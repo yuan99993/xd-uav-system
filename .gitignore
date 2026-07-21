@@ -1,68 +1,152 @@
-# =========================
-# C++ / CMake
-# =========================
+# ============================================================
+# ROS1 / Catkin workspace
+# ============================================================
 build/
-cmake-build-*/
+devel/
+install/
+build_isolated/
+devel_isolated/
+install_isolated/
+.catkin_workspace
+.catkin_tools/
+src/CMakeLists.txt
+
+# Catkin and generated CMake files
+catkin_generated/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
+CTestTestfile.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# ============================================================
+# C / C++ build outputs
+# ============================================================
 *.o
 *.obj
-*.exe
-*.dll
-*.so
 *.a
-*.lib
+*.so
+*.so.*
+*.dll
+*.dylib
+*.exe
+*.out
+*.app
 *.pdb
+*.ilk
+*.gch
+*.gcda
+*.gcno
+*.gcov
 
-# =========================
-# Qt
-# =========================
-*.user
-*.user.*
-.qmake.stash
-moc_*.cpp
-qrc_*.cpp
-ui_*.h
+# ============================================================
+# ROS runtime files and test recordings
+# ============================================================
+.ros/
+ros_log/
+logs/
+*.log
+*.bag
+*.bag.active
+*.db3
+*.mcap
+*.launch.xml
+*.gv
 
-# =========================
+# Large local datasets and generated results.
+# Important: keep source/configuration files in the repository.
+data/
+datasets/
+recordings/
+rosbags/
+outputs/
+artifacts/
+results/
+
+# Common point-cloud and numerical data generated during tests.
+# Use git add -f when a specific sample is intentionally versioned.
+*.pcd
+*.ply
+*.las
+*.laz
+*.npy
+*.npz
+
+# ============================================================
 # Python
-# =========================
+# ============================================================
 __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
 .coverage
+.coverage.*
 htmlcov/
+.pytype/
 
-# Python虚拟环境
+# Virtual environments
 .venv/
 venv/
 env/
+ENV/
 
-# Python构建产物
+# Python build outputs
 dist/
+build/lib/
 *.egg-info/
 pip-wheel-metadata/
 
-# =========================
-# IDE
-# =========================
+# ============================================================
+# Qt / IDE
+# ============================================================
+*.user
+*.user.*
+.qmake.stash
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
 .vscode/
 .idea/
+.vs/
+.vscode-test/
+*.swp
+*.swo
+*~
 
-# =========================
-# 敏感配置
-# =========================
+# ============================================================
+# Secrets and local configuration
+# ============================================================
 .env
 .env.*
 !.env.example
+*.secret
+*.key
+*.pem
+secrets/
+config/local/
+config/*.local.*
+config/*secret*
 
-# =========================
-# 系统文件
-# =========================
+# ============================================================
+# Coverage, profiling and local reports
+# ============================================================
+coverage/
+profile/
+*.prof
+*.gcov
+*.html
+
+# ============================================================
+# OS files
+# ============================================================
 .DS_Store
 Thumbs.db
+Desktop.ini
+
