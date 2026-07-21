@@ -1,18 +1,68 @@
-# Build and Release Folders
-bin-debug/
-bin-release/
-[Oo]bj/
-[Bb]in/
+# =========================
+# C++ / CMake
+# =========================
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+*.pdb
 
-# Other files and folders
-.settings/
+# =========================
+# Qt
+# =========================
+*.user
+*.user.*
+.qmake.stash
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
 
-# Executables
-*.swf
-*.air
-*.ipa
-*.apk
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
-# should NOT be excluded as they contain compiler settings and other important
-# information for Eclipse / Flash Builder.
+# Python虚拟环境
+.venv/
+venv/
+env/
+
+# Python构建产物
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# 敏感配置
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# 系统文件
+# =========================
+.DS_Store
+Thumbs.db
