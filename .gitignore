@@ -4,15 +4,10 @@
 build/
 devel/
 install/
-build_isolated/
-devel_isolated/
-install_isolated/
+logs/
 .catkin_workspace
-.catkin_tools/
 src/CMakeLists.txt
-
-# Catkin and generated CMake files
-catkin_generated/
+cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
@@ -148,5 +143,3 @@ profile/
 # ============================================================
 .DS_Store
 Thumbs.db
-Desktop.ini
-

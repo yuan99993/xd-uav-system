@@ -8,7 +8,7 @@ Software architecture description
 
 #### Installation
 
-1.  xxxx
+1.  功能测试
 2.  xxxx
 3.  xxxx
 
