@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="config" default="$(find xd_uav_sigle_tf_manager)/config/single_tf.yaml"/>
+  <arg name="local_origin_frame" default="$(arg uav_name)/local_origin"/>
+  <arg name="odom_frame" default="$(arg uav_name)/odom"/>
+  <arg name="body_frame" default="$(arg uav_name)/base_link"/>
+  <arg name="main_odom_topic" default="mavros/local_position/odom"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_sigle_tf_manager"
+          type="single_tf_manager_node"
+          name="single_tf_manager"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <!-- launch参数会覆盖通用YAML中的坐标系名称，以便复用于不同uavX。 -->
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="main_transform/topic" value="$(arg main_odom_topic)"/>
+      <param name="main_transform/parent_frame" value="$(arg odom_frame)"/>
+      <param name="main_transform/child_frame" value="$(arg body_frame)"/>
+      <param name="local_alignment/parent_frame" value="$(arg local_origin_frame)"/>
+      <param name="local_alignment/child_frame" value="$(arg odom_frame)"/>
+    </node>
+  </group>
+</launch>

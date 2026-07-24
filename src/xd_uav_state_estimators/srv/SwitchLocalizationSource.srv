@@ -1,0 +1,8 @@
+# 填写已配置的定位源名称；使用"auto"或空名称可恢复自动选源。
+string source_name
+---
+bool success
+string message
+string active_source
+string requested_source
+bool automatic

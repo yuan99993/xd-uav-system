@@ -1,0 +1,72 @@
+<?xml version="1.0"?>
+<launch>
+  <group ns="uav_test">
+    <node pkg="xd_uav_state_estimator"
+          type="state_estimator_node"
+          name="state_estimator"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(find xd_uav_state_estimator)/config/local_odom.yaml"/>
+
+      <param name="uav_name" value="uav_test"/>
+      <param name="world_frame" value="world"/>
+      <param name="map_frame" value="uav_test/map"/>
+      <param name="odom_frame" value="uav_test/odom"/>
+      <param name="body_frame" value="uav_test/base_link"/>
+      <param name="imu_prediction/enabled" value="true"/>
+      <param name="imu_prediction/estimate_bias" value="false"/>
+      <param name="max_localization_delay" value="0.20"/>
+      <param name="delayed_measurement/history_duration" value="0.50"/>
+      <param name="max_dead_reckoning_time" value="0.30"/>
+      <param name="diagnostics_rate" value="20.0"/>
+      <param name="switch_back_to_primary" value="true"/>
+      <param name="source_switching/minimum_active_time" value="0.10"/>
+      <param name="source_switching/cooldown" value="0.10"/>
+
+      <rosparam param="localization_sources">[primary, fallback]</rosparam>
+
+      <param name="sources/primary/enabled" value="true"/>
+      <param name="sources/primary/adapter" value="odometry"/>
+      <param name="sources/primary/topic" value="primary_odom"/>
+      <param name="sources/primary/role" value="primary"/>
+      <param name="sources/primary/priority" value="0"/>
+      <param name="sources/primary/use_position_xy" value="true"/>
+      <param name="sources/primary/use_altitude" value="true"/>
+      <param name="sources/primary/use_velocity_xy" value="true"/>
+      <param name="sources/primary/use_vertical_velocity" value="true"/>
+      <param name="sources/primary/use_heading" value="true"/>
+      <param name="sources/primary/timeout" value="0.25"/>
+      <param name="sources/primary/alignment/mode" value="align_on_activation"/>
+      <param name="sources/primary/alignment/samples" value="5"/>
+      <param name="sources/primary/reliability/max_consecutive_rejections" value="3"/>
+      <param name="sources/primary/reliability/quarantine_duration" value="1.0"/>
+      <param name="sources/primary/reliability/recovery_min_samples" value="10"/>
+      <param name="sources/primary/reliability/recovery_stable_time" value="0.10"/>
+
+      <param name="sources/fallback/enabled" value="true"/>
+      <param name="sources/fallback/adapter" value="odometry"/>
+      <param name="sources/fallback/topic" value="fallback_odom"/>
+      <param name="sources/fallback/role" value="fallback"/>
+      <param name="sources/fallback/priority" value="1"/>
+      <param name="sources/fallback/use_position_xy" value="true"/>
+      <param name="sources/fallback/use_altitude" value="true"/>
+      <param name="sources/fallback/use_velocity_xy" value="false"/>
+      <param name="sources/fallback/use_vertical_velocity" value="false"/>
+      <param name="sources/fallback/use_heading" value="true"/>
+      <param name="sources/fallback/timeout" value="0.25"/>
+      <param name="sources/fallback/alignment/mode" value="align_on_activation"/>
+      <param name="sources/fallback/alignment/samples" value="5"/>
+    </node>
+
+    <!-- 模拟SLAM安装在机体前方0.2米处，并验证Adapter使用TF转换到base_link。 -->
+    <node pkg="tf2_ros"
+          type="static_transform_publisher"
+          name="body_to_fallback_sensor"
+          args="0.2 0 0 0 0 0 1 uav_test/base_link fallback_sensor"/>
+  </group>
+
+  <test pkg="xd_uav_state_estimator"
+        type="test_multi_source.py"
+        test-name="test_multi_source"
+        time-limit="20"/>
+</launch>

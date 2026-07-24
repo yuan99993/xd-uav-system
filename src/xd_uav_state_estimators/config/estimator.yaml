@@ -1,0 +1,43 @@
+# 估计器内部算法参数。定位源话题不放在这个文件中。
+output_rate: 100.0
+diagnostics_rate: 2.0
+max_localization_delay: 0.15
+max_dead_reckoning_time: 1.0
+imu_timeout: 0.30
+require_imu: false
+
+filter:
+  initial_position_variance: 1.0
+  initial_velocity_variance: 1.0
+  initial_acceleration_variance: 10.0
+  position_process_noise: 0.05
+  velocity_process_noise: 0.50
+  acceleration_process_noise: 2.0
+  yaw_process_noise: 0.02
+  yaw_rate_process_noise: 0.20
+  imu_acceleration_variance: 0.50
+  imu_yaw_rate_variance: 0.05
+  remove_gravity: true
+  gravity: 9.80665
+  acceleration_limit: 30.0
+
+innovation_gate:
+  position_xy: 5.0
+  position_z: 3.0
+  velocity_xy: 5.0
+  velocity_z: 3.0
+  heading: 1.57
+  use_nis: true
+  position_xy_nis: 9.21
+  position_z_nis: 6.63
+  velocity_xy_nis: 9.21
+  velocity_z_nis: 6.63
+  heading_nis: 6.63
+
+source_switching:
+  switch_back_to_primary: true
+  minimum_active_time: 1.0
+  cooldown: 0.5
+
+# 输出速度遵循nav_msgs/Odometry约定，在body_frame坐标系中表达。
+output_twist_in_body_frame: true

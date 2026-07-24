@@ -1,0 +1,67 @@
+# 本文件加载到/uavX/single_tf_manager节点的私有参数空间。
+publish_rate: 30.0
+input_timeout: 1.0
+
+# 独占发布odom -> base_link。
+main_transform:
+  enabled: true
+  # 单独启动本包时直接使用MAVROS；与估计器联合启动时由launch覆盖为main/odom。
+  topic: mavros/local_position/odom
+  parent_frame: odom
+  child_frame: base_link
+
+# local_origin -> odom局部对齐层，不处理GPS、经纬度或世界坐标。
+local_alignment:
+  enabled: true
+  parent_frame: local_origin
+  child_frame: odom
+
+  # 没有修正数据时发布单位变换，保证local_origin -> odom -> base_link始终连通。
+  fallback_identity: true
+
+  # 可选修正话题，消息表示local_origin下base_link的位姿。
+  # 留空表示当前没有全局/回环修正，local_origin -> odom保持单位变换。
+  correction_topic: ""
+  max_position_variance: 100.0
+  position_filter_alpha: 0.08
+  yaw_filter_alpha: 0.08
+  max_position_jump: 10.0
+  max_yaw_jump: 1.57079632679
+
+# 物理安装TF在此配置，后续也可以迁移到URDF和robot_state_publisher。
+static_transforms:
+  - name: base_to_lidar
+    enabled: true
+    parent_frame: base_link
+    child_frame: lidar_link
+    translation: [0.0, 0.0, 0.10]
+    rotation_rpy: [0.0, 0.0, 0.0]
+
+  - name: lidar_to_lidar_imu
+    enabled: true
+    parent_frame: lidar_link
+    child_frame: lidar_imu_link
+    translation: [0.0, 0.0, 0.0]
+    rotation_rpy: [0.0, 0.0, 0.0]
+  - name: fastlio_to_lidar_imu
+    enabled: true
+    parent_frame: odom
+    child_frame: fastlio_origin
+    translation: [0.0, 0.0, 0.0]
+    rotation_rpy: [0.0, 0.0, 0.0]
+
+# 通用动态TF转发规则。支持以下消息类型：还要修改
+#   odometry, pose_stamped, transform_stamped
+# parent_frame和child_frame非空时会覆盖消息自带的坐标系名称。
+dynamic_transforms:
+  - name: fastlio_origin
+    # 当前关闭Fast-LIO来源坐标系的TF，只保留估计器数据输入。
+    # 后续确实需要显示该来源坐标系时再启用。
+    enabled: false
+    type: transform_stamped
+    topic: state_estimator/sources/fastlio/alignment
+    # 估计器发布的是主odom系到Fast-LIO原点的对齐量。
+    # 如需启用，必须先关闭上面的同名静态TF，避免两个规则同时占用同一个child。
+    parent_frame: odom
+    child_frame: fastlio_origin
+    invert: false

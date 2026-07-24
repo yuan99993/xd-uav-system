@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- 与MRS兼容的入口：启动roslaunch前执行export UAV_NAME=uav1。 -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <!-- 保留下划线小写参数别名，以兼容原有的uav_name:=...启动方式。 -->
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="config" default="$(find xd_uav_state_estimator)/config/local_odom.yaml"/>
+  <arg name="localization_config" default="$(find xd_uav_state_estimator)/config/localization/localization.yaml"/>
+  <arg name="gps_world_alignment_config" default="$(find xd_uav_state_estimator)/config/gps_world_alignment.yaml"/>
+  <arg name="enable_gps_world_alignment" default="true"/>
+  <!-- The estimator is the single owner of odom -> base_link. -->
+  <arg name="publish_tf" default="true"/>
+  <arg name="node_name" default="state_estimator"/>
+  <arg name="respawn" default="false"/>
+
+  <!-- 下列相对话题名称会解析到/$(arg uav_name)命名空间内。 -->
+  <arg name="odometry_topic" default="mavros/local_position/odom"/>
+  <arg name="imu_topic" default="mavros/imu/data"/>
+  <arg name="control_input_topic" default="control_input"/>
+  <arg name="gps_fix_topic" default="mavros/global_position/global"/>
+  <arg name="gps_origin_topic" default="mavros/global_position/gp_origin"/>
+  <arg name="heading_topic" default="mavros/global_position/compass_hdg"/>
+
+  <arg name="world_frame" default="world"/>
+  <arg name="local_origin_frame" default="$(arg uav_name)/local_origin"/>
+  <arg name="map_frame" default="$(arg local_origin_frame)"/>
+  <arg name="odom_frame" default="$(arg uav_name)/odom"/>
+  <arg name="body_frame" default="$(arg uav_name)/base_link"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_state_estimator"
+          type="state_estimator_node"
+          name="$(arg node_name)"
+          output="screen"
+          respawn="$(arg respawn)"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <rosparam command="load" file="$(arg localization_config)"/>
+
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="world_frame" value="$(arg world_frame)"/>
+      <param name="map_frame" value="$(arg map_frame)"/>
+      <param name="odom_frame" value="$(arg odom_frame)"/>
+      <param name="body_frame" value="$(arg body_frame)"/>
+      <param name="publish_tf" value="$(arg publish_tf)"/>
+      <param name="sources/mavros_local/topic" value="$(arg odometry_topic)"/>
+
+      <remap from="imu_in" to="$(arg imu_topic)"/>
+      <remap from="control_input_in" to="$(arg control_input_topic)"/>
+    </node>
+
+    <!--
+      GPS defines the shared world position, compass_hdg defines ENU yaw, and
+      the active estimator output supplies continuous local odometry.
+    -->
+    <node if="$(arg enable_gps_world_alignment)"
+          pkg="xd_uav_state_estimator"
+          type="gps_world_alignment_node"
+          name="gps_world_alignment"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg gps_world_alignment_config)"/>
+      <param name="world_frame" value="$(arg world_frame)"/>
+      <param name="local_origin_frame" value="$(arg local_origin_frame)"/>
+      <param name="odom_frame" value="$(arg odom_frame)"/>
+
+      <remap from="gps_fix" to="$(arg gps_fix_topic)"/>
+      <remap from="gps_origin" to="$(arg gps_origin_topic)"/>
+      <remap from="heading" to="$(arg heading_topic)"/>
+      <remap from="odometry" to="state_estimator/main/odom"/>
+    </node>
+  </group>
+</launch>

@@ -1,0 +1,21 @@
+# Shared WGS84 datum defining the world ENU tangent plane.
+# These values match the default PX4 SITL Zurich home position.
+world_datum:
+  latitude: 47.397772
+  longitude: 8.545594
+  altitude: 535.273915610798
+
+# compass_hdg is used for yaw. Add magnetic declination or sensor mounting
+# correction here in radians when using real hardware.
+heading_offset: 0.0
+
+use_altitude: true
+input_timeout: 1.0
+max_position_covariance: 25.0
+
+# Low-pass correction of the global layer. This never filters odom -> base_link.
+position_filter_alpha: 0.08
+yaw_filter_alpha: 0.08
+max_position_jump: 10.0
+max_yaw_jump: 1.57079632679
+publish_rate: 30.0

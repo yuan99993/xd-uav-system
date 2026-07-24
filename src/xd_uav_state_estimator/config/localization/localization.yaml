@@ -1,0 +1,91 @@
+# 定位源数量决定工作方式：列表中启用一个源即单源，启用多个源即自动选源。
+switch_back_to_primary: true
+source_switching:
+  minimum_active_time: 1.0
+  cooldown: 0.5
+
+localization_sources:
+  - mavros_local
+  - fastlio
+
+sources:
+  mavros_local:
+    enabled: true
+    adapter: odometry
+    topic: mavros/local_position/odom
+    role: primary
+    priority: 0
+    use_position_xy: true
+    use_altitude: true
+    use_velocity_xy: true
+    use_vertical_velocity: true
+    use_heading: true
+    twist_in_body_frame: true
+    timeout: 0.25
+    alignment:
+      mode: align_on_activation
+      samples: 10
+    frame_transform:
+      use_tf_for_child_frame: true
+      require_tf: true
+      timeout: 0.02
+    covariance:
+      use_message: true
+      position_xy: 0.01
+      position_z: 0.05
+      velocity_xy: 0.01
+      velocity_z: 0.02
+      heading: 0.02
+    reliability:
+      max_position_variance: 100.0
+      max_velocity_variance: 100.0
+      max_heading_variance: 10.0
+      max_consecutive_rejections: 5
+      quarantine_duration: 1.0
+      recovery_min_samples: 20
+      recovery_stable_time: 0.5
+
+  fastlio:
+    enabled: true
+    adapter: odometry
+    # state_estimator节点位于/uav1命名空间时，解析为
+    # /uav1/fastlio/Odometry。
+    topic: fastlio/Odometry
+    role: fallback
+    priority: 1
+    use_position_xy: true
+    use_altitude: true
+    use_velocity_xy: false
+    use_vertical_velocity: false
+    use_heading: true
+    twist_in_body_frame: false
+    timeout: 0.50
+
+    # 激活备用源时根据当前估计状态计算坐标对齐，避免直接跳到SLAM原点。
+    alignment:
+      mode: align_on_activation
+      samples: 10
+
+    frame_transform:
+      use_tf_for_child_frame: true
+      # FAST-LIO输出lidar_imu_link位姿；必须通过飞机传感器静态树换算
+      # 到base_link，缺少安装外参时拒绝该来源，禁止静默当作同一坐标系。
+      require_tf: true
+      timeout: 0.05
+
+    covariance:
+      # FAST-LIO原始Odometry没有提供稳定、完整的协方差，使用这里的固定噪声。
+      use_message: false
+      position_xy: 0.05
+      position_z: 0.10
+      velocity_xy: 0.20
+      velocity_z: 0.20
+      heading: 0.05
+    reliability:
+      max_position_variance: 100.0
+      max_velocity_variance: 100.0
+      max_heading_variance: 10.0
+      max_consecutive_rejections: 5
+      quarantine_duration: 1.0
+      recovery_min_samples: 20
+      recovery_stable_time: 0.5
