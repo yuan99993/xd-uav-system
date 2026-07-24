@@ -1,8 +1,0 @@
-<launch>
-  <node pkg="xd_demo_cpp"
-        type="heartbeat_node"
-        name="heartbeat_node"
-        output="screen">
-    <rosparam command="load" file="$(find xd_demo_cpp)/config/params.yaml" />
-  </node>
-</launch>
