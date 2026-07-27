@@ -1,8 +1,0 @@
-# 配置中的定位源名称；传入 "auto" 或空字符串可恢复自动选源。
-string source_name
----
-bool success
-string message
-string active_source
-string requested_source
-bool automatic
