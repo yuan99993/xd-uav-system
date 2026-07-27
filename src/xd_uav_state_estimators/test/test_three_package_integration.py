@@ -12,7 +12,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool
 
-from xd_uav_state_estimators.msg import EstimatorStatus
+from xd_uav_state_estimators.msg import EstimatorStatus, PositionXY
 from xd_uav_state_estimators.srv import SwitchLocalizationSource
 
 
@@ -22,6 +22,7 @@ class ThreePackageIntegration(unittest.TestCase):
         self._running = True
         self._publish_fastlio = False
         self._publish_mavros = True
+        self._motion_start = rospy.Time.now()
         self._publishers = {
             "mavros": rospy.Publisher(
                 "/uav1/mavros/local_position/odom", Odometry, queue_size=10
@@ -45,7 +46,7 @@ class ThreePackageIntegration(unittest.TestCase):
         self._running = False
         self._thread.join(timeout=1.0)
 
-    def _odometry(self, parent, child, x):
+    def _odometry(self, parent, child, x, velocity_x=0.0):
         message = Odometry()
         message.header.stamp = rospy.Time.now()
         message.header.frame_id = parent
@@ -53,6 +54,7 @@ class ThreePackageIntegration(unittest.TestCase):
         message.pose.pose.position.x = x
         message.pose.pose.position.z = 2.0
         message.pose.pose.orientation.w = 1.0
+        message.twist.twist.linear.x = velocity_x
         for index in (0, 7, 14, 35):
             message.pose.covariance[index] = 0.02
             message.twist.covariance[index] = 0.02
@@ -62,6 +64,7 @@ class ThreePackageIntegration(unittest.TestCase):
         rate = rospy.Rate(30)
         while self._running and not rospy.is_shutdown():
             now = rospy.Time.now()
+            elapsed = max(0.0, (now - self._motion_start).to_sec())
             origin = GeoPointStamped()
             origin.header.stamp = now
             origin.header.frame_id = "earth"
@@ -79,12 +82,21 @@ class ThreePackageIntegration(unittest.TestCase):
 
             if self._publish_mavros:
                 self._publishers["mavros"].publish(
-                    self._odometry("uav1/odom", "uav1/base_link", 0.0)
+                    self._odometry(
+                        "uav1/odom",
+                        "uav1/base_link",
+                        2.0 * elapsed,
+                        velocity_x=2.0,
+                    )
                 )
             if self._publish_fastlio:
                 self._publishers["fastlio"].publish(
                     self._odometry(
-                        "uav1/fastlio_origin", "uav1/lidar_imu_link", 50.0
+                        "uav1/fastlio_origin",
+                        "uav1/lidar_imu_link",
+                        50.0 + 2.0 * elapsed,
+                        # Fast-LIO来源没有配置速度修正，用它验证切源不能清零main速度。
+                        velocity_x=0.0,
                     )
                 )
             rate.sleep()
@@ -102,6 +114,16 @@ class ThreePackageIntegration(unittest.TestCase):
         self.fail("condition not met before timeout")
 
     def test_estimation_switch_and_tf_ownership(self):
+        correction = self._wait_for(
+            lambda: rospy.wait_for_message(
+                "/uav1/state_estimator_inputs/mavros/position_xy",
+                PositionXY,
+                timeout=0.2,
+            )
+        )
+        self.assertEqual(correction.header.frame_id, "uav1/mavros_origin")
+        self.assertEqual(correction.child_frame_id, "uav1/base_link")
+
         main = self._wait_for(
             lambda: rospy.wait_for_message(
                 "/uav1/state_estimator/main/odom", Odometry, timeout=0.2
@@ -123,8 +145,20 @@ class ThreePackageIntegration(unittest.TestCase):
         switch = rospy.ServiceProxy(
             "/uav1/state_estimator/switch_source", SwitchLocalizationSource
         )
-        before = rospy.wait_for_message(
-            "/uav1/state_estimator/main/odom", Odometry, timeout=2.0
+        before = self._wait_for(
+            lambda: (
+                message
+                if abs(
+                    (message := rospy.wait_for_message(
+                        "/uav1/state_estimator/main/odom",
+                        Odometry,
+                        timeout=0.2,
+                    )).twist.twist.linear.x
+                    - 2.0
+                )
+                < 0.3
+                else None
+            )
         )
         response = switch("fastlio")
         self.assertTrue(response.success, response.message)
@@ -138,6 +172,14 @@ class ThreePackageIntegration(unittest.TestCase):
             + (after.pose.pose.position.z - before.pose.pose.position.z) ** 2
         )
         self.assertLess(displacement, 0.5)
+        velocity_jump = abs(
+            after.twist.twist.linear.x - before.twist.twist.linear.x
+        )
+        self.assertLess(
+            velocity_jump,
+            0.4,
+            "切换到没有速度修正的Fast-LIO后，main速度发生了跳变",
+        )
 
         buffer = tf2_ros.Buffer()
         listener = tf2_ros.TransformListener(buffer)
@@ -163,14 +205,69 @@ class ThreePackageIntegration(unittest.TestCase):
         self.assertAlmostEqual(local_alignment.transform.translation.y, 0.0, delta=1e-6)
         self.assertAlmostEqual(local_alignment.transform.translation.z, 0.0, delta=1e-6)
 
+        mavros_origin = self._wait_for(
+            lambda: buffer.lookup_transform(
+                "uav1/odom",
+                "uav1/mavros_origin",
+                rospy.Time(0),
+                rospy.Duration(0.2),
+            )
+        )
+        self.assertEqual(mavros_origin.child_frame_id, "uav1/mavros_origin")
+
+        mavros_estimate = self._wait_for(
+            lambda: buffer.lookup_transform(
+                "uav1/odom",
+                "uav1/mavros_estimated_base_link",
+                rospy.Time(0),
+                rospy.Duration(0.2),
+            )
+        )
+        self.assertEqual(
+            mavros_estimate.child_frame_id,
+            "uav1/mavros_estimated_base_link",
+        )
+
+        fastlio_origin = self._wait_for(
+            lambda: buffer.lookup_transform(
+                "uav1/odom",
+                "uav1/fastlio_origin",
+                rospy.Time(0),
+                rospy.Duration(0.2),
+            )
+        )
+        self.assertEqual(fastlio_origin.child_frame_id, "uav1/fastlio_origin")
+
+        fastlio_estimate = self._wait_for(
+            lambda: buffer.lookup_transform(
+                "uav1/odom",
+                "uav1/fastlio_estimated_base_link",
+                rospy.Time(0),
+                rospy.Duration(0.2),
+            )
+        )
+        self.assertEqual(
+            fastlio_estimate.child_frame_id,
+            "uav1/fastlio_estimated_base_link",
+        )
+
         world_odom = self._wait_for(
             lambda: rospy.wait_for_message(
-                "/uav1/state_estimator/frames/world/odom",
+                "/uav1/state_estimator/main/frames/world/odom",
                 Odometry,
                 timeout=0.2,
             )
         )
         self.assertEqual(world_odom.header.frame_id, "world")
+
+        fastlio_world = self._wait_for(
+            lambda: rospy.wait_for_message(
+                "/uav1/state_estimator/sources/fastlio/frames/world/odom",
+                Odometry,
+                timeout=0.2,
+            )
+        )
+        self.assertEqual(fastlio_world.header.frame_id, "world")
 
         response = switch("auto")
         self.assertTrue(response.success)

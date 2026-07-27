@@ -117,14 +117,11 @@ class SingleTfManager {
     uav_name_ = trimSlashes(uav_name_);
     private_nh_.param("publish_rate", publish_rate_, 30.0);
     private_nh_.param("input_timeout", input_timeout_, 1.0);
-    loadMainTransform();
     loadLocalAlignment();
     loadStaticTransforms();
     loadDynamicTransforms();
     static_broadcaster_.sendTransform(static_transforms_);
 
-    main_valid_publisher_ =
-        private_nh_.advertise<std_msgs::Bool>("main_transform_valid", 1, true);
     alignment_valid_publisher_ =
         private_nh_.advertise<std_msgs::Bool>("local_alignment_valid", 1, true);
     diagnostics_publisher_ =
@@ -132,9 +129,8 @@ class SingleTfManager {
     timer_ = private_nh_.createTimer(
         ros::Duration(1.0 / std::max(1.0, publish_rate_)),
         &SingleTfManager::timerCallback, this);
-    publishBoolean(main_valid_publisher_, false);
     publishBoolean(alignment_valid_publisher_, false);
-    ROS_INFO("[xd_uav_sigle_tf_manager] %s owns %zu child frame(s)",
+    ROS_INFO("[xd_uav_single_tf_manager] %s管理%zu个子坐标系",
              uav_name_.c_str(), child_owners_.size());
   }
 
@@ -159,24 +155,6 @@ class SingleTfManager {
     }
   }
 
-  void loadMainTransform() {
-    private_nh_.param("main_transform/enabled", main_enabled_, true);
-    if (!main_enabled_) {
-      return;
-    }
-    private_nh_.param("main_transform/topic", main_topic_,
-                      std::string("mavros/local_position/odom"));
-    std::string parent;
-    std::string child;
-    private_nh_.param("main_transform/parent_frame", parent, std::string("odom"));
-    private_nh_.param("main_transform/child_frame", child, std::string("base_link"));
-    main_parent_frame_ = scopedFrame(parent);
-    main_child_frame_ = scopedFrame(child);
-    claimChild(main_child_frame_, "main_transform");
-    main_subscriber_ =
-        nh_.subscribe(main_topic_, 30, &SingleTfManager::mainOdometryCallback, this);
-  }
-
   void loadLocalAlignment() {
     private_nh_.param("local_alignment/enabled", local_alignment_enabled_, true);
     if (!local_alignment_enabled_) {
@@ -195,6 +173,9 @@ class SingleTfManager {
                       fallback_identity_, true);
     private_nh_.param("local_alignment/correction_topic",
                       correction_topic_, std::string());
+    private_nh_.param("local_alignment/odometry_topic",
+                      odometry_topic_,
+                      std::string("state_estimator/main/odom"));
     private_nh_.param("local_alignment/max_position_variance",
                       max_position_variance_, 100.0);
     private_nh_.param("local_alignment/position_filter_alpha",
@@ -206,6 +187,9 @@ class SingleTfManager {
     yaw_filter_alpha_ = std::clamp(yaw_filter_alpha_, 0.0, 1.0);
 
     if (!correction_topic_.empty()) {
+      odometry_subscriber_ = nh_.subscribe(
+          odometry_topic_, 30,
+          &SingleTfManager::odometryCallback, this);
       correction_subscriber_ = nh_.subscribe(
           correction_topic_, 20, &SingleTfManager::correctionCallback, this);
     }
@@ -323,19 +307,23 @@ class SingleTfManager {
     return true;
   }
 
-  void mainOdometryCallback(const nav_msgs::Odometry::ConstPtr& message) {
-    geometry_msgs::Vector3 translation;
-    translation.x = message->pose.pose.position.x;
-    translation.y = message->pose.pose.position.y;
-    translation.z = message->pose.pose.position.z;
-    geometry_msgs::TransformStamped transform;
-    if (!buildTransform(main_parent_frame_, main_child_frame_, message->header.stamp,
-                        translation, message->pose.pose.orientation, false, &transform)) {
-      ROS_WARN_THROTTLE(2.0, "[xd_uav_sigle_tf_manager] invalid main odometry pose");
+  void odometryCallback(const nav_msgs::Odometry::ConstPtr& message) {
+    tf2::Quaternion rotation;
+    tf2::fromMsg(message->pose.pose.orientation, rotation);
+    if (!normalize(&rotation) ||
+        !std::isfinite(message->pose.pose.position.x) ||
+        !std::isfinite(message->pose.pose.position.y) ||
+        !std::isfinite(message->pose.pose.position.z)) {
+      ROS_WARN_THROTTLE(
+          2.0,
+          "[xd_uav_single_tf_manager] 主估计里程计位姿无效");
       return;
     }
-    dynamic_broadcaster_.sendTransform(transform);
-    tf2::fromMsg(transform.transform, odom_body_transform_);
+    odom_body_transform_.setOrigin(
+        tf2::Vector3(message->pose.pose.position.x,
+                     message->pose.pose.position.y,
+                     message->pose.pose.position.z));
+    odom_body_transform_.setRotation(rotation);
     have_main_pose_ = true;
     last_main_receive_ = ros::Time::now();
     updateAlignment();
@@ -348,7 +336,7 @@ class SingleTfManager {
         !std::isfinite(message->pose.pose.position.y) ||
         !std::isfinite(message->pose.pose.position.z)) {
       ROS_WARN_THROTTLE(
-          2.0, "[xd_uav_sigle_tf_manager] invalid local alignment correction");
+          2.0, "[xd_uav_single_tf_manager] 局部对齐修正无效");
       return;
     }
 
@@ -362,7 +350,7 @@ class SingleTfManager {
     }
     if (largest_variance > max_position_variance_) {
       ROS_WARN_THROTTLE(
-          2.0, "[xd_uav_sigle_tf_manager] local alignment covariance is too large");
+          2.0, "[xd_uav_single_tf_manager] 局部对齐修正协方差过大");
       return;
     }
 
@@ -412,7 +400,8 @@ class SingleTfManager {
     const double dz = candidate_translation[2] - alignment_translation_[2];
     if (std::sqrt(dx * dx + dy * dy + dz * dz) > max_position_jump_ ||
         std::abs(wrapAngle(candidate_yaw - alignment_yaw_)) > max_yaw_jump_) {
-      ROS_WARN_THROTTLE(2.0, "[xd_uav_sigle_tf_manager] rejected local alignment jump");
+      ROS_WARN_THROTTLE(
+          2.0, "[xd_uav_single_tf_manager] 拒绝局部对齐跳变");
       return;
     }
     for (std::size_t index = 0; index < alignment_translation_.size(); ++index) {
@@ -466,12 +455,8 @@ class SingleTfManager {
 
   void timerCallback(const ros::TimerEvent&) {
     const ros::Time now = ros::Time::now();
-    const bool main_valid =
-        main_enabled_ && !last_main_receive_.isZero() &&
-        (now - last_main_receive_).toSec() <= input_timeout_;
     const bool alignment_valid =
         local_alignment_enabled_ && alignment_initialized_ && alignmentInputsFresh(now);
-    publishBoolean(main_valid_publisher_, main_valid);
     publishBoolean(alignment_valid_publisher_, alignment_valid);
 
     if (local_alignment_enabled_ &&
@@ -492,10 +477,10 @@ class SingleTfManager {
       transform.transform.rotation = tf2::toMsg(quaternion);
       dynamic_broadcaster_.sendTransform(transform);
     }
-    publishDiagnostics(now, main_valid, alignment_valid);
+    publishDiagnostics(now, alignment_valid);
   }
 
-  void publishDiagnostics(const ros::Time& now, const bool main_valid,
+  void publishDiagnostics(const ros::Time& now,
                           const bool alignment_valid) {
     if (!last_diagnostics_.isZero() &&
         (now - last_diagnostics_).toSec() < 0.5) {
@@ -507,14 +492,26 @@ class SingleTfManager {
     diagnostic_msgs::DiagnosticStatus status;
     status.name = uav_name_ + "/single_tf_manager";
     status.hardware_id = uav_name_;
-    status.level = main_valid ? diagnostic_msgs::DiagnosticStatus::OK
-                              : diagnostic_msgs::DiagnosticStatus::WARN;
-    status.message = main_valid ? "main TF available" : "main TF stale/waiting";
-    addDiagnostic(&status, "main_transform_valid", main_valid);
+    const bool fallback_in_use =
+        local_alignment_enabled_ && fallback_identity_ &&
+        !alignment_initialized_;
+    const bool local_chain_available =
+        !local_alignment_enabled_ || alignment_valid ||
+        fallback_in_use;
+    status.level =
+        local_chain_available
+            ? diagnostic_msgs::DiagnosticStatus::OK
+            : diagnostic_msgs::DiagnosticStatus::WARN;
+    status.message =
+        !local_alignment_enabled_
+            ? "局部对齐层已禁用"
+            : (alignment_valid
+                   ? "局部对齐有效"
+                   : (fallback_in_use ? "使用局部单位对齐"
+                                      : "等待局部对齐修正"));
     addDiagnostic(&status, "local_alignment_valid", alignment_valid);
     addDiagnostic(&status, "local_alignment_identity_fallback",
-                  local_alignment_enabled_ && fallback_identity_ &&
-                      !alignment_initialized_);
+                  fallback_in_use);
     addDiagnostic(&status, "owned_children",
                   static_cast<int>(child_owners_.size()));
     for (const auto& rule : dynamic_rules_) {
@@ -553,17 +550,14 @@ class SingleTfManager {
   ros::NodeHandle private_nh_;
   tf2_ros::TransformBroadcaster dynamic_broadcaster_;
   tf2_ros::StaticTransformBroadcaster static_broadcaster_;
-  ros::Subscriber main_subscriber_;
+  ros::Subscriber odometry_subscriber_;
   ros::Subscriber correction_subscriber_;
-  ros::Publisher main_valid_publisher_;
   ros::Publisher alignment_valid_publisher_;
   ros::Publisher diagnostics_publisher_;
   ros::Timer timer_;
 
   std::string uav_name_;
-  std::string main_topic_;
-  std::string main_parent_frame_;
-  std::string main_child_frame_;
+  std::string odometry_topic_;
   std::string local_parent_frame_;
   std::string local_child_frame_;
   std::string correction_topic_;
@@ -584,7 +578,6 @@ class SingleTfManager {
   double yaw_filter_alpha_{0.08};
   double max_position_jump_{10.0};
   double max_yaw_jump_{kPi / 2.0};
-  bool main_enabled_{true};
   bool local_alignment_enabled_{true};
   bool fallback_identity_{true};
   bool have_main_pose_{false};
@@ -598,7 +591,7 @@ int main(int argc, char** argv) {
     SingleTfManager manager;
     ros::spin();
   } catch (const std::exception& exception) {
-    ROS_FATAL("[xd_uav_sigle_tf_manager] startup failed: %s", exception.what());
+    ROS_FATAL("[xd_uav_single_tf_manager] 启动失败: %s", exception.what());
     return 1;
   }
   return 0;

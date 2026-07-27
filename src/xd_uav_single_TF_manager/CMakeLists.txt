@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(xd_uav_sigle_tf_manager)
+project(xd_uav_single_tf_manager)
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 

@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>xd_uav_sigle_tf_manager</name>
+  <name>xd_uav_single_tf_manager</name>
   <version>1.0.0</version>
-  <description>Per-UAV namespaced TF ownership and configurable topic-to-TF relays.</description>
+  <description>单架无人机的命名空间TF管理与可配置话题转TF功能。</description>
 
   <maintainer email="kzy@example.com">kzy</maintainer>
   <license>BSD-3-Clause</license>

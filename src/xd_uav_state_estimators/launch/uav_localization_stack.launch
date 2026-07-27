@@ -3,19 +3,25 @@
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
   <arg name="algorithm_config" default="$(find xd_uav_state_estimators)/config/estimator.yaml"/>
   <arg name="sources_config" default="$(find xd_uav_state_estimators)/config/sources.yaml"/>
-  <arg name="tf_config" default="$(find xd_uav_sigle_tf_manager)/config/single_tf.yaml"/>
+  <arg name="tf_config" default="$(find xd_uav_single_tf_manager)/config/single_tf.yaml"/>
+  <arg name="start_odometry_adapters" default="true"/>
 
-  <!-- 这里只启动单架飞机的估计器与TF管理器；整个多机系统只启动一次world_tf.launch。 -->
+  <!-- 适配器种类和输入话题完全由sources.yaml定义，launch不再硬编码定位算法。 -->
+  <include if="$(arg start_odometry_adapters)"
+           file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="sources_config" value="$(arg sources_config)"/>
+  </include>
+
+  <!-- 这里只启动单架飞机相关节点；整个多机系统只启动一次world_tf.launch。 -->
   <include file="$(find xd_uav_state_estimators)/launch/estimator.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="algorithm_config" value="$(arg algorithm_config)"/>
     <arg name="sources_config" value="$(arg sources_config)"/>
   </include>
 
-  <include file="$(find xd_uav_sigle_tf_manager)/launch/single_tf.launch">
+  <include file="$(find xd_uav_single_tf_manager)/launch/single_tf.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="config" value="$(arg tf_config)"/>
-    <!-- 联合启动时使用估计器主输出，使切换后的定位源真正驱动odom -> base_link。 -->
-    <arg name="main_odom_topic" value="state_estimator/main/odom"/>
   </include>
 </launch>

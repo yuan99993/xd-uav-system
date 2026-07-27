@@ -1,10 +1,15 @@
-# 估计器内部算法参数。定位源话题不放在这个文件中。
+# 估计器内部算法参数。定位源、修正量和话题只在sources.yaml中配置。
 output_rate: 100.0
 diagnostics_rate: 2.0
 max_localization_delay: 0.15
 max_dead_reckoning_time: 1.0
 imu_timeout: 0.30
 require_imu: false
+frame_lookup_timeout: 0.03
+
+# 主估计结果除标准odom坐标系外，还可重发布到以下坐标系。
+# 对应话题为state_estimator/main/frames/<坐标系>/odom。
+main_republish_in_frames: [local_origin, world]
 
 filter:
   initial_position_variance: 1.0
@@ -21,23 +26,24 @@ filter:
   gravity: 9.80665
   acceleration_limit: 30.0
 
+# 先经过绝对门限，再按配置使用NIS统计门限。
 innovation_gate:
   position_xy: 5.0
   position_z: 3.0
   velocity_xy: 5.0
   velocity_z: 3.0
   heading: 1.57
+  yaw_rate: 3.0
   use_nis: true
   position_xy_nis: 9.21
   position_z_nis: 6.63
   velocity_xy_nis: 9.21
   velocity_z_nis: 6.63
   heading_nis: 6.63
+  yaw_rate_nis: 6.63
 
 source_switching:
-  switch_back_to_primary: true
+  # 数值越小优先级越高；高优先级源恢复后是否自动切回。
+  switch_back_to_higher_priority: true
   minimum_active_time: 1.0
   cooldown: 0.5
-
-# 输出速度遵循nav_msgs/Odometry约定，在body_frame坐标系中表达。
-output_twist_in_body_frame: true

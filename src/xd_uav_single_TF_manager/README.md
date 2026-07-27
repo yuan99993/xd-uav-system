@@ -1,11 +1,10 @@
-# xd_uav_sigle_tf_manager
+# xd_uav_single_tf_manager
 
-单机TF管理包。目录和包名保留用户指定的`sigle`拼写。每架飞机在自己的`/uavX`
-命名空间中启动一个实例。
+单机TF管理包。每架飞机在自己的`/uavX`命名空间中启动一个实例。
 
-## TF所有权
+## TF职责
 
-默认负责：
+默认标准链为：
 
 ```text
 uavX/local_origin
@@ -15,48 +14,31 @@ uavX/local_origin
             └── uavX/lidar_imu_link
 ```
 
-- `local_origin -> odom`：无修正输入时发布单位变换；有局部修正输入时自动反算并平滑更新。
-- `odom -> base_link`：直接消费一个`nav_msgs/Odometry`话题。
-- 雷达安装TF：由`static_transforms`配置。
-- 来源或其他算法TF：由`dynamic_transforms`配置。
+所有权划分如下：
 
-节点启动时会检查所有child frame。两个规则配置同一个child会直接报错退出，避免双父节点。
+- `local_origin -> odom`：由本包发布。
+- `odom -> base_link`：由状态估计器独占发布，本包不再转发。
+- 雷达等安装TF：由本包的`static_transforms`发布。
+- 各定位源自己的虚拟机体与来源原点：由`dynamic_transforms`发布。
 
-单独启动本包时，`odom -> base_link`默认读取
-`/uavX/mavros/local_position/odom`。通过整套定位launch启动时，会自动覆盖为
-`/uavX/state_estimator/main/odom`，因此估计器切换主源后TF也随主源切换。
+默认还会得到：
 
-## 自定义话题驱动TF
-
-在`config/single_tf.yaml`中增加：
-
-```yaml
-dynamic_transforms:
-  - name: my_slam_origin
-    enabled: true
-    type: odometry
-    topic: my_slam/odometry
-    parent_frame: odom
-    child_frame: my_slam_origin
-    invert: false
+```text
+uavX/odom -> uavX/mavros_estimated_base_link
+uavX/odom -> uavX/fastlio_estimated_base_link
+uavX/odom -> uavX/mavros_origin
+uavX/odom -> uavX/fastlio_origin
 ```
 
-支持的消息类型：
+来源虚拟TF只用于观察和坐标变换，不会占用标准`base_link`，也不会参与控制器主输入。
+节点启动时会检查所有child frame；两个规则占用同一个child时会直接停止，避免双父节点。
 
-- `odometry`：`nav_msgs/Odometry`
-- `pose_stamped`：`geometry_msgs/PoseStamped`
-- `transform_stamped`：`geometry_msgs/TransformStamped`
+## local_origin到odom
 
-不含`/`的frame会自动加当前飞机前缀，例如`odom`变成`uav2/odom`。话题也建议使用
-相对名称，使配置可以在不同`uavX`之间复用。
+本包不读取GPS、经纬度或磁航向。世界管理器只负责`world -> local_origin`，单机管理器
+只负责局部层。
 
-`parent_frame`和`child_frame`会覆盖消息自带frame，确保TF树由配置明确控制。
-
-## 局部校正层
-
-本包不读取经纬度、GPS原点或磁航向，这些数据不属于单机局部TF管理职责。
-
-没有局部修正算法时：
+没有回环或全局修正时：
 
 ```yaml
 local_alignment:
@@ -65,31 +47,62 @@ local_alignment:
   correction_topic: ""
 ```
 
-此时持续发布单位变换`local_origin -> odom`，用于保证整条TF链连通。单位变换表示当前
-还没有全局或回环校正，并不是伪造了一份校正结果；因此
-`local_alignment_valid`仍为`false`。
+此时发布单位变换`local_origin -> odom`，表示尚未发生局部校正，并保证标准TF链完整；
+`local_alignment_valid`保持为`false`。
 
-如果后续接入回环、全局定位或其他局部校正算法，把`correction_topic`配置为其
-`nav_msgs/Odometry`话题。该消息的pose必须表示`local_origin -> base_link`，管理器会结合
-主里程计中的`odom -> base_link`计算：
+后续接入回环或全局修正时，`correction_topic`应提供`local_origin`下`base_link`的
+`nav_msgs/Odometry`，`odometry_topic`提供主估计的`odom`下`base_link`。管理器计算：
 
 ```text
 T_local_origin_odom =
     T_local_origin_base_link × inverse(T_odom_base_link)
 ```
 
-随后对结果进行跳变检查和平滑，再发布`local_origin -> odom`。
+结果通过跳变检查与平滑后发布。
 
-## 启动
+## 自定义TF规则
 
-```bash
-UAV_NAME=uav1 roslaunch xd_uav_sigle_tf_manager single_tf.launch
+静态安装关系：
+
+```yaml
+static_transforms:
+  - name: base_to_sensor
+    enabled: true
+    parent_frame: base_link
+    child_frame: sensor_link
+    translation: [0.0, 0.0, 0.1]
+    rotation_rpy: [0.0, 0.0, 0.0]
 ```
 
-有效性和诊断：
+话题驱动的动态关系：
+
+```yaml
+dynamic_transforms:
+  - name: slam_estimate
+    enabled: true
+    type: odometry
+    topic: state_estimator/sources/slam/odom
+    parent_frame: odom
+    child_frame: slam_estimated_base_link
+    invert: false
+```
+
+消息类型支持：
+
+- `odometry`：`nav_msgs/Odometry`
+- `pose_stamped`：`geometry_msgs/PoseStamped`
+- `transform_stamped`：`geometry_msgs/TransformStamped`
+
+不含`/`的frame会自动加当前飞机前缀。`parent_frame`和`child_frame`会覆盖消息自带名称，
+使TF树所有权始终由配置明确决定。
+
+## 启动与状态
+
+```bash
+UAV_NAME=uav1 roslaunch xd_uav_single_tf_manager single_tf.launch
+```
 
 ```text
-/uav1/single_tf_manager/main_transform_valid
 /uav1/single_tf_manager/local_alignment_valid
 /uav1/single_tf_manager/diagnostics
 ```

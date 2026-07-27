@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -25,12 +26,19 @@
 #include <tf2/LinearMath/Transform.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 
 #include <Eigen/Dense>
 
 #include <xd_uav_state_estimators/EstimatorStatus.h>
+#include <xd_uav_state_estimators/Heading.h>
+#include <xd_uav_state_estimators/PositionXY.h>
+#include <xd_uav_state_estimators/PositionZ.h>
 #include <xd_uav_state_estimators/SwitchLocalizationSource.h>
+#include <xd_uav_state_estimators/VelocityXY.h>
+#include <xd_uav_state_estimators/VelocityZ.h>
+#include <xd_uav_state_estimators/YawRate.h>
 
 namespace {
 
@@ -38,23 +46,6 @@ constexpr double kPi = 3.14159265358979323846;
 
 double wrapAngle(const double value) {
   return std::atan2(std::sin(value), std::cos(value));
-}
-
-bool finiteQuaternion(const geometry_msgs::Quaternion& quaternion) {
-  return std::isfinite(quaternion.x) && std::isfinite(quaternion.y) &&
-         std::isfinite(quaternion.z) && std::isfinite(quaternion.w);
-}
-
-bool normalizeQuaternion(const geometry_msgs::Quaternion& message, tf2::Quaternion* quaternion) {
-  if (!finiteQuaternion(message)) {
-    return false;
-  }
-  *quaternion = tf2::Quaternion(message.x, message.y, message.z, message.w);
-  if (!std::isfinite(quaternion->length2()) || quaternion->length2() < 1e-9) {
-    return false;
-  }
-  quaternion->normalize();
-  return true;
 }
 
 std::string trimSlashes(std::string value) {
@@ -67,21 +58,36 @@ std::string trimSlashes(std::string value) {
   return value;
 }
 
-double validVariance(const double value, const double fallback) {
-  return std::isfinite(value) && value > 0.0 ? value : fallback;
+bool normalizeQuaternion(const geometry_msgs::Quaternion& message,
+                         tf2::Quaternion* quaternion) {
+  if (!std::isfinite(message.x) || !std::isfinite(message.y) ||
+      !std::isfinite(message.z) || !std::isfinite(message.w)) {
+    return false;
+  }
+  *quaternion =
+      tf2::Quaternion(message.x, message.y, message.z, message.w);
+  if (quaternion->length2() < 1e-9) {
+    return false;
+  }
+  quaternion->normalize();
+  return true;
 }
 
-std::string xmlString(const XmlRpc::XmlRpcValue& value, const std::string& key,
-                      const std::string& fallback) {
-  if (value.getType() != XmlRpc::XmlRpcValue::TypeStruct || !value.hasMember(key) ||
+std::string xmlString(const XmlRpc::XmlRpcValue& value,
+                      const std::string& key,
+                      const std::string& fallback = "") {
+  if (value.getType() != XmlRpc::XmlRpcValue::TypeStruct ||
+      !value.hasMember(key) ||
       value[key].getType() != XmlRpc::XmlRpcValue::TypeString) {
     return fallback;
   }
   return static_cast<std::string>(value[key]);
 }
 
-bool xmlBool(const XmlRpc::XmlRpcValue& value, const std::string& key, const bool fallback) {
-  if (value.getType() != XmlRpc::XmlRpcValue::TypeStruct || !value.hasMember(key) ||
+bool xmlBool(const XmlRpc::XmlRpcValue& value, const std::string& key,
+             const bool fallback) {
+  if (value.getType() != XmlRpc::XmlRpcValue::TypeStruct ||
+      !value.hasMember(key) ||
       value[key].getType() != XmlRpc::XmlRpcValue::TypeBoolean) {
     return fallback;
   }
@@ -90,7 +96,8 @@ bool xmlBool(const XmlRpc::XmlRpcValue& value, const std::string& key, const boo
 
 double xmlDouble(const XmlRpc::XmlRpcValue& value, const std::string& key,
                  const double fallback) {
-  if (value.getType() != XmlRpc::XmlRpcValue::TypeStruct || !value.hasMember(key)) {
+  if (value.getType() != XmlRpc::XmlRpcValue::TypeStruct ||
+      !value.hasMember(key)) {
     return fallback;
   }
   if (value[key].getType() == XmlRpc::XmlRpcValue::TypeDouble) {
@@ -100,6 +107,13 @@ double xmlDouble(const XmlRpc::XmlRpcValue& value, const std::string& key,
     return static_cast<int>(value[key]);
   }
   return fallback;
+}
+
+std::string frameTopicName(const std::string& frame) {
+  const std::string trimmed = trimSlashes(frame);
+  const std::size_t separator = trimmed.find_last_of('/');
+  return separator == std::string::npos ? trimmed
+                                        : trimmed.substr(separator + 1);
 }
 
 class AxisKalman {
@@ -119,7 +133,8 @@ class AxisKalman {
     covariance_.setIdentity();
   }
 
-  void initialize(const double position, const double velocity, const double acceleration) {
+  void initialize(const double position, const double velocity,
+                  const double acceleration) {
     state_ << position, velocity, acceleration;
     covariance_.setZero();
     covariance_(0, 0) = parameters_.initial_position_variance;
@@ -141,19 +156,18 @@ class AxisKalman {
     process_noise(1, 1) = parameters_.velocity_process_noise * dt;
     process_noise(2, 2) = parameters_.acceleration_process_noise * dt;
     state_ = transition * state_;
-    covariance_ = transition * covariance_ * transition.transpose() + process_noise;
+    covariance_ =
+        transition * covariance_ * transition.transpose() + process_noise;
   }
 
   double innovation(const int index, const double measurement) const {
     return measurement - state_(index);
   }
 
-  double innovationVariance(const int index, const double measurement_variance) const {
-    return covariance_(index, index) + measurement_variance;
-  }
-
-  double nis(const int index, const double measurement, const double measurement_variance) const {
-    const double variance = innovationVariance(index, measurement_variance);
+  double nis(const int index, const double measurement,
+             const double measurement_variance) const {
+    const double variance =
+        covariance_(index, index) + measurement_variance;
     if (!std::isfinite(variance) || variance <= 1e-12) {
       return std::numeric_limits<double>::infinity();
     }
@@ -161,7 +175,8 @@ class AxisKalman {
     return residual * residual / variance;
   }
 
-  void correct(const int index, const double measurement, const double measurement_variance) {
+  void correct(const int index, const double measurement,
+               const double measurement_variance) {
     if (!initialized_) {
       return;
     }
@@ -169,11 +184,14 @@ class AxisKalman {
     observation(index) = 1.0;
     const double residual = measurement - (observation * state_)(0);
     const double innovation_variance =
-        (observation * covariance_ * observation.transpose())(0, 0) + measurement_variance;
-    if (!std::isfinite(innovation_variance) || innovation_variance <= 1e-12) {
+        (observation * covariance_ * observation.transpose())(0, 0) +
+        measurement_variance;
+    if (!std::isfinite(innovation_variance) ||
+        innovation_variance <= 1e-12) {
       return;
     }
-    const Eigen::Vector3d gain = covariance_ * observation.transpose() / innovation_variance;
+    const Eigen::Vector3d gain =
+        covariance_ * observation.transpose() / innovation_variance;
     state_ += gain * residual;
     covariance_ =
         (Eigen::Matrix3d::Identity() - gain * observation) * covariance_;
@@ -183,8 +201,9 @@ class AxisKalman {
   double position() const { return state_(0); }
   double velocity() const { return state_(1); }
   double acceleration() const { return state_(2); }
-  double variance(const int index) const { return covariance_(index, index); }
-  bool initialized() const { return initialized_; }
+  double variance(const int index) const {
+    return covariance_(index, index);
+  }
 
  private:
   Parameters parameters_;
@@ -195,7 +214,8 @@ class AxisKalman {
 
 class YawKalman {
  public:
-  void configure(const double yaw_process_noise, const double rate_process_noise) {
+  void configure(const double yaw_process_noise,
+                 const double rate_process_noise) {
     yaw_process_noise_ = yaw_process_noise;
     rate_process_noise_ = rate_process_noise;
   }
@@ -219,17 +239,35 @@ class YawKalman {
     process_noise(1, 1) = rate_process_noise_ * dt;
     state_ = transition * state_;
     state_(0) = wrapAngle(state_(0));
-    covariance_ = transition * covariance_ * transition.transpose() + process_noise;
+    covariance_ =
+        transition * covariance_ * transition.transpose() + process_noise;
   }
 
-  double yawInnovation(const double yaw) const { return wrapAngle(yaw - state_(0)); }
+  double yawInnovation(const double yaw) const {
+    return wrapAngle(yaw - state_(0));
+  }
 
   double yawNis(const double yaw, const double variance) const {
     const double innovation_variance = covariance_(0, 0) + variance;
-    if (innovation_variance <= 1e-12) {
+    if (!std::isfinite(innovation_variance) ||
+        innovation_variance <= 1e-12) {
       return std::numeric_limits<double>::infinity();
     }
     const double residual = yawInnovation(yaw);
+    return residual * residual / innovation_variance;
+  }
+
+  double rateInnovation(const double rate) const {
+    return rate - state_(1);
+  }
+
+  double rateNis(const double rate, const double variance) const {
+    const double innovation_variance = covariance_(1, 1) + variance;
+    if (!std::isfinite(innovation_variance) ||
+        innovation_variance <= 1e-12) {
+      return std::numeric_limits<double>::infinity();
+    }
+    const double residual = rateInnovation(rate);
     return residual * residual / innovation_variance;
   }
 
@@ -239,24 +277,29 @@ class YawKalman {
   }
 
   void correctRate(const double rate, const double variance) {
-    correct(1, rate - state_(1), variance);
+    correct(1, rateInnovation(rate), variance);
   }
 
   double yaw() const { return state_(0); }
   double rate() const { return state_(1); }
-  double variance(const int index) const { return covariance_(index, index); }
-  bool initialized() const { return initialized_; }
+  double variance(const int index) const {
+    return covariance_(index, index);
+  }
 
  private:
-  void correct(const int index, const double residual, const double variance) {
+  void correct(const int index, const double residual,
+               const double variance) {
     Eigen::RowVector2d observation = Eigen::RowVector2d::Zero();
     observation(index) = 1.0;
     const double innovation_variance =
-        (observation * covariance_ * observation.transpose())(0, 0) + variance;
-    if (!std::isfinite(innovation_variance) || innovation_variance <= 1e-12) {
+        (observation * covariance_ * observation.transpose())(0, 0) +
+        variance;
+    if (!std::isfinite(innovation_variance) ||
+        innovation_variance <= 1e-12) {
       return;
     }
-    const Eigen::Vector2d gain = covariance_ * observation.transpose() / innovation_variance;
+    const Eigen::Vector2d gain =
+        covariance_ * observation.transpose() / innovation_variance;
     state_ += gain * residual;
     covariance_ =
         (Eigen::Matrix2d::Identity() - gain * observation) * covariance_;
@@ -270,51 +313,112 @@ class YawKalman {
   bool initialized_{false};
 };
 
-struct SourceConfig {
+enum class CorrectionKind {
+  kPositionXY,
+  kPositionZ,
+  kVelocityXY,
+  kVelocityZ,
+  kHeading,
+  kYawRate,
+};
+
+std::string correctionKindName(const CorrectionKind kind) {
+  switch (kind) {
+    case CorrectionKind::kPositionXY:
+      return "position_xy";
+    case CorrectionKind::kPositionZ:
+      return "position_z";
+    case CorrectionKind::kVelocityXY:
+      return "velocity_xy";
+    case CorrectionKind::kVelocityZ:
+      return "velocity_z";
+    case CorrectionKind::kHeading:
+      return "heading";
+    case CorrectionKind::kYawRate:
+      return "yaw_rate";
+  }
+  return "unknown";
+}
+
+CorrectionKind parseCorrectionKind(const std::string& name) {
+  if (name == "position_xy") {
+    return CorrectionKind::kPositionXY;
+  }
+  if (name == "position_z") {
+    return CorrectionKind::kPositionZ;
+  }
+  if (name == "velocity_xy") {
+    return CorrectionKind::kVelocityXY;
+  }
+  if (name == "velocity_z") {
+    return CorrectionKind::kVelocityZ;
+  }
+  if (name == "heading") {
+    return CorrectionKind::kHeading;
+  }
+  if (name == "yaw_rate") {
+    return CorrectionKind::kYawRate;
+  }
+  throw std::runtime_error("不支持的修正类型: " + name);
+}
+
+bool isPoseCorrection(const CorrectionKind kind) {
+  return kind == CorrectionKind::kPositionXY ||
+         kind == CorrectionKind::kPositionZ ||
+         kind == CorrectionKind::kHeading;
+}
+
+struct CorrectionConfig {
   std::string name;
   std::string topic;
-  std::string role{"fallback"};
+  CorrectionKind kind{CorrectionKind::kPositionXY};
+  double timeout{0.25};
+  bool required{true};
+};
+
+struct CorrectionRuntime {
+  CorrectionConfig config;
+  ros::Subscriber subscriber;
+  ros::Time last_received;
+  ros::Time last_accepted;
+  ros::Time quarantine_until;
+  ros::Time recovery_started;
+  std::uint64_t received{0};
+  std::uint64_t accepted{0};
+  std::uint64_t rejected{0};
+  int consecutive_rejections{0};
+  int recovery_samples{0};
+  bool recovering{false};
+};
+
+struct SourceConfig {
+  std::string name;
   std::string alignment_mode{"align_on_activation"};
   int priority{0};
-  bool enabled{true};
-  bool use_position_xy{true};
-  bool use_altitude{true};
-  bool use_velocity_xy{true};
-  bool use_vertical_velocity{true};
-  bool use_heading{true};
-  bool twist_in_body_frame{true};
-  bool use_message_covariance{true};
-  bool use_tf_for_child_frame{true};
-  bool require_tf{true};
-  double tf_timeout{0.02};
-  double timeout{0.25};
-  double position_xy_variance{0.01};
-  double position_z_variance{0.05};
-  double velocity_xy_variance{0.01};
-  double velocity_z_variance{0.02};
-  double heading_variance{0.02};
   double max_position_variance{100.0};
   double max_velocity_variance{100.0};
   double max_heading_variance{10.0};
+  double max_yaw_rate_variance{10.0};
   int max_consecutive_rejections{5};
   double quarantine_duration{1.0};
   int recovery_min_samples{20};
   double recovery_stable_time{0.5};
+  std::vector<std::string> republish_frames;
 };
 
-struct Measurement {
-  ros::Time stamp;
-  std::string parent_frame;
-  Eigen::Vector3d position{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
-  tf2::Quaternion orientation{0.0, 0.0, 0.0, 1.0};
-  Eigen::Vector3d angular_velocity_body{Eigen::Vector3d::Zero()};
-  double yaw{0.0};
-  double position_xy_variance{0.01};
-  double position_z_variance{0.05};
-  double velocity_xy_variance{0.01};
-  double velocity_z_variance{0.02};
-  double heading_variance{0.02};
+struct RawState {
+  Eigen::Vector2d position_xy{Eigen::Vector2d::Zero()};
+  Eigen::Vector2d velocity_xy{Eigen::Vector2d::Zero()};
+  double position_z{0.0};
+  double velocity_z{0.0};
+  double heading{0.0};
+  double yaw_rate{0.0};
+  bool have_position_xy{false};
+  bool have_position_z{false};
+  bool have_velocity_xy{false};
+  bool have_velocity_z{false};
+  bool have_heading{false};
+  bool have_yaw_rate{false};
 };
 
 struct Estimate {
@@ -322,58 +426,74 @@ struct Estimate {
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
   Eigen::Vector3d acceleration{Eigen::Vector3d::Zero()};
-  double yaw{0.0};
-  double yaw_rate{0.0};
-  double roll{0.0};
-  double pitch{0.0};
   std::array<double, 3> position_variance{{1.0, 1.0, 1.0}};
   std::array<double, 3> velocity_variance{{1.0, 1.0, 1.0}};
+  double yaw{0.0};
+  double yaw_rate{0.0};
   double yaw_variance{0.25};
+  double roll{0.0};
+  double pitch{0.0};
 };
 
-struct FrameOutput {
-  std::string name;
+struct FramePublisher {
   std::string target_frame;
-  std::string topic;
-  double lookup_timeout{0.02};
   ros::Publisher publisher;
 };
 
 struct SourceRuntime {
-  SourceRuntime(SourceConfig source_config, const AxisKalman::Parameters& parameters,
-                const double yaw_process_noise, const double yaw_rate_process_noise)
+  SourceRuntime(SourceConfig source_config,
+                const AxisKalman::Parameters& axis_parameters,
+                const double yaw_process_noise,
+                const double yaw_rate_process_noise)
       : config(std::move(source_config)),
-        axis{{AxisKalman(parameters), AxisKalman(parameters), AxisKalman(parameters)}} {
+        axis{{AxisKalman(axis_parameters), AxisKalman(axis_parameters),
+              AxisKalman(axis_parameters)}} {
     yaw_filter.configure(yaw_process_noise, yaw_rate_process_noise);
   }
 
   SourceConfig config;
   std::array<AxisKalman, 3> axis;
   YawKalman yaw_filter;
-  ros::Subscriber subscriber;
+  std::vector<std::unique_ptr<CorrectionRuntime>> corrections;
   ros::Publisher odometry_publisher;
   ros::Publisher valid_publisher;
   ros::Publisher alignment_publisher;
-  Measurement latest_raw;
-  bool have_raw{false};
-  bool initialized{false};
-  bool alignment_initialized{false};
-  double alignment_yaw{0.0};
-  Eigen::Vector3d alignment_translation{Eigen::Vector3d::Zero()};
+  std::vector<FramePublisher> frame_publishers;
+  RawState raw;
+  std::string raw_frame;
   ros::Time filter_stamp;
-  ros::Time last_received;
-  ros::Time last_accepted;
-  ros::Time quarantine_until;
-  ros::Time recovery_started;
-  int consecutive_rejections{0};
-  int recovery_samples{0};
-  bool recovering{false};
-  std::uint64_t received{0};
-  std::uint64_t adapter_rejected{0};
-  std::uint64_t correction_rejected{0};
-  std::uint64_t accepted{0};
-  double latest_roll{0.0};
-  double latest_pitch{0.0};
+  ros::Time latest_raw_stamp;
+  Eigen::Vector3d alignment_translation{Eigen::Vector3d::Zero()};
+  double alignment_yaw{0.0};
+  bool alignment_initialized{false};
+  bool filters_initialized{false};
+};
+
+struct MainRuntime {
+  MainRuntime(const AxisKalman::Parameters& axis_parameters,
+              const double yaw_process_noise,
+              const double yaw_rate_process_noise)
+      : axis{{AxisKalman(axis_parameters), AxisKalman(axis_parameters),
+              AxisKalman(axis_parameters)}} {
+    yaw_filter.configure(yaw_process_noise, yaw_rate_process_noise);
+  }
+
+  std::array<AxisKalman, 3> axis;
+  YawKalman yaw_filter;
+  ros::Time filter_stamp;
+  bool initialized{false};
+};
+
+struct CorrectionSample {
+  CorrectionKind kind{CorrectionKind::kPositionXY};
+  ros::Time stamp;
+  std::string frame_id;
+  std::string child_frame_id;
+  Eigen::Vector2d vector{Eigen::Vector2d::Zero()};
+  double scalar{0.0};
+  double variance_a{0.01};
+  double variance_b{0.01};
+  bool valid{false};
 };
 
 }  // 匿名命名空间
@@ -383,37 +503,55 @@ class MultiSourceEstimatorNode {
   MultiSourceEstimatorNode()
       : private_nh_("~"), tf_listener_(tf_buffer_) {
     loadParameters();
+    main_state_ = std::make_unique<MainRuntime>(
+        axis_parameters_, yaw_process_noise_, yaw_rate_process_noise_);
     loadSources();
-    loadFrameOutputs();
 
-    imu_subscriber_ = nh_.subscribe("imu", 100, &MultiSourceEstimatorNode::imuCallback, this);
-    main_odometry_publisher_ = private_nh_.advertise<nav_msgs::Odometry>("main/odom", 10);
+    imu_subscriber_ =
+        nh_.subscribe("imu", 100, &MultiSourceEstimatorNode::imuCallback, this);
+    main_odometry_publisher_ =
+        private_nh_.advertise<nav_msgs::Odometry>("main/odom", 10);
     localization_valid_publisher_ =
         private_nh_.advertise<std_msgs::Bool>("localization_valid", 1, true);
-    state_valid_publisher_ = private_nh_.advertise<std_msgs::Bool>("state_valid", 1, true);
+    state_valid_publisher_ =
+        private_nh_.advertise<std_msgs::Bool>("state_valid", 1, true);
     status_publisher_ =
-        private_nh_.advertise<xd_uav_state_estimators::EstimatorStatus>("status", 2, true);
+        private_nh_.advertise<xd_uav_state_estimators::EstimatorStatus>(
+            "status", 5);
     diagnostics_publisher_ =
-        private_nh_.advertise<diagnostic_msgs::DiagnosticArray>("diagnostics", 2);
-    reset_server_ =
-        private_nh_.advertiseService("reset", &MultiSourceEstimatorNode::resetCallback, this);
+        private_nh_.advertise<diagnostic_msgs::DiagnosticArray>(
+            "diagnostics", 5);
+    reset_server_ = private_nh_.advertiseService(
+        "reset", &MultiSourceEstimatorNode::resetCallback, this);
     switch_server_ = private_nh_.advertiseService(
-        "switch_source", &MultiSourceEstimatorNode::switchSourceCallback, this);
+        "switch_source", &MultiSourceEstimatorNode::switchSourceCallback,
+        this);
+
+    createMainFramePublishers();
     output_timer_ = private_nh_.createTimer(
         ros::Duration(1.0 / std::max(1.0, output_rate_)),
         &MultiSourceEstimatorNode::outputTimerCallback, this);
     diagnostics_timer_ = private_nh_.createTimer(
         ros::Duration(1.0 / std::max(0.2, diagnostics_rate_)),
         &MultiSourceEstimatorNode::diagnosticsTimerCallback, this);
-
     publishBoolean(localization_valid_publisher_, false);
     publishBoolean(state_valid_publisher_, false);
-    ROS_INFO_STREAM("[xd_uav_state_estimators] initialized for " << uav_name_
-                    << " with " << sources_.size()
-                    << " source(s); this node does not publish TF");
+
+    ROS_INFO(
+        "[xd_uav_state_estimators] %s已加载%zu个多修正定位源，并独占发布主输出TF",
+        uav_name_.c_str(), sources_.size());
   }
 
  private:
+  std::string scopedFrame(const std::string& configured) const {
+    const std::string frame = trimSlashes(configured);
+    if (frame.empty() || frame == "world" || frame == "earth" ||
+        frame.find('/') != std::string::npos) {
+      return frame;
+    }
+    return uav_name_ + "/" + frame;
+  }
+
   void loadParameters() {
     private_nh_.param("uav_name", uav_name_, std::string("uav1"));
     uav_name_ = trimSlashes(uav_name_);
@@ -423,11 +561,13 @@ class MultiSourceEstimatorNode {
     body_frame_ = trimSlashes(body_frame_);
     private_nh_.param("output_rate", output_rate_, 100.0);
     private_nh_.param("diagnostics_rate", diagnostics_rate_, 2.0);
-    private_nh_.param("max_localization_delay", max_localization_delay_, 0.15);
-    private_nh_.param("max_dead_reckoning_time", max_dead_reckoning_time_, 1.0);
+    private_nh_.param("max_localization_delay", max_localization_delay_,
+                      0.15);
+    private_nh_.param("max_dead_reckoning_time", max_dead_reckoning_time_,
+                      1.0);
     private_nh_.param("imu_timeout", imu_timeout_, 0.3);
     private_nh_.param("require_imu", require_imu_, false);
-    private_nh_.param("output_twist_in_body_frame", output_twist_in_body_frame_, true);
+    private_nh_.param("frame_lookup_timeout", frame_lookup_timeout_, 0.03);
 
     private_nh_.param("filter/initial_position_variance",
                       axis_parameters_.initial_position_variance, 1.0);
@@ -438,81 +578,96 @@ class MultiSourceEstimatorNode {
     private_nh_.param("filter/position_process_noise",
                       axis_parameters_.position_process_noise, 0.05);
     private_nh_.param("filter/velocity_process_noise",
-                      axis_parameters_.velocity_process_noise, 0.5);
+                      axis_parameters_.velocity_process_noise, 0.50);
     private_nh_.param("filter/acceleration_process_noise",
                       axis_parameters_.acceleration_process_noise, 2.0);
     private_nh_.param("filter/yaw_process_noise", yaw_process_noise_, 0.02);
-    private_nh_.param("filter/yaw_rate_process_noise", yaw_rate_process_noise_, 0.2);
-    private_nh_.param("filter/imu_acceleration_variance", imu_acceleration_variance_, 0.5);
-    private_nh_.param("filter/imu_yaw_rate_variance", imu_yaw_rate_variance_, 0.05);
+    private_nh_.param("filter/yaw_rate_process_noise",
+                      yaw_rate_process_noise_, 0.20);
+    private_nh_.param("filter/imu_acceleration_variance",
+                      imu_acceleration_variance_, 0.50);
+    private_nh_.param("filter/imu_yaw_rate_variance",
+                      imu_yaw_rate_variance_, 0.05);
     private_nh_.param("filter/remove_gravity", remove_gravity_, true);
     private_nh_.param("filter/gravity", gravity_, 9.80665);
     private_nh_.param("filter/acceleration_limit", acceleration_limit_, 30.0);
 
-    private_nh_.param("innovation_gate/position_xy", position_xy_limit_, 5.0);
+    private_nh_.param("innovation_gate/position_xy", position_xy_limit_,
+                      5.0);
     private_nh_.param("innovation_gate/position_z", position_z_limit_, 3.0);
-    private_nh_.param("innovation_gate/velocity_xy", velocity_xy_limit_, 5.0);
+    private_nh_.param("innovation_gate/velocity_xy", velocity_xy_limit_,
+                      5.0);
     private_nh_.param("innovation_gate/velocity_z", velocity_z_limit_, 3.0);
     private_nh_.param("innovation_gate/heading", heading_limit_, 1.57);
+    private_nh_.param("innovation_gate/yaw_rate", yaw_rate_limit_, 3.0);
     private_nh_.param("innovation_gate/use_nis", use_nis_, true);
-    private_nh_.param("innovation_gate/position_xy_nis", position_xy_nis_limit_, 9.21);
-    private_nh_.param("innovation_gate/position_z_nis", position_z_nis_limit_, 6.63);
-    private_nh_.param("innovation_gate/velocity_xy_nis", velocity_xy_nis_limit_, 9.21);
-    private_nh_.param("innovation_gate/velocity_z_nis", velocity_z_nis_limit_, 6.63);
-    private_nh_.param("innovation_gate/heading_nis", heading_nis_limit_, 6.63);
+    private_nh_.param("innovation_gate/position_xy_nis",
+                      position_xy_nis_limit_, 9.21);
+    private_nh_.param("innovation_gate/position_z_nis",
+                      position_z_nis_limit_, 6.63);
+    private_nh_.param("innovation_gate/velocity_xy_nis",
+                      velocity_xy_nis_limit_, 9.21);
+    private_nh_.param("innovation_gate/velocity_z_nis",
+                      velocity_z_nis_limit_, 6.63);
+    private_nh_.param("innovation_gate/heading_nis",
+                      heading_nis_limit_, 6.63);
+    private_nh_.param("innovation_gate/yaw_rate_nis",
+                      yaw_rate_nis_limit_, 6.63);
 
-    private_nh_.param("source_switching/switch_back_to_primary", switch_back_to_primary_, true);
-    private_nh_.param("source_switching/minimum_active_time", minimum_active_time_, 1.0);
+    private_nh_.param(
+        "source_switching/switch_back_to_higher_priority",
+        switch_back_to_higher_priority_, true);
+    private_nh_.param("source_switching/minimum_active_time",
+                      minimum_active_time_, 1.0);
     private_nh_.param("source_switching/cooldown", switch_cooldown_, 0.5);
+    private_nh_.getParam("main_republish_in_frames",
+                         main_republish_frames_);
+  }
+
+  std::string correctionTopic(const std::string& configured) const {
+    if (configured.empty()) {
+      return configured;
+    }
+    if (configured.front() == '/') {
+      return configured;
+    }
+    const std::string trimmed = trimSlashes(configured);
+    if (trimmed.rfind("state_estimator_inputs/", 0) == 0) {
+      return trimmed;
+    }
+    return "state_estimator_inputs/" + trimmed;
   }
 
   void loadSources() {
     std::vector<std::string> names;
-    if (!private_nh_.getParam("localization_sources", names) || names.empty()) {
-      throw std::runtime_error("localization_sources must contain at least one source");
+    if (!private_nh_.getParam("localization_sources", names) ||
+        names.empty()) {
+      throw std::runtime_error(
+          "localization_sources至少需要包含一个来源");
     }
-
     for (const std::string& name : names) {
+      if (source_by_name_.count(name) != 0) {
+        throw std::runtime_error("定位源名称重复: " + name);
+      }
       SourceConfig config;
       config.name = name;
       const std::string prefix = "sources/" + name + "/";
-      private_nh_.param(prefix + "enabled", config.enabled, true);
-      if (!config.enabled) {
-        continue;
-      }
-      private_nh_.param(prefix + "topic", config.topic, std::string());
-      private_nh_.param(prefix + "role", config.role, std::string("fallback"));
       private_nh_.param(prefix + "priority", config.priority, 0);
-      private_nh_.param(prefix + "timeout", config.timeout, 0.25);
-      private_nh_.param(prefix + "use_position_xy", config.use_position_xy, true);
-      private_nh_.param(prefix + "use_altitude", config.use_altitude, true);
-      private_nh_.param(prefix + "use_velocity_xy", config.use_velocity_xy, true);
-      private_nh_.param(prefix + "use_vertical_velocity", config.use_vertical_velocity, true);
-      private_nh_.param(prefix + "use_heading", config.use_heading, true);
-      private_nh_.param(prefix + "twist_in_body_frame", config.twist_in_body_frame, true);
       private_nh_.param(prefix + "alignment/mode", config.alignment_mode,
                         std::string("align_on_activation"));
-      private_nh_.param(prefix + "frame_transform/use_tf_for_child_frame",
-                        config.use_tf_for_child_frame, true);
-      private_nh_.param(prefix + "frame_transform/require_tf", config.require_tf, true);
-      private_nh_.param(prefix + "frame_transform/timeout", config.tf_timeout, 0.02);
-      private_nh_.param(prefix + "covariance/use_message",
-                        config.use_message_covariance, true);
-      private_nh_.param(prefix + "covariance/position_xy",
-                        config.position_xy_variance, 0.01);
-      private_nh_.param(prefix + "covariance/position_z",
-                        config.position_z_variance, 0.05);
-      private_nh_.param(prefix + "covariance/velocity_xy",
-                        config.velocity_xy_variance, 0.01);
-      private_nh_.param(prefix + "covariance/velocity_z",
-                        config.velocity_z_variance, 0.02);
-      private_nh_.param(prefix + "covariance/heading", config.heading_variance, 0.02);
+      if (config.alignment_mode != "align_on_activation" &&
+          config.alignment_mode != "identity") {
+        throw std::runtime_error(
+            "来源'" + name + "'的alignment.mode无效");
+      }
       private_nh_.param(prefix + "reliability/max_position_variance",
                         config.max_position_variance, 100.0);
       private_nh_.param(prefix + "reliability/max_velocity_variance",
                         config.max_velocity_variance, 100.0);
       private_nh_.param(prefix + "reliability/max_heading_variance",
                         config.max_heading_variance, 10.0);
+      private_nh_.param(prefix + "reliability/max_yaw_rate_variance",
+                        config.max_yaw_rate_variance, 10.0);
       private_nh_.param(prefix + "reliability/max_consecutive_rejections",
                         config.max_consecutive_rejections, 5);
       private_nh_.param(prefix + "reliability/quarantine_duration",
@@ -521,290 +676,525 @@ class MultiSourceEstimatorNode {
                         config.recovery_min_samples, 20);
       private_nh_.param(prefix + "reliability/recovery_stable_time",
                         config.recovery_stable_time, 0.5);
-      if (config.topic.empty()) {
-        throw std::runtime_error("source '" + name + "' has an empty topic");
-      }
+      private_nh_.getParam(prefix + "republish_in_frames",
+                           config.republish_frames);
 
       auto source = std::make_unique<SourceRuntime>(
-          config, axis_parameters_, yaw_process_noise_, yaw_rate_process_noise_);
+          config, axis_parameters_, yaw_process_noise_,
+          yaw_rate_process_noise_);
       SourceRuntime* source_pointer = source.get();
-      source->subscriber = nh_.subscribe<nav_msgs::Odometry>(
-          config.topic, 30,
-          [this, source_pointer](const nav_msgs::Odometry::ConstPtr& message) {
-            sourceCallback(source_pointer, message);
-          });
-      source->odometry_publisher = private_nh_.advertise<nav_msgs::Odometry>(
-          "sources/" + name + "/odom", 10);
+      source->odometry_publisher =
+          private_nh_.advertise<nav_msgs::Odometry>(
+              "sources/" + name + "/odom", 10);
       source->valid_publisher =
-          private_nh_.advertise<std_msgs::Bool>("sources/" + name + "/valid", 1, true);
-      source->alignment_publisher = private_nh_.advertise<geometry_msgs::TransformStamped>(
-          "sources/" + name + "/alignment", 2, true);
+          private_nh_.advertise<std_msgs::Bool>(
+              "sources/" + name + "/valid", 1, true);
+      source->alignment_publisher =
+          private_nh_.advertise<geometry_msgs::TransformStamped>(
+              "sources/" + name + "/alignment", 2, true);
+      loadCorrections(source_pointer, prefix);
+      createSourceFramePublishers(source_pointer);
       publishBoolean(source->valid_publisher, false);
       source_by_name_[name] = source_pointer;
       sources_.push_back(std::move(source));
-      ROS_INFO_STREAM("[xd_uav_state_estimators] source '" << name << "' <- "
-                      << nh_.resolveName(config.topic));
     }
   }
 
-  void loadFrameOutputs() {
-    XmlRpc::XmlRpcValue outputs;
-    if (!private_nh_.getParam("frame_outputs", outputs)) {
-      return;
+  void loadCorrections(SourceRuntime* source, const std::string& prefix) {
+    XmlRpc::XmlRpcValue rules;
+    if (!private_nh_.getParam(prefix + "corrections", rules) ||
+        rules.getType() != XmlRpc::XmlRpcValue::TypeArray ||
+        rules.size() == 0) {
+      throw std::runtime_error(
+          "来源'" + source->config.name + "'必须配置corrections列表");
     }
-    if (outputs.getType() != XmlRpc::XmlRpcValue::TypeArray) {
-      throw std::runtime_error("frame_outputs must be a YAML list");
-    }
-    for (int index = 0; index < outputs.size(); ++index) {
-      if (!xmlBool(outputs[index], "enabled", true)) {
-        continue;
+    double default_timeout = 0.25;
+    bool default_required = true;
+    private_nh_.param(prefix + "correction_defaults/timeout",
+                      default_timeout, 0.25);
+    private_nh_.param(prefix + "correction_defaults/required",
+                      default_required, true);
+    std::unordered_map<std::string, int> kind_counts;
+
+    for (int index = 0; index < rules.size(); ++index) {
+      XmlRpc::XmlRpcValue& rule = rules[index];
+      if (rule.getType() != XmlRpc::XmlRpcValue::TypeStruct ||
+          rule.size() != 1) {
+        throw std::runtime_error(
+            "每条correction必须是只包含一个修正类型的映射");
       }
-      FrameOutput output;
-      output.name = xmlString(outputs[index], "name", "frame_" + std::to_string(index));
-      output.target_frame = trimSlashes(xmlString(outputs[index], "target_frame", ""));
-      output.topic = xmlString(outputs[index], "topic", "");
-      output.lookup_timeout = xmlDouble(outputs[index], "lookup_timeout", 0.02);
-      if (output.target_frame.empty() || output.topic.empty()) {
-        throw std::runtime_error("enabled frame_outputs entries need target_frame and topic");
+      auto iterator = rule.begin();
+      const std::string kind_text = iterator->first;
+      XmlRpc::XmlRpcValue& specification = iterator->second;
+      CorrectionConfig config;
+      config.kind = parseCorrectionKind(kind_text);
+      config.timeout = default_timeout;
+      config.required = default_required;
+      if (specification.getType() == XmlRpc::XmlRpcValue::TypeString) {
+        config.topic = static_cast<std::string>(specification);
+      } else if (specification.getType() ==
+                 XmlRpc::XmlRpcValue::TypeStruct) {
+        config.topic = xmlString(specification, "topic");
+        config.timeout =
+            xmlDouble(specification, "timeout", default_timeout);
+        config.required =
+            xmlBool(specification, "required", default_required);
+        config.name = xmlString(specification, "name");
+      } else {
+        throw std::runtime_error(
+            "correction必须使用话题字符串或参数映射");
       }
-      output.publisher = nh_.advertise<nav_msgs::Odometry>(output.topic, 5);
-      frame_outputs_.push_back(output);
+      config.topic = correctionTopic(config.topic);
+      if (config.topic.empty() || config.timeout <= 0.0) {
+        throw std::runtime_error(
+            "来源'" + source->config.name + "'存在无效correction参数");
+      }
+      const int ordinal = ++kind_counts[kind_text];
+      if (config.name.empty()) {
+        config.name =
+            ordinal == 1 ? kind_text
+                         : kind_text + "_" + std::to_string(ordinal);
+      }
+      auto correction = std::make_unique<CorrectionRuntime>();
+      correction->config = config;
+      subscribeCorrection(source, correction.get());
+      ROS_INFO(
+          "[xd_uav_state_estimators] %s/%s <- %s，required=%s",
+          source->config.name.c_str(), config.name.c_str(),
+          nh_.resolveName(config.topic).c_str(),
+          config.required ? "true" : "false");
+      source->corrections.push_back(std::move(correction));
     }
   }
 
-  bool convertMeasurement(SourceRuntime* source, const nav_msgs::Odometry& message,
-                          Measurement* measurement, std::string* reason) {
-    source->received++;
+  void subscribeCorrection(SourceRuntime* source,
+                           CorrectionRuntime* correction) {
+    const std::string& topic = correction->config.topic;
+    switch (correction->config.kind) {
+      case CorrectionKind::kPositionXY:
+        correction->subscriber =
+            nh_.subscribe<xd_uav_state_estimators::PositionXY>(
+                topic, 30,
+                [this, source, correction](
+                    const xd_uav_state_estimators::PositionXY::ConstPtr&
+                        message) {
+                  CorrectionSample sample;
+                  sample.kind = CorrectionKind::kPositionXY;
+                  sample.stamp = message->header.stamp;
+                  sample.frame_id = trimSlashes(message->header.frame_id);
+                  sample.child_frame_id =
+                      trimSlashes(message->child_frame_id);
+                  sample.vector = Eigen::Vector2d(message->x, message->y);
+                  sample.variance_a = message->covariance[0];
+                  sample.variance_b = message->covariance[3];
+                  sample.valid = message->valid;
+                  processCorrection(source, correction, sample);
+                });
+        break;
+      case CorrectionKind::kPositionZ:
+        correction->subscriber =
+            nh_.subscribe<xd_uav_state_estimators::PositionZ>(
+                topic, 30,
+                [this, source, correction](
+                    const xd_uav_state_estimators::PositionZ::ConstPtr&
+                        message) {
+                  CorrectionSample sample;
+                  sample.kind = CorrectionKind::kPositionZ;
+                  sample.stamp = message->header.stamp;
+                  sample.frame_id = trimSlashes(message->header.frame_id);
+                  sample.child_frame_id =
+                      trimSlashes(message->child_frame_id);
+                  sample.scalar = message->z;
+                  sample.variance_a = message->variance;
+                  sample.valid = message->valid;
+                  processCorrection(source, correction, sample);
+                });
+        break;
+      case CorrectionKind::kVelocityXY:
+        correction->subscriber =
+            nh_.subscribe<xd_uav_state_estimators::VelocityXY>(
+                topic, 30,
+                [this, source, correction](
+                    const xd_uav_state_estimators::VelocityXY::ConstPtr&
+                        message) {
+                  CorrectionSample sample;
+                  sample.kind = CorrectionKind::kVelocityXY;
+                  sample.stamp = message->header.stamp;
+                  sample.frame_id = trimSlashes(message->header.frame_id);
+                  sample.child_frame_id =
+                      trimSlashes(message->child_frame_id);
+                  sample.vector = Eigen::Vector2d(message->x, message->y);
+                  sample.variance_a = message->covariance[0];
+                  sample.variance_b = message->covariance[3];
+                  sample.valid = message->valid;
+                  processCorrection(source, correction, sample);
+                });
+        break;
+      case CorrectionKind::kVelocityZ:
+        correction->subscriber =
+            nh_.subscribe<xd_uav_state_estimators::VelocityZ>(
+                topic, 30,
+                [this, source, correction](
+                    const xd_uav_state_estimators::VelocityZ::ConstPtr&
+                        message) {
+                  CorrectionSample sample;
+                  sample.kind = CorrectionKind::kVelocityZ;
+                  sample.stamp = message->header.stamp;
+                  sample.frame_id = trimSlashes(message->header.frame_id);
+                  sample.child_frame_id =
+                      trimSlashes(message->child_frame_id);
+                  sample.scalar = message->z;
+                  sample.variance_a = message->variance;
+                  sample.valid = message->valid;
+                  processCorrection(source, correction, sample);
+                });
+        break;
+      case CorrectionKind::kHeading:
+        correction->subscriber =
+            nh_.subscribe<xd_uav_state_estimators::Heading>(
+                topic, 30,
+                [this, source, correction](
+                    const xd_uav_state_estimators::Heading::ConstPtr&
+                        message) {
+                  CorrectionSample sample;
+                  sample.kind = CorrectionKind::kHeading;
+                  sample.stamp = message->header.stamp;
+                  sample.frame_id = trimSlashes(message->header.frame_id);
+                  sample.child_frame_id =
+                      trimSlashes(message->child_frame_id);
+                  sample.scalar = wrapAngle(message->heading);
+                  sample.variance_a = message->variance;
+                  sample.valid = message->valid;
+                  processCorrection(source, correction, sample);
+                });
+        break;
+      case CorrectionKind::kYawRate:
+        correction->subscriber =
+            nh_.subscribe<xd_uav_state_estimators::YawRate>(
+                topic, 30,
+                [this, source, correction](
+                    const xd_uav_state_estimators::YawRate::ConstPtr&
+                        message) {
+                  CorrectionSample sample;
+                  sample.kind = CorrectionKind::kYawRate;
+                  sample.stamp = message->header.stamp;
+                  sample.frame_id = trimSlashes(message->header.frame_id);
+                  sample.child_frame_id =
+                      trimSlashes(message->child_frame_id);
+                  sample.scalar = message->yaw_rate;
+                  sample.variance_a = message->variance;
+                  sample.valid = message->valid;
+                  processCorrection(source, correction, sample);
+                });
+        break;
+    }
+  }
+
+  bool sampleValid(const SourceRuntime& source,
+                   const CorrectionSample& sample,
+                   std::string* reason) const {
     const ros::Time now = ros::Time::now();
-    measurement->stamp = message.header.stamp.isZero() ? now : message.header.stamp;
-    if ((now - measurement->stamp).toSec() > max_localization_delay_ ||
-        measurement->stamp > now + ros::Duration(0.05)) {
-      *reason = "measurement timestamp outside allowed delay";
+    if (!sample.valid) {
+      *reason = "适配器标记数据无效";
       return false;
     }
-    measurement->parent_frame = trimSlashes(message.header.frame_id);
-    const std::string child_frame = trimSlashes(message.child_frame_id);
-    if (measurement->parent_frame.empty() || child_frame.empty()) {
-      *reason = "empty frame_id or child_frame_id";
+    if (sample.stamp.isZero() ||
+        (now - sample.stamp).toSec() > max_localization_delay_ ||
+        sample.stamp > now + ros::Duration(0.05)) {
+      *reason = "时间戳超出允许范围";
       return false;
     }
-
-    tf2::Quaternion parent_child_rotation;
-    if (!normalizeQuaternion(message.pose.pose.orientation, &parent_child_rotation)) {
-      *reason = "invalid pose quaternion";
+    if (sample.child_frame_id != body_frame_) {
+      *reason = "child_frame_id不是标准base_link";
       return false;
     }
-    const auto& position = message.pose.pose.position;
-    if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
-        !std::isfinite(position.z)) {
-      *reason = "non-finite position";
+    if (!std::isfinite(sample.vector.x()) ||
+        !std::isfinite(sample.vector.y()) ||
+        !std::isfinite(sample.scalar) ||
+        !std::isfinite(sample.variance_a) ||
+        !std::isfinite(sample.variance_b) ||
+        sample.variance_a <= 0.0 || sample.variance_b <= 0.0) {
+      *reason = "数值或协方差非法";
       return false;
     }
-    tf2::Transform parent_child(
-        parent_child_rotation, tf2::Vector3(position.x, position.y, position.z));
-    tf2::Transform child_body = tf2::Transform::getIdentity();
-
-    if (child_frame != body_frame_ && source->config.use_tf_for_child_frame) {
-      try {
-        const geometry_msgs::TransformStamped transform = tf_buffer_.lookupTransform(
-            child_frame, body_frame_, measurement->stamp,
-            ros::Duration(source->config.tf_timeout));
-        tf2::fromMsg(transform.transform, child_body);
-      } catch (const tf2::TransformException& exception) {
-        if (source->config.require_tf) {
-          *reason = std::string("missing child-to-body TF: ") + exception.what();
-          return false;
-        }
-        ROS_WARN_THROTTLE(2.0,
-                          "[xd_uav_state_estimators] source '%s' assumes child '%s' is body '%s'",
-                          source->config.name.c_str(), child_frame.c_str(), body_frame_.c_str());
-      }
-    } else if (child_frame != body_frame_ && source->config.require_tf) {
-      *reason = "source child_frame differs from body_frame while TF conversion is disabled";
+    if (sample.kind != CorrectionKind::kYawRate &&
+        sample.frame_id.empty()) {
+      *reason = "参考坐标系为空";
       return false;
     }
-
-    const tf2::Transform parent_body = parent_child * child_body;
-    measurement->position =
-        Eigen::Vector3d(parent_body.getOrigin().x(), parent_body.getOrigin().y(),
-                        parent_body.getOrigin().z());
-    measurement->orientation = parent_body.getRotation();
-    double roll = 0.0;
-    double pitch = 0.0;
-    tf2::Matrix3x3(measurement->orientation).getRPY(roll, pitch, measurement->yaw);
-
-    const auto& linear = message.twist.twist.linear;
-    const auto& angular = message.twist.twist.angular;
-    if (!std::isfinite(linear.x) || !std::isfinite(linear.y) || !std::isfinite(linear.z) ||
-        !std::isfinite(angular.x) || !std::isfinite(angular.y) ||
-        !std::isfinite(angular.z)) {
-      *reason = "non-finite twist";
-      return false;
-    }
-    const tf2::Vector3 linear_input(linear.x, linear.y, linear.z);
-    const tf2::Vector3 angular_input(angular.x, angular.y, angular.z);
-    if (source->config.twist_in_body_frame) {
-      const tf2::Vector3 velocity_at_body =
-          linear_input + angular_input.cross(child_body.getOrigin());
-      const tf2::Vector3 velocity_parent =
-          tf2::quatRotate(parent_child_rotation, velocity_at_body);
-      measurement->velocity =
-          Eigen::Vector3d(velocity_parent.x(), velocity_parent.y(), velocity_parent.z());
-      const tf2::Vector3 angular_body =
-          tf2::quatRotate(child_body.getRotation().inverse(), angular_input);
-      measurement->angular_velocity_body =
-          Eigen::Vector3d(angular_body.x(), angular_body.y(), angular_body.z());
-    } else {
-      measurement->velocity = Eigen::Vector3d(linear.x, linear.y, linear.z);
-      const tf2::Vector3 angular_body =
-          tf2::quatRotate(parent_body.getRotation().inverse(), angular_input);
-      measurement->angular_velocity_body =
-          Eigen::Vector3d(angular_body.x(), angular_body.y(), angular_body.z());
-    }
-
-    const SourceConfig& config = source->config;
-    measurement->position_xy_variance = config.position_xy_variance;
-    measurement->position_z_variance = config.position_z_variance;
-    measurement->velocity_xy_variance = config.velocity_xy_variance;
-    measurement->velocity_z_variance = config.velocity_z_variance;
-    measurement->heading_variance = config.heading_variance;
-    if (config.use_message_covariance) {
-      measurement->position_xy_variance =
-          std::max(validVariance(message.pose.covariance[0], config.position_xy_variance),
-                   validVariance(message.pose.covariance[7], config.position_xy_variance));
-      measurement->position_z_variance =
-          validVariance(message.pose.covariance[14], config.position_z_variance);
-      measurement->heading_variance =
-          validVariance(message.pose.covariance[35], config.heading_variance);
-      measurement->velocity_xy_variance =
-          std::max(validVariance(message.twist.covariance[0], config.velocity_xy_variance),
-                   validVariance(message.twist.covariance[7], config.velocity_xy_variance));
-      measurement->velocity_z_variance =
-          validVariance(message.twist.covariance[14], config.velocity_z_variance);
-    }
-    if (measurement->position_xy_variance > config.max_position_variance ||
-        measurement->position_z_variance > config.max_position_variance ||
-        measurement->velocity_xy_variance > config.max_velocity_variance ||
-        measurement->velocity_z_variance > config.max_velocity_variance ||
-        measurement->heading_variance > config.max_heading_variance) {
-      *reason = "measurement covariance exceeds source reliability limits";
+    const double max_variance =
+        sample.kind == CorrectionKind::kPositionXY ||
+                sample.kind == CorrectionKind::kPositionZ
+            ? source.config.max_position_variance
+            : (sample.kind == CorrectionKind::kVelocityXY ||
+                       sample.kind == CorrectionKind::kVelocityZ
+                   ? source.config.max_velocity_variance
+                   : (sample.kind == CorrectionKind::kHeading
+                          ? source.config.max_heading_variance
+                          : source.config.max_yaw_rate_variance));
+    if (sample.variance_a > max_variance ||
+        sample.variance_b > max_variance) {
+      *reason = "协方差超过可靠性上限";
       return false;
     }
     return true;
   }
 
-  void sourceCallback(SourceRuntime* source, const nav_msgs::Odometry::ConstPtr& message) {
-    Measurement measurement;
+  void processCorrection(SourceRuntime* source,
+                         CorrectionRuntime* correction,
+                         const CorrectionSample& sample) {
+    correction->received++;
+    correction->last_received = ros::Time::now();
+    if (correction->last_received < correction->quarantine_until) {
+      return;
+    }
+    if (!correction->quarantine_until.isZero() &&
+        !correction->recovering) {
+      correction->recovering = true;
+      correction->recovery_started = correction->last_received;
+      correction->recovery_samples = 0;
+    }
+
     std::string reason;
-    if (!convertMeasurement(source, *message, &measurement, &reason)) {
-      source->adapter_rejected++;
-      ROS_WARN_THROTTLE(2.0, "[xd_uav_state_estimators] source '%s' rejected: %s",
-                        source->config.name.c_str(), reason.c_str());
+    if (!sampleValid(*source, sample, &reason)) {
+      registerRejection(source, correction, reason);
       return;
     }
-    const ros::Time now = ros::Time::now();
-    source->last_received = now;
-    source->latest_raw = measurement;
-    source->have_raw = true;
-
-    if (now < source->quarantine_until) {
-      return;
+    if (isPoseCorrection(sample.kind)) {
+      if (source->raw_frame.empty()) {
+        source->raw_frame = sample.frame_id;
+      } else if (sample.frame_id != source->raw_frame &&
+                 sample.frame_id != odom_frame_) {
+        registerRejection(source, correction,
+                          "修正坐标系与来源原点不一致");
+        return;
+      }
     }
-    if (!source->quarantine_until.isZero() && !source->recovering) {
-      source->recovering = true;
-      source->recovery_started = now;
-      source->recovery_samples = 0;
-      source->alignment_initialized = false;
-      source->initialized = false;
-    }
-
-    initializeAlignmentIfNeeded(source, measurement);
-    Measurement aligned = applyAlignment(*source, measurement);
-    if (!source->initialized) {
-      initializeSource(source, aligned);
-      registerAccepted(source, now);
-      updateSelection(now);
-      publishAlignment(*source, aligned.stamp);
+    if ((sample.kind == CorrectionKind::kVelocityXY ||
+         sample.kind == CorrectionKind::kVelocityZ) &&
+        !source->raw_frame.empty() &&
+        sample.frame_id != source->raw_frame &&
+        sample.frame_id != odom_frame_ &&
+        sample.frame_id != body_frame_) {
+      registerRejection(source, correction,
+                        "速度修正坐标系既不是来源原点、odom，也不是机体");
       return;
     }
 
-    const double dt = (aligned.stamp - source->filter_stamp).toSec();
-    if (dt < -1e-4) {
-      source->adapter_rejected++;
-      ROS_WARN_THROTTLE(2.0, "[xd_uav_state_estimators] source '%s' timestamp moved backwards",
-                        source->config.name.c_str());
+    const bool alignment_was_initialized =
+        source->alignment_initialized;
+    if (!source->alignment_initialized ||
+        !source->filters_initialized) {
+      updateRawState(source, sample);
+    }
+    initializeAlignmentIfReady(source, sample.stamp);
+    if (!source->alignment_initialized) {
+      registerAccepted(source, correction);
       return;
     }
-    predictSource(source, std::max(0.0, dt));
-    source->filter_stamp = std::max(source->filter_stamp, aligned.stamp);
+    if (!alignment_was_initialized || !source->filters_initialized) {
+      initializeFiltersFromRaw(source, sample.stamp);
+      registerAccepted(source, correction);
+      publishAlignment(*source, sample.stamp);
+      updateSelection(ros::Time::now());
+      return;
+    }
 
-    if (!measurementPassesInnovationGate(*source, aligned, &reason)) {
-      registerCorrectionRejection(source, now, reason);
-      updateSelection(now);
+    predictSourceTo(source, sample.stamp);
+    CorrectionSample aligned = alignSample(*source, sample);
+    if (!innovationAccepted(source->axis, source->yaw_filter,
+                            aligned, &reason)) {
+      registerRejection(source, correction, reason);
+      updateSelection(ros::Time::now());
       return;
     }
     correctSource(source, aligned);
-    registerAccepted(source, now);
-    publishAlignment(*source, aligned.stamp);
-    updateSelection(now);
+    updateRawState(source, sample);
+    registerAccepted(source, correction);
+    publishAlignment(*source, sample.stamp);
+    if (source->config.name == active_source_) {
+      correctMainFromActiveSource(aligned);
+    }
+    updateSelection(ros::Time::now());
   }
 
-  void initializeAlignmentIfNeeded(SourceRuntime* source, const Measurement& measurement) {
-    if (source->alignment_initialized) {
+  void updateRawState(SourceRuntime* source,
+                      const CorrectionSample& sample) {
+    source->latest_raw_stamp =
+        std::max(source->latest_raw_stamp, sample.stamp);
+    switch (sample.kind) {
+      case CorrectionKind::kPositionXY:
+        source->raw.position_xy = sample.vector;
+        source->raw.have_position_xy = true;
+        break;
+      case CorrectionKind::kPositionZ:
+        source->raw.position_z = sample.scalar;
+        source->raw.have_position_z = true;
+        break;
+      case CorrectionKind::kVelocityXY:
+        source->raw.velocity_xy = sample.vector;
+        source->raw.have_velocity_xy = true;
+        break;
+      case CorrectionKind::kVelocityZ:
+        source->raw.velocity_z = sample.scalar;
+        source->raw.have_velocity_z = true;
+        break;
+      case CorrectionKind::kHeading:
+        source->raw.heading = wrapAngle(sample.scalar);
+        source->raw.have_heading = true;
+        break;
+      case CorrectionKind::kYawRate:
+        source->raw.yaw_rate = sample.scalar;
+        source->raw.have_yaw_rate = true;
+        break;
+    }
+  }
+
+  bool hasCorrectionKind(const SourceRuntime& source,
+                         const CorrectionKind kind) const {
+    return std::any_of(
+        source.corrections.begin(), source.corrections.end(),
+        [kind](const std::unique_ptr<CorrectionRuntime>& correction) {
+          return correction->config.kind == kind;
+        });
+  }
+
+  bool rawReadyForAlignment(const SourceRuntime& source) const {
+    const bool position_xy_ready =
+        !hasCorrectionKind(source, CorrectionKind::kPositionXY) ||
+        source.raw.have_position_xy;
+    const bool position_z_ready =
+        !hasCorrectionKind(source, CorrectionKind::kPositionZ) ||
+        source.raw.have_position_z;
+    const bool heading_ready =
+        !hasCorrectionKind(source, CorrectionKind::kHeading) ||
+        source.raw.have_heading;
+    return position_xy_ready && position_z_ready && heading_ready &&
+           (!source.raw_frame.empty() ||
+            !hasCorrectionKind(source, CorrectionKind::kPositionXY));
+  }
+
+  void initializeAlignmentIfReady(SourceRuntime* source,
+                                  const ros::Time& stamp) {
+    if (source->alignment_initialized ||
+        !rawReadyForAlignment(*source)) {
       return;
     }
-    if (source->config.alignment_mode == "identity" || active_source_.empty()) {
+    if (source->config.alignment_mode == "identity" ||
+        active_source_.empty()) {
       source->alignment_yaw = 0.0;
       source->alignment_translation.setZero();
-    } else {
-      Estimate target;
-      if (!currentMainEstimate(measurement.stamp, &target)) {
-        source->alignment_yaw = 0.0;
-        source->alignment_translation.setZero();
-      } else {
-        source->alignment_yaw = wrapAngle(target.yaw - measurement.yaw);
-        const Eigen::Rotation2Dd rotation(source->alignment_yaw);
-        const Eigen::Vector2d translated =
-            target.position.head<2>() - rotation * measurement.position.head<2>();
-        source->alignment_translation =
-            Eigen::Vector3d(translated.x(), translated.y(),
-                            target.position.z() - measurement.position.z());
-      }
+      source->alignment_initialized = true;
+      return;
     }
+    Estimate target;
+    if (!currentMainEstimate(stamp, &target)) {
+      return;
+    }
+    calculateAlignmentToTarget(source, target);
+  }
+
+  void calculateAlignmentToTarget(SourceRuntime* source,
+                                  const Estimate& target) {
+    source->alignment_yaw =
+        source->raw.have_heading
+            ? wrapAngle(target.yaw - source->raw.heading)
+            : 0.0;
+    const Eigen::Rotation2Dd rotation(source->alignment_yaw);
+    if (source->raw.have_position_xy) {
+      const Eigen::Vector2d translated =
+          target.position.head<2>() -
+          rotation * source->raw.position_xy;
+      source->alignment_translation.x() = translated.x();
+      source->alignment_translation.y() = translated.y();
+    } else {
+      source->alignment_translation.x() = 0.0;
+      source->alignment_translation.y() = 0.0;
+    }
+    source->alignment_translation.z() =
+        source->raw.have_position_z
+            ? target.position.z() - source->raw.position_z
+            : 0.0;
     source->alignment_initialized = true;
   }
 
-  Measurement applyAlignment(const SourceRuntime& source,
-                             const Measurement& measurement) const {
-    Measurement aligned = measurement;
+  void initializeFiltersFromRaw(SourceRuntime* source,
+                                const ros::Time& stamp) {
+    const Eigen::Rotation2Dd rotation(source->alignment_yaw);
+    Eigen::Vector2d position = Eigen::Vector2d::Zero();
+    if (source->raw.have_position_xy) {
+      position =
+          rotation * source->raw.position_xy +
+          source->alignment_translation.head<2>();
+    }
+    const Eigen::Vector2d velocity =
+        source->raw.have_velocity_xy
+            ? rotation * source->raw.velocity_xy
+            : Eigen::Vector2d::Zero();
+    source->axis[0].initialize(position.x(), velocity.x(), 0.0);
+    source->axis[1].initialize(position.y(), velocity.y(), 0.0);
+    source->axis[2].initialize(
+        source->raw.have_position_z
+            ? source->raw.position_z +
+                  source->alignment_translation.z()
+            : 0.0,
+        source->raw.have_velocity_z ? source->raw.velocity_z : 0.0,
+        0.0);
+    source->yaw_filter.initialize(
+        source->raw.have_heading
+            ? wrapAngle(source->raw.heading + source->alignment_yaw)
+            : 0.0,
+        source->raw.have_yaw_rate ? source->raw.yaw_rate : 0.0);
+    source->filter_stamp = stamp;
+    source->filters_initialized = true;
+  }
+
+  CorrectionSample alignSample(const SourceRuntime& source,
+                               const CorrectionSample& sample) const {
+    CorrectionSample aligned = sample;
     const Eigen::Rotation2Dd rotation(source.alignment_yaw);
-    aligned.position.head<2>() =
-        rotation * measurement.position.head<2>() +
-        source.alignment_translation.head<2>();
-    aligned.position.z() = measurement.position.z() + source.alignment_translation.z();
-    aligned.velocity.head<2>() = rotation * measurement.velocity.head<2>();
-    aligned.velocity.z() = measurement.velocity.z();
-    aligned.yaw = wrapAngle(measurement.yaw + source.alignment_yaw);
-    double roll = 0.0;
-    double pitch = 0.0;
-    double unused_yaw = 0.0;
-    tf2::Matrix3x3(measurement.orientation).getRPY(roll, pitch, unused_yaw);
-    aligned.orientation.setRPY(roll, pitch, aligned.yaw);
+    switch (sample.kind) {
+      case CorrectionKind::kPositionXY:
+        if (sample.frame_id != odom_frame_) {
+          aligned.vector =
+              rotation * sample.vector +
+              source.alignment_translation.head<2>();
+        }
+        break;
+      case CorrectionKind::kPositionZ:
+        if (sample.frame_id != odom_frame_) {
+          aligned.scalar += source.alignment_translation.z();
+        }
+        break;
+      case CorrectionKind::kVelocityXY:
+        if (sample.frame_id == body_frame_) {
+          const Eigen::Rotation2Dd body_to_odom(
+              source.yaw_filter.yaw());
+          aligned.vector = body_to_odom * sample.vector;
+        } else if (sample.frame_id != odom_frame_) {
+          aligned.vector = rotation * sample.vector;
+        }
+        break;
+      case CorrectionKind::kVelocityZ:
+        break;
+      case CorrectionKind::kHeading:
+        if (sample.frame_id != odom_frame_) {
+          aligned.scalar =
+              wrapAngle(sample.scalar + source.alignment_yaw);
+        }
+        break;
+      case CorrectionKind::kYawRate:
+        break;
+    }
+    aligned.frame_id = odom_frame_;
     return aligned;
   }
 
-  void initializeSource(SourceRuntime* source, const Measurement& measurement) {
-    for (int axis = 0; axis < 3; ++axis) {
-      source->axis[axis].initialize(measurement.position(axis), measurement.velocity(axis), 0.0);
+  void predictSourceTo(SourceRuntime* source, const ros::Time& stamp) {
+    if (!source->filters_initialized) {
+      return;
     }
-    source->yaw_filter.initialize(measurement.yaw, measurement.angular_velocity_body.z());
-    source->filter_stamp = measurement.stamp;
-    tf2::Matrix3x3(measurement.orientation)
-        .getRPY(source->latest_roll, source->latest_pitch, unused_yaw_);
-    source->initialized = true;
-  }
-
-  void predictSource(SourceRuntime* source, const double dt) {
+    const double dt = std::max(0.0, (stamp - source->filter_stamp).toSec());
     if (dt <= 0.0) {
       return;
     }
@@ -814,168 +1204,333 @@ class MultiSourceEstimatorNode {
     source->yaw_filter.predict(dt);
     if (imuAccelerationFresh()) {
       for (int axis = 0; axis < 3; ++axis) {
-        source->axis[axis].correct(2, latest_acceleration_odom_(axis),
-                                   imu_acceleration_variance_);
+        source->axis[axis].correct(
+            2, latest_acceleration_odom_(axis),
+            imu_acceleration_variance_);
       }
     }
     if (imuRateFresh()) {
-      source->yaw_filter.correctRate(latest_yaw_rate_, imu_yaw_rate_variance_);
+      source->yaw_filter.correctRate(latest_yaw_rate_,
+                                     imu_yaw_rate_variance_);
     }
+    source->filter_stamp = stamp;
   }
 
-  bool measurementPassesInnovationGate(const SourceRuntime& source,
-                                       const Measurement& measurement,
-                                       std::string* reason) const {
-    if (source.config.use_position_xy) {
-      const double dx = source.axis[0].innovation(0, measurement.position.x());
-      const double dy = source.axis[1].innovation(0, measurement.position.y());
-      const double nis =
-          source.axis[0].nis(0, measurement.position.x(), measurement.position_xy_variance) +
-          source.axis[1].nis(0, measurement.position.y(), measurement.position_xy_variance);
-      if (std::hypot(dx, dy) > position_xy_limit_ ||
-          (use_nis_ && nis > position_xy_nis_limit_)) {
-        *reason = "horizontal position innovation";
-        return false;
+  bool innovationAccepted(const std::array<AxisKalman, 3>& axis,
+                          const YawKalman& yaw_filter,
+                          const CorrectionSample& sample,
+                          std::string* reason) const {
+    switch (sample.kind) {
+      case CorrectionKind::kPositionXY: {
+        const double dx =
+            axis[0].innovation(0, sample.vector.x());
+        const double dy =
+            axis[1].innovation(0, sample.vector.y());
+        const double nis =
+            axis[0].nis(0, sample.vector.x(), sample.variance_a) +
+            axis[1].nis(0, sample.vector.y(), sample.variance_b);
+        if (std::hypot(dx, dy) > position_xy_limit_ ||
+            (use_nis_ && nis > position_xy_nis_limit_)) {
+          *reason = "水平位置新息超限";
+          return false;
+        }
+        break;
       }
-    }
-    if (source.config.use_altitude) {
-      if (std::abs(source.axis[2].innovation(0, measurement.position.z())) > position_z_limit_ ||
-          (use_nis_ && source.axis[2].nis(0, measurement.position.z(),
-                                          measurement.position_z_variance) >
-                           position_z_nis_limit_)) {
-        *reason = "altitude innovation";
-        return false;
+      case CorrectionKind::kPositionZ:
+        if (std::abs(axis[2].innovation(0, sample.scalar)) >
+                position_z_limit_ ||
+            (use_nis_ &&
+             axis[2].nis(0, sample.scalar, sample.variance_a) >
+                 position_z_nis_limit_)) {
+          *reason = "高度新息超限";
+          return false;
+        }
+        break;
+      case CorrectionKind::kVelocityXY: {
+        const double dx =
+            axis[0].innovation(1, sample.vector.x());
+        const double dy =
+            axis[1].innovation(1, sample.vector.y());
+        const double nis =
+            axis[0].nis(1, sample.vector.x(), sample.variance_a) +
+            axis[1].nis(1, sample.vector.y(), sample.variance_b);
+        if (std::hypot(dx, dy) > velocity_xy_limit_ ||
+            (use_nis_ && nis > velocity_xy_nis_limit_)) {
+          *reason = "水平速度新息超限";
+          return false;
+        }
+        break;
       }
-    }
-    if (source.config.use_velocity_xy) {
-      const double dx = source.axis[0].innovation(1, measurement.velocity.x());
-      const double dy = source.axis[1].innovation(1, measurement.velocity.y());
-      const double nis =
-          source.axis[0].nis(1, measurement.velocity.x(), measurement.velocity_xy_variance) +
-          source.axis[1].nis(1, measurement.velocity.y(), measurement.velocity_xy_variance);
-      if (std::hypot(dx, dy) > velocity_xy_limit_ ||
-          (use_nis_ && nis > velocity_xy_nis_limit_)) {
-        *reason = "horizontal velocity innovation";
-        return false;
-      }
-    }
-    if (source.config.use_vertical_velocity) {
-      if (std::abs(source.axis[2].innovation(1, measurement.velocity.z())) >
-              velocity_z_limit_ ||
-          (use_nis_ && source.axis[2].nis(1, measurement.velocity.z(),
-                                          measurement.velocity_z_variance) >
-                           velocity_z_nis_limit_)) {
-        *reason = "vertical velocity innovation";
-        return false;
-      }
-    }
-    if (source.config.use_heading) {
-      if (std::abs(source.yaw_filter.yawInnovation(measurement.yaw)) > heading_limit_ ||
-          (use_nis_ &&
-           source.yaw_filter.yawNis(measurement.yaw, measurement.heading_variance) >
-               heading_nis_limit_)) {
-        *reason = "heading innovation";
-        return false;
-      }
+      case CorrectionKind::kVelocityZ:
+        if (std::abs(axis[2].innovation(1, sample.scalar)) >
+                velocity_z_limit_ ||
+            (use_nis_ &&
+             axis[2].nis(1, sample.scalar, sample.variance_a) >
+                 velocity_z_nis_limit_)) {
+          *reason = "垂直速度新息超限";
+          return false;
+        }
+        break;
+      case CorrectionKind::kHeading:
+        if (std::abs(yaw_filter.yawInnovation(sample.scalar)) >
+                heading_limit_ ||
+            (use_nis_ &&
+             yaw_filter.yawNis(sample.scalar, sample.variance_a) >
+                 heading_nis_limit_)) {
+          *reason = "航向新息超限";
+          return false;
+        }
+        break;
+      case CorrectionKind::kYawRate:
+        if (std::abs(yaw_filter.rateInnovation(sample.scalar)) >
+                yaw_rate_limit_ ||
+            (use_nis_ &&
+             yaw_filter.rateNis(sample.scalar, sample.variance_a) >
+                 yaw_rate_nis_limit_)) {
+          *reason = "偏航角速度新息超限";
+          return false;
+        }
+        break;
     }
     return true;
   }
 
-  void correctSource(SourceRuntime* source, const Measurement& measurement) {
-    if (source->config.use_position_xy) {
-      source->axis[0].correct(0, measurement.position.x(), measurement.position_xy_variance);
-      source->axis[1].correct(0, measurement.position.y(), measurement.position_xy_variance);
+  void correctSource(SourceRuntime* source,
+                     const CorrectionSample& sample) {
+    switch (sample.kind) {
+      case CorrectionKind::kPositionXY:
+        source->axis[0].correct(0, sample.vector.x(),
+                                sample.variance_a);
+        source->axis[1].correct(0, sample.vector.y(),
+                                sample.variance_b);
+        break;
+      case CorrectionKind::kPositionZ:
+        source->axis[2].correct(0, sample.scalar,
+                                sample.variance_a);
+        break;
+      case CorrectionKind::kVelocityXY:
+        source->axis[0].correct(1, sample.vector.x(),
+                                sample.variance_a);
+        source->axis[1].correct(1, sample.vector.y(),
+                                sample.variance_b);
+        break;
+      case CorrectionKind::kVelocityZ:
+        source->axis[2].correct(1, sample.scalar,
+                                sample.variance_a);
+        break;
+      case CorrectionKind::kHeading:
+        source->yaw_filter.correctYaw(sample.scalar,
+                                      sample.variance_a);
+        break;
+      case CorrectionKind::kYawRate:
+        source->yaw_filter.correctRate(sample.scalar,
+                                       sample.variance_a);
+        break;
     }
-    if (source->config.use_altitude) {
-      source->axis[2].correct(0, measurement.position.z(), measurement.position_z_variance);
-    }
-    if (source->config.use_velocity_xy) {
-      source->axis[0].correct(1, measurement.velocity.x(), measurement.velocity_xy_variance);
-      source->axis[1].correct(1, measurement.velocity.y(), measurement.velocity_xy_variance);
-    }
-    if (source->config.use_vertical_velocity) {
-      source->axis[2].correct(1, measurement.velocity.z(), measurement.velocity_z_variance);
-    }
-    if (source->config.use_heading) {
-      source->yaw_filter.correctYaw(measurement.yaw, measurement.heading_variance);
-    }
-    source->yaw_filter.correctRate(measurement.angular_velocity_body.z(),
-                                   imu_yaw_rate_variance_);
-    tf2::Matrix3x3(measurement.orientation)
-        .getRPY(source->latest_roll, source->latest_pitch, unused_yaw_);
   }
 
-  void registerAccepted(SourceRuntime* source, const ros::Time& now) {
-    source->accepted++;
-    source->last_accepted = now;
-    source->consecutive_rejections = 0;
-    if (source->recovering) {
-      source->recovery_samples++;
-      if (source->recovery_samples >= source->config.recovery_min_samples &&
-          (now - source->recovery_started).toSec() >=
+  void initializeMainFromEstimate(const Estimate& estimate) {
+    for (int index = 0; index < 3; ++index) {
+      main_state_->axis[index].initialize(
+          estimate.position(index), estimate.velocity(index),
+          estimate.acceleration(index));
+    }
+    main_state_->yaw_filter.initialize(estimate.yaw, estimate.yaw_rate);
+    main_state_->filter_stamp = estimate.stamp;
+    main_state_->initialized = true;
+  }
+
+  void predictMainTo(const ros::Time& stamp) {
+    if (!main_state_->initialized) {
+      return;
+    }
+    const double dt =
+        std::max(0.0, (stamp - main_state_->filter_stamp).toSec());
+    if (dt <= 0.0) {
+      return;
+    }
+    for (AxisKalman& axis : main_state_->axis) {
+      axis.predict(dt);
+    }
+    main_state_->yaw_filter.predict(dt);
+    if (imuAccelerationFresh()) {
+      for (int axis = 0; axis < 3; ++axis) {
+        main_state_->axis[axis].correct(
+            2, latest_acceleration_odom_(axis),
+            imu_acceleration_variance_);
+      }
+    }
+    if (imuRateFresh()) {
+      main_state_->yaw_filter.correctRate(
+          latest_yaw_rate_, imu_yaw_rate_variance_);
+    }
+    main_state_->filter_stamp = stamp;
+  }
+
+  void correctMainFromActiveSource(const CorrectionSample& sample) {
+    if (!main_state_->initialized) {
+      return;
+    }
+    predictMainTo(sample.stamp);
+    std::string reason;
+    if (!innovationAccepted(main_state_->axis, main_state_->yaw_filter,
+                            sample, &reason)) {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[xd_uav_state_estimators] 当前主源修正未进入main滤波器: %s",
+          reason.c_str());
+      return;
+    }
+    switch (sample.kind) {
+      case CorrectionKind::kPositionXY:
+        main_state_->axis[0].correct(
+            0, sample.vector.x(), sample.variance_a);
+        main_state_->axis[1].correct(
+            0, sample.vector.y(), sample.variance_b);
+        break;
+      case CorrectionKind::kPositionZ:
+        main_state_->axis[2].correct(
+            0, sample.scalar, sample.variance_a);
+        break;
+      case CorrectionKind::kVelocityXY:
+        main_state_->axis[0].correct(
+            1, sample.vector.x(), sample.variance_a);
+        main_state_->axis[1].correct(
+            1, sample.vector.y(), sample.variance_b);
+        break;
+      case CorrectionKind::kVelocityZ:
+        main_state_->axis[2].correct(
+            1, sample.scalar, sample.variance_a);
+        break;
+      case CorrectionKind::kHeading:
+        main_state_->yaw_filter.correctYaw(
+            sample.scalar, sample.variance_a);
+        break;
+      case CorrectionKind::kYawRate:
+        main_state_->yaw_filter.correctRate(
+            sample.scalar, sample.variance_a);
+        break;
+    }
+  }
+
+  void registerAccepted(SourceRuntime* source,
+                        CorrectionRuntime* correction) {
+    const ros::Time now = ros::Time::now();
+    correction->accepted++;
+    correction->last_accepted = now;
+    correction->consecutive_rejections = 0;
+    if (correction->recovering) {
+      correction->recovery_samples++;
+      if (correction->recovery_samples >=
+              source->config.recovery_min_samples &&
+          (now - correction->recovery_started).toSec() >=
               source->config.recovery_stable_time) {
-        source->recovering = false;
-        source->quarantine_until = ros::Time();
-        ROS_INFO("[xd_uav_state_estimators] source '%s' recovered",
-                 source->config.name.c_str());
+        correction->recovering = false;
+        correction->quarantine_until = ros::Time();
+        ROS_INFO(
+            "[xd_uav_state_estimators] 修正%s/%s已恢复",
+            source->config.name.c_str(),
+            correction->config.name.c_str());
       }
     }
   }
 
-  void registerCorrectionRejection(SourceRuntime* source, const ros::Time& now,
-                                   const std::string& reason) {
-    source->correction_rejected++;
-    source->consecutive_rejections++;
-    if (source->consecutive_rejections >= source->config.max_consecutive_rejections) {
-      source->quarantine_until = now + ros::Duration(source->config.quarantine_duration);
-      source->recovering = false;
-      source->recovery_samples = 0;
-      ROS_WARN("[xd_uav_state_estimators] source '%s' quarantined: %s",
-               source->config.name.c_str(), reason.c_str());
+  void registerRejection(SourceRuntime* source,
+                         CorrectionRuntime* correction,
+                         const std::string& reason) {
+    correction->rejected++;
+    correction->consecutive_rejections++;
+    if (correction->consecutive_rejections >=
+        source->config.max_consecutive_rejections) {
+      correction->quarantine_until =
+          ros::Time::now() +
+          ros::Duration(source->config.quarantine_duration);
+      correction->recovering = false;
+      correction->recovery_samples = 0;
+      ROS_WARN(
+          "[xd_uav_state_estimators] 修正%s/%s已隔离: %s",
+          source->config.name.c_str(),
+          correction->config.name.c_str(), reason.c_str());
     } else {
-      ROS_WARN_THROTTLE(1.0, "[xd_uav_state_estimators] source '%s' correction rejected: %s",
-                        source->config.name.c_str(), reason.c_str());
+      ROS_WARN_THROTTLE(
+          1.0, "[xd_uav_state_estimators] 修正%s/%s被拒绝: %s",
+          source->config.name.c_str(),
+          correction->config.name.c_str(), reason.c_str());
     }
   }
 
-  bool sourceHealthy(const SourceRuntime& source, const ros::Time& now) const {
-    return source.initialized && !source.recovering && now >= source.quarantine_until &&
-           !source.last_accepted.isZero() &&
-           (now - source.last_accepted).toSec() <= source.config.timeout;
+  bool correctionHealthy(const CorrectionRuntime& correction,
+                         const ros::Time& now) const {
+    return !correction.last_accepted.isZero() &&
+           now >= correction.quarantine_until &&
+           !correction.recovering &&
+           (now - correction.last_accepted).toSec() <=
+               correction.config.timeout;
+  }
+
+  bool sourceHealthy(const SourceRuntime& source,
+                     const ros::Time& now) const {
+    if (!source.filters_initialized ||
+        !source.alignment_initialized) {
+      return false;
+    }
+    bool have_required = false;
+    for (const auto& correction : source.corrections) {
+      if (!correction->config.required) {
+        continue;
+      }
+      have_required = true;
+      if (!correctionHealthy(*correction, now)) {
+        return false;
+      }
+    }
+    return have_required;
+  }
+
+  double sourceLocalizationAge(const SourceRuntime& source,
+                               const ros::Time& now) const {
+    double age = 0.0;
+    bool found = false;
+    for (const auto& correction : source.corrections) {
+      if (!correction->config.required ||
+          correction->last_accepted.isZero()) {
+        continue;
+      }
+      age = std::max(
+          age, (now - correction->last_accepted).toSec());
+      found = true;
+    }
+    return found ? age : std::numeric_limits<double>::infinity();
   }
 
   SourceRuntime* chooseDesiredSource(const ros::Time& now) const {
     if (!automatic_selection_ && !requested_source_.empty()) {
-      const auto iterator = source_by_name_.find(requested_source_);
-      if (iterator != source_by_name_.end() && sourceHealthy(*iterator->second, now)) {
+      const auto iterator =
+          source_by_name_.find(requested_source_);
+      if (iterator != source_by_name_.end() &&
+          sourceHealthy(*iterator->second, now)) {
         return iterator->second;
       }
     }
-    std::vector<SourceRuntime*> candidates;
+    SourceRuntime* desired = nullptr;
     for (const auto& source : sources_) {
-      if (sourceHealthy(*source, now)) {
-        candidates.push_back(source.get());
+      if (!sourceHealthy(*source, now)) {
+        continue;
+      }
+      if (desired == nullptr ||
+          source->config.priority < desired->config.priority) {
+        desired = source.get();
       }
     }
-    if (candidates.empty()) {
-      return nullptr;
-    }
-    std::sort(candidates.begin(), candidates.end(),
-              [](const SourceRuntime* left, const SourceRuntime* right) {
-                const int left_role = left->config.role == "primary" ? 0 : 1;
-                const int right_role = right->config.role == "primary" ? 0 : 1;
-                if (left_role != right_role) {
-                  return left_role < right_role;
-                }
-                return left->config.priority < right->config.priority;
-              });
-    return candidates.front();
+    return desired;
   }
 
   void updateSelection(const ros::Time& now) {
     SourceRuntime* desired = chooseDesiredSource(now);
     SourceRuntime* active =
-        active_source_.empty() ? nullptr : source_by_name_.at(active_source_);
+        active_source_.empty()
+            ? nullptr
+            : source_by_name_.at(active_source_);
     if (desired == nullptr) {
       return;
     }
@@ -986,11 +1541,13 @@ class MultiSourceEstimatorNode {
     if (desired == active) {
       return;
     }
-    if (!automatic_selection_ && desired->config.name == requested_source_) {
+    if (!automatic_selection_ &&
+        desired->config.name == requested_source_) {
       activateSource(desired, now);
       return;
     }
-    if (!switch_back_to_primary_) {
+    if (!switch_back_to_higher_priority_ ||
+        desired->config.priority >= active->config.priority) {
       return;
     }
     if ((now - active_since_).toSec() < minimum_active_time_ ||
@@ -1001,54 +1558,81 @@ class MultiSourceEstimatorNode {
   }
 
   void activateSource(SourceRuntime* source, const ros::Time& now) {
-    if (source == nullptr || source->config.name == active_source_) {
+    if (source == nullptr ||
+        source->config.name == active_source_) {
       return;
     }
     Estimate target;
     const bool have_target = currentMainEstimate(now, &target);
-    if (have_target && source->have_raw &&
+    if (have_target && rawReadyForAlignment(*source) &&
         source->config.alignment_mode == "align_on_activation") {
-      source->alignment_yaw = wrapAngle(target.yaw - source->latest_raw.yaw);
-      const Eigen::Rotation2Dd rotation(source->alignment_yaw);
-      const Eigen::Vector2d translation =
-          target.position.head<2>() - rotation * source->latest_raw.position.head<2>();
-      source->alignment_translation =
-          Eigen::Vector3d(translation.x(), translation.y(),
-                          target.position.z() - source->latest_raw.position.z());
-      source->alignment_initialized = true;
-      Measurement aligned = applyAlignment(*source, source->latest_raw);
-      initializeSource(source, aligned);
+      calculateAlignmentToTarget(source, target);
+      initializeFiltersFromRaw(source, now);
       publishAlignment(*source, now);
+    }
+    if (!main_state_->initialized) {
+      Estimate initial;
+      if (!estimateSourceAt(*source, now, &initial)) {
+        ROS_WARN(
+            "[xd_uav_state_estimators] 来源%s尚不能初始化main状态",
+            source->config.name.c_str());
+        return;
+      }
+      initializeMainFromEstimate(initial);
     }
     active_source_ = source->config.name;
     active_since_ = now;
     last_switch_time_ = now;
     switch_count_++;
-    ROS_INFO("[xd_uav_state_estimators] active source -> %s",
+    ROS_INFO("[xd_uav_state_estimators] main定位源切换为%s",
              active_source_.c_str());
   }
 
-  bool estimateSourceAt(const SourceRuntime& source, const ros::Time& stamp,
+  bool estimateSourceAt(const SourceRuntime& source,
+                        const ros::Time& stamp,
                         Estimate* estimate) const {
-    if (!source.initialized) {
+    if (!source.filters_initialized) {
       return false;
     }
     std::array<AxisKalman, 3> axis = source.axis;
     YawKalman yaw = source.yaw_filter;
-    const double dt = std::max(0.0, (stamp - source.filter_stamp).toSec());
+    const double dt =
+        std::max(0.0, (stamp - source.filter_stamp).toSec());
     for (AxisKalman& filter : axis) {
       filter.predict(dt);
     }
     yaw.predict(dt);
-    if (imuAccelerationFresh()) {
-      for (int index = 0; index < 3; ++index) {
-        axis[index].correct(2, latest_acceleration_odom_(index),
-                            imu_acceleration_variance_);
-      }
+    estimate->stamp = stamp;
+    for (int index = 0; index < 3; ++index) {
+      estimate->position(index) = axis[index].position();
+      estimate->velocity(index) = axis[index].velocity();
+      estimate->acceleration(index) = axis[index].acceleration();
+      estimate->position_variance[index] =
+          axis[index].variance(0);
+      estimate->velocity_variance[index] =
+          axis[index].variance(1);
     }
-    if (imuRateFresh()) {
-      yaw.correctRate(latest_yaw_rate_, imu_yaw_rate_variance_);
+    estimate->yaw = yaw.yaw();
+    estimate->yaw_rate = yaw.rate();
+    estimate->yaw_variance = yaw.variance(0);
+    estimate->roll = latest_roll_;
+    estimate->pitch = latest_pitch_;
+    return true;
+  }
+
+  bool currentMainEstimate(const ros::Time& stamp,
+                           Estimate* estimate) const {
+    if (!main_state_->initialized || active_source_.empty()) {
+      return false;
     }
+    std::array<AxisKalman, 3> axis = main_state_->axis;
+    YawKalman yaw = main_state_->yaw_filter;
+    const double dt =
+        std::max(0.0, (stamp - main_state_->filter_stamp).toSec());
+    for (AxisKalman& filter : axis) {
+      filter.predict(dt);
+    }
+    yaw.predict(dt);
     estimate->stamp = stamp;
     for (int index = 0; index < 3; ++index) {
       estimate->position(index) = axis[index].position();
@@ -1060,21 +1644,13 @@ class MultiSourceEstimatorNode {
     estimate->yaw = yaw.yaw();
     estimate->yaw_rate = yaw.rate();
     estimate->yaw_variance = yaw.variance(0);
-    estimate->roll = source.latest_roll;
-    estimate->pitch = source.latest_pitch;
+    estimate->roll = latest_roll_;
+    estimate->pitch = latest_pitch_;
     return true;
   }
 
-  bool currentMainEstimate(const ros::Time& stamp, Estimate* estimate) const {
-    if (active_source_.empty()) {
-      return false;
-    }
-    const auto iterator = source_by_name_.find(active_source_);
-    return iterator != source_by_name_.end() &&
-           estimateSourceAt(*iterator->second, stamp, estimate);
-  }
-
-  nav_msgs::Odometry estimateToOdometry(const Estimate& estimate) const {
+  nav_msgs::Odometry estimateToOdometry(
+      const Estimate& estimate) const {
     nav_msgs::Odometry message;
     message.header.stamp = estimate.stamp;
     message.header.frame_id = odom_frame_;
@@ -1092,20 +1668,13 @@ class MultiSourceEstimatorNode {
     message.pose.covariance[28] = 0.05;
     message.pose.covariance[35] = estimate.yaw_variance;
 
-    Eigen::Vector3d velocity = estimate.velocity;
-    Eigen::Vector3d acceleration = estimate.acceleration;
-    if (output_twist_in_body_frame_) {
-      const tf2::Vector3 parent_velocity(velocity.x(), velocity.y(), velocity.z());
-      const tf2::Vector3 body_velocity =
-          tf2::quatRotate(orientation.inverse(), parent_velocity);
-      velocity = Eigen::Vector3d(body_velocity.x(), body_velocity.y(), body_velocity.z());
-      const tf2::Vector3 parent_acceleration(acceleration.x(), acceleration.y(),
-                                             acceleration.z());
-      const tf2::Vector3 body_acceleration =
-          tf2::quatRotate(orientation.inverse(), parent_acceleration);
-      acceleration = Eigen::Vector3d(body_acceleration.x(), body_acceleration.y(),
-                                     body_acceleration.z());
-    }
+    const tf2::Vector3 parent_velocity(
+        estimate.velocity.x(), estimate.velocity.y(),
+        estimate.velocity.z());
+    const tf2::Vector3 body_velocity =
+        tf2::quatRotate(orientation.inverse(), parent_velocity);
+    const Eigen::Vector3d velocity(
+        body_velocity.x(), body_velocity.y(), body_velocity.z());
     message.twist.twist.linear.x = velocity.x();
     message.twist.twist.linear.y = velocity.y();
     message.twist.twist.linear.z = velocity.z();
@@ -1117,132 +1686,238 @@ class MultiSourceEstimatorNode {
     return message;
   }
 
+  void publishMainTransform(const nav_msgs::Odometry& odometry) {
+    geometry_msgs::TransformStamped transform;
+    transform.header = odometry.header;
+    transform.child_frame_id = odometry.child_frame_id;
+    transform.transform.translation.x =
+        odometry.pose.pose.position.x;
+    transform.transform.translation.y =
+        odometry.pose.pose.position.y;
+    transform.transform.translation.z =
+        odometry.pose.pose.position.z;
+    transform.transform.rotation = odometry.pose.pose.orientation;
+    main_transform_broadcaster_.sendTransform(transform);
+  }
+
   void imuCallback(const sensor_msgs::Imu::ConstPtr& message) {
+    tf2::Quaternion orientation;
+    if (!normalizeQuaternion(message->orientation, &orientation)) {
+      return;
+    }
+    double yaw = 0.0;
+    tf2::Matrix3x3(orientation).getRPY(
+        latest_roll_, latest_pitch_, yaw);
     const auto& acceleration = message->linear_acceleration;
     const auto& angular_velocity = message->angular_velocity;
-    if (!std::isfinite(acceleration.x) || !std::isfinite(acceleration.y) ||
-        !std::isfinite(acceleration.z) || !std::isfinite(angular_velocity.z)) {
+    if (!std::isfinite(acceleration.x) ||
+        !std::isfinite(acceleration.y) ||
+        !std::isfinite(acceleration.z) ||
+        !std::isfinite(angular_velocity.z)) {
       return;
     }
-    Eigen::Vector3d body_acceleration(acceleration.x, acceleration.y, acceleration.z);
-    if (body_acceleration.norm() > acceleration_limit_) {
-      ROS_WARN_THROTTLE(2.0, "[xd_uav_state_estimators] unreasonable IMU acceleration rejected");
-      return;
+    tf2::Vector3 acceleration_odom = tf2::quatRotate(
+        orientation,
+        tf2::Vector3(acceleration.x, acceleration.y,
+                     acceleration.z));
+    if (remove_gravity_) {
+      acceleration_odom.setZ(acceleration_odom.z() - gravity_);
     }
-    Estimate main;
-    if (currentMainEstimate(ros::Time::now(), &main)) {
-      tf2::Quaternion orientation;
-      orientation.setRPY(main.roll, main.pitch, main.yaw);
-      const tf2::Vector3 rotated = tf2::quatRotate(
-          orientation,
-          tf2::Vector3(body_acceleration.x(), body_acceleration.y(),
-                       body_acceleration.z()));
-      latest_acceleration_odom_ = Eigen::Vector3d(rotated.x(), rotated.y(), rotated.z());
-      if (remove_gravity_) {
-        latest_acceleration_odom_.z() -= gravity_;
-      }
-      have_acceleration_ = true;
+    latest_acceleration_odom_ = Eigen::Vector3d(
+        acceleration_odom.x(), acceleration_odom.y(),
+        acceleration_odom.z());
+    if (latest_acceleration_odom_.norm() > acceleration_limit_) {
+      latest_acceleration_odom_ *=
+          acceleration_limit_ / latest_acceleration_odom_.norm();
     }
     latest_yaw_rate_ = angular_velocity.z;
     last_imu_receive_ = ros::Time::now();
+    have_acceleration_ = true;
     have_imu_rate_ = true;
   }
 
   bool imuAccelerationFresh() const {
     return have_acceleration_ &&
-           (ros::Time::now() - last_imu_receive_).toSec() <= imu_timeout_;
+           (ros::Time::now() - last_imu_receive_).toSec() <=
+               imu_timeout_;
   }
 
   bool imuRateFresh() const {
     return have_imu_rate_ &&
-           (ros::Time::now() - last_imu_receive_).toSec() <= imu_timeout_;
+           (ros::Time::now() - last_imu_receive_).toSec() <=
+               imu_timeout_;
+  }
+
+  void createSourceFramePublishers(SourceRuntime* source) {
+    for (const std::string& configured :
+         source->config.republish_frames) {
+      const std::string target = scopedFrame(configured);
+      if (target.empty()) {
+        continue;
+      }
+      FramePublisher output;
+      output.target_frame = target;
+      output.publisher = private_nh_.advertise<nav_msgs::Odometry>(
+          "sources/" + source->config.name + "/frames/" +
+              frameTopicName(target) + "/odom",
+          5);
+      source->frame_publishers.push_back(output);
+    }
+  }
+
+  void createMainFramePublishers() {
+    for (const std::string& configured : main_republish_frames_) {
+      const std::string target = scopedFrame(configured);
+      if (target.empty()) {
+        continue;
+      }
+      FramePublisher output;
+      output.target_frame = target;
+      output.publisher = private_nh_.advertise<nav_msgs::Odometry>(
+          "main/frames/" + frameTopicName(target) + "/odom", 5);
+      main_frame_publishers_.push_back(output);
+    }
+  }
+
+  bool transformOdometry(const nav_msgs::Odometry& input,
+                         const std::string& target_frame,
+                         nav_msgs::Odometry* output) {
+    tf2::Transform target_odom = tf2::Transform::getIdentity();
+    if (target_frame != odom_frame_) {
+      try {
+        const geometry_msgs::TransformStamped transform =
+            tf_buffer_.lookupTransform(
+                target_frame, odom_frame_, ros::Time(0),
+                ros::Duration(frame_lookup_timeout_));
+        tf2::fromMsg(transform.transform, target_odom);
+      } catch (const tf2::TransformException& exception) {
+        ROS_WARN_THROTTLE(
+            2.0,
+            "[xd_uav_state_estimators] 无法重发布到坐标系%s: %s",
+            target_frame.c_str(), exception.what());
+        return false;
+      }
+    }
+    tf2::Transform odom_body;
+    tf2::fromMsg(input.pose.pose, odom_body);
+    const tf2::Transform target_body = target_odom * odom_body;
+    *output = input;
+    output->header.frame_id = target_frame;
+    output->pose.pose.position.x = target_body.getOrigin().x();
+    output->pose.pose.position.y = target_body.getOrigin().y();
+    output->pose.pose.position.z = target_body.getOrigin().z();
+    output->pose.pose.orientation =
+        tf2::toMsg(target_body.getRotation());
+
+    Eigen::Matrix<double, 6, 6> covariance;
+    for (int row = 0; row < 6; ++row) {
+      for (int column = 0; column < 6; ++column) {
+        covariance(row, column) =
+            input.pose.covariance[row * 6 + column];
+      }
+    }
+    const tf2::Matrix3x3 basis(target_odom.getRotation());
+    Eigen::Matrix3d rotation;
+    for (int row = 0; row < 3; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        rotation(row, column) = basis[row][column];
+      }
+    }
+    Eigen::Matrix<double, 6, 6> covariance_rotation =
+        Eigen::Matrix<double, 6, 6>::Zero();
+    covariance_rotation.block<3, 3>(0, 0) = rotation;
+    covariance_rotation.block<3, 3>(3, 3) = rotation;
+    covariance =
+        covariance_rotation * covariance *
+        covariance_rotation.transpose();
+    for (int row = 0; row < 6; ++row) {
+      for (int column = 0; column < 6; ++column) {
+        output->pose.covariance[row * 6 + column] =
+            covariance(row, column);
+      }
+    }
+    return true;
+  }
+
+  void publishFrameOutputs(const nav_msgs::Odometry& odometry,
+                           std::vector<FramePublisher>* publishers) {
+    for (FramePublisher& publisher : *publishers) {
+      nav_msgs::Odometry transformed;
+      if (transformOdometry(odometry, publisher.target_frame,
+                            &transformed)) {
+        publisher.publisher.publish(transformed);
+      }
+    }
   }
 
   void outputTimerCallback(const ros::TimerEvent&) {
     const ros::Time now = ros::Time::now();
     updateSelection(now);
-    for (const auto& source : sources_) {
+    for (auto& source : sources_) {
       const bool valid = sourceHealthy(*source, now);
       publishBoolean(source->valid_publisher, valid);
       Estimate estimate;
       if (estimateSourceAt(*source, now, &estimate)) {
-        source->odometry_publisher.publish(estimateToOdometry(estimate));
+        const nav_msgs::Odometry odometry =
+            estimateToOdometry(estimate);
+        source->odometry_publisher.publish(odometry);
+        publishFrameOutputs(odometry, &source->frame_publishers);
       }
     }
 
     const bool localization_valid =
-        !active_source_.empty() && sourceHealthy(*source_by_name_.at(active_source_), now);
+        !active_source_.empty() &&
+        sourceHealthy(*source_by_name_.at(active_source_), now);
     bool state_valid = false;
     Estimate main;
     if (currentMainEstimate(now, &main)) {
-      const SourceRuntime* active = source_by_name_.at(active_source_);
-      const double dead_reckoning_age =
-          active->last_accepted.isZero()
-              ? std::numeric_limits<double>::infinity()
-              : (now - active->last_accepted).toSec();
-      state_valid = localization_valid || dead_reckoning_age <= max_dead_reckoning_time_;
+      const double age = sourceLocalizationAge(
+          *source_by_name_.at(active_source_), now);
+      state_valid =
+          localization_valid || age <= max_dead_reckoning_time_;
       if (require_imu_ && !imuRateFresh()) {
         state_valid = false;
       }
       if (state_valid) {
-        const nav_msgs::Odometry main_odometry = estimateToOdometry(main);
+        const nav_msgs::Odometry main_odometry =
+            estimateToOdometry(main);
         main_odometry_publisher_.publish(main_odometry);
-        latest_main_odometry_ = main_odometry;
-        have_main_odometry_ = true;
-        publishFrameOutputs(now);
+        publishMainTransform(main_odometry);
+        publishFrameOutputs(main_odometry,
+                            &main_frame_publishers_);
       }
     }
-    publishBoolean(localization_valid_publisher_, localization_valid);
+    publishBoolean(localization_valid_publisher_,
+                   localization_valid);
     publishBoolean(state_valid_publisher_, state_valid);
     publishStatus(now, localization_valid, state_valid);
   }
 
-  void publishFrameOutputs(const ros::Time& stamp) {
-    if (!have_main_odometry_) {
-      return;
-    }
-    for (FrameOutput& output : frame_outputs_) {
-      try {
-        const geometry_msgs::TransformStamped transform = tf_buffer_.lookupTransform(
-            output.target_frame, body_frame_, ros::Time(0),
-            ros::Duration(output.lookup_timeout));
-        nav_msgs::Odometry message;
-        message.header.stamp = stamp;
-        message.header.frame_id = output.target_frame;
-        message.child_frame_id = body_frame_;
-        message.pose.pose.position.x = transform.transform.translation.x;
-        message.pose.pose.position.y = transform.transform.translation.y;
-        message.pose.pose.position.z = transform.transform.translation.z;
-        message.pose.pose.orientation = transform.transform.rotation;
-        message.pose.covariance = latest_main_odometry_.pose.covariance;
-        message.twist = latest_main_odometry_.twist;
-        output.publisher.publish(message);
-      } catch (const tf2::TransformException& exception) {
-        ROS_WARN_THROTTLE(2.0,
-                          "[xd_uav_state_estimators] frame output '%s' unavailable: %s",
-                          output.name.c_str(), exception.what());
-      }
-    }
-  }
-
-  void publishAlignment(const SourceRuntime& source, const ros::Time& stamp) {
-    if (!source.alignment_initialized || source.latest_raw.parent_frame.empty()) {
+  void publishAlignment(const SourceRuntime& source,
+                        const ros::Time& stamp) {
+    if (!source.alignment_initialized ||
+        source.raw_frame.empty() ||
+        source.raw_frame == odom_frame_) {
       return;
     }
     geometry_msgs::TransformStamped message;
     message.header.stamp = stamp;
     message.header.frame_id = odom_frame_;
-    message.child_frame_id = trimSlashes(source.latest_raw.parent_frame);
-    message.transform.translation.x = source.alignment_translation.x();
-    message.transform.translation.y = source.alignment_translation.y();
-    message.transform.translation.z = source.alignment_translation.z();
+    message.child_frame_id = source.raw_frame;
+    message.transform.translation.x =
+        source.alignment_translation.x();
+    message.transform.translation.y =
+        source.alignment_translation.y();
+    message.transform.translation.z =
+        source.alignment_translation.z();
     tf2::Quaternion rotation;
     rotation.setRPY(0.0, 0.0, source.alignment_yaw);
     message.transform.rotation = tf2::toMsg(rotation);
     source.alignment_publisher.publish(message);
   }
 
-  void publishStatus(const ros::Time& now, const bool localization_valid,
+  void publishStatus(const ros::Time& now,
+                     const bool localization_valid,
                      const bool state_valid) {
     xd_uav_state_estimators::EstimatorStatus message;
     message.header.stamp = now;
@@ -1256,27 +1931,30 @@ class MultiSourceEstimatorNode {
     if (active_source_.empty()) {
       message.localization_age = -1.0;
       message.dead_reckoning_age = -1.0;
-      message.state = xd_uav_state_estimators::EstimatorStatus::WAITING;
+      message.state =
+          xd_uav_state_estimators::EstimatorStatus::WAITING;
       message.state_name = "WAITING";
-      message.failure_reason = "no healthy localization source";
+      message.failure_reason = "没有健康定位源";
     } else {
-      const SourceRuntime* active = source_by_name_.at(active_source_);
-      const double age = active->last_accepted.isZero()
-                             ? -1.0
-                             : (now - active->last_accepted).toSec();
+      const double age = sourceLocalizationAge(
+          *source_by_name_.at(active_source_), now);
       message.localization_age = age;
-      message.dead_reckoning_age = localization_valid ? 0.0 : age;
+      message.dead_reckoning_age =
+          localization_valid ? 0.0 : age;
       if (localization_valid && state_valid) {
-        message.state = xd_uav_state_estimators::EstimatorStatus::RUNNING;
+        message.state =
+            xd_uav_state_estimators::EstimatorStatus::RUNNING;
         message.state_name = "RUNNING";
       } else if (state_valid) {
-        message.state = xd_uav_state_estimators::EstimatorStatus::DEAD_RECKONING;
+        message.state =
+            xd_uav_state_estimators::EstimatorStatus::DEAD_RECKONING;
         message.state_name = "DEAD_RECKONING";
-        message.failure_reason = "active source is stale; IMU/model prediction only";
+        message.failure_reason = "定位修正超时，正在短时预测";
       } else {
-        message.state = xd_uav_state_estimators::EstimatorStatus::LOST;
+        message.state =
+            xd_uav_state_estimators::EstimatorStatus::LOST;
         message.state_name = "LOST";
-        message.failure_reason = "no state safe for control";
+        message.failure_reason = "没有可安全用于控制的状态";
       }
     }
     status_publisher_.publish(message);
@@ -1287,88 +1965,143 @@ class MultiSourceEstimatorNode {
     diagnostic_msgs::DiagnosticArray array;
     array.header.stamp = now;
     for (const auto& source : sources_) {
-      diagnostic_msgs::DiagnosticStatus status;
-      status.name = uav_name_ + "/state_estimator/source/" + source->config.name;
-      status.hardware_id = source->config.name;
+      diagnostic_msgs::DiagnosticStatus source_status;
+      source_status.name =
+          uav_name_ + "/state_estimator/source/" +
+          source->config.name;
+      source_status.hardware_id = source->config.name;
       const bool healthy = sourceHealthy(*source, now);
-      status.level = healthy ? diagnostic_msgs::DiagnosticStatus::OK
-                             : diagnostic_msgs::DiagnosticStatus::WARN;
-      status.message =
-          now < source->quarantine_until
-              ? "quarantined"
-              : (source->recovering ? "recovering" : (healthy ? "healthy" : "stale/waiting"));
-      addDiagnostic(&status, "active",
-                    source->config.name == active_source_ ? "true" : "false");
-      addDiagnostic(&status, "topic", nh_.resolveName(source->config.topic));
-      addDiagnostic(&status, "received", std::to_string(source->received));
-      addDiagnostic(&status, "accepted", std::to_string(source->accepted));
-      addDiagnostic(&status, "adapter_rejected",
-                    std::to_string(source->adapter_rejected));
-      addDiagnostic(&status, "correction_rejected",
-                    std::to_string(source->correction_rejected));
-      addDiagnostic(&status, "age",
-                    source->last_accepted.isZero()
-                        ? "-1"
-                        : std::to_string((now - source->last_accepted).toSec()));
-      array.status.push_back(status);
+      source_status.level =
+          healthy ? diagnostic_msgs::DiagnosticStatus::OK
+                  : diagnostic_msgs::DiagnosticStatus::WARN;
+      source_status.message =
+          healthy ? "健康" : "等待或存在必需修正异常";
+      addDiagnostic(
+          &source_status, "active",
+          source->config.name == active_source_ ? "true" : "false");
+      addDiagnostic(&source_status, "priority",
+                    std::to_string(source->config.priority));
+      addDiagnostic(
+          &source_status, "alignment_translation",
+          std::to_string(source->alignment_translation.x()) + "," +
+              std::to_string(source->alignment_translation.y()) + "," +
+              std::to_string(source->alignment_translation.z()));
+      addDiagnostic(&source_status, "alignment_yaw",
+                    std::to_string(source->alignment_yaw));
+      array.status.push_back(source_status);
+
+      for (const auto& correction : source->corrections) {
+        diagnostic_msgs::DiagnosticStatus status;
+        status.name =
+            uav_name_ + "/state_estimator/correction/" +
+            source->config.name + "/" + correction->config.name;
+        status.hardware_id = source->config.name;
+        const bool correction_healthy =
+            correctionHealthy(*correction, now);
+        status.level =
+            correction_healthy
+                ? diagnostic_msgs::DiagnosticStatus::OK
+                : (correction->config.required
+                       ? diagnostic_msgs::DiagnosticStatus::ERROR
+                       : diagnostic_msgs::DiagnosticStatus::WARN);
+        status.message =
+            correction->recovering
+                ? "恢复观察中"
+                : (now < correction->quarantine_until
+                       ? "已隔离"
+                       : (correction_healthy ? "健康"
+                                             : "超时或等待"));
+        addDiagnostic(&status, "type",
+                      correctionKindName(correction->config.kind));
+        addDiagnostic(&status, "topic",
+                      nh_.resolveName(correction->config.topic));
+        addDiagnostic(&status, "required",
+                      correction->config.required ? "true" : "false");
+        addDiagnostic(&status, "received",
+                      std::to_string(correction->received));
+        addDiagnostic(&status, "accepted",
+                      std::to_string(correction->accepted));
+        addDiagnostic(&status, "rejected",
+                      std::to_string(correction->rejected));
+        addDiagnostic(
+            &status, "age",
+            correction->last_accepted.isZero()
+                ? "-1"
+                : std::to_string(
+                      (now - correction->last_accepted).toSec()));
+        array.status.push_back(status);
+      }
     }
     diagnostics_publisher_.publish(array);
   }
 
-  static void addDiagnostic(diagnostic_msgs::DiagnosticStatus* status,
-                            const std::string& key, const std::string& value) {
+  static void addDiagnostic(
+      diagnostic_msgs::DiagnosticStatus* status,
+      const std::string& key, const std::string& value) {
     diagnostic_msgs::KeyValue entry;
     entry.key = key;
     entry.value = value;
     status->values.push_back(entry);
   }
 
-  static void publishBoolean(const ros::Publisher& publisher, const bool value) {
+  static void publishBoolean(const ros::Publisher& publisher,
+                             const bool value) {
     std_msgs::Bool message;
     message.data = value;
     publisher.publish(message);
   }
 
-  bool resetCallback(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& response) {
+  bool resetCallback(std_srvs::Trigger::Request&,
+                     std_srvs::Trigger::Response& response) {
     for (auto& source : sources_) {
-      source->initialized = false;
       source->alignment_initialized = false;
-      source->consecutive_rejections = 0;
-      source->quarantine_until = ros::Time();
-      source->recovering = false;
-      source->recovery_samples = 0;
+      source->filters_initialized = false;
+      source->raw = RawState();
+      source->raw_frame.clear();
+      for (auto& correction : source->corrections) {
+        correction->last_received = ros::Time();
+        correction->last_accepted = ros::Time();
+        correction->quarantine_until = ros::Time();
+        correction->recovering = false;
+        correction->consecutive_rejections = 0;
+        correction->recovery_samples = 0;
+      }
     }
     active_source_.clear();
-    have_main_odometry_ = false;
+    main_state_->initialized = false;
+    main_state_->filter_stamp = ros::Time();
     response.success = true;
-    response.message = "all source estimators reset";
+    response.message = "全部来源滤波器已重置";
     return true;
   }
 
   bool switchSourceCallback(
-      xd_uav_state_estimators::SwitchLocalizationSource::Request& request,
-      xd_uav_state_estimators::SwitchLocalizationSource::Response& response) {
+      xd_uav_state_estimators::SwitchLocalizationSource::Request&
+          request,
+      xd_uav_state_estimators::SwitchLocalizationSource::Response&
+          response) {
     const std::string requested = request.source_name;
     if (requested.empty() || requested == "auto") {
       automatic_selection_ = true;
       requested_source_.clear();
       updateSelection(ros::Time::now());
       response.success = true;
-      response.message = "automatic source selection enabled";
+      response.message = "已启用自动定位源选择";
     } else {
       const auto iterator = source_by_name_.find(requested);
       if (iterator == source_by_name_.end()) {
         response.success = false;
-        response.message = "unknown or disabled source: " + requested;
-      } else if (!sourceHealthy(*iterator->second, ros::Time::now())) {
+        response.message = "未知定位源: " + requested;
+      } else if (!sourceHealthy(*iterator->second,
+                                ros::Time::now())) {
         response.success = false;
-        response.message = "source is not healthy: " + requested;
+        response.message = "定位源当前不健康: " + requested;
       } else {
         automatic_selection_ = false;
         requested_source_ = requested;
         activateSource(iterator->second, ros::Time::now());
         response.success = true;
-        response.message = "source selected: " + requested;
+        response.message = "已指定定位源: " + requested;
       }
     }
     response.active_source = active_source_;
@@ -1381,6 +2114,7 @@ class MultiSourceEstimatorNode {
   ros::NodeHandle private_nh_;
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
+  tf2_ros::TransformBroadcaster main_transform_broadcaster_;
   ros::Subscriber imu_subscriber_;
   ros::Publisher main_odometry_publisher_;
   ros::Publisher localization_valid_publisher_;
@@ -1394,7 +2128,9 @@ class MultiSourceEstimatorNode {
 
   std::vector<std::unique_ptr<SourceRuntime>> sources_;
   std::unordered_map<std::string, SourceRuntime*> source_by_name_;
-  std::vector<FrameOutput> frame_outputs_;
+  std::unique_ptr<MainRuntime> main_state_;
+  std::vector<FramePublisher> main_frame_publishers_;
+  std::vector<std::string> main_republish_frames_;
   AxisKalman::Parameters axis_parameters_;
   std::string uav_name_;
   std::string odom_frame_;
@@ -1404,10 +2140,10 @@ class MultiSourceEstimatorNode {
   ros::Time active_since_;
   ros::Time last_switch_time_;
   ros::Time last_imu_receive_;
-  nav_msgs::Odometry latest_main_odometry_;
   Eigen::Vector3d latest_acceleration_odom_{Eigen::Vector3d::Zero()};
   double latest_yaw_rate_{0.0};
-  double unused_yaw_{0.0};
+  double latest_roll_{0.0};
+  double latest_pitch_{0.0};
   double output_rate_{100.0};
   double diagnostics_rate_{2.0};
   double max_localization_delay_{0.15};
@@ -1424,22 +2160,23 @@ class MultiSourceEstimatorNode {
   double velocity_xy_limit_{5.0};
   double velocity_z_limit_{3.0};
   double heading_limit_{1.57};
+  double yaw_rate_limit_{3.0};
   double position_xy_nis_limit_{9.21};
   double position_z_nis_limit_{6.63};
   double velocity_xy_nis_limit_{9.21};
   double velocity_z_nis_limit_{6.63};
   double heading_nis_limit_{6.63};
+  double yaw_rate_nis_limit_{6.63};
   double minimum_active_time_{1.0};
   double switch_cooldown_{0.5};
+  double frame_lookup_timeout_{0.03};
   bool require_imu_{false};
   bool remove_gravity_{true};
-  bool output_twist_in_body_frame_{true};
   bool use_nis_{true};
-  bool switch_back_to_primary_{true};
+  bool switch_back_to_higher_priority_{true};
   bool automatic_selection_{true};
   bool have_acceleration_{false};
   bool have_imu_rate_{false};
-  bool have_main_odometry_{false};
   std::uint64_t switch_count_{0};
 };
 
@@ -1449,7 +2186,8 @@ int main(int argc, char** argv) {
     MultiSourceEstimatorNode node;
     ros::spin();
   } catch (const std::exception& exception) {
-    ROS_FATAL("[xd_uav_state_estimators] startup failed: %s", exception.what());
+    ROS_FATAL("[xd_uav_state_estimators] 启动失败: %s",
+              exception.what());
     return 1;
   }
   return 0;

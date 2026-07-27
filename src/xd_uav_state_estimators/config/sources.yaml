@@ -1,80 +1,104 @@
-# 定位源接口及各来源的独立配置。所有相对话题都会解析到/uavX命名空间。
-localization_sources: [mavros_local, fastlio]
-
-sources:
-  mavros_local:
-    enabled: true
-    topic: mavros/local_position/odom
-    role: primary
-    priority: 0
-    timeout: 0.25
-    use_position_xy: true
-    use_altitude: true
-    use_velocity_xy: true
-    use_vertical_velocity: true
-    use_heading: true
-    twist_in_body_frame: true
-    alignment:
-      mode: align_on_activation
-    frame_transform:
-      use_tf_for_child_frame: true
-      require_tf: true
-      timeout: 0.02
-    covariance:
-      use_message: true
-      position_xy: 0.01
-      position_z: 0.05
-      velocity_xy: 0.01
-      velocity_z: 0.02
-      heading: 0.02
-    reliability:
-      max_position_variance: 100.0
-      max_velocity_variance: 100.0
-      max_heading_variance: 10.0
-      max_consecutive_rejections: 5
-      quarantine_duration: 1.0
-      recovery_min_samples: 20
-      recovery_stable_time: 0.5
+# Odometry适配层由本文件统一管理。每个顶层名称会自动成为标准输出路径：
+# /uavX/state_estimator_inputs/<适配器名称>/{position_xy,...,yaw_rate}
+# 后续增加VIO、LIO-SAM等Odometry输入时，只需在这里增加一项，不需要修改launch。
+odometry_adapters:
+  mavros:
+    input_topic: mavros/local_position/odom
+    body_frame: base_link
+    parent_frame_override: mavros_origin
+    child_frame_override: ""
+    tf_timeout: 0.03
+    max_input_delay: 0.50
+    fallback_covariance:
+      position: 0.05
+      velocity: 0.10
+      heading: 0.05
+      yaw_rate: 0.10
 
   fastlio:
-    enabled: true
-    topic: fastlio/Odometry
-    role: fallback
-    priority: 1
-    timeout: 0.50
-    use_position_xy: true
-    use_altitude: true
-    use_velocity_xy: false
-    use_vertical_velocity: false
-    use_heading: true
-    twist_in_body_frame: false
+    input_topic: fastlio/Odometry
+    body_frame: base_link
+    parent_frame_override: fastlio_origin
+    # Fast-LIO的Odometry描述雷达IMU参考点，适配器会用TF换算到base_link。
+    child_frame_override: lidar_imu_link
+    tf_timeout: 0.03
+    max_input_delay: 0.50
+    fallback_covariance:
+      position: 0.05
+      velocity: 0.10
+      heading: 0.05
+      yaw_rate: 0.10
+
+# localization_sources既是加载列表，也是来源名称的唯一入口。
+# 列表中存在的来源一定会加载，因此每个来源不再设置enabled。
+localization_sources: [mavros, fastlio]
+
+sources:
+  mavros:
+    # 数值越小优先级越高，只用于自动选择当前主定位源。
+    priority: 0
+
+    # 字符串写法继承本组默认值；映射写法可覆盖单项参数。
+    # 相对话题自动补成state_estimator_inputs/<配置值>。
+    correction_defaults:
+      timeout: 0.25
+      required: true
+    corrections:
+      - position_xy: mavros/position_xy
+      - position_z: mavros/position_z
+      - velocity_xy: mavros/velocity_xy
+      - velocity_z: mavros/velocity_z
+      - heading: mavros/heading
+      - yaw_rate:
+          topic: mavros/yaw_rate
+          timeout: 0.25
+          required: false
+
+    # 新来源成为主源时，把它的原点对齐到当前连续主状态。
     alignment:
       mode: align_on_activation
-    frame_transform:
-      use_tf_for_child_frame: true
-      require_tf: true
-      timeout: 0.05
-    covariance:
-      use_message: false
-      position_xy: 0.05
-      position_z: 0.10
-      velocity_xy: 0.20
-      velocity_z: 0.20
-      heading: 0.05
+
     reliability:
       max_position_variance: 100.0
       max_velocity_variance: 100.0
       max_heading_variance: 10.0
+      max_yaw_rate_variance: 10.0
       max_consecutive_rejections: 5
       quarantine_duration: 1.0
       recovery_min_samples: 20
       recovery_stable_time: 0.5
 
-# 可选的指定坐标系位姿输出。这里只发布Odometry话题，绝不广播TF。
-# TF管理器必须已经提供target_frame到body_frame的完整变换链。
-frame_outputs:
-  - name: world
-    enabled: true
-    target_frame: world
-    topic: state_estimator/frames/world/odom
-    lookup_timeout: 0.02
+    # 发布该来源在指定坐标系下的估计结果，不产生TF。
+    republish_in_frames: [local_origin, world]
+
+  fastlio:
+    priority: 1
+
+    correction_defaults:
+      timeout: 0.50
+      required: true
+    corrections:
+      - position_xy: fastlio/position_xy
+      - position_z: fastlio/position_z
+      - heading: fastlio/heading
+
+      # 若以后需要其他速度源协助Fast-LIO，可直接取消下面的注释。
+      # - velocity_xy:
+      #     topic: external_velocity/velocity_xy
+      #     timeout: 0.30
+      #     required: false
+
+    alignment:
+      mode: align_on_activation
+
+    reliability:
+      max_position_variance: 100.0
+      max_velocity_variance: 100.0
+      max_heading_variance: 10.0
+      max_yaw_rate_variance: 10.0
+      max_consecutive_rejections: 5
+      quarantine_duration: 1.0
+      recovery_min_samples: 20
+      recovery_stable_time: 0.5
+
+    republish_in_frames: [local_origin, world]
