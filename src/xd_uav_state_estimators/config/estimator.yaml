@@ -4,7 +4,7 @@ diagnostics_rate: 2.0
 max_localization_delay: 0.15
 max_dead_reckoning_time: 1.0
 imu_timeout: 0.30
-require_imu: false
+require_imu: true
 frame_lookup_timeout: 0.03
 
 # 主估计结果除标准odom坐标系外，还可重发布到以下坐标系。
