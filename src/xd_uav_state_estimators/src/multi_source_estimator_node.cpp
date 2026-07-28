@@ -15,6 +15,7 @@
 #include <diagnostic_msgs/DiagnosticArray.h>
 #include <diagnostic_msgs/DiagnosticStatus.h>
 #include <diagnostic_msgs/KeyValue.h>
+#include <geometry_msgs/AccelWithCovarianceStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
@@ -428,6 +429,7 @@ struct Estimate {
   Eigen::Vector3d acceleration{Eigen::Vector3d::Zero()};
   std::array<double, 3> position_variance{{1.0, 1.0, 1.0}};
   std::array<double, 3> velocity_variance{{1.0, 1.0, 1.0}};
+  std::array<double, 3> acceleration_variance{{1.0, 1.0, 1.0}};
   double yaw{0.0};
   double yaw_rate{0.0};
   double yaw_variance{0.25};
@@ -511,6 +513,9 @@ class MultiSourceEstimatorNode {
         nh_.subscribe("imu", 100, &MultiSourceEstimatorNode::imuCallback, this);
     main_odometry_publisher_ =
         private_nh_.advertise<nav_msgs::Odometry>("main/odom", 10);
+    main_acceleration_publisher_ =
+        private_nh_.advertise<geometry_msgs::AccelWithCovarianceStamped>(
+            "main/acceleration", 10);
     localization_valid_publisher_ =
         private_nh_.advertise<std_msgs::Bool>("localization_valid", 1, true);
     state_valid_publisher_ =
@@ -588,6 +593,12 @@ class MultiSourceEstimatorNode {
                       imu_acceleration_variance_, 0.50);
     private_nh_.param("filter/imu_yaw_rate_variance",
                       imu_yaw_rate_variance_, 0.05);
+    private_nh_.param("filter/angular_acceleration_time_constant",
+                      angular_acceleration_time_constant_, 0.05);
+    private_nh_.param("filter/angular_acceleration_variance",
+                      angular_acceleration_variance_, 1.0);
+    private_nh_.param("filter/angular_acceleration_limit",
+                      angular_acceleration_limit_, 100.0);
     private_nh_.param("filter/remove_gravity", remove_gravity_, true);
     private_nh_.param("filter/gravity", gravity_, 9.80665);
     private_nh_.param("filter/acceleration_limit", acceleration_limit_, 30.0);
@@ -1611,6 +1622,8 @@ class MultiSourceEstimatorNode {
           axis[index].variance(0);
       estimate->velocity_variance[index] =
           axis[index].variance(1);
+      estimate->acceleration_variance[index] =
+          axis[index].variance(2);
     }
     estimate->yaw = yaw.yaw();
     estimate->yaw_rate = yaw.rate();
@@ -1640,6 +1653,7 @@ class MultiSourceEstimatorNode {
       estimate->acceleration(index) = axis[index].acceleration();
       estimate->position_variance[index] = axis[index].variance(0);
       estimate->velocity_variance[index] = axis[index].variance(1);
+      estimate->acceleration_variance[index] = axis[index].variance(2);
     }
     estimate->yaw = yaw.yaw();
     estimate->yaw_rate = yaw.rate();
@@ -1686,6 +1700,33 @@ class MultiSourceEstimatorNode {
     return message;
   }
 
+  geometry_msgs::AccelWithCovarianceStamped estimateToAcceleration(
+      const Estimate& estimate) const {
+    geometry_msgs::AccelWithCovarianceStamped message;
+    message.header.stamp = estimate.stamp;
+    message.header.frame_id = odom_frame_;
+    message.accel.accel.linear.x = estimate.acceleration.x();
+    message.accel.accel.linear.y = estimate.acceleration.y();
+    message.accel.accel.linear.z = estimate.acceleration.z();
+    message.accel.covariance[0] = estimate.acceleration_variance[0];
+    message.accel.covariance[7] = estimate.acceleration_variance[1];
+    message.accel.covariance[14] = estimate.acceleration_variance[2];
+    tf2::Quaternion orientation;
+    orientation.setRPY(estimate.roll, estimate.pitch, estimate.yaw);
+    const tf2::Vector3 angular_acceleration_odom = tf2::quatRotate(
+        orientation,
+        tf2::Vector3(latest_angular_acceleration_body_.x(),
+                     latest_angular_acceleration_body_.y(),
+                     latest_angular_acceleration_body_.z()));
+    message.accel.accel.angular.x = angular_acceleration_odom.x();
+    message.accel.accel.angular.y = angular_acceleration_odom.y();
+    message.accel.accel.angular.z = angular_acceleration_odom.z();
+    message.accel.covariance[21] = angular_acceleration_variance_;
+    message.accel.covariance[28] = angular_acceleration_variance_;
+    message.accel.covariance[35] = angular_acceleration_variance_;
+    return message;
+  }
+
   void publishMainTransform(const nav_msgs::Odometry& odometry) {
     geometry_msgs::TransformStamped transform;
     transform.header = odometry.header;
@@ -1713,6 +1754,8 @@ class MultiSourceEstimatorNode {
     if (!std::isfinite(acceleration.x) ||
         !std::isfinite(acceleration.y) ||
         !std::isfinite(acceleration.z) ||
+        !std::isfinite(angular_velocity.x) ||
+        !std::isfinite(angular_velocity.y) ||
         !std::isfinite(angular_velocity.z)) {
       return;
     }
@@ -1730,6 +1773,43 @@ class MultiSourceEstimatorNode {
       latest_acceleration_odom_ *=
           acceleration_limit_ / latest_acceleration_odom_.norm();
     }
+
+    const ros::Time sample_stamp =
+        message->header.stamp.isZero() ? ros::Time::now()
+                                       : message->header.stamp;
+    const Eigen::Vector3d body_rate(
+        angular_velocity.x, angular_velocity.y, angular_velocity.z);
+    if (have_body_rate_sample_) {
+      const double dt = (sample_stamp - last_imu_sample_stamp_).toSec();
+      if (dt > 1e-4 && dt <= imu_timeout_) {
+        const Eigen::Vector3d raw_angular_acceleration =
+            (body_rate - latest_body_rate_) / dt;
+        Eigen::Vector3d limited_angular_acceleration =
+            raw_angular_acceleration;
+        const double angular_acceleration_limit =
+            std::max(0.0, angular_acceleration_limit_);
+        if (angular_acceleration_limit > 0.0 &&
+            limited_angular_acceleration.norm() >
+                angular_acceleration_limit) {
+          limited_angular_acceleration *=
+              angular_acceleration_limit /
+              limited_angular_acceleration.norm();
+        }
+        const double time_constant =
+            std::max(0.0, angular_acceleration_time_constant_);
+        const double alpha =
+            time_constant > 0.0 ? dt / (time_constant + dt) : 1.0;
+        latest_angular_acceleration_body_ +=
+            alpha * (limited_angular_acceleration -
+                     latest_angular_acceleration_body_);
+      } else if (dt < 0.0 || dt > imu_timeout_) {
+        latest_angular_acceleration_body_.setZero();
+      }
+    }
+    latest_body_rate_ = body_rate;
+    last_imu_sample_stamp_ = sample_stamp;
+    have_body_rate_sample_ = true;
+
     latest_yaw_rate_ = angular_velocity.z;
     last_imu_receive_ = ros::Time::now();
     have_acceleration_ = true;
@@ -1882,6 +1962,8 @@ class MultiSourceEstimatorNode {
         const nav_msgs::Odometry main_odometry =
             estimateToOdometry(main);
         main_odometry_publisher_.publish(main_odometry);
+        main_acceleration_publisher_.publish(
+            estimateToAcceleration(main));
         publishMainTransform(main_odometry);
         publishFrameOutputs(main_odometry,
                             &main_frame_publishers_);
@@ -2117,6 +2199,7 @@ class MultiSourceEstimatorNode {
   tf2_ros::TransformBroadcaster main_transform_broadcaster_;
   ros::Subscriber imu_subscriber_;
   ros::Publisher main_odometry_publisher_;
+  ros::Publisher main_acceleration_publisher_;
   ros::Publisher localization_valid_publisher_;
   ros::Publisher state_valid_publisher_;
   ros::Publisher status_publisher_;
@@ -2140,7 +2223,11 @@ class MultiSourceEstimatorNode {
   ros::Time active_since_;
   ros::Time last_switch_time_;
   ros::Time last_imu_receive_;
+  ros::Time last_imu_sample_stamp_;
   Eigen::Vector3d latest_acceleration_odom_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d latest_body_rate_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d latest_angular_acceleration_body_{
+      Eigen::Vector3d::Zero()};
   double latest_yaw_rate_{0.0};
   double latest_roll_{0.0};
   double latest_pitch_{0.0};
@@ -2153,6 +2240,9 @@ class MultiSourceEstimatorNode {
   double yaw_rate_process_noise_{0.2};
   double imu_acceleration_variance_{0.5};
   double imu_yaw_rate_variance_{0.05};
+  double angular_acceleration_time_constant_{0.05};
+  double angular_acceleration_variance_{1.0};
+  double angular_acceleration_limit_{100.0};
   double gravity_{9.80665};
   double acceleration_limit_{30.0};
   double position_xy_limit_{5.0};
@@ -2177,6 +2267,7 @@ class MultiSourceEstimatorNode {
   bool automatic_selection_{true};
   bool have_acceleration_{false};
   bool have_imu_rate_{false};
+  bool have_body_rate_sample_{false};
   std::uint64_t switch_count_{0};
 };
 

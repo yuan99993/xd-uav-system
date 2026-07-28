@@ -22,6 +22,10 @@ filter:
   yaw_rate_process_noise: 0.20
   imu_acceleration_variance: 0.50
   imu_yaw_rate_variance: 0.05
+  # IMU三轴角速度差分后的低通时间常数，以及发布协方差。
+  angular_acceleration_time_constant: 0.05
+  angular_acceleration_variance: 1.0
+  angular_acceleration_limit: 100.0
   remove_gravity: true
   gravity: 9.80665
   acceleration_limit: 30.0

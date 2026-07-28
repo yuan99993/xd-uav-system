@@ -113,6 +113,7 @@ uavX/odom -> uavX/base_link
 
 ```text
 /uav1/state_estimator/main/odom
+/uav1/state_estimator/main/acceleration
 /uav1/state_estimator/main/frames/world/odom
 /uav1/state_estimator/sources/<来源>/odom
 /uav1/state_estimator/sources/<来源>/frames/world/odom
@@ -129,6 +130,9 @@ uavX/odom -> uavX/base_link
 `nav_msgs/Odometry`话题。
 
 所有输出Odometry的twist都按消息规范在`child_frame_id`，即`base_link`中表达。
+`main/acceleration`使用`geometry_msgs/AccelWithCovarianceStamped`，其线加速度在
+`uavX/odom`中表达，已经过主滤波器估计且不包含重力。角加速度由IMU三轴角速度差分、
+低通滤波后从机体系旋转到`uavX/odom`，因此线加速度和角加速度遵守同一个`frame_id`。
 
 ## 切换服务
 
