@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="config" default="$(find xd_uav_sead)/config/sead_defaults.yaml"/>
+  <arg name="respawn" default="false"/>
+  <arg name="gps_origin_lat" default="47.397742"/>
+  <arg name="gps_origin_lon" default="8.545594"/>
+
+  <!-- Gazebo 仿真一键演示: SEAD 机载节点 + mock GCS 自动发起飞/航点 -->
+  <group ns="$(arg uav_name)">
+    <!-- SEAD 机载核心 -->
+    <node pkg="xd_uav_sead"
+          type="sead_onboard_node.py"
+          name="sead_onboard"
+          output="screen"
+          respawn="$(arg respawn)"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="gps_origin_0_lat" value="$(arg gps_origin_lat)"/>
+      <param name="gps_origin_0_lon" value="$(arg gps_origin_lon)"/>
+    </node>
+
+    <!-- Mock GCS: 自动起飞 → 航点 -->
+    <node pkg="xd_uav_sead"
+          type="mock_gcs.py"
+          name="mock_gcs"
+          output="screen"
+          launch-prefix="bash -c 'sleep 5; exec $0 $@'">
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="cmd" value="takeoff"/>
+      <param name="alt" value="120"/>
+    </node>
+  </group>
+</launch>

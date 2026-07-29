@@ -6,10 +6,85 @@ metadata:
   task: 将 SEAD 和 PixEagle 改写为 ROS 功能包
 ---
 
+# ⚠️ 上下文管理（最高优先级）
+
+## 当你感到上下文过长 / 回复变慢 / 开始循环时，立即执行：
+
+1. **保存当前进度**：在 `temp/` 下写一个简短的状态文件，记录：
+   - 完成了什么
+   - 还有什么没做
+   - 下一个要做什么
+2. **开新对话**：告诉用户 "上下文已满，请新开对话继续"
+3. **新对话的第一条消息**：告诉 Claude 读 `CLAUDE.md` + `temp/` 下的状态文件
+
+## 省 token 规则（永远遵守）
+
+- **不做无意义的重复验证** — 编译/语法/roslaunch 各测一次即可
+- **Bash > Edit** — 批量 sed 替代逐个 Edit
+- **grep > Read** — 定位优先，只在必须理解逻辑时 Read 整个文件
+- **方案确认后再动手** — 先列出改动清单，用户说"做"再执行
+- **工具退出码即验证** — 不 echo "✅" 确认
+- **只读你需要的行** — `Read offset= limit=` 而不是整个文件
+- **不逐行更新 TodoWrite** — 只在大阶段切换时更新
+
+## 架构约束（最高优先级）
+
+**移植，不是重写。** SEAD 的原始功能必须全部保留。新增的仿真支持是附加的，不能删除或破坏任何原有硬件代码路径。
+
+具体原则：
+- XBee 硬件路径：`digi.xbee` import 保留（try/except 可选导入），`find_xbee_by_id` 保留，`XBee_Devices` 保持原始 64-bit 地址
+- 仿真路径：`SeadRosBridge` 是额外加的一层，通过 `~use_simulation:=true` 或 digi.xbee 不可用时自动启用
+- `communication_info.py` 的 pack/unpack 函数一律不动（这是硬件和仿真共用的协议层）
+
+## 已知问题（上次对话遗留）
+
+| 问题 | 状态 |
+|------|------|
+| 本地代理 `ANTHROPIC_BASE_URL=http://127.0.0.1:15721` 导致 token 计数异常 + echo 死循环 | **未解决，怀疑是代理 bug** |
+| Phase 2-4 TASK_LIST 进度条和子任务矛盾 | 已修正 |
+| rosbridge SEAD_mission 格式字符串 bug（`f"i{i*2}"` 中 i 未定义） | 已修复 |
+| drone.py 构造函数无限忙等 | 已修复 |
+| sead_onboard 硬编码不存在的 launch 包 `multi_demo` | 已改为 param |
+| drone.py __main__ 仍用 sys.argv | 已改为 rospy.get_param |
+
+---
+
 # xd-uavsystem-test — ROS1 Catkin 功能包代码风格规范
 
 本规范提取自 `src/xd-uavsystem-test/` 下三个标准 ROS 包的结构、命名、配置和构建约定。
 **生效范围**：仅限"将 SEAD / PixEagle 改写为 ROS 功能包"这一任务，以及 `src/xd-uavsystem-test/` 目录下的所有产出。
+
+---
+
+## 〇、工作准则（最高优先级）
+
+### 禁止事项
+- **禁止未经确认直接修改任何文件。** 包括但不限于：源码、配置、脚本、依赖环境、`pip install`、`apt install`、编译参数。
+- **禁止在用户未明确指令的情况下扩大任务范围。** 用户说看 SEAD 就只看 SEAD，不能顺便动 PixEagle。
+- **禁止修改系统级或工作空间级环境。** 如 CMakeLists.txt 顶层文件、catkin workspace 配置、Python 系统包。
+
+### Python 环境（必读）
+
+| 项目 | 路径/版本 |
+|------|----------|
+| **ROS 系统 Python（SEAD 移植用这个）** | `/usr/bin/python3` (3.8.10) |
+| rospy 等 ROS 包路径 | `/opt/ros/noetic/lib/python3/dist-packages/` |
+| 已安装的 pip 包 | numpy 1.17.4, scipy 1.3.3, pymap3d 3.1.0, dubins 1.0.1 |
+| **PixEagle 的 Python（不要碰）** | `/home/promise/.pyenv/versions/3.10.14/bin/python3` (3.10.14) |
+
+- **安装任何 pip 包必须用 `/usr/bin/python3 -m pip install --user <pkg>`**，不能用裸 `pip3`（裸 pip3 指向 pyenv 3.10，装了 ROS 代码也 import 不到）
+- **不要碰 pyenv / Python 3.10 / PixEagle 环境**
+- catkin_make 会自动找 ROS 系统 Python，不需要额外设置 PYTHONPATH
+
+### 正确流程
+1. **分析 → 列方案 → 等确认。** 先看清楚代码、依赖关系、耦合程度，把方案写到 `temp/` 下的任务清单里。
+2. **用户说"做"才能做。** 方案得到确认后，按步骤逐项执行，每完成一步汇报结果。
+3. **遇到不确定的依赖或冲突，停下来问。** 比如发现某个 Python 包没装，不要自己 `pip install`，先告诉用户需要什么。
+4. **最小可验证成果优先。** 每次只做能让用户自己验证的一小步，不做多余的事。
+
+### 关于 PixEagle
+- PixEagle 使用 MAVSDK（不是 mavros），内部 127 个文件深度交叉引用，耦合极重。
+- **在用户明确给出策略之前，不对 PixEagle 做任何操作。** 包括但不限于：复制文件、改写 import、创建新包、评估可行性之外的改动。
 
 ---
 

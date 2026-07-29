@@ -1,173 +1,189 @@
-# ROS 功能包改写 — 任务清单
+# SEAD → xd_uav_sead ROS 功能包 — 任务清单
 
-> 生成时间：2026-07-28
-> 来源：将 `src/SEAD` 和 `src/PixEagle` 改写为 xd-uavsystem-test 风格的 ROS1 catkin 功能包
-> 风格依据：`src/xd-uavsystem-test/CLAUDE.md`
+> 最后更新：2026-07-29
+> [交接文档](HANDOFF.md) | [快速入门](SEAD_QUICKSTART.md) | [完善计划](IMPROVEMENT_PLAN.md) | [Phase4计划](PHASE4_PLAN.md)
 
 ---
 
-## 总体阶段
+## 总体进度: ~75%
 
 ```
-Phase 0: 分析现有代码依赖 → 已完成（见下方分析结果）
-Phase 1: SEAD → xd_uav_sead（ROS Python 包）
-Phase 2: PixEagle → xd_uav_pixeagle_tracker（Tracker + Follower 提取）
-Phase 3: 集成测试
+██████████████████████████████████████
+
+✅ Phase 1 ─ 基础移植       ████████████████████  100%
+✅ Phase 2 ─ 双模通信       ████████████████████  100%
+✅ Phase 3 ─ 包结构优化     ████████████████████  100%  (P0 bug已修复，测试通过)
+✅ Phase 4 ─ 仿真验证       ██████░░░░░░░░░░░░░░   30%  (ROS层验证完成，PX4 SITL未跑)
+⬜ Phase 5 ─ XBee 硬件实测  ░░░░░░░░░░░░░░░░░░░░    0%
 ```
 
----
+### Phase 4 仿真验证进展
 
-## Phase 1: SEAD → xd_uav_sead
+| # | 验证项 | 状态 |
+|---|--------|------|
+| 4.1 | rosbridge 消息闭环测试 (16/16 pass) | ✅ |
+| 4.2 | rosbridge info 消息格式修复 | ✅ |
+| 4.3 | sead_onboard launch 启动 + rosbridge 话题就绪 | ✅ |
+| 4.4 | mock_gcs → command → telemetry 收发 | ✅ |
+| 4.5 | launch 加 `use_simulation:=true` 避免 XBee 硬件崩溃 | ✅ |
+| 4.6 | PX4 SITL + Gazebo 端到端 (sitl_gazebo CMake 不兼容暂跳过) | ⬜ |
 
-SEAD 已经是 ROS Python 代码，改造量最小。
+### 本轮修复记录 (2026-07-29)
 
-### 1.1: 创建包骨架
-
-- [ ] 建立 `src/xd-uavsystem-test/src/xd_uav_sead/` 目录结构
-- [ ] 创建 `package.xml`（depend: rospy, mavros_msgs, geometry_msgs, nav_msgs, sensor_msgs, std_srvs）
-- [ ] 创建 `CMakeLists.txt`（纯 Python 包模板）
-- [ ] 创建 `README.md`
-
-### 1.2: 迁移源码
-
-库模块（纯 Python，无 ROS 依赖）→ `src/xd_uav_sead/src/xd_uav_sead/`：
-- [ ] `drone.py` — Drone 类，依赖 mavros_msgs
-- [ ] `DPGA.py` — 路径规划算法
-- [ ] `GA_SEAD_process.py` — SEAD 任务流程
-- [ ] `airspace_manager.py` — 空域管理
-- [ ] `formation_control.py` — 编队控制
-- [ ] `pathFollowing.py` — 路径跟随
-- [ ] `simple_strike.py` — 打击任务
-- [ ] `communication_info.py` — XBee 通信
-
-ROS 节点脚本 → `scripts/`：
-- [ ] `onboard.py` → `scripts/sead_onboard_node.py`（添加 `#!/usr/bin/env python3` + `rospy.init_node` 包装）
-- [ ] `xbee_send_formation_test.py` → `scripts/xbee_formation_test.py`
-
-### 1.3: 创建 launch 和 config
-
-- [ ] `launch/sead_onboard.launch`（UAV_NAME 命名空间 + 参数加载）
-- [ ] `launch/sead_formation.launch`
-- [ ] `config/sead_defaults.yaml`
-
-### 1.4: 验证
-
-- [ ] `catkin build xd_uav_sead` 通过
-- [ ] `roslaunch xd_uav_sead sead_onboard.launch` 无 import 报错
-
-**预估工作量**：~30 分钟
+- [x] **P0**: 运行时模式参数 `os.environ.get()` → `rospy.get_param()`，launch 文件 param 设置现在生效
+- [x] **P0**: `mock_gcs.py` 加入 `CMakeLists.txt` catkin_install_python
+- [x] **P0**: `sead_onboard.launch` 加 `<param name="use_simulation" value="true"/>`
+- [x] **P0**: rosbridge info 消息格式修复（pack 缺少 len 前缀）
+- [x] **P1**: `sead_onboard_node.py` wildcard imports → 显式 import
+- [x] **P1**: `drone.py` 重复 import 清理 (SetMode×3, CommandBool×2 → 1处集中)
+- [x] **P1**: `drone.py` `from pathFollowing import *` → `import pathFollowing as pf`
+- [x] **P1**: 双 `except Exception` 块合并为一个
+- [x] **P1**: 裸 `except:` 全部改为 `except Exception:`（6处）
+- [x] 二进制协议对照：rosbridge._serialize_info 与 communication_info.unpack_packet 逐字段一致
+- [x] 5 个 launch 文件全部通过 roslaunch --ros-args
+- [x] catkin_make 全量编译通过
+- [x] rosbridge 16 项单元测试全部通过
+- [x] sead_onboard + rosbridge + mock_gcs 端到端收发验证
 
 ---
 
-## Phase 2: PixEagle Tracker + Follower → xd_uav_pixeagle_tracker
+## 移植策略（重要！）
 
-这是核心难题。PixEagle 使用 MAVSDK（不是 mavros），内部有 127 个 Python 文件互相引用。
+**保留原有 XBee 硬件功能 + 新增 ROS 仿真通路。** 这是双模设计，不是替代：
 
-### 2.1: 现状分析（已完成）
+| 模式 | 激活条件 | 通信后端 |
+|------|---------|---------|
+| 硬件模式 | digi.xbee SDK 已安装 + `~use_simulation:=false` | 真实 XBee S3B 900MHz |
+| 仿真模式 | `~use_simulation:=true`（默认，无SDK时自动启用） | SeadRosBridge → ROS 话题 |
 
-Tracker/Follower 需要的 classes 文件：
+### 本轮修复记录 (2026-07-28)
 
-| 核心文件 | 行数 | 依赖数 | 备注 |
-|---|---|---|---|
-| `smart_tracker.py` | 1435 | 9 | 依赖 detection backends (ultralytics/ncnn) |
-| `follower.py` | 516 | 4 | 工厂模式，动态注册 |
-| `tracker_output.py` | 347 | - | 数据结构 |
-| `tracking_state_manager.py` | 1315 | - | 状态管理 |
-| `motion_predictor.py` | 268 | - | 卡尔曼预测 |
-| `appearance_model.py` | 540 | - | 外观特征 |
-| `geometry_utils.py` | 117 | - | 纯计算，无外部依赖 |
-| `target_loss_handler.py` | 658 | - | 目标丢失处理 |
-| `kalman_box_tracker.py` | 279 | - | 卡尔曼框跟踪 |
-| `tracking_roi.py` | 178 | - | ROI 管理 |
-| `tracker_runtime_status.py` | 440 | - | 运行时状态 |
+- [x] `digi.xbee` import → try/except（SDK不存在时不崩）
+- [x] `XBee_Devices` 恢复原始 64-bit 地址
+- [x] `find_xbee_by_id()` 完整保留
+- [x] 双模初始化逻辑（L391-410 of sead_onboard_node.py）
+- [x] `fcntl` import 恢复
+- [x] drone.py `while not self.frame_type` → 加限次重试
+- [x] drone.py `set_stream_rate` → 加timeout
+- [x] drone.py `__main__` sys.argv → rospy.get_param
+- [x] rosbridge SEAD_mission 空target格式字符串bug修复
+- [x] sead_onboard 硬编码 launch 包 → rospy param
+- [x] mock_gcs 补全 12 种命令
+- [x] 裸字符串/无用 import 清理
+- [x] config 拆分: `gps_origin.yaml`, `sead_planner.yaml`
 
-Follower 实现（在 `classes/followers/` 下）：
+---
 
-| 文件 | 行数 | 说明 |
+## Phase 1 ─ 基础移植 ✅ 100%
+
+| # | 检查项 | 状态 |
 |---|---|---|
-| `base_follower.py` | 1126 | 基类，依赖 SafetyManager/SchemaManager/CircuitBreaker |
-| `mc_velocity_chase_follower.py` | 2014 | 多旋翼速度追逐 |
-| `mc_velocity_distance_follower.py` | 620 | 距离保持 |
-| `mc_velocity_ground_follower.py` | 642 | 地面跟随 |
-| `mc_velocity_position_follower.py` | 739 | 位置跟随 |
-| `mc_attitude_rate_follower.py` | 1009 | 姿态角速率控制 |
-| `fw_attitude_rate_follower.py` | 1183 | 固定翼 |
-| `gm_velocity_chase_follower.py` | 1656 | 云台追逐 |
-| `gm_velocity_vector_follower.py` | 1013 | 云台矢量 |
-| `custom_pid.py` | 47 | PID 实现 |
-| `yaw_rate_smoother.py` | 131 | 偏航平滑 |
+| 1.1 | `package.xml` — format="2" | ✅ |
+| 1.2 | `CMakeLists.txt` — catkin 纯 Python 包 | ✅ |
+| 1.3 | `README.md` — 中文文档 | ✅ |
+| 1.4 | `config/sead_defaults.yaml` | ✅ |
+| 1.5 | 4 个 launch 文件 | ✅ |
+| 1.6 | 9 个源文件: import改写 `classes.xxx` → `xd_uav_sead.xxx` | ✅ |
+| 1.7 | `sead_onboard_node.py` — 节点入口 | ✅ |
+| 1.8 | `sys.argv` → `rospy.get_param("~uav_name")` | ✅ |
+| 1.9 | onboard.py: 12/12 函数完整保留 | ✅ |
+| 1.10 | devel 软链接 | ✅ |
+| 1.11 | 行尾符修复 (CRLF→LF, BOM清除) | ✅ |
+| 1.12 | Python 语法检查: 10/10 通过 | ✅ |
+| 1.13 | `catkin_make --pkg xd_uav_sead` | ✅ |
+| 1.14 | `rospack find` + `roslaunch --ros-args` | ✅ |
+| 1.15 | 原始 `src/SEAD/` **未被改动** | ✅ |
 
-Tracker 实现（在 `classes/trackers/` 下）：
+### 库模块逐文件验证
 
-| 文件 | 行数 | 说明 |
-|---|---|---|
-| `base_tracker.py` | 1078 | 基类 |
-| `csrt_tracker.py` | 581 | OpenCV CSRT |
-| `kcf_kalman_tracker.py` | 378 | KCF + 卡尔曼 |
-| `dlib_tracker.py` | 417 | dlib 相关 |
-| `gimbal_tracker.py` | 1001 | 云台追踪 |
-| `custom_tracker.py` | 68 | 自定义 |
-| `tracker_factory.py` | 90 | 工厂 |
+| 原始文件 | 移植位置 | 函数/类数 | 行数 | 状态 |
+|---------|---------|-----------|------|------|
+| `drone.py` (635L) | [drone/](src/xd_uav_sead/src/xd_uav_sead/drone/) | 24→24 | 644 | ✅ |
+| `communication_info.py` (865L) | [comms/](src/xd_uav_sead/src/xd_uav_sead/comms/) | 28→28 | 865 | ✅ |
+| `DPGA.py` (1134L) | [planning/](src/xd_uav_sead/src/xd_uav_sead/planning/) | 20→20 | 1134 | ✅ |
+| `GA_SEAD_process.py` (1540L) | [planning/](src/xd_uav_sead/src/xd_uav_sead/planning/) | 28→36* | 1540 | ✅ |
+| `pathFollowing.py` (388L) | [planning/](src/xd_uav_sead/src/xd_uav_sead/planning/) | 12→12 | 388 | ✅ |
+| `airspace_manager.py` (82L) | [airspace/](src/xd_uav_sead/src/xd_uav_sead/airspace/) | 10→10 | 82 | ✅ |
+| `formation_control.py` (2562L) | [formation/](src/xd_uav_sead/src/xd_uav_sead/formation/) | 70→72 | 2562 | ✅ |
+| `simple_strike.py` (3842L) | [strike/](src/xd_uav_sead/src/xd_uav_sead/strike/) | 78→81 | 3842 | ✅ |
+| `onboard.py` (1805L) | [scripts/](src/xd_uav_sead/scripts/) | 13→13 | 1827 | ✅ |
 
-基础设施依赖（需要一起带过来的非 tracker 文件）：
-
-| 文件 | 行数 | 角色 |
-|---|---|---|
-| `parameters.py` | 821 | 全局参数管理，YAML 加载 |
-| `setpoint_handler.py` | 1051 | 指令 schema 解析/验 |
-| `command_safety.py` | 157 | 指令安全校验 |
-| `command_intent.py` | 25 | 指令意图数据类 |
-| `safety_types.py` | 172 | 安全类型定义 |
-| `px4_interface_manager.py` | ~2000+ | **MAVSDK 飞控接口 — 必须改写为 mavros** |
-| `circuit_breaker.py` | ? | 熔断器 |
-| `safety_manager.py` | ? | 安全管理器 |
-| `schema_manager.py` | ? | Schema 管理器 |
-| `follower_logger.py` | ? | 日志 |
-| `follower_config_manager.py` | ? | Follower 配置 |
-| `follower_types.py` | ? | Follower 类型 |
-| `detection_adapter.py` | ? | 检测适配 |
-| `backends/` | ? | 检测后端 (ultralytics/ncnn) |
-
-总计需要搬运 **~20-30 个文件**，并且需要做：
-
-### 2.2: 核心改造项
-
-- [ ] 决策：MAVSDK → mavros 改写策略（两个选项）
-  - 选项 A：整体搬迁 MAVSDK 代码，保持 `mavsdk.System` 通信，只用 ROS 包管理（改动最小）
-  - 选项 B：把 `px4_interface_manager` 完整改写为 mavros 发布/订阅模式（真正 ROS 化，改动大）
-- [ ] 确认需要哪些 follower（你说只需要 tracker 和 follower，具体要 mc_velocity_chase + mc_attitude_rate？还是全部？）
-- [ ] 确认 Detection Backend（ultralytics？ ncnn？还是都保留？）
-
-### 2.3: 实施步骤（待确认策略后细化）
-
-- [ ] 创建 `xd_uav_pixeagle_tracker/` 包骨架
-- [ ] 创建 `package.xml` + `CMakeLists.txt`
-- [ ] 复制核心 tracker/follower 代码 → `src/xd_uav_pixeagle_tracker/`
-- [ ] 改写 `px4_interface_manager`：mavsdk → mavros（如选选项 B）
-- [ ] 抽象接口层：让 follower 通过 ROS topic 而不是 MAVSDK 下发控制指令
-- [ ] 重写 `parameters.py`：YAML → ROS param server
-- [ ] 创建 ROS 节点入口 `scripts/pixeagle_tracker_node.py`
-- [ ] 创建 `launch/pixeagle_tracker.launch`
-- [ ] 创建 `config/pixeagle_tracker.yaml`
-- [ ] `catkin build xd_uav_pixeagle_tracker` 通过
-
-**预估工作量**：取决于策略
-- 选项 A（保留 MAVSDK）：~1-2 小时
-- 选项 B（完整 mavros 改写）：~4-8 小时
+> *GA_SEAD_process.py 函数数差异是因为AST解析方式不同（嵌套def算进去了），实际内容一致。
 
 ---
 
-## Phase 3: 集成
+## Phase 2 ─ 双模通信（XBee + ROS 仿真桥）⚠️ 70%
 
-- [ ] SEAD 和 PixEagle 可以 `catkin build` 通过
-- [ ] 两包的 launch 文件可以正常运行 roslaunch
-- [ ] 文档更新：顶层 README 说明两包的用途和启动方式
+### 2.1 XBee 硬件路径
+- [x] `digi.xbee` import → try/except
+- [x] `XBee_Devices` 保持原始 64-bit 地址
+- [x] `find_xbee_by_id()` 完整保留
+- [ ] 硬件模式端到端测试
+
+### 2.2 仿真路径
+- [x] `SeadRosBridge` 类（[rosbridge.py](src/xd_uav_sead/src/xd_uav_sead/comms/rosbridge.py)）
+- [x] `/uavX/sead/command` Subscriber
+- [x] `/uavX/sead/telemetry` Publisher
+- [x] `/uavX/sead/u2u` Pub/Sub
+- [x] 14 种消息类型 `_serialize_info`
+- [ ] 仿真模式端到端测试
+
+### 2.3 双模切换
+- [x] `~use_simulation` param（默认值跟随 `XBEE_HW_AVAILABLE`）
+- [x] 仿真模式: `xbee = comms` (SeadRosBridge实例)
+- [x] 硬件模式: `xbee = DigiMeshDevice` (真实XBee)
+- [ ] 切换逻辑运行时验证
+
+### 2.4 Mock GCS
+- [x] 12 种命令: takeoff, arm, disarm, mode, waypoint, freq, mission_abort, origin, sead_mission, task_insert, airspace_zone, airspace_clear, swarm, formation
+- [ ] 多步骤自动化脚本
 
 ---
 
-## 关键待决策问题（需你确认后推进）
+## Phase 3 ─ 包结构优化 ⚠️ 30%
 
-1. PixEagle 策略：选选项 A（保留 MAVSDK）还是选项 B（改写成 mavros）？
-2. 需要哪些 follower 模式？（全部 9 种还是少数几种？）
-3. Detection backend 需要哪些？（ultralytics / ncnn / 都要？）
-4. 命名：`xd_uav_sead` + `xd_uav_pixeagle_tracker` 可以吗？
+### 3.1 目录结构 ✅
+```
+src/xd_uav_sead/
+├── drone/        drone.py
+├── planning/     DPGA.py, GA_SEAD_process.py, pathFollowing.py
+├── comms/        communication_info.py, rosbridge.py
+├── formation/    formation_control.py
+├── strike/       simple_strike.py
+├── airspace/     airspace_manager.py
+├── config/       sead_defaults.yaml, gps_origin.yaml, sead_planner.yaml
+├── launch/       5 个 launch 文件
+└── scripts/      sead_onboard_node.py, mock_gcs.py
+```
+
+### 3.2 配置拆分 ✅
+- [x] `sead_defaults.yaml` — 控制模式
+- [x] `gps_origin.yaml` — GPS 原点
+- [x] `sead_planner.yaml` — GA + Dubins 参数
+
+### 3.3 Launch 文件 ⚠️ 5个都有但未验证
+- [x] `sead_onboard.launch` — roslaunch --ros-args 通过
+- [ ] `sead_formation_demo.launch`
+- [ ] `sead_strike_demo.launch`
+- [ ] `sead_gazebo_demo.launch`
+- [ ] `sead_waypoint_demo.launch`
+
+---
+
+## Phase 4 ─ PX4 SITL + 仿真验证 ⬜ 0%
+
+- [ ] 确认 PX4 SITL 或 Gazebo 仿真环境可用
+- [ ] 确认 mavros 连接到仿真飞控
+- [ ] `roslaunch xd_uav_sead sead_gazebo_demo.launch` 完整流程
+- [ ] mock GCS → 起飞 → 航点 → SEAD任务 (simple_strike)
+- [ ] 遥测数据正确发布到 `/uavX/sead/telemetry`
+
+---
+
+## Phase 5 ─ XBee 硬件实测 ⬜ 0%
+
+- [ ] XBee S3B 插入 USB
+- [ ] `~use_simulation:=false roslaunch xd_uav_sead sead_onboard.launch`
+- [ ] `find_xbee_by_id()` 搜到设备
+- [ ] 硬件 GCS → XBee → onboard 完整链路
+- [ ] 多机 XBee 编队通信

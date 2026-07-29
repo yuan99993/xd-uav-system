@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="config" default="$(find xd_uav_sead)/config/sead_defaults.yaml"/>
+  <arg name="respawn" default="false"/>
+
+  <!-- 航点演示模式: 启动后等待 mock GCS 发 waypoint 命令 -->
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_sead"
+          type="sead_onboard_node.py"
+          name="sead_onboard"
+          output="screen"
+          respawn="$(arg respawn)"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="sead_runtime_mode" value="waypoint"/>
+    </node>
+  </group>
+</launch>

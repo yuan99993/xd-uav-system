@@ -1,0 +1,22 @@
+# xd_uav_sead 默认参数
+# 加载到 /uavX/sead_onboard 节点的私有参数空间
+
+# --- SEAD 控制模式 ---
+# swiftwing_vector: SwiftWing矢量控制（固定翼推荐）
+# position_waypoint: 位置航点控制
+sead_control_mode: "swiftwing_vector"
+
+# --- Simple Strike 控制模式 ---
+simple_strike_control_mode: "swiftwing_vector"
+
+# --- SEAD 运行时模式 ---
+# simple_strike: 简化3目标打击（无GA）
+# dpga_sead: 完整DPGA任务分配
+sead_runtime_mode: "simple_strike"
+
+# --- XBee 通信波特率 ---
+xbee_baud: 57600
+
+# --- 编队参数 ---
+formation_trail_follow_mode: "leader_history_distance_back"
+formation_execution_mode: "position_waypoint_guide_to_waypoint"
