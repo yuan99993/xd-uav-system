@@ -18,6 +18,7 @@
           clear_params="true">
       <rosparam command="load" file="$(arg config)"/>
       <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="use_simulation" value="true"/>
       <param name="gps_origin_0_lat" value="$(arg gps_origin_lat)"/>
       <param name="gps_origin_0_lon" value="$(arg gps_origin_lon)"/>
     </node>

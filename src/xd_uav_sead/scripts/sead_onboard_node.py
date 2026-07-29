@@ -492,7 +492,8 @@ if __name__ == "__main__":
     # 从 param server 读配置（必须在 init_node 之后）
     uav_name = rospy.get_param("~uav_name", "uav0")
     uav_index = int(uav_name.replace("uav", ""))
-    target_uav_id = uav_index + 1
+    # MRS uses uav1 → id=1; SEAD original uses uav0 → id=0; normalize
+    target_uav_id = rospy.get_param("~uav_id", uav_index + 1)  # 保持 +1 的向后兼容
 
     # 用 rospy params 覆盖模块级 os.environ 默认值（launch 文件的 param 设置从此生效）
     simple_strike_control_mode = rospy.get_param(
@@ -678,7 +679,10 @@ if __name__ == "__main__":
                 if not packet:
                     break
                 drain_count += 1
-                messageType, info = data.unpack_packet(packet.data)  # 解包
+                result = data.unpack_packet(packet.data)  # 解包
+                if result is None:
+                    continue  # 未识别的消息，跳过
+                messageType, info = result
                 print(messageType, info, new_timer.t())
                 if (
                     messageType == Message_ID.Mode_Change
@@ -808,7 +812,8 @@ if __name__ == "__main__":
                     )
                     if (
                         not UAV.mode == Mode.GUIDED.name
-                    ):  # 不是OFFBOARD则设置一次OFFBOARD
+                        and not (hasattr(UAV, 'local_pose') and UAV.local_pose[2] > 5.0)
+                    ):  # 不是OFFBOARD且高度<5m才走起飞，已升空则跳过
                         success = UAV.set_mode("OFFBOARD")
 
                     if method == WaypointMissionMethod.guide_waypoint:  # 单点任务

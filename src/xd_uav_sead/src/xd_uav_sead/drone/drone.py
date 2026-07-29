@@ -72,20 +72,23 @@ class Drone(object):
         self.transition_sent = False
         self.last_setpoint_time = time()
         self.home = [0, 0, 0]
-        self.frame_type = FrameType.Fixed_wing
+        # classifier 从 mavros param 读取 PX4 机型而非死等
+        # SITL 里 param 读不到时默认多旋翼
+        self.frame_type = None # 初始化为 None 只等 classifier 确认
         self._classifier_attempts = 0
         while not self.frame_type:
             self._classifier_attempts += 1
-            if self._classifier_attempts > 20:
+            if self._classifier_attempts > 5:
                 rospy.logwarn(
                     f"uav_classifier failed after {self._classifier_attempts} attempts, "
-                    "defaulting to Fixed_wing"
+                    "defaulting to Quad"
                 )
-                self.frame_type = FrameType.Fixed_wing
+                self.frame_type = FrameType.Quad
                 break
             self.uav_classifier()
             if not self.frame_type:
-                rospy.sleep(0.3)
+                rospy.sleep(0.5)
+        rospy.loginfo(f"[Drone] frame_type = {self.frame_type}")
         rospy.Subscriber(f"{self.ns_mavros}/state", State, self.state_callback)
         rospy.Subscriber(f"{self.ns_mavros}/imu/data", Imu, self.imu_callback)
         rospy.Subscriber(
@@ -269,9 +272,76 @@ class Drone(object):
         - OFFBOARD: 参数设置 -> 自动起飞 -> 等待离地 -> 发送OFFBOARD所需数据 -> 切OFFBOARD
         - LAND: 切 AUTO.LAND
         - LOITER: 切 AUTO.LOITER (盘旋)
+        2. Quad (多旋翼):
+        - OFFBOARD: 预热 setpoint → 切 OFFBOARD
+        - LAND: 切 AUTO.LAND
+        - LOITER: 切 AUTO.LOITER
+        - TAKEOFF: AUTO.TAKEOFF
         """
         ns_mavros = self.ns_mavros
-        if self.frame_type == FrameType.Fixed_wing:
+        if self.frame_type == FrameType.Quad:
+            if mode == "OFFBOARD" or mode == "GUIDED":
+                rospy.loginfo("Quad: Switching to OFFBOARD...")
+                # 预热 setpoint 流（PX4 要求切 OFFBOARD 前有持续的 setpoint）
+                for i in range(20):
+                    if rospy.is_shutdown():
+                        return False
+                    sp = PositionTarget()
+                    sp.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+                    sp.type_mask = 0b0000111111111000
+                    sp.position.x = self.local_pose[0]
+                    sp.position.y = self.local_pose[1]
+                    sp.position.z = self.local_pose[2] if self.local_pose[2] > 1.0 else 10.0
+                    self.setpoint_pub.publish(sp)
+                    self.last_setpoint_time = time()
+                    rospy.sleep(0.05)
+                self.defaultoffboard = [
+                    self.local_pose[0], self.local_pose[1],
+                    max(self.local_pose[2], 10.0),
+                ]
+                try:
+                    rospy.wait_for_service(f"{ns_mavros}/set_mode", timeout=2.0)
+                    res = rospy.ServiceProxy(f"{ns_mavros}/set_mode", SetMode)(custom_mode="OFFBOARD")
+                    if res.mode_sent:
+                        rospy.loginfo("Quad: OFFBOARD success.")
+                    else:
+                        rospy.logwarn("Quad: OFFBOARD REJECTED by FCU.")
+                    return res.mode_sent
+                except Exception as e:
+                    rospy.logerr(f"Quad OFFBOARD failed: {e}")
+                    return False
+
+            elif mode == "LAND" or mode == "AUTO.LAND":
+                rospy.loginfo("Quad: Switching to AUTO.LAND...")
+                self.keepoffboard = None
+                try:
+                    rospy.wait_for_service(f"{ns_mavros}/set_mode", timeout=2.0)
+                    return rospy.ServiceProxy(f"{ns_mavros}/set_mode", SetMode)(custom_mode="AUTO.LAND").mode_sent
+                except Exception as e:
+                    rospy.logerr(f"Quad LAND failed: {e}")
+                    return False
+
+            elif mode == "LOITER" or mode == "AUTO.LOITER":
+                rospy.loginfo("Quad: Switching to AUTO.LOITER...")
+                try:
+                    rospy.wait_for_service(f"{ns_mavros}/set_mode", timeout=2.0)
+                    return rospy.ServiceProxy(f"{ns_mavros}/set_mode", SetMode)(custom_mode="AUTO.LOITER").mode_sent
+                except Exception as e:
+                    rospy.logerr(f"Quad LOITER failed: {e}")
+                    return False
+
+            elif mode == "TAKEOFF":
+                rospy.loginfo("Quad: Switching to AUTO.TAKEOFF...")
+                try:
+                    rospy.wait_for_service(f"{ns_mavros}/set_mode", timeout=2.0)
+                    return rospy.ServiceProxy(f"{ns_mavros}/set_mode", SetMode)(custom_mode="AUTO.TAKEOFF").mode_sent
+                except Exception as e:
+                    rospy.logerr(f"Quad TAKEOFF failed: {e}")
+                    return False
+
+            return True
+
+        elif self.frame_type == FrameType.Fixed_wing:
             if mode == "TAKEOFF":
                 rospy.loginfo("Fixed-wing: Switching to AUTO.TAKEOFF...")
                 try:
@@ -526,13 +596,24 @@ class Drone(object):
             return False
 
     def uav_classifier(self):
+        """读取 PX4 SITL mavros 参数进行判断"""
         servo_1 = self.get_param("SERVO1_FUNCTION")
-        if servo_1:
+        rospy.loginfo(f"[classifier] SERVO1_FUNCTION = {servo_1}")
+        if servo_1 is not None and servo_1 is not False:
+            rospy.loginfo(f"[classifier] integer = {servo_1.integer}")
             if servo_1.integer == 4:
                 "Aileron: 4"
+                rospy.loginfo("[classifier] => Fixed_wing")
                 self.frame_type = FrameType.Fixed_wing
             else:
+                rospy.loginfo("[classifier] => Quad")
                 self.frame_type = FrameType.Quad
+        else:
+            # SITL 中 param 可能读数失败 → 默认多旋翼
+            rospy.loginfo("[classifier] param read failed, => Quad")
+            self.frame_type = FrameType.Quad
+
+
 
     def origin_correction(self, origin_id):
         oid = str(origin_id)

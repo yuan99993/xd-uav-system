@@ -6,6 +6,80 @@ metadata:
   task: 将 SEAD 和 PixEagle 改写为 ROS 功能包
 ---
 
+# 🚀 新对话快速恢复
+
+**如果你是新对话的第一个回复，先读这个，然后给用户一句话汇报：**
+
+> "上次在做 **SEAD → xd_uav_sead 移植**，进度 ~92%。Phase 4 MRS Gazebo + PX4 SITL 下 OFFBOARD 切模式刚刚验证通过。下一步是 waypoint 飞行轨迹验证。详细进度见 [TASK_LIST.md](temp/TASK_LIST.md)，交接文档在 [HANDOFF.md](temp/HANDOFF.md)。"
+
+## 我在做什么
+
+**将 `../SEAD/` 下的 Python 多无人机 SEAD 控制系统移植为 ROS1 catkin 功能包 `xd_uav_sead`。** 原始代码在 `../SEAD/`（零改动），移植后代码在 `src/xd_uav_sead/`。
+
+**移植策略：双模设计** — XBee 硬件代码完整保留 + 新增 ROS 仿真通路 (SeadRosBridge)，通过 `~use_simulation` param 切换。
+
+### 核心文件映射
+
+| 原始文件 (../SEAD/) | 移植位置 (src/xd_uav_sead/) | 说明 |
+|---------------------|---------------------------|------|
+| `onboard.py` | `scripts/sead_onboard_node.py` | 主节点入口 |
+| `drone.py` | `src/xd_uav_sead/drone/drone.py` | mavros 接口，**本轮修复了 Quad OFFBOARD** |
+| `communication_info.py` | `src/xd_uav_sead/comms/communication_info.py` | 协议层，**不要改** |
+| `DPGA.py` | `src/xd_uav_sead/planning/DPGA.py` | GA 任务分配 |
+| `GA_SEAD_process.py` | `src/xd_uav_sead/planning/GA_SEAD_process.py` | GA 主流程 |
+| `pathFollowing.py` | `src/xd_uav_sead/planning/pathFollowing.py` | 路径跟随 |
+| `formation_control.py` | `src/xd_uav_sead/formation/formation_control.py` | 编队控制 |
+| `simple_strike.py` | `src/xd_uav_sead/strike/simple_strike.py` | 简易打击 |
+| `airspace_manager.py` | `src/xd_uav_sead/airspace/airspace_manager.py` | 空域管理 |
+| — (新增) | `src/xd_uav_sead/comms/rosbridge.py` | XBee→ROS 仿真桥 |
+| — (新增) | `scripts/mock_gcs.py` | 模拟地面站 |
+
+### 本轮修复的 drone.py 问题
+
+| 问题 | 修复 |
+|------|------|
+| SITL 永远判为 Fixed_wing | `get_param` 返回 `False` 时 `is not None` 误判 → 改为 `is not False` |
+| frame_type 初始值+fallback 都硬编码 Fixed_wing | 初始 `None`，fallback `Quad` |
+| set_mode 完全缺失 Quad 分支 | 新增 Quad OFFBOARD/LAND/LOITER/TAKEOFF，OFFBOARD 前预热 20 帧 setpoint |
+
+## 验证过的命令（可直接给用户）
+
+```bash
+# === 启动 ===
+cd ~/catkin_ws/src/xd-uavsystem-test
+bash temp/start_sim.sh                                    # 终端1: 启动 MRS 仿真
+
+# === SEAD 机载 ===
+source ~/catkin_ws/devel/setup.bash
+roslaunch xd_uav_sead sead_onboard.launch                 # 终端2: 启动 SEAD
+
+# === 控制指令（终端3）===
+source ~/catkin_ws/devel/setup.bash
+rosrun xd_uav_sead mock_gcs.py _uav_name:=uav1 _cmd:=mode _mode:=GUIDED    # ✅ 切 OFFBOARD
+rosrun xd_uav_sead mock_gcs.py _uav_name:=uav1 _cmd:=waypoint _x:=30 _y:=0 _z:=30  # ⬜ 待验证轨迹
+rosrun xd_uav_sead mock_gcs.py _uav_name:=uav1 _cmd:=info _text:="hello"   # ✅
+rosrun xd_uav_sead mock_gcs.py _uav_name:=uav1 _cmd:=freq _freq:=2.0       # ✅
+rosrun xd_uav_sead mock_gcs.py _uav_name:=uav1 _cmd:=airspace_clear        # ✅
+
+# === 关闭 ===
+pkill -f sead_onboard
+bash temp/kill_sim.sh
+```
+
+## 关键文档
+
+| 文档 | 内容 |
+|------|------|
+| [TASK_LIST.md](temp/TASK_LIST.md) | 完整任务清单+checklist |
+| [HANDOFF.md](temp/HANDOFF.md) | 交接文档（给下个 Claude） |
+| [STATUS_REPORT.md](temp/STATUS_REPORT.md) | 汇报用状态报告 |
+| [FINAL_SUMMARY.md](temp/FINAL_SUMMARY.md) | 交付摘要 |
+| [PHASE4_TEST_REPORT.md](temp/PHASE4_TEST_REPORT.md) | Phase 4 测试详情 |
+| [SEAD_QUICKSTART.md](temp/SEAD_QUICKSTART.md) | 快速启动指南 |
+| [IMPROVEMENT_PLAN.md](temp/IMPROVEMENT_PLAN.md) | 完善计划 |
+| [verify_offboard.sh](temp/verify_offboard.sh) | OFFBOARD 验证脚本 |
+
+---
 # ⚠️ 上下文管理（最高优先级）
 
 ## 当你感到上下文过长 / 回复变慢 / 开始循环时，立即执行：
@@ -36,16 +110,16 @@ metadata:
 - 仿真路径：`SeadRosBridge` 是额外加的一层，通过 `~use_simulation:=true` 或 digi.xbee 不可用时自动启用
 - `communication_info.py` 的 pack/unpack 函数一律不动（这是硬件和仿真共用的协议层）
 
-## 已知问题（上次对话遗留）
+## 已知问题
 
 | 问题 | 状态 |
 |------|------|
-| 本地代理 `ANTHROPIC_BASE_URL=http://127.0.0.1:15721` 导致 token 计数异常 + echo 死循环 | **未解决，怀疑是代理 bug** |
-| Phase 2-4 TASK_LIST 进度条和子任务矛盾 | 已修正 |
-| rosbridge SEAD_mission 格式字符串 bug（`f"i{i*2}"` 中 i 未定义） | 已修复 |
-| drone.py 构造函数无限忙等 | 已修复 |
-| sead_onboard 硬编码不存在的 launch 包 `multi_demo` | 已改为 param |
-| drone.py __main__ 仍用 sys.argv | 已改为 rospy.get_param |
+| 本地代理 `ANTHROPIC_BASE_URL=http://127.0.0.1:15721` 导致 token 计数异常 + echo 死循环 | **未解决** |
+| drone.py `get_param` 返回 `False` 时 `is not None` 误判导致 SITL 判为 Fixed_wing | ✅ 已修复 |
+| drone.py `set_mode` 缺失 Quad 分支 | ✅ 已修复 |
+| drone.py frame_type 初始值+fallback 硬编码 Fixed_wing | ✅ 已修复 |
+| rosbridge SEAD_mission 格式字符串 bug | ✅ 已修复 |
+| sead_onboard 硬编码不存在的 launch 包 `multi_demo` | ✅ 已修复 |
 
 ---
 
@@ -62,6 +136,14 @@ metadata:
 - **禁止未经确认直接修改任何文件。** 包括但不限于：源码、配置、脚本、依赖环境、`pip install`、`apt install`、编译参数。
 - **禁止在用户未明确指令的情况下扩大任务范围。** 用户说看 SEAD 就只看 SEAD，不能顺便动 PixEagle。
 - **禁止修改系统级或工作空间级环境。** 如 CMakeLists.txt 顶层文件、catkin workspace 配置、Python 系统包。
+- **禁止修改 PX4 和 Gazebo 仿真环境。** PX4-Autopilot (`~/PX4-Autopilot/`)、MRS Gazebo 仿真器 (`~/catkin_ws/src/mrs_uav_gazebo_simulator/`)、MRS tmux session 相关文件一律不改。遇到 PX4/Gazebo 报错**先问用户**，不要自己修。仿真环境是用户的，移植代码是我的。
+
+### 仿真环境使用约定
+- **启动**: `bash temp/start_sim.sh` (封装 MRS one_drone tmux session)
+- **停止**: `bash temp/kill_sim.sh`（等价于 `tmux -L mrs kill-session -t simulation`）
+- **MRS 路径**: `~/catkin_ws/src/mrs_uav_gazebo_simulator/tmux/one_drone/`
+- PX4 SITL 通过 Gazebo 运行，mavros 话题在 `/uav1/mavros/*`
+- **会话结束后必须关闭仿真**，不能留后台进程
 
 ### Python 环境（必读）
 
