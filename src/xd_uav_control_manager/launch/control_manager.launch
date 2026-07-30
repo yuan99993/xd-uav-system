@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="vehicle_type" default="multirotor"/>
+  <arg name="offboard_config" default="$(find xd_uav_control_manager)/config/offboard.yaml"/>
+  <arg name="safety_config" default="$(find xd_uav_control_manager)/config/safety.yaml"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_control_manager"
+          type="control_manager_node"
+          name="control_manager"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg offboard_config)"/>
+      <rosparam command="load" file="$(arg safety_config)"/>
+      <param name="vehicle_type" value="$(arg vehicle_type)"/>
+
+      <remap from="main_odometry" to="state_estimator/main/odom"/>
+      <remap from="main_acceleration" to="state_estimator/main/acceleration"/>
+      <remap from="estimator_status" to="state_estimator/status"/>
+      <remap from="imu" to="mavros/imu/data"/>
+      <remap from="airspeed" to="mavros/vfr_hud"/>
+      <remap from="mavros_state" to="mavros/state"/>
+      <remap from="mavros_extended_state"
+             to="mavros/extended_state"/>
+      <remap from="controller_command" to="controller/command"/>
+      <remap from="attitude_target" to="mavros/setpoint_raw/attitude"/>
+      <remap from="set_mode" to="mavros/set_mode"/>
+      <remap from="arming" to="mavros/cmd/arming"/>
+      <remap from="command_long" to="mavros/cmd/command"/>
+      <remap from="controller_internal_command"
+             to="controller/internal/command"/>
+    </node>
+  </group>
+</launch>

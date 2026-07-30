@@ -1,0 +1,23 @@
+<launch>
+  <group ns="fixedwing_test">
+    <node pkg="xd_uav_controller"
+          type="controller_node"
+          name="controller"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load"
+                file="$(find xd_uav_controller)/config/common_config.yaml"/>
+      <rosparam command="load"
+                file="$(find xd_uav_controller)/config/fixedwing.yaml"/>
+      <param name="vehicle_type" value="fixedwing"/>
+      <param name="home/frame" value="odom"/>
+      <rosparam param="home/fixed_position">[500.0, 100.0, 100.0]</rosparam>
+      <param name="home/fixed_yaw" value="0.0"/>
+      <param name="home/use_home_yaw" value="true"/>
+    </node>
+    <test test-name="fixedwing_controller_interface"
+          pkg="xd_uav_controller"
+          type="test_fixedwing_controller.py"
+          time-limit="35"/>
+  </group>
+</launch>

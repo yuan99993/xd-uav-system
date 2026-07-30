@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="vehicle_type" default="multirotor"/>
+  <arg name="common_config"
+       default="$(find xd_uav_controller)/config/common_config.yaml"/>
+  <arg name="config"
+       default="$(find xd_uav_controller)/config/$(arg vehicle_type).yaml"/>
+  <arg name="simple_goal_topic"
+       default="/move_base_simple/goal"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_controller"
+          type="controller_node"
+          name="controller"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg common_config)"/>
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="vehicle_type" value="$(arg vehicle_type)"/>
+      <remap from="state" to="control_manager/state"/>
+      <remap from="reference_position_target"
+             to="control/reference/setpoint"/>
+      <remap from="reference_odometry"
+             to="control/reference/odom"/>
+      <remap from="reference_trajectory"
+             to="control/reference/trajectory"/>
+      <remap from="reference_trajectory_path"
+             to="control/reference/trajectory_path"/>
+      <remap from="simple_goal"
+             to="$(arg simple_goal_topic)"/>
+      <remap from="local_alignment_valid"
+             to="single_tf_manager/local_alignment_valid"/>
+      <remap from="command" to="controller/command"/>
+    </node>
+  </group>
+</launch>

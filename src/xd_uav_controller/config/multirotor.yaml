@@ -1,0 +1,50 @@
+control_rate: 100.0
+
+multirotor:
+  gravity: 9.80665
+  hover_throttle: 0.7
+  min_throttle: 0.05
+  max_throttle: 0.90
+  max_tilt: 0.61
+  max_body_rate: [3.0, 3.0, 2.0]
+  attitude_gain: [5.0, 5.0, 2.0]
+
+  mpc:
+    horizon: 26
+    # 状态为[position, velocity]，MPC直接输出期望加速度。
+    q: [500.0, 100.0]
+    terminal_q: [1000.0, 300.0]
+    r: 20.0
+    max_velocity_xy: 15.0
+    max_velocity_z: 5.0
+    max_acceleration_xy: 2.5
+    max_acceleration_z: 2.0
+    max_jerk_xy: 3.0
+    max_jerk_z: 3.0
+    # 仅启用速度轴时，用积分补偿模型、阻力和悬停推力偏差。
+    # 状态直接表示附加加速度，并由下面的限制执行抗饱和。
+    velocity_integral_gain: [1.0, 1.0, 2.0]
+    velocity_integral_acceleration_limit: [1.0, 1.0, 1.0]
+    # 某轴只启用加速度时，使用去重力后的acceleration_odom形成PI闭环。
+    # 一旦同轴启用位置或速度，加速度恢复为轨迹前馈，不重复闭环。
+    acceleration_feedback_gain: [0.25, 0.25, 0.35]
+    acceleration_integral_gain: [0.20, 0.20, 0.40]
+    acceleration_integral_acceleration_limit: [1.0, 1.0, 1.0]
+
+takeoff:
+  default_altitude: 3.0
+  max_velocity: 0.8
+  max_acceleration: 0.6
+  position_tolerance: 0.15
+  velocity_tolerance: 0.15
+
+landing:
+  descent_velocity: 0.35
+  final_descent_velocity: 0.15
+  slow_height: 0.7
+  return_velocity: 1.0
+  position_tolerance: 0.10
+  velocity_tolerance: 0.10
+  touchdown_offset: 0.15
+  touchdown_height_tolerance: 0.10
+  touchdown_velocity_tolerance: 0.20
