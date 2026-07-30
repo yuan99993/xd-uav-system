@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <clocale>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -1700,6 +1701,67 @@ class MultiSourceEstimatorNode {
     return message;
   }
 
+  nav_msgs::Odometry sourceEstimateToOdometry(
+      const SourceRuntime& source, const Estimate& estimate) const {
+    nav_msgs::Odometry message = estimateToOdometry(estimate);
+    if (source.raw_frame.empty() ||
+        source.raw_frame == odom_frame_ ||
+        !source.alignment_initialized) {
+      return message;
+    }
+
+    // 来源滤波器内部工作在公共odom中。对外发布单来源结果时，
+    // 使用该来源的对齐量反变换，恢复成“来源原点 -> base_link”。
+    tf2::Quaternion odom_origin_rotation;
+    odom_origin_rotation.setRPY(0.0, 0.0, source.alignment_yaw);
+    const tf2::Transform odom_origin(
+        odom_origin_rotation,
+        tf2::Vector3(source.alignment_translation.x(),
+                     source.alignment_translation.y(),
+                     source.alignment_translation.z()));
+    tf2::Transform odom_body;
+    tf2::fromMsg(message.pose.pose, odom_body);
+    const tf2::Transform origin_body =
+        odom_origin.inverseTimes(odom_body);
+
+    message.header.frame_id = source.raw_frame;
+    message.pose.pose.position.x = origin_body.getOrigin().x();
+    message.pose.pose.position.y = origin_body.getOrigin().y();
+    message.pose.pose.position.z = origin_body.getOrigin().z();
+    message.pose.pose.orientation =
+        tf2::toMsg(origin_body.getRotation());
+
+    // 位姿协方差原先表达在odom中，需要同步旋转到来源原点。
+    Eigen::Matrix<double, 6, 6> covariance;
+    for (int row = 0; row < 6; ++row) {
+      for (int column = 0; column < 6; ++column) {
+        covariance(row, column) =
+            message.pose.covariance[row * 6 + column];
+      }
+    }
+    const tf2::Matrix3x3 basis(odom_origin_rotation.inverse());
+    Eigen::Matrix3d rotation;
+    for (int row = 0; row < 3; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        rotation(row, column) = basis[row][column];
+      }
+    }
+    Eigen::Matrix<double, 6, 6> covariance_rotation =
+        Eigen::Matrix<double, 6, 6>::Zero();
+    covariance_rotation.block<3, 3>(0, 0) = rotation;
+    covariance_rotation.block<3, 3>(3, 3) = rotation;
+    covariance =
+        covariance_rotation * covariance *
+        covariance_rotation.transpose();
+    for (int row = 0; row < 6; ++row) {
+      for (int column = 0; column < 6; ++column) {
+        message.pose.covariance[row * 6 + column] =
+            covariance(row, column);
+      }
+    }
+    return message;
+  }
+
   geometry_msgs::AccelWithCovarianceStamped estimateToAcceleration(
       const Estimate& estimate) const {
     geometry_msgs::AccelWithCovarianceStamped message;
@@ -1862,14 +1924,22 @@ class MultiSourceEstimatorNode {
   bool transformOdometry(const nav_msgs::Odometry& input,
                          const std::string& target_frame,
                          nav_msgs::Odometry* output) {
-    tf2::Transform target_odom = tf2::Transform::getIdentity();
-    if (target_frame != odom_frame_) {
+    const std::string input_frame =
+        trimSlashes(input.header.frame_id);
+    if (input_frame.empty()) {
+      ROS_WARN_THROTTLE(
+          2.0,
+          "[xd_uav_state_estimators] 无法重发布frame_id为空的Odometry");
+      return false;
+    }
+    tf2::Transform target_input = tf2::Transform::getIdentity();
+    if (target_frame != input_frame) {
       try {
         const geometry_msgs::TransformStamped transform =
             tf_buffer_.lookupTransform(
-                target_frame, odom_frame_, ros::Time(0),
+                target_frame, input_frame, ros::Time(0),
                 ros::Duration(frame_lookup_timeout_));
-        tf2::fromMsg(transform.transform, target_odom);
+        tf2::fromMsg(transform.transform, target_input);
       } catch (const tf2::TransformException& exception) {
         ROS_WARN_THROTTLE(
             2.0,
@@ -1878,9 +1948,9 @@ class MultiSourceEstimatorNode {
         return false;
       }
     }
-    tf2::Transform odom_body;
-    tf2::fromMsg(input.pose.pose, odom_body);
-    const tf2::Transform target_body = target_odom * odom_body;
+    tf2::Transform input_body;
+    tf2::fromMsg(input.pose.pose, input_body);
+    const tf2::Transform target_body = target_input * input_body;
     *output = input;
     output->header.frame_id = target_frame;
     output->pose.pose.position.x = target_body.getOrigin().x();
@@ -1896,7 +1966,7 @@ class MultiSourceEstimatorNode {
             input.pose.covariance[row * 6 + column];
       }
     }
-    const tf2::Matrix3x3 basis(target_odom.getRotation());
+    const tf2::Matrix3x3 basis(target_input.getRotation());
     Eigen::Matrix3d rotation;
     for (int row = 0; row < 3; ++row) {
       for (int column = 0; column < 3; ++column) {
@@ -1939,7 +2009,7 @@ class MultiSourceEstimatorNode {
       Estimate estimate;
       if (estimateSourceAt(*source, now, &estimate)) {
         const nav_msgs::Odometry odometry =
-            estimateToOdometry(estimate);
+            sourceEstimateToOdometry(*source, estimate);
         source->odometry_publisher.publish(odometry);
         publishFrameOutputs(odometry, &source->frame_publishers);
       }
@@ -2272,6 +2342,8 @@ class MultiSourceEstimatorNode {
 };
 
 int main(int argc, char** argv) {
+  // rosconsole底层使用log4cxx；显式启用UTF-8，避免中文日志被转换成问号。
+  std::setlocale(LC_ALL, "C.UTF-8");
   ros::init(argc, argv, "state_estimator");
   try {
     MultiSourceEstimatorNode node;

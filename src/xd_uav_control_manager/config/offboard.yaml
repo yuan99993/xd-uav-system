@@ -1,0 +1,6 @@
+offboard:
+  setpoint_rate: 100.0
+  prestream_duration: 1.5
+  request_retry_interval: 1.0
+  request_timeout: 10.0
+  cancel_mode: POSCTL

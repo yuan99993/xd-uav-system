@@ -1,0 +1,1366 @@
+#include <algorithm>
+#include <clocale>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+
+#include <diagnostic_msgs/DiagnosticArray.h>
+#include <diagnostic_msgs/DiagnosticStatus.h>
+#include <diagnostic_msgs/KeyValue.h>
+#include <geometry_msgs/AccelWithCovarianceStamped.h>
+#include <mavros_msgs/AttitudeTarget.h>
+#include <mavros_msgs/CommandBool.h>
+#include <mavros_msgs/CommandCode.h>
+#include <mavros_msgs/CommandLong.h>
+#include <mavros_msgs/ExtendedState.h>
+#include <mavros_msgs/SetMode.h>
+#include <mavros_msgs/State.h>
+#include <mavros_msgs/VFR_HUD.h>
+#include <nav_msgs/Odometry.h>
+#include <ros/ros.h>
+#include <sensor_msgs/Imu.h>
+#include <std_msgs/String.h>
+#include <std_srvs/SetBool.h>
+#include <std_srvs/Trigger.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+
+#include <xd_uav_controller/ControlCommand.h>
+#include <xd_uav_controller/ControlState.h>
+#include <xd_uav_controller/InternalCommand.h>
+#include <xd_uav_controller/Takeoff.h>
+#include <xd_uav_state_estimators/EstimatorStatus.h>
+
+namespace {
+
+double messageAge(const ros::Time& now, const ros::Time& stamp,
+                  const ros::Time& receive_time) {
+  const ros::Time effective_stamp =
+      stamp.isZero() ? receive_time : stamp;
+  if (effective_stamp.isZero()) {
+    return std::numeric_limits<double>::infinity();
+  }
+  const double age = (now - effective_stamp).toSec();
+  return age >= 0.0 ? age
+                    : std::numeric_limits<double>::infinity();
+}
+
+bool finiteVector(const geometry_msgs::Vector3& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) &&
+         std::isfinite(value.z);
+}
+
+bool normalizeQuaternion(
+    const geometry_msgs::Quaternion& message,
+    tf2::Quaternion* quaternion) {
+  tf2::fromMsg(message, *quaternion);
+  if (!std::isfinite(quaternion->x()) ||
+      !std::isfinite(quaternion->y()) ||
+      !std::isfinite(quaternion->z()) ||
+      !std::isfinite(quaternion->w()) ||
+      quaternion->length2() < 1e-9) {
+    return false;
+  }
+  quaternion->normalize();
+  return true;
+}
+
+void addDiagnostic(diagnostic_msgs::DiagnosticStatus* status,
+                   const std::string& key,
+                   const std::string& value) {
+  diagnostic_msgs::KeyValue item;
+  item.key = key;
+  item.value = value;
+  status->values.push_back(item);
+}
+
+}  // namespace
+
+class ControlManagerNode {
+ public:
+  ControlManagerNode() : private_nh_("~") {
+    loadParameters();
+    odometry_subscriber_ = nh_.subscribe(
+        "main_odometry", 20,
+        &ControlManagerNode::odometryCallback, this);
+    acceleration_subscriber_ = nh_.subscribe(
+        "main_acceleration", 20,
+        &ControlManagerNode::accelerationCallback, this);
+    imu_subscriber_ = nh_.subscribe(
+        "imu", 100, &ControlManagerNode::imuCallback, this);
+    estimator_status_subscriber_ = nh_.subscribe(
+        "estimator_status", 10,
+        &ControlManagerNode::estimatorStatusCallback, this);
+    airspeed_subscriber_ = nh_.subscribe(
+        "airspeed", 20, &ControlManagerNode::airspeedCallback, this);
+    mavros_state_subscriber_ = nh_.subscribe(
+        "mavros_state", 10,
+        &ControlManagerNode::mavrosStateCallback, this);
+    mavros_extended_state_subscriber_ = nh_.subscribe(
+        "mavros_extended_state", 10,
+        &ControlManagerNode::mavrosExtendedStateCallback, this);
+    command_subscriber_ = nh_.subscribe(
+        "controller_command", 20,
+        &ControlManagerNode::commandCallback, this);
+
+    state_publisher_ =
+        private_nh_.advertise<xd_uav_controller::ControlState>(
+            "state", 20);
+    status_publisher_ =
+        private_nh_.advertise<std_msgs::String>("status", 5, true);
+    diagnostics_publisher_ =
+        private_nh_.advertise<diagnostic_msgs::DiagnosticArray>(
+            "diagnostics", 5);
+    attitude_target_publisher_ =
+        nh_.advertise<mavros_msgs::AttitudeTarget>(
+            "attitude_target", 20);
+    offboard_server_ = private_nh_.advertiseService(
+        "offboard", &ControlManagerNode::offboardCallback, this);
+    cancel_offboard_server_ = private_nh_.advertiseService(
+        "cancel_offboard",
+        &ControlManagerNode::cancelOffboardCallback, this);
+    takeoff_server_ = private_nh_.advertiseService(
+        "takeoff", &ControlManagerNode::takeoffCallback, this);
+    land_server_ = private_nh_.advertiseService(
+        "land", &ControlManagerNode::landCallback, this);
+    land_home_server_ = private_nh_.advertiseService(
+        "land_home", &ControlManagerNode::landHomeCallback, this);
+    reset_failsafe_server_ = private_nh_.advertiseService(
+        "reset_failsafe",
+        &ControlManagerNode::resetFailsafeCallback, this);
+    set_mode_client_ =
+        nh_.serviceClient<mavros_msgs::SetMode>("set_mode");
+    arming_client_ =
+        nh_.serviceClient<mavros_msgs::CommandBool>("arming");
+    command_long_client_ =
+        nh_.serviceClient<mavros_msgs::CommandLong>("command_long");
+    controller_internal_command_client_ =
+        nh_.serviceClient<xd_uav_controller::InternalCommand>(
+            "controller_internal_command");
+
+    timer_ = private_nh_.createTimer(
+        ros::Duration(1.0 / std::max(2.0, setpoint_rate_)),
+        &ControlManagerNode::timerCallback, this);
+    transition(State::kStandby,
+               "节点已启动，等待OFFBOARD或起飞服务");
+    ROS_INFO("[xd_uav_control_manager] 已加载%s安全与OFFBOARD管理",
+             vehicle_type_.c_str());
+  }
+
+ private:
+  enum class State {
+    kStandby,
+    kWaitState,
+    kPrestream,
+    kRequestOffboard,
+    kRequestArm,
+    kActive,
+    kLanding,
+    kFailsafe,
+  };
+
+  void loadParameters() {
+    private_nh_.param("vehicle_type", vehicle_type_,
+                      std::string("multirotor"));
+    if (vehicle_type_ != "multirotor" &&
+        vehicle_type_ != "fixedwing") {
+      throw std::runtime_error(
+          "vehicle_type必须是multirotor或fixedwing");
+    }
+    vehicle_type_id_ =
+        vehicle_type_ == "multirotor"
+            ? xd_uav_controller::ControlState::VEHICLE_MULTIROTOR
+            : xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
+
+    private_nh_.param("offboard/setpoint_rate",
+                      setpoint_rate_, 100.0);
+    private_nh_.param("offboard/prestream_duration",
+                      prestream_duration_, 1.5);
+    private_nh_.param("offboard/request_retry_interval",
+                      request_retry_interval_, 1.0);
+    private_nh_.param("offboard/request_timeout",
+                      request_timeout_, 10.0);
+    private_nh_.param("offboard/cancel_mode",
+                      cancel_mode_, std::string("POSCTL"));
+
+    private_nh_.param("safety/odometry_timeout",
+                      odometry_timeout_, 0.20);
+    private_nh_.param("safety/imu_timeout", imu_timeout_, 0.10);
+    private_nh_.param("safety/acceleration_timeout",
+                      acceleration_timeout_, 0.20);
+    private_nh_.param("safety/airspeed_timeout",
+                      airspeed_timeout_, 0.30);
+    private_nh_.param(
+        "safety/airspeed_negative_tolerance",
+        airspeed_negative_tolerance_, 3.0);
+    private_nh_.param("safety/command_timeout",
+                      command_timeout_, 0.10);
+    private_nh_.param("safety/estimator_status_timeout",
+                      estimator_status_timeout_, 0.30);
+    private_nh_.param("safety/stable_duration",
+                      stable_duration_, 1.5);
+    private_nh_.param("safety/invalid_grace_duration",
+                      invalid_grace_duration_, 0.5);
+    private_nh_.param("safety/landed_confirm_duration",
+                      landed_confirm_duration_, 0.5);
+    private_nh_.param("safety/touchdown_idle_duration",
+                      touchdown_idle_duration_, 0.75);
+    private_nh_.param("safety/force_disarm_timeout",
+                      force_disarm_timeout_, 2.0);
+    private_nh_.param("safety/allow_force_disarm",
+                      allow_force_disarm_, true);
+    private_nh_.param("safety/require_acceleration",
+                      require_acceleration_, true);
+    private_nh_.param("safety/require_localization",
+                      require_localization_, false);
+    private_nh_.param("safety/minimum_groundspeed_for_course",
+                      minimum_groundspeed_for_course_, 0.5);
+    private_nh_.param(
+        "safety/fixedwing_touchdown_max_groundspeed",
+        fixedwing_touchdown_max_groundspeed_, 2.0);
+
+    landed_confirm_duration_ =
+        std::max(0.1, landed_confirm_duration_);
+    airspeed_negative_tolerance_ =
+        std::max(0.0, airspeed_negative_tolerance_);
+    touchdown_idle_duration_ =
+        std::max(0.0, touchdown_idle_duration_);
+    force_disarm_timeout_ =
+        std::max(touchdown_idle_duration_ + 0.1,
+                 force_disarm_timeout_);
+    fixedwing_touchdown_max_groundspeed_ =
+        std::max(0.1, fixedwing_touchdown_max_groundspeed_);
+  }
+
+  void odometryCallback(
+      const nav_msgs::Odometry::ConstPtr& message) {
+    odometry_ = *message;
+    odometry_receive_ = ros::Time::now();
+    have_odometry_ = true;
+  }
+
+  void accelerationCallback(
+      const geometry_msgs::AccelWithCovarianceStamped::ConstPtr&
+          message) {
+    acceleration_ = *message;
+    acceleration_receive_ = ros::Time::now();
+    have_acceleration_ = true;
+  }
+
+  void imuCallback(const sensor_msgs::Imu::ConstPtr& message) {
+    imu_ = *message;
+    imu_receive_ = ros::Time::now();
+    have_imu_ = true;
+  }
+
+  void estimatorStatusCallback(
+      const xd_uav_state_estimators::EstimatorStatus::ConstPtr&
+          message) {
+    estimator_status_ = *message;
+    estimator_status_receive_ = ros::Time::now();
+    have_estimator_status_ = true;
+  }
+
+  void airspeedCallback(
+      const mavros_msgs::VFR_HUD::ConstPtr& message) {
+    airspeed_ = *message;
+    airspeed_receive_ = ros::Time::now();
+    have_airspeed_ = true;
+  }
+
+  void mavrosStateCallback(
+      const mavros_msgs::State::ConstPtr& message) {
+    mavros_state_ = *message;
+    mavros_state_receive_ = ros::Time::now();
+    have_mavros_state_ = true;
+  }
+
+  void mavrosExtendedStateCallback(
+      const mavros_msgs::ExtendedState::ConstPtr& message) {
+    mavros_extended_state_ = *message;
+    mavros_extended_state_receive_ = ros::Time::now();
+    have_mavros_extended_state_ = true;
+  }
+
+  void commandCallback(
+      const xd_uav_controller::ControlCommand::ConstPtr& message) {
+    command_ = *message;
+    command_receive_ = ros::Time::now();
+    have_command_ = true;
+  }
+
+  xd_uav_controller::ControlState buildControlState(
+      const ros::Time& now) {
+    xd_uav_controller::ControlState state;
+    state.header.stamp = now;
+    state.vehicle_type = vehicle_type_id_;
+
+    state.odometry_age =
+        have_odometry_
+            ? messageAge(now, odometry_.header.stamp,
+                         odometry_receive_)
+            : std::numeric_limits<double>::infinity();
+    state.imu_age =
+        have_imu_ ? messageAge(now, imu_.header.stamp, imu_receive_)
+                  : std::numeric_limits<double>::infinity();
+    state.acceleration_age =
+        have_acceleration_
+            ? messageAge(now, acceleration_.header.stamp,
+                         acceleration_receive_)
+            : std::numeric_limits<double>::infinity();
+    state.airspeed_age =
+        have_airspeed_
+            ? messageAge(now, airspeed_.header.stamp,
+                         airspeed_receive_)
+            : std::numeric_limits<double>::infinity();
+    const double measured_airspeed =
+        have_airspeed_
+            ? static_cast<double>(airspeed_.airspeed)
+            : std::numeric_limits<double>::quiet_NaN();
+    const bool airspeed_ground_clamp_allowed =
+        (have_mavros_state_ && !mavros_state_.armed) ||
+        (have_mavros_extended_state_ &&
+         mavros_extended_state_.landed_state ==
+             mavros_msgs::ExtendedState::
+                 LANDED_STATE_ON_GROUND);
+    state.odometry_fresh =
+        state.odometry_age <= odometry_timeout_;
+    state.imu_fresh = state.imu_age <= imu_timeout_;
+    state.acceleration_fresh =
+        state.acceleration_age <= acceleration_timeout_;
+    state.airspeed_valid =
+        state.airspeed_age <= airspeed_timeout_ &&
+        std::isfinite(measured_airspeed) &&
+        (measured_airspeed >= 0.0 ||
+         (airspeed_ground_clamp_allowed &&
+          measured_airspeed >=
+              -airspeed_negative_tolerance_));
+
+    tf2::Quaternion orientation;
+    const bool orientation_valid =
+        have_odometry_ &&
+        normalizeQuaternion(odometry_.pose.pose.orientation,
+                            &orientation);
+    const bool odometry_values_valid =
+        have_odometry_ &&
+        std::isfinite(odometry_.pose.pose.position.x) &&
+        std::isfinite(odometry_.pose.pose.position.y) &&
+        std::isfinite(odometry_.pose.pose.position.z) &&
+        finiteVector(odometry_.twist.twist.linear);
+    const bool imu_values_valid =
+        have_imu_ && finiteVector(imu_.angular_velocity);
+    const bool acceleration_values_valid =
+        have_acceleration_ &&
+        finiteVector(acceleration_.accel.accel.linear) &&
+        finiteVector(acceleration_.accel.accel.angular);
+    const bool frame_ids_valid =
+        have_odometry_ && have_imu_ &&
+        !odometry_.header.frame_id.empty() &&
+        !odometry_.child_frame_id.empty() &&
+        imu_.header.frame_id == odometry_.child_frame_id &&
+        (!require_acceleration_ ||
+         acceleration_.header.frame_id ==
+             odometry_.header.frame_id);
+
+    if (have_odometry_) {
+      state.header.frame_id = odometry_.header.frame_id;
+      state.body_frame_id = odometry_.child_frame_id;
+      state.position_odom = odometry_.pose.pose.position;
+      state.orientation_odom_body =
+          odometry_.pose.pose.orientation;
+      if (orientation_valid) {
+        const tf2::Vector3 velocity_body(
+            odometry_.twist.twist.linear.x,
+            odometry_.twist.twist.linear.y,
+            odometry_.twist.twist.linear.z);
+        const tf2::Vector3 velocity_odom =
+            tf2::quatRotate(orientation, velocity_body);
+        state.velocity_odom.x = velocity_odom.x();
+        state.velocity_odom.y = velocity_odom.y();
+        state.velocity_odom.z = velocity_odom.z();
+        state.groundspeed =
+            std::hypot(velocity_odom.x(), velocity_odom.y());
+        state.climb_rate = velocity_odom.z();
+        if (state.groundspeed >=
+            minimum_groundspeed_for_course_) {
+          state.course =
+              std::atan2(velocity_odom.y(), velocity_odom.x());
+        } else {
+          double roll = 0.0;
+          double pitch = 0.0;
+          double yaw = 0.0;
+          tf2::Matrix3x3(orientation).getRPY(
+              roll, pitch, yaw);
+          state.course = yaw;
+        }
+      }
+    }
+    if (have_imu_) {
+      state.body_rate = imu_.angular_velocity;
+    }
+    if (have_acceleration_) {
+      state.acceleration_odom =
+          acceleration_.accel.accel.linear;
+      state.angular_acceleration_odom =
+          acceleration_.accel.accel.angular;
+    }
+    if (have_airspeed_) {
+      state.airspeed =
+          std::isfinite(measured_airspeed)
+              ? std::max(0.0, measured_airspeed)
+              : measured_airspeed;
+      if (state.airspeed_valid &&
+          measured_airspeed < 0.0) {
+        ROS_WARN_THROTTLE(
+            2.0,
+            "[xd_uav_control_manager] 地面空速为%.2fm/s，"
+            "在%.2fm/s负值容差内，按0m/s提供给控制器",
+            measured_airspeed,
+            airspeed_negative_tolerance_);
+      }
+    }
+    if (have_estimator_status_) {
+      state.localization_valid =
+          estimator_status_.localization_valid;
+      state.active_source = estimator_status_.active_source;
+    }
+
+    const double estimator_status_age =
+        have_estimator_status_
+            ? messageAge(now, estimator_status_.header.stamp,
+                         estimator_status_receive_)
+            : std::numeric_limits<double>::infinity();
+    bool valid =
+        have_estimator_status_ &&
+        estimator_status_age <= estimator_status_timeout_ &&
+        estimator_status_.state_valid &&
+        state.odometry_fresh && state.imu_fresh &&
+        orientation_valid && odometry_values_valid &&
+        imu_values_valid && frame_ids_valid;
+    if (require_acceleration_) {
+      valid = valid && state.acceleration_fresh &&
+              acceleration_values_valid;
+    }
+    if (require_localization_) {
+      valid = valid && estimator_status_.localization_valid;
+    }
+    if (vehicle_type_ == "fixedwing") {
+      valid = valid && state.airspeed_valid;
+    }
+    state.state_valid = valid;
+
+    if (valid) {
+      if (valid_since_.isZero()) {
+        valid_since_ = now;
+      }
+      state.stable =
+          (now - valid_since_).toSec() >= stable_duration_;
+    } else {
+      valid_since_ = ros::Time();
+      state.stable = false;
+    }
+    return state;
+  }
+
+  bool validCommand(const ros::Time& now,
+                    std::string* reason) const {
+    if (!have_command_) {
+      *reason = "尚未收到控制器输出";
+      return false;
+    }
+    const double age =
+        messageAge(now, command_.header.stamp, command_receive_);
+    if (age > command_timeout_) {
+      *reason = "控制器输出超时";
+      return false;
+    }
+    if (!command_.valid) {
+      *reason = "控制器拒绝输出: " +
+                command_.rejection_reason;
+      return false;
+    }
+    if (command_.vehicle_type != vehicle_type_id_) {
+      *reason = "控制器输出机型不匹配";
+      return false;
+    }
+    if (!finiteVector(command_.body_rate) ||
+        !std::isfinite(command_.thrust) ||
+        command_.thrust < 0.0 || command_.thrust > 1.0) {
+      *reason = "控制器输出包含非法值";
+      return false;
+    }
+    return true;
+  }
+
+  void publishAttitudeTarget(const ros::Time& now,
+                             const bool refresh = true) {
+    if (refresh) {
+      last_safe_target_.header.frame_id =
+          current_control_state_.body_frame_id;
+      last_safe_target_.type_mask =
+          mavros_msgs::AttitudeTarget::IGNORE_ATTITUDE;
+      last_safe_target_.orientation.w = 1.0;
+      last_safe_target_.body_rate = command_.body_rate;
+      last_safe_target_.thrust =
+          static_cast<float>(std::max(
+              0.0, std::min(1.0, command_.thrust)));
+      have_last_safe_target_ = true;
+    }
+    if (!have_last_safe_target_) {
+      return;
+    }
+    last_safe_target_.header.stamp = now;
+    attitude_target_publisher_.publish(last_safe_target_);
+  }
+
+  void publishTouchdownTarget(const ros::Time& now) {
+    last_safe_target_.header.stamp = now;
+    last_safe_target_.header.frame_id =
+        current_control_state_.body_frame_id;
+    last_safe_target_.type_mask =
+        mavros_msgs::AttitudeTarget::IGNORE_ATTITUDE;
+    last_safe_target_.orientation.x = 0.0;
+    last_safe_target_.orientation.y = 0.0;
+    last_safe_target_.orientation.z = 0.0;
+    last_safe_target_.orientation.w = 1.0;
+    last_safe_target_.body_rate.x = 0.0;
+    last_safe_target_.body_rate.y = 0.0;
+    last_safe_target_.body_rate.z = 0.0;
+    last_safe_target_.thrust = 0.0F;
+    have_last_safe_target_ = true;
+    attitude_target_publisher_.publish(last_safe_target_);
+  }
+
+  void requestOffboard(const ros::Time& now) {
+    if (!last_request_.isZero() &&
+         (now - last_request_).toSec() <
+             request_retry_interval_) {
+      return;
+    }
+    mavros_msgs::SetMode service;
+    service.request.custom_mode = offboard_mode_;
+    const bool service_called = set_mode_client_.call(service);
+    last_mode_request_accepted_ =
+        service_called && service.response.mode_sent;
+    ++mode_request_attempts_;
+    if (!last_mode_request_accepted_) {
+      ROS_WARN_THROTTLE(
+          1.0, "[xd_uav_control_manager] OFFBOARD请求失败");
+    }
+    last_request_ = now;
+  }
+
+  void requestArm(const ros::Time& now) {
+    if (!arm_requested_ ||
+        (!last_request_.isZero() &&
+         (now - last_request_).toSec() <
+             request_retry_interval_)) {
+      return;
+    }
+    mavros_msgs::CommandBool service;
+    service.request.value = true;
+    if (!arming_client_.call(service) ||
+        !service.response.success) {
+      ROS_WARN_THROTTLE(
+          1.0, "[xd_uav_control_manager] 解锁请求失败");
+    }
+    last_request_ = now;
+  }
+
+  void requestDisarm(const ros::Time& now) {
+    if (!last_request_.isZero() &&
+        (now - last_request_).toSec() <
+            request_retry_interval_) {
+      return;
+    }
+    mavros_msgs::CommandBool service;
+    service.request.value = false;
+    if (!arming_client_.call(service) ||
+        !service.response.success) {
+      ROS_WARN_THROTTLE(
+          1.0, "[xd_uav_control_manager] 上锁请求失败");
+    }
+    normal_disarm_attempted_ = true;
+    last_request_ = now;
+  }
+
+  void requestForceDisarm(const ros::Time& now) {
+    if (!allow_force_disarm_ ||
+        (!last_request_.isZero() &&
+         (now - last_request_).toSec() <
+             request_retry_interval_)) {
+      return;
+    }
+    mavros_msgs::CommandLong service;
+    service.request.broadcast = false;
+    service.request.command =
+        mavros_msgs::CommandCode::COMPONENT_ARM_DISARM;
+    service.request.confirmation = 0;
+    service.request.param1 = 0.0F;
+    service.request.param2 = 21196.0F;
+    const bool accepted =
+        command_long_client_.call(service) &&
+        service.response.success;
+    force_disarm_requested_ = true;
+    if (accepted) {
+      ROS_WARN(
+          "[xd_uav_control_manager] PX4未识别落地，"
+          "已在零推力触地状态请求强制上锁");
+    } else {
+      ROS_ERROR_THROTTLE(
+          1.0,
+          "[xd_uav_control_manager] 强制上锁请求失败");
+    }
+    last_request_ = now;
+  }
+
+  void transition(const State next, const std::string& reason) {
+    if (state_machine_state_ == next &&
+        state_reason_ == reason) {
+      return;
+    }
+    state_machine_state_ = next;
+    state_reason_ = reason;
+    state_entered_ = ros::Time::now();
+    last_request_ = ros::Time();
+    std_msgs::String status;
+    status.data = stateName(next) + ": " + reason;
+    status_publisher_.publish(status);
+    ROS_INFO("[xd_uav_control_manager] %s",
+             status.data.c_str());
+  }
+
+  static std::string stateName(const State state) {
+    switch (state) {
+      case State::kStandby:
+        return "STANDBY";
+      case State::kWaitState:
+        return "WAIT_STATE";
+      case State::kPrestream:
+        return "PRESTREAM";
+      case State::kRequestOffboard:
+        return "REQUEST_OFFBOARD";
+      case State::kRequestArm:
+        return "REQUEST_ARM";
+      case State::kActive:
+        return "ACTIVE";
+      case State::kLanding:
+        return "LANDING";
+      case State::kFailsafe:
+        return "FAILSAFE";
+    }
+    return "UNKNOWN";
+  }
+
+  void enterStandby(const std::string& reason) {
+    xd_uav_controller::InternalCommand reset_service;
+    reset_service.request.command =
+        xd_uav_controller::InternalCommand::Request::RESET;
+    if (!controller_internal_command_client_.call(reset_service) ||
+        !reset_service.response.success) {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[xd_uav_control_manager] 控制器内部参考复位失败");
+    }
+    offboard_requested_ = false;
+    arm_requested_ = false;
+    landing_requested_ = false;
+    landing_seen_in_air_ = false;
+    touchdown_confirmed_ = false;
+    normal_disarm_attempted_ = false;
+    force_disarm_requested_ = false;
+    invalid_since_ = ros::Time();
+    landed_since_ = ros::Time();
+    touchdown_confirmed_at_ = ros::Time();
+    have_last_safe_target_ = false;
+    transition(State::kStandby, reason);
+  }
+
+  bool offboardCallback(
+      std_srvs::Trigger::Request&,
+      std_srvs::Trigger::Response& response) {
+    if (state_machine_state_ == State::kFailsafe) {
+      response.success = false;
+      response.message =
+          "当前处于FAILSAFE，请先调用reset_failsafe";
+      return true;
+    }
+    if (state_machine_state_ == State::kLanding) {
+      response.success = false;
+      response.message = "正在降落，不能重新请求OFFBOARD";
+      return true;
+    }
+    if (state_machine_state_ == State::kActive &&
+        mavros_state_.mode == offboard_mode_) {
+      response.success = true;
+      response.message = "OFFBOARD已经处于持续维持状态";
+      return true;
+    }
+    offboard_requested_ = true;
+    arm_requested_ = false;
+    transition(State::kWaitState,
+               "收到OFFBOARD服务请求，等待稳定控制状态");
+    response.success = true;
+    response.message = "已接受OFFBOARD请求";
+    return true;
+  }
+
+  bool cancelOffboardCallback(
+      std_srvs::Trigger::Request&,
+      std_srvs::Trigger::Response& response) {
+    if (state_machine_state_ == State::kFailsafe) {
+      response.success = false;
+      response.message =
+          "当前处于FAILSAFE，拒绝覆盖PX4安全模式";
+      return true;
+    }
+    if (!offboard_requested_ &&
+        mavros_state_.mode != offboard_mode_) {
+      response.success = true;
+      response.message = "OFFBOARD当前未启用";
+      return true;
+    }
+
+    if (mavros_state_.mode == offboard_mode_) {
+      mavros_msgs::SetMode service;
+      service.request.custom_mode = cancel_mode_;
+      if (!set_mode_client_.call(service) ||
+          !service.response.mode_sent) {
+        response.success = false;
+        response.message =
+            "PX4拒绝切换到" + cancel_mode_ +
+            "，继续维持OFFBOARD";
+        return true;
+      }
+    }
+
+    enterStandby(
+        "用户取消OFFBOARD，已交还给" + cancel_mode_);
+    response.success = true;
+    response.message =
+        "已取消OFFBOARD并请求切换到" + cancel_mode_;
+    return true;
+  }
+
+  bool takeoffCallback(
+      xd_uav_controller::Takeoff::Request& request,
+      xd_uav_controller::Takeoff::Response& response) {
+    if (state_machine_state_ == State::kFailsafe) {
+      response.success = false;
+      response.message =
+          "当前处于FAILSAFE，请先调用reset_failsafe";
+      return true;
+    }
+    if (state_machine_state_ == State::kLanding) {
+      response.success = false;
+      response.message = "正在降落，不能起飞";
+      return true;
+    }
+    if (have_mavros_state_ && mavros_state_.armed) {
+      response.success = false;
+      response.message = "飞机已经解锁，拒绝重复起飞";
+      return true;
+    }
+
+    xd_uav_controller::InternalCommand service;
+    service.request.command =
+        xd_uav_controller::InternalCommand::Request::TAKEOFF;
+    service.request.altitude = request.altitude;
+    if (!controller_internal_command_client_.call(service)) {
+      response.success = false;
+      response.message = "无法调用控制器内部命令服务";
+      return true;
+    }
+    if (!service.response.success) {
+      response.success = false;
+      response.message = service.response.message;
+      return true;
+    }
+
+    offboard_requested_ = true;
+    arm_requested_ = true;
+    landing_requested_ = false;
+    transition(State::kWaitState,
+               "收到起飞请求，准备OFFBOARD和解锁");
+    response.success = true;
+    response.message =
+        "已接受起飞请求：将依次进入OFFBOARD、解锁并起飞";
+    return true;
+  }
+
+  bool landCallback(
+      std_srvs::Trigger::Request&,
+      std_srvs::Trigger::Response& response) {
+    return startLanding(false, response);
+  }
+
+  bool landHomeCallback(
+      std_srvs::Trigger::Request&,
+      std_srvs::Trigger::Response& response) {
+    return startLanding(true, response);
+  }
+
+  bool startLanding(
+      const bool return_home,
+      std_srvs::Trigger::Response& response) {
+    if (state_machine_state_ == State::kLanding) {
+      response.success = true;
+      response.message = "降落已经在执行";
+      return true;
+    }
+    if (state_machine_state_ != State::kActive ||
+        !mavros_state_.armed ||
+        mavros_state_.mode != offboard_mode_) {
+      response.success = false;
+      response.message =
+          "只有已解锁并处于OFFBOARD主动控制时才能降落";
+      return true;
+    }
+    if (!have_mavros_extended_state_ ||
+        mavros_extended_state_.landed_state !=
+            mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR) {
+      response.success = false;
+      response.message =
+          "mavros/extended_state未确认飞机在空中";
+      return true;
+    }
+
+    xd_uav_controller::InternalCommand service;
+    service.request.command =
+        return_home
+            ? xd_uav_controller::InternalCommand::Request::LAND_HOME
+            : xd_uav_controller::InternalCommand::Request::LAND;
+    if (!controller_internal_command_client_.call(service)) {
+      response.success = false;
+      response.message =
+          "无法调用控制器内部命令服务";
+      return true;
+    }
+    if (!service.response.success) {
+      response.success = false;
+      response.message = service.response.message;
+      return true;
+    }
+
+    landing_requested_ = true;
+    arm_requested_ = false;
+    landing_seen_in_air_ =
+        have_mavros_extended_state_ &&
+        mavros_extended_state_.landed_state ==
+            mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR;
+    touchdown_confirmed_ = false;
+    normal_disarm_attempted_ = false;
+    force_disarm_requested_ = false;
+    landed_since_ = ros::Time();
+    touchdown_confirmed_at_ = ros::Time();
+    if (vehicle_type_ == "fixedwing") {
+      transition(
+          State::kLanding,
+          return_home
+              ? "收到固定翼返航降落请求，飞向配置home并执行进近"
+              : "收到固定翼降落请求，沿当前航向建立进近航线");
+    } else {
+      transition(
+          State::kLanding,
+          return_home
+              ? "收到返航降落请求，先返回配置home再受控下降"
+              : "收到原地降落请求，保持水平位置并受控下降");
+    }
+    response.success = true;
+    response.message =
+        return_home
+            ? "已接受返航降落请求"
+            : "已接受原地降落请求";
+    return true;
+  }
+
+  bool resetFailsafeCallback(
+      std_srvs::Trigger::Request&,
+      std_srvs::Trigger::Response& response) {
+    if (state_machine_state_ != State::kFailsafe) {
+      response.success = true;
+      response.message = "当前没有FAILSAFE";
+      return true;
+    }
+    offboard_requested_ = false;
+    arm_requested_ = false;
+    landing_requested_ = false;
+    landing_seen_in_air_ = false;
+    touchdown_confirmed_ = false;
+    normal_disarm_attempted_ = false;
+    force_disarm_requested_ = false;
+    invalid_since_ = ros::Time();
+    landed_since_ = ros::Time();
+    touchdown_confirmed_at_ = ros::Time();
+    transition(State::kStandby, "FAILSAFE已复位，等待服务请求");
+    response.success = true;
+    response.message = "FAILSAFE已复位";
+    return true;
+  }
+
+  void publishDiagnostics(const ros::Time& now,
+                          const std::string& command_reason) {
+    diagnostic_msgs::DiagnosticArray array;
+    array.header.stamp = now;
+    diagnostic_msgs::DiagnosticStatus status;
+    status.name = "xd_uav_control_manager/offboard";
+    status.hardware_id = vehicle_type_;
+    status.level =
+        state_machine_state_ == State::kFailsafe
+            ? diagnostic_msgs::DiagnosticStatus::ERROR
+            : (state_machine_state_ == State::kActive
+                   ? diagnostic_msgs::DiagnosticStatus::OK
+                   : diagnostic_msgs::DiagnosticStatus::WARN);
+    status.message = stateName(state_machine_state_) +
+                     ": " + state_reason_;
+    addDiagnostic(&status, "offboard_requested",
+                  offboard_requested_ ? "true" : "false");
+    addDiagnostic(&status, "arm_requested",
+                  arm_requested_ ? "true" : "false");
+    addDiagnostic(&status, "landing_requested",
+                  landing_requested_ ? "true" : "false");
+    addDiagnostic(&status, "landing_touchdown",
+                  command_.landing_touchdown
+                      ? "true"
+                      : "false");
+    addDiagnostic(
+        &status, "groundspeed",
+        std::to_string(current_control_state_.groundspeed));
+    addDiagnostic(&status, "touchdown_confirmed",
+                  touchdown_confirmed_
+                      ? "true"
+                      : "false");
+    addDiagnostic(&status, "normal_disarm_attempted",
+                  normal_disarm_attempted_
+                      ? "true"
+                      : "false");
+    addDiagnostic(&status, "force_disarm_requested",
+                  force_disarm_requested_
+                      ? "true"
+                      : "false");
+    addDiagnostic(&status, "state_valid",
+                  current_control_state_.state_valid
+                      ? "true"
+                      : "false");
+    addDiagnostic(&status, "stable",
+                  current_control_state_.stable
+                      ? "true"
+                      : "false");
+    addDiagnostic(&status, "command", command_reason);
+    addDiagnostic(&status, "mavros_mode", mavros_state_.mode);
+    addDiagnostic(&status, "armed",
+                  mavros_state_.armed ? "true" : "false");
+    addDiagnostic(&status, "input_health",
+                  active_input_reason_);
+    addDiagnostic(&status, "mode_request_attempts",
+                  std::to_string(mode_request_attempts_));
+    addDiagnostic(&status, "last_mode_request_accepted",
+                  last_mode_request_accepted_ ? "true" : "false");
+    array.status.push_back(status);
+    diagnostics_publisher_.publish(array);
+  }
+
+  std::string inputFailureReason(
+      const ros::Time& now, const bool command_valid,
+      const std::string& command_reason,
+      const bool mavros_connected) const {
+    if (!mavros_connected) {
+      return "MAVROS连接或mavros/state超时";
+    }
+    if (!have_estimator_status_) {
+      return "未收到估计器状态";
+    }
+    if (messageAge(now, estimator_status_.header.stamp,
+                   estimator_status_receive_) >
+        estimator_status_timeout_) {
+      return "估计器状态超时";
+    }
+    if (!estimator_status_.state_valid) {
+      return "估计器报告state_valid=false";
+    }
+    if (!current_control_state_.odometry_fresh) {
+      return "Odometry超时";
+    }
+    if (!current_control_state_.imu_fresh) {
+      return "IMU超时";
+    }
+    if (require_acceleration_ &&
+        !current_control_state_.acceleration_fresh) {
+      return "加速度状态超时";
+    }
+    if (!current_control_state_.state_valid) {
+      return "控制状态数值、坐标系或必需输入无效";
+    }
+    if (!command_valid) {
+      return command_reason;
+    }
+    return "正常";
+  }
+
+  bool publishWithInputGrace(
+      const ros::Time& now, const bool inputs_healthy) {
+    if (inputs_healthy) {
+      invalid_since_ = ros::Time();
+      publishAttitudeTarget(now, true);
+      return true;
+    }
+    if (invalid_since_.isZero()) {
+      invalid_since_ = now;
+    }
+    const double invalid_duration =
+        (now - invalid_since_).toSec();
+    if (invalid_duration <= invalid_grace_duration_ &&
+        have_last_safe_target_) {
+      publishAttitudeTarget(now, false);
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[xd_uav_control_manager] 输入短暂失效(%.2fs/%0.2fs): %s",
+          invalid_duration, invalid_grace_duration_,
+          active_input_reason_.c_str());
+      return true;
+    }
+    transition(
+        State::kFailsafe,
+        "输入持续失效: " + active_input_reason_);
+    return false;
+  }
+
+  void timerCallback(const ros::TimerEvent&) {
+    const ros::Time now = ros::Time::now();
+    current_control_state_ = buildControlState(now);
+    state_publisher_.publish(current_control_state_);
+
+    std::string command_reason;
+    const bool command_valid =
+        validCommand(now, &command_reason);
+    const bool flight_state_valid =
+        current_control_state_.state_valid &&
+        current_control_state_.stable;
+    const bool mavros_connected =
+        have_mavros_state_ && mavros_state_.connected &&
+        messageAge(now, mavros_state_.header.stamp,
+                   mavros_state_receive_) <= 1.0;
+    const bool active_inputs_healthy =
+        current_control_state_.state_valid &&
+        command_valid && mavros_connected;
+    active_input_reason_ = inputFailureReason(
+        now, command_valid, command_reason, mavros_connected);
+
+    switch (state_machine_state_) {
+      case State::kStandby:
+        break;
+
+      case State::kWaitState:
+        if (!offboard_requested_) {
+          transition(State::kStandby, "等待服务请求");
+        } else if (flight_state_valid && command_valid &&
+                   mavros_connected) {
+          transition(State::kPrestream,
+                     "状态稳定，开始预发送控制量");
+        }
+        break;
+
+      case State::kPrestream:
+        if (!flight_state_valid || !command_valid ||
+            !mavros_connected) {
+          transition(State::kWaitState,
+                     "预发送期间状态或控制量失效");
+          break;
+        }
+        publishAttitudeTarget(now);
+        if ((now - state_entered_).toSec() >=
+            prestream_duration_) {
+          transition(State::kRequestOffboard,
+                     "预发送完成，请求OFFBOARD");
+        }
+        break;
+
+      case State::kRequestOffboard:
+        if (!current_control_state_.state_valid ||
+            !command_valid ||
+            !mavros_connected) {
+          transition(State::kWaitState,
+                     "请求OFFBOARD期间输入失效: " +
+                         active_input_reason_);
+          break;
+        }
+        publishAttitudeTarget(now);
+        if (mavros_state_.mode == offboard_mode_) {
+          if (arm_requested_ && !mavros_state_.armed) {
+            transition(State::kRequestArm,
+                       "已进入OFFBOARD，准备解锁");
+          } else if (landing_requested_) {
+            transition(State::kLanding,
+                       "已恢复OFFBOARD，继续降落");
+          } else {
+            transition(State::kActive,
+                       "OFFBOARD持续维持中");
+          }
+        } else if ((now - state_entered_).toSec() >
+                   request_timeout_) {
+          transition(State::kFailsafe,
+                     "进入OFFBOARD超时；PX4当前模式=" +
+                         mavros_state_.mode);
+        } else {
+          requestOffboard(now);
+        }
+        break;
+
+      case State::kRequestArm:
+        if (!current_control_state_.state_valid ||
+            !command_valid ||
+            !mavros_connected ||
+            mavros_state_.mode != offboard_mode_) {
+          transition(State::kFailsafe,
+                     "解锁期间输入或模式失效: " +
+                         active_input_reason_);
+          break;
+        }
+        publishAttitudeTarget(now);
+        if (mavros_state_.armed) {
+          transition(State::kActive,
+                     "OFFBOARD已解锁，持续控制");
+        } else if ((now - state_entered_).toSec() >
+                   request_timeout_) {
+          transition(State::kFailsafe, "解锁超时");
+        } else {
+          requestArm(now);
+        }
+        break;
+
+      case State::kActive:
+        if (!publishWithInputGrace(
+                now, active_inputs_healthy)) {
+          break;
+        }
+        if (mavros_state_.mode != offboard_mode_) {
+          enterStandby(
+              "检测到人工切出OFFBOARD，停止外部控制");
+          break;
+        }
+        if (arm_requested_ && !mavros_state_.armed) {
+          transition(State::kFailsafe,
+                     "飞行期间意外上锁");
+          break;
+        }
+        break;
+
+      case State::kLanding: {
+        if (mavros_state_.mode != offboard_mode_) {
+          enterStandby(
+              "降落期间人工切出OFFBOARD，停止外部控制");
+          break;
+        }
+        if (landing_seen_in_air_ && !mavros_state_.armed) {
+          enterStandby(
+              "降落完成、螺旋桨已上锁，等待下一次服务请求");
+          break;
+        }
+
+        if (touchdown_confirmed_) {
+          // 触地已经经过持续确认。此后不再让瞬时估计抖动
+          // 恢复悬停推力，而是保持零推力直到PX4确认上锁。
+          publishTouchdownTarget(now);
+          const double touchdown_elapsed =
+              (now - touchdown_confirmed_at_).toSec();
+          if (allow_force_disarm_ &&
+              touchdown_elapsed >= force_disarm_timeout_) {
+            requestForceDisarm(now);
+          } else if (touchdown_elapsed >=
+                         touchdown_idle_duration_ &&
+                     (!normal_disarm_attempted_ ||
+                      !allow_force_disarm_)) {
+            requestDisarm(now);
+          }
+          break;
+        }
+
+        if (!publishWithInputGrace(
+                now, active_inputs_healthy)) {
+          break;
+        }
+        const bool px4_reports_in_air =
+            have_mavros_extended_state_ &&
+            mavros_extended_state_.landed_state ==
+                mavros_msgs::ExtendedState::
+                    LANDED_STATE_IN_AIR;
+        const bool px4_reports_landed =
+            have_mavros_extended_state_ &&
+            mavros_extended_state_.landed_state ==
+                mavros_msgs::ExtendedState::
+                    LANDED_STATE_ON_GROUND;
+        const bool fixedwing_touchdown_speed_safe =
+            vehicle_type_ != "fixedwing" ||
+            (std::isfinite(
+                 current_control_state_.groundspeed) &&
+             current_control_state_.groundspeed <=
+                 fixedwing_touchdown_max_groundspeed_);
+        const bool touchdown_detected =
+            (command_.landing_touchdown ||
+             px4_reports_landed) &&
+            fixedwing_touchdown_speed_safe;
+        if (vehicle_type_ == "fixedwing" &&
+            (command_.landing_touchdown ||
+             px4_reports_landed) &&
+            !fixedwing_touchdown_speed_safe) {
+          ROS_WARN_THROTTLE(
+              1.0,
+              "[xd_uav_control_manager] 固定翼触地信号已出现，"
+              "但地速%.2fm/s仍高于%.2fm/s，继续滑跑且不解锁",
+              current_control_state_.groundspeed,
+              fixedwing_touchdown_max_groundspeed_);
+        }
+        if (px4_reports_in_air &&
+            !command_.landing_touchdown) {
+          landing_seen_in_air_ = true;
+        }
+        if (landing_seen_in_air_ && touchdown_detected) {
+          if (landed_since_.isZero()) {
+            landed_since_ = now;
+            ROS_INFO(
+                "[xd_uav_control_manager] 检测到触地，"
+                "正在进行持续确认");
+          }
+          if ((now - landed_since_).toSec() >=
+              landed_confirm_duration_) {
+            touchdown_confirmed_ = true;
+            touchdown_confirmed_at_ = now;
+            normal_disarm_attempted_ = false;
+            force_disarm_requested_ = false;
+            last_request_ = ros::Time();
+            publishTouchdownTarget(now);
+            ROS_WARN(
+                "[xd_uav_control_manager] 触地已确认，"
+                "输出零推力并准备上锁");
+          }
+        } else {
+          landed_since_ = ros::Time();
+        }
+        break;
+      }
+
+      case State::kFailsafe:
+        // 停止发布外部控制量，让PX4执行配置好的OFFBOARD-loss策略。
+        break;
+    }
+    publishDiagnostics(now, command_reason);
+  }
+
+  ros::NodeHandle nh_;
+  ros::NodeHandle private_nh_;
+  ros::Subscriber odometry_subscriber_;
+  ros::Subscriber acceleration_subscriber_;
+  ros::Subscriber imu_subscriber_;
+  ros::Subscriber estimator_status_subscriber_;
+  ros::Subscriber airspeed_subscriber_;
+  ros::Subscriber mavros_state_subscriber_;
+  ros::Subscriber mavros_extended_state_subscriber_;
+  ros::Subscriber command_subscriber_;
+  ros::Publisher state_publisher_;
+  ros::Publisher status_publisher_;
+  ros::Publisher diagnostics_publisher_;
+  ros::Publisher attitude_target_publisher_;
+  ros::ServiceServer offboard_server_;
+  ros::ServiceServer cancel_offboard_server_;
+  ros::ServiceServer takeoff_server_;
+  ros::ServiceServer land_server_;
+  ros::ServiceServer land_home_server_;
+  ros::ServiceServer reset_failsafe_server_;
+  ros::ServiceClient set_mode_client_;
+  ros::ServiceClient arming_client_;
+  ros::ServiceClient command_long_client_;
+  ros::ServiceClient controller_internal_command_client_;
+  ros::Timer timer_;
+
+  nav_msgs::Odometry odometry_;
+  geometry_msgs::AccelWithCovarianceStamped acceleration_;
+  sensor_msgs::Imu imu_;
+  xd_uav_state_estimators::EstimatorStatus estimator_status_;
+  mavros_msgs::VFR_HUD airspeed_;
+  mavros_msgs::State mavros_state_;
+  mavros_msgs::ExtendedState mavros_extended_state_;
+  mavros_msgs::AttitudeTarget last_safe_target_;
+  xd_uav_controller::ControlCommand command_;
+  xd_uav_controller::ControlState current_control_state_;
+  ros::Time odometry_receive_;
+  ros::Time acceleration_receive_;
+  ros::Time imu_receive_;
+  ros::Time estimator_status_receive_;
+  ros::Time airspeed_receive_;
+  ros::Time mavros_state_receive_;
+  ros::Time mavros_extended_state_receive_;
+  ros::Time command_receive_;
+  ros::Time valid_since_;
+  ros::Time state_entered_;
+  ros::Time last_request_;
+  ros::Time invalid_since_;
+  ros::Time landed_since_;
+  ros::Time touchdown_confirmed_at_;
+
+  bool have_odometry_{false};
+  bool have_acceleration_{false};
+  bool have_imu_{false};
+  bool have_estimator_status_{false};
+  bool have_airspeed_{false};
+  bool have_mavros_state_{false};
+  bool have_mavros_extended_state_{false};
+  bool have_command_{false};
+  bool have_last_safe_target_{false};
+  bool offboard_requested_{false};
+  bool arm_requested_{false};
+  bool landing_requested_{false};
+  bool landing_seen_in_air_{false};
+  bool touchdown_confirmed_{false};
+  bool normal_disarm_attempted_{false};
+  bool force_disarm_requested_{false};
+  bool last_mode_request_accepted_{false};
+  uint32_t mode_request_attempts_{0};
+  State state_machine_state_{State::kStandby};
+  std::string state_reason_;
+  std::string active_input_reason_{"尚未检查"};
+
+  std::string vehicle_type_;
+  uint8_t vehicle_type_id_{
+      xd_uav_controller::ControlState::VEHICLE_MULTIROTOR};
+  double setpoint_rate_{100.0};
+  double prestream_duration_{1.5};
+  double request_retry_interval_{1.0};
+  double request_timeout_{10.0};
+  std::string offboard_mode_{"OFFBOARD"};
+  std::string cancel_mode_{"POSCTL"};
+
+  double odometry_timeout_{0.20};
+  double imu_timeout_{0.10};
+  double acceleration_timeout_{0.20};
+  double airspeed_timeout_{0.30};
+  double airspeed_negative_tolerance_{3.0};
+  double command_timeout_{0.10};
+  double estimator_status_timeout_{0.30};
+  double stable_duration_{1.5};
+  double invalid_grace_duration_{0.5};
+  double landed_confirm_duration_{0.5};
+  double touchdown_idle_duration_{0.75};
+  double force_disarm_timeout_{2.0};
+  bool allow_force_disarm_{true};
+  bool require_acceleration_{true};
+  bool require_localization_{false};
+  double minimum_groundspeed_for_course_{0.5};
+  double fixedwing_touchdown_max_groundspeed_{2.0};
+};
+
+int main(int argc, char** argv) {
+  std::setlocale(LC_ALL, "");
+  ros::init(argc, argv, "control_manager");
+  try {
+    ControlManagerNode node;
+    ros::spin();
+  } catch (const std::exception& exception) {
+    ROS_FATAL("[xd_uav_control_manager] 启动失败: %s",
+              exception.what());
+    return 1;
+  }
+  return 0;
+}

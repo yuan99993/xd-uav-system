@@ -1,0 +1,41 @@
+control_rate: 100.0
+
+multirotor:
+  gravity: 9.80665
+  hover_throttle: 0.7
+  min_throttle: 0.05
+  max_throttle: 0.90
+  max_tilt: 0.61
+  max_body_rate: [3.0, 3.0, 2.0]
+  attitude_gain: [5.0, 5.0, 2.0]
+
+  mpc:
+    horizon: 26
+    # 状态为[position, velocity]，MPC直接输出期望加速度。
+    q: [500.0, 100.0]
+    terminal_q: [1000.0, 300.0]
+    r: 20.0
+    max_velocity_xy: 5.0
+    max_velocity_z: 3.0
+    max_acceleration_xy: 2.5
+    max_acceleration_z: 2.0
+    max_jerk_xy: 3.0
+    max_jerk_z: 3.0
+
+takeoff:
+  default_altitude: 3.0
+  max_velocity: 0.8
+  max_acceleration: 0.6
+  position_tolerance: 0.15
+  velocity_tolerance: 0.15
+
+landing:
+  descent_velocity: 0.35
+  final_descent_velocity: 0.15
+  slow_height: 0.7
+  return_velocity: 1.0
+  position_tolerance: 0.10
+  velocity_tolerance: 0.10
+  touchdown_offset: 0.15
+  touchdown_height_tolerance: 0.10
+  touchdown_velocity_tolerance: 0.20

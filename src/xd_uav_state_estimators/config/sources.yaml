@@ -69,7 +69,8 @@ sources:
       recovery_stable_time: 0.5
 
     # 发布该来源在指定坐标系下的估计结果，不产生TF。
-    republish_in_frames: [local_origin, world]
+    # republish_in_frames: [local_origin, world]
+    republish_in_frames: [local_origin]
 
   fastlio:
     priority: 1
@@ -101,4 +102,4 @@ sources:
       recovery_min_samples: 20
       recovery_stable_time: 0.5
 
-    republish_in_frames: [local_origin, world]
+    republish_in_frames: [local_origin]

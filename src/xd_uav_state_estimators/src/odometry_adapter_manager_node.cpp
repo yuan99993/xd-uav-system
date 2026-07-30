@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <clocale>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
@@ -411,6 +412,8 @@ class OdometryAdapterManager {
 };
 
 int main(int argc, char** argv) {
+  // rosconsole底层使用log4cxx；显式启用UTF-8，避免中文日志被转换成问号。
+  std::setlocale(LC_ALL, "C.UTF-8");
   ros::init(argc, argv, "odometry_adapter_manager");
   try {
     OdometryAdapterManager manager;

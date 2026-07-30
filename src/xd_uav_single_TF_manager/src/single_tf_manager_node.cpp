@@ -12,6 +12,7 @@
 #include <XmlRpcValue.h>
 #include <diagnostic_msgs/DiagnosticArray.h>
 #include <diagnostic_msgs/DiagnosticStatus.h>
+#include <diagnostic_msgs/KeyValue.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <nav_msgs/Odometry.h>
@@ -112,7 +113,7 @@ class SingleTfManager {
  public:
   SingleTfManager() : private_nh_("~") {
     odom_body_transform_.setIdentity();
-    local_body_transform_.setIdentity();
+    correction_transform_.setIdentity();
     private_nh_.param("uav_name", uav_name_, std::string("uav1"));
     uav_name_ = trimSlashes(uav_name_);
     private_nh_.param("publish_rate", publish_rate_, 30.0);
@@ -171,13 +172,34 @@ class SingleTfManager {
 
     private_nh_.param("local_alignment/fallback_identity",
                       fallback_identity_, true);
+    private_nh_.param("local_alignment/input_mode", alignment_input_mode_,
+                      std::string("body_pose"));
+    if (alignment_input_mode_ != "body_pose" &&
+        alignment_input_mode_ != "direct_transform") {
+      throw std::runtime_error(
+          "local_alignment/input_mode must be body_pose or direct_transform");
+    }
+    std::string body_frame;
+    private_nh_.param("local_alignment/body_frame", body_frame,
+                      std::string("base_link"));
+    body_frame_ = scopedFrame(body_frame);
     private_nh_.param("local_alignment/correction_topic",
                       correction_topic_, std::string());
+    private_nh_.param("local_alignment/correction_valid_topic",
+                      correction_valid_topic_, std::string());
     private_nh_.param("local_alignment/odometry_topic",
                       odometry_topic_,
                       std::string("state_estimator/main/odom"));
+    private_nh_.param("local_alignment/validate_message_frames",
+                      validate_message_frames_, true);
+    private_nh_.param("local_alignment/require_positive_covariance",
+                      require_positive_covariance_, true);
     private_nh_.param("local_alignment/max_position_variance",
                       max_position_variance_, 100.0);
+    private_nh_.param("local_alignment/max_yaw_variance",
+                      max_yaw_variance_, 10.0);
+    private_nh_.param("local_alignment/max_time_difference",
+                      max_time_difference_, 0.10);
     private_nh_.param("local_alignment/position_filter_alpha",
                       position_filter_alpha_, 0.08);
     private_nh_.param("local_alignment/yaw_filter_alpha", yaw_filter_alpha_, 0.08);
@@ -187,11 +209,20 @@ class SingleTfManager {
     yaw_filter_alpha_ = std::clamp(yaw_filter_alpha_, 0.0, 1.0);
 
     if (!correction_topic_.empty()) {
-      odometry_subscriber_ = nh_.subscribe(
-          odometry_topic_, 30,
-          &SingleTfManager::odometryCallback, this);
+      if (alignment_input_mode_ == "body_pose") {
+        odometry_subscriber_ = nh_.subscribe(
+            odometry_topic_, 30,
+            &SingleTfManager::odometryCallback, this);
+      }
       correction_subscriber_ = nh_.subscribe(
           correction_topic_, 20, &SingleTfManager::correctionCallback, this);
+      if (!correction_valid_topic_.empty()) {
+        correction_valid_subscriber_ = nh_.subscribe(
+            correction_valid_topic_, 5,
+            &SingleTfManager::correctionValidCallback, this);
+      } else {
+        correction_valid_ = true;
+      }
     }
   }
 
@@ -308,6 +339,16 @@ class SingleTfManager {
   }
 
   void odometryCallback(const nav_msgs::Odometry::ConstPtr& message) {
+    if (validate_message_frames_ &&
+        (trimSlashes(message->header.frame_id) != local_child_frame_ ||
+         trimSlashes(message->child_frame_id) != body_frame_)) {
+      ROS_WARN_THROTTLE(
+          2.0,
+          "[xd_uav_single_tf_manager] 主估计里程计坐标系应为%s -> %s，实际为%s -> %s",
+          local_child_frame_.c_str(), body_frame_.c_str(),
+          message->header.frame_id.c_str(), message->child_frame_id.c_str());
+      return;
+    }
     tf2::Quaternion rotation;
     tf2::fromMsg(message->pose.pose.orientation, rotation);
     if (!normalize(&rotation) ||
@@ -326,10 +367,35 @@ class SingleTfManager {
     odom_body_transform_.setRotation(rotation);
     have_main_pose_ = true;
     last_main_receive_ = ros::Time::now();
+    last_main_stamp_ =
+        message->header.stamp.isZero() ? last_main_receive_
+                                       : message->header.stamp;
     updateAlignment();
   }
 
+  void correctionValidCallback(const std_msgs::Bool::ConstPtr& message) {
+    correction_valid_ = message->data;
+    last_valid_receive_ = ros::Time::now();
+    if (correction_valid_) {
+      updateAlignment();
+    }
+  }
+
   void correctionCallback(const nav_msgs::Odometry::ConstPtr& message) {
+    const std::string expected_child =
+        alignment_input_mode_ == "body_pose" ? body_frame_
+                                              : local_child_frame_;
+    if (validate_message_frames_ &&
+        (trimSlashes(message->header.frame_id) != local_parent_frame_ ||
+         trimSlashes(message->child_frame_id) != expected_child)) {
+      ROS_WARN_THROTTLE(
+          2.0,
+          "[xd_uav_single_tf_manager] %s修正坐标系应为%s -> %s，实际为%s -> %s",
+          alignment_input_mode_.c_str(), local_parent_frame_.c_str(),
+          expected_child.c_str(), message->header.frame_id.c_str(),
+          message->child_frame_id.c_str());
+      return;
+    }
     tf2::Quaternion quaternion;
     tf2::fromMsg(message->pose.pose.orientation, quaternion);
     if (!normalize(&quaternion) || !std::isfinite(message->pose.pose.position.x) ||
@@ -344,29 +410,58 @@ class SingleTfManager {
     for (const std::size_t index : {std::size_t{0}, std::size_t{7},
                                     std::size_t{14}}) {
       const double variance = message->pose.covariance[index];
-      if (std::isfinite(variance) && variance > 0.0) {
-        largest_variance = std::max(largest_variance, variance);
+      if (!std::isfinite(variance) || variance < 0.0 ||
+          (require_positive_covariance_ && variance <= 0.0)) {
+        ROS_WARN_THROTTLE(
+            2.0,
+            "[xd_uav_single_tf_manager] 局部对齐修正位置协方差无效");
+        return;
       }
+      largest_variance = std::max(largest_variance, variance);
     }
     if (largest_variance > max_position_variance_) {
       ROS_WARN_THROTTLE(
           2.0, "[xd_uav_single_tf_manager] 局部对齐修正协方差过大");
       return;
     }
+    const double yaw_variance = message->pose.covariance[35];
+    if (!std::isfinite(yaw_variance) || yaw_variance < 0.0 ||
+        (require_positive_covariance_ && yaw_variance <= 0.0) ||
+        yaw_variance > max_yaw_variance_) {
+      ROS_WARN_THROTTLE(
+          2.0, "[xd_uav_single_tf_manager] 局部对齐修正航向协方差无效");
+      return;
+    }
 
-    local_body_transform_.setOrigin(
+    correction_transform_.setOrigin(
         tf2::Vector3(message->pose.pose.position.x, message->pose.pose.position.y,
                      message->pose.pose.position.z));
-    local_body_transform_.setRotation(quaternion);
+    correction_transform_.setRotation(quaternion);
     have_correction_pose_ = true;
     last_correction_receive_ = ros::Time::now();
+    last_correction_stamp_ =
+        message->header.stamp.isZero() ? last_correction_receive_
+                                       : message->header.stamp;
     updateAlignment();
   }
 
   bool alignmentInputsFresh(const ros::Time& now) const {
-    return have_main_pose_ && have_correction_pose_ &&
+    if (!have_correction_pose_ ||
+        (now - last_correction_receive_).toSec() > input_timeout_ ||
+        !correction_valid_) {
+      return false;
+    }
+    if (!correction_valid_topic_.empty() &&
+        (now - last_valid_receive_).toSec() > input_timeout_) {
+      return false;
+    }
+    if (alignment_input_mode_ == "direct_transform") {
+      return true;
+    }
+    return have_main_pose_ &&
            (now - last_main_receive_).toSec() <= input_timeout_ &&
-           (now - last_correction_receive_).toSec() <= input_timeout_;
+           std::abs((last_main_stamp_ - last_correction_stamp_).toSec()) <=
+               max_time_difference_;
   }
 
   void updateAlignment() {
@@ -375,10 +470,12 @@ class SingleTfManager {
       return;
     }
 
-    // 已知local_origin -> base_link和odom -> base_link，
-    // 反算local_origin -> odom，避免在本包内引入GPS或世界坐标逻辑。
+    // body_pose模式通过同一时刻的两条机体位姿反算局部对齐；
+    // direct_transform模式直接采用消息中的local_origin -> odom。
     const tf2::Transform candidate =
-        local_body_transform_ * odom_body_transform_.inverse();
+        alignment_input_mode_ == "body_pose"
+            ? correction_transform_ * odom_body_transform_.inverse()
+            : correction_transform_;
     double roll = 0.0;
     double pitch = 0.0;
     double candidate_yaw = 0.0;
@@ -512,6 +609,10 @@ class SingleTfManager {
     addDiagnostic(&status, "local_alignment_valid", alignment_valid);
     addDiagnostic(&status, "local_alignment_identity_fallback",
                   fallback_in_use);
+    addDiagnostic(&status, "local_alignment_input_mode",
+                  alignment_input_mode_);
+    addDiagnostic(&status, "local_alignment_correction_valid",
+                  correction_valid_);
     addDiagnostic(&status, "owned_children",
                   static_cast<int>(child_owners_.size()));
     for (const auto& rule : dynamic_rules_) {
@@ -540,6 +641,15 @@ class SingleTfManager {
     status->values.push_back(entry);
   }
 
+  static void addDiagnostic(diagnostic_msgs::DiagnosticStatus* status,
+                            const std::string& key,
+                            const std::string& value) {
+    diagnostic_msgs::KeyValue entry;
+    entry.key = key;
+    entry.value = value;
+    status->values.push_back(entry);
+  }
+
   static void publishBoolean(const ros::Publisher& publisher, const bool value) {
     std_msgs::Bool message;
     message.data = value;
@@ -552,34 +662,46 @@ class SingleTfManager {
   tf2_ros::StaticTransformBroadcaster static_broadcaster_;
   ros::Subscriber odometry_subscriber_;
   ros::Subscriber correction_subscriber_;
+  ros::Subscriber correction_valid_subscriber_;
   ros::Publisher alignment_valid_publisher_;
   ros::Publisher diagnostics_publisher_;
   ros::Timer timer_;
 
   std::string uav_name_;
+  std::string alignment_input_mode_;
   std::string odometry_topic_;
   std::string local_parent_frame_;
   std::string local_child_frame_;
+  std::string body_frame_;
   std::string correction_topic_;
+  std::string correction_valid_topic_;
   std::unordered_map<std::string, std::string> child_owners_;
   std::vector<geometry_msgs::TransformStamped> static_transforms_;
   std::vector<std::unique_ptr<DynamicRule>> dynamic_rules_;
   tf2::Transform odom_body_transform_;
-  tf2::Transform local_body_transform_;
+  tf2::Transform correction_transform_;
   std::array<double, 3> alignment_translation_{{0.0, 0.0, 0.0}};
   ros::Time last_main_receive_;
   ros::Time last_correction_receive_;
+  ros::Time last_valid_receive_;
+  ros::Time last_main_stamp_;
+  ros::Time last_correction_stamp_;
   ros::Time last_diagnostics_;
   double alignment_yaw_{0.0};
   double publish_rate_{30.0};
   double input_timeout_{1.0};
   double max_position_variance_{100.0};
+  double max_yaw_variance_{10.0};
+  double max_time_difference_{0.10};
   double position_filter_alpha_{0.08};
   double yaw_filter_alpha_{0.08};
   double max_position_jump_{10.0};
   double max_yaw_jump_{kPi / 2.0};
   bool local_alignment_enabled_{true};
   bool fallback_identity_{true};
+  bool validate_message_frames_{true};
+  bool require_positive_covariance_{true};
+  bool correction_valid_{false};
   bool have_main_pose_{false};
   bool have_correction_pose_{false};
   bool alignment_initialized_{false};

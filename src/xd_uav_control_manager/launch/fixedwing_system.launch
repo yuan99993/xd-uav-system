@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="controller_common_config"
+       default="$(find xd_uav_controller)/config/common_config.yaml"/>
+  <arg name="controller_config"
+       default="$(find xd_uav_controller)/config/fixedwing.yaml"/>
+  <arg name="offboard_config" default="$(find xd_uav_control_manager)/config/offboard.yaml"/>
+  <arg name="safety_config" default="$(find xd_uav_control_manager)/config/safety.yaml"/>
+  <arg name="simple_goal_topic"
+       default="/move_base_simple/goal"/>
+
+  <include file="$(find xd_uav_control_manager)/launch/control_manager.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle_type" value="fixedwing"/>
+    <arg name="offboard_config" value="$(arg offboard_config)"/>
+    <arg name="safety_config" value="$(arg safety_config)"/>
+  </include>
+  <include file="$(find xd_uav_controller)/launch/controller.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle_type" value="fixedwing"/>
+    <arg name="common_config"
+         value="$(arg controller_common_config)"/>
+    <arg name="config" value="$(arg controller_config)"/>
+    <arg name="simple_goal_topic"
+         value="$(arg simple_goal_topic)"/>
+  </include>
+</launch>

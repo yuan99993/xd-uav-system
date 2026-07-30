@@ -9,7 +9,7 @@ frame_lookup_timeout: 0.03
 
 # 主估计结果除标准odom坐标系外，还可重发布到以下坐标系。
 # 对应话题为state_estimator/main/frames/<坐标系>/odom。
-main_republish_in_frames: [local_origin, world]
+main_republish_in_frames: [local_origin]
 
 filter:
   initial_position_variance: 1.0
@@ -22,7 +22,7 @@ filter:
   yaw_rate_process_noise: 0.20
   imu_acceleration_variance: 0.50
   imu_yaw_rate_variance: 0.05
-  # IMU三轴角速度差分后的低通时间常数，以及发布协方差。
+  # IMU三轴角速度差分后的低通时间常数，以及发布协方差。发布角加速度的滤波器参数
   angular_acceleration_time_constant: 0.05
   angular_acceleration_variance: 1.0
   angular_acceleration_limit: 100.0

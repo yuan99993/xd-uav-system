@@ -1,0 +1,25 @@
+<launch>
+  <group ns="controller_test">
+    <node pkg="xd_uav_controller"
+          type="controller_node"
+          name="controller"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load"
+                file="$(find xd_uav_controller)/config/common_config.yaml"/>
+      <rosparam command="load"
+                file="$(find xd_uav_controller)/config/multirotor.yaml"/>
+      <param name="vehicle_type" value="multirotor"/>
+      <!-- This test verifies that a takeoff-recorded semantic home
+           follows later local_origin -> odom alignment updates. -->
+      <param name="home/mode" value="takeoff"/>
+      <param name="landing/descent_velocity" value="2.0"/>
+      <param name="landing/final_descent_velocity" value="2.0"/>
+      <param name="landing/touchdown_offset" value="0.05"/>
+    </node>
+    <test test-name="controller_interface"
+          pkg="xd_uav_controller"
+          type="test_controller.py"
+          time-limit="15"/>
+  </group>
+</launch>
