@@ -1,0 +1,52 @@
+<launch>
+  <!--
+    standalone_test.launch — 独立测试（无需 PX4/Gazebo）
+
+    仅启动 Tracker + Follower + 外部输入测试脚本 + RViz。
+    用于快速验证 Tracker→Follower 数据流，不需要仿真环境。
+
+    用法:
+      roslaunch tracker standalone_test.launch
+  -->
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  Tracker 节点                                                        -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <include file="$(find tracker)/launch/tracker.launch">
+    <arg name="frame_width"  value="640" />
+    <arg name="frame_height" value="480" />
+    <arg name="publish_rate" value="30.0" />
+  </include>
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  Follower 节点                                                       -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <include file="$(find follower)/launch/follower.launch">
+    <arg name="lateral_guidance_mode" value="coordinated_turn" />
+    <arg name="max_forward_velocity"  value="5.0" />
+    <arg name="publish_rate"          value="30.0" />
+    <arg name="pitch_compensation_enabled" value="false" />
+    <arg name="adaptive_dive_climb_enabled" value="false" />
+  </include>
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  外部输入测试脚本（发送虚拟边界框到 Tracker）                        -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <node pkg="tracker" type="test_external_input.py" name="test_external_input"
+        output="screen" />
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  RViz 可视化                                                        -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <node pkg="rviz" type="rviz" name="rviz_standalone"
+        args="-d $(find tracker)/config/tracker_follower.rviz"
+        output="log" />
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  监控输出                                                            -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <node pkg="rostopic" type="rostopic" name="monitor_errors"
+        args="echo /tracker_node/normalized_error --clear"
+        output="screen" launch-prefix="bash -c 'sleep 3; exec $0 $@' " />
+
+</launch>

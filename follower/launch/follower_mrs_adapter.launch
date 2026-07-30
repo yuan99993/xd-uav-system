@@ -1,0 +1,17 @@
+<launch>
+  <!--
+    Transport-only adapter. Control gains remain in follower_params.yaml;
+    this launch file maps follower to the local MAVROS and optional MRS ports.
+  -->
+  <arg name="adapter_config"
+       default="$(find follower)/config/mrs_adapter_defaults.yaml" />
+
+  <env name="PYTHONNOUSERSITE" value="1" />
+
+  <node name="follower_node" pkg="follower" type="follower_node.py"
+        output="screen" required="false">
+    <!-- Load algorithm defaults first, then machine-specific endpoint mapping. -->
+    <rosparam command="load" file="$(find follower)/config/follower_params.yaml" />
+    <rosparam command="load" file="$(arg adapter_config)" />
+  </node>
+</launch>

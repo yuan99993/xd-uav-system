@@ -1,0 +1,113 @@
+# follower/config/follower_params.yaml
+# ── Follower 功能包参数配置文件 ───────────────────────────────────────────
+# MRS-style YAML configuration for the Follower ROS package.
+#
+# 加载方式:
+#   rosparam load follower_params.yaml
+#   或在 launch 文件中使用 <rosparam file="$(find follower)/config/follower_params.yaml" />
+
+# ── 控制模式 ────────────────────────────────────────────────────────────
+lateral_guidance_mode: "coordinated_turn"   # coordinated_turn | sideslip
+enable_auto_mode_switching: false
+mode_switch_velocity: 3.0                    # m/s
+mode_switch_hysteresis: 0.5                  # m/s
+
+# ── 发布频率 ────────────────────────────────────────────────────────────
+publish_rate: 30.0                           # Hz
+
+# ── 速度限制 ────────────────────────────────────────────────────────────
+max_velocity_forward: 8.0                    # m/s
+max_velocity_lateral: 3.0                    # m/s
+max_velocity_vertical: 2.0                   # m/s
+max_velocity_magnitude: 15.0                 # m/s (total magnitude limit)
+max_yaw_rate_deg_s: 90.0                     # deg/s
+
+# ── 高度限制 ────────────────────────────────────────────────────────────
+min_altitude: 2.0                            # m
+max_altitude: 120.0                          # m
+altitude_warning_buffer: 5.0                 # m
+altitude_check_interval: 1.0                 # s
+
+# ── 前向速度斜坡 ────────────────────────────────────────────────────────
+initial_forward_velocity: 0.0                # m/s
+max_forward_velocity: 5.0                    # m/s
+forward_ramp_rate: 0.5                       # m/s²
+ramp_down_on_target_loss: true
+target_loss_stop_velocity: 0.0               # m/s (0 = full stop on loss)
+forward_velocity_deadzone: 0.01              # m/s
+min_forward_velocity_threshold: 0.2          # m/s
+
+# ── 偏航平滑 ────────────────────────────────────────────────────────────
+yaw_smoothing_enabled: true
+yaw_deadzone_deg_s: 0.5                      # deg/s
+yaw_max_rate_change_deg_s2: 90.0             # deg/s² (yaw acceleration limit)
+yaw_smoothing_alpha: 0.7                     # EMA factor [0, 1]
+yaw_speed_scaling_enabled: true
+yaw_min_speed_threshold: 0.5                 # m/s
+yaw_max_speed_threshold: 5.0                 # m/s
+yaw_low_speed_factor: 0.5
+
+# ── PID 参数 ─────────────────────────────────────────────────────────────
+pid_yaw:
+  kp: 2.0
+  ki: 0.05
+  kd: 0.1
+pid_right:
+  kp: 1.5
+  ki: 0.02
+  kd: 0.05
+pid_down:
+  kp: 1.0
+  ki: 0.03
+  kd: 0.05
+
+# ── 自适应俯冲/爬升 ──────────────────────────────────────────────────────
+adaptive_dive_climb_enabled: false
+adaptive_smoothing_alpha: 0.2
+adaptive_warmup_frames: 10
+adaptive_rate_threshold: 5.0                 # px/s deadzone
+adaptive_max_correction: 1.0                 # m/s
+adaptive_correction_gain: 0.3
+adaptive_min_confidence: 0.6
+adaptive_fwd_coupling_enabled: false
+adaptive_fwd_coupling_gain: 0.1
+pixel_to_rate_calibration: 0.05
+
+# ── 俯仰补偿 ─────────────────────────────────────────────────────────────
+pitch_compensation_enabled: false
+pitch_compensation_model: "linear_velocity"
+pitch_compensation_gain: 0.05
+pitch_smoothing_alpha: 0.7
+pitch_data_max_age: 0.5                      # s
+pitch_min_velocity: 1.0                      # m/s
+pitch_deadband: 2.0                          # deg
+pitch_max_angle: 45.0                        # deg
+pitch_max_correction: 0.3                    # normalized coords
+
+# ── 目标丢失处理 ────────────────────────────────────────────────────────
+target_loss_coord_threshold: 1.5             # normalized (abs > this = lost)
+target_loss_timeout: 3.0                     # seconds
+
+# ── 指令平滑 ────────────────────────────────────────────────────────────
+command_smoothing_enabled: true
+smoothing_factor: 0.3                        # EMA factor [0, 1]
+
+# ── 调试 ────────────────────────────────────────────────────────────────
+debug_mode: false
+log_level: "info"
+
+# ── 接口与新鲜度 ────────────────────────────────────────────────────────
+tracker_error_topic: "/tracker_node/normalized_error"
+error_timeout_sec: 0.25
+mavros_namespace: "/mavros"
+enable_mavros_output: true
+mavros_velocity_topic: "/mavros/setpoint_velocity/cmd_vel"
+enable_mrs_velocity_reference: false
+mrs_velocity_reference_topic: "/uav1/control_manager/velocity_reference_in"
+mrs_velocity_frame: "uav1/fcu"
+visualization_frame: "map"
+velocity_marker_scale: 1.0
+velocity_marker_min_speed: 0.02
+actual_velocity_marker_scale: 1.0
+actual_velocity_marker_min_speed: 0.02
+pid_proportional_on_measurement: false

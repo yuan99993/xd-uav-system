@@ -1,0 +1,80 @@
+<launch>
+  <!--
+    tracker.launch — Tracker 功能包启动文件
+    MRS-style launch file for the Tracker ROS package.
+
+    启动 Tracker 节点，提供目标检测跟踪和归一化误差输出。
+  -->
+
+  <!-- ── 节点参数 ──────────────────────────────────────────────────────── -->
+  <arg name="frame_width"       default="640" />
+  <arg name="frame_height"      default="480" />
+  <arg name="publish_rate"      default="30.0" />
+  <arg name="tracker_name"      default="TrackerCore" />
+  <arg name="direct_observation_hold_time" default="0.15" />
+
+  <!-- ── 相机参数 ──────────────────────────────────────────────────────── -->
+  <arg name="fov_horizontal"    default="60.0" />
+  <arg name="fov_vertical"      default="45.0" />
+  <arg name="mount_offset_yaw"   default="0.0" />
+  <arg name="mount_offset_pitch" default="0.0" />
+  <arg name="mount_offset_roll"  default="0.0" />
+
+  <!-- ── 跟踪参数 ──────────────────────────────────────────────────────── -->
+  <arg name="enable_kalman_filter"       default="true" />
+  <arg name="enable_motion_predictor"    default="true" />
+  <arg name="enable_prediction_buffer"   default="true" />
+  <arg name="id_loss_tolerance_frames"   default="5" />
+  <arg name="spatial_iou_threshold"      default="0.35" />
+  <arg name="tracking_strategy"          default="hybrid" />
+  <arg name="target_size_ratio"          default="0.15" />
+
+  <!-- ── Kalman 参数 ───────────────────────────────────────────────────── -->
+  <arg name="kalman_process_noise"       default="1.0" />
+  <arg name="kalman_measurement_noise"   default="1.0" />
+
+  <!-- ── 运动预测参数 ───────────────────────────────────────────────────── -->
+  <arg name="velocity_alpha"             default="0.7" />
+  <arg name="acceleration_alpha"         default="0.5" />
+
+  <!-- ── 环境变量 ──────────────────────────────────────────────────────── -->
+  <env name="PYTHONNOUSERSITE" value="1" />
+
+  <!-- ── 节点定义 ──────────────────────────────────────────────────────── -->
+  <node name="tracker_node" pkg="tracker" type="tracker_node.py" output="screen"
+        required="false">
+
+    <!-- Frame -->
+    <param name="frame_width"      value="$(arg frame_width)" />
+    <param name="frame_height"     value="$(arg frame_height)" />
+    <param name="publish_rate"     value="$(arg publish_rate)" />
+    <param name="tracker_name"     value="$(arg tracker_name)" />
+    <param name="direct_observation_hold_time" value="$(arg direct_observation_hold_time)" />
+
+    <!-- Camera -->
+    <param name="fov_horizontal"    value="$(arg fov_horizontal)" />
+    <param name="fov_vertical"      value="$(arg fov_vertical)" />
+    <param name="mount_offset_yaw"   value="$(arg mount_offset_yaw)" />
+    <param name="mount_offset_pitch" value="$(arg mount_offset_pitch)" />
+    <param name="mount_offset_roll"  value="$(arg mount_offset_roll)" />
+
+    <!-- Tracking -->
+    <param name="enable_kalman_filter"       value="$(arg enable_kalman_filter)" />
+    <param name="enable_motion_predictor"    value="$(arg enable_motion_predictor)" />
+    <param name="enable_prediction_buffer"   value="$(arg enable_prediction_buffer)" />
+    <param name="id_loss_tolerance_frames"   value="$(arg id_loss_tolerance_frames)" />
+    <param name="spatial_iou_threshold"      value="$(arg spatial_iou_threshold)" />
+    <param name="tracking_strategy"          value="$(arg tracking_strategy)" />
+    <param name="target_size_ratio"          value="$(arg target_size_ratio)" />
+
+    <!-- Kalman -->
+    <param name="kalman_process_noise"       value="$(arg kalman_process_noise)" />
+    <param name="kalman_measurement_noise"   value="$(arg kalman_measurement_noise)" />
+
+    <!-- Motion -->
+    <param name="velocity_alpha"             value="$(arg velocity_alpha)" />
+    <param name="acceleration_alpha"         value="$(arg acceleration_alpha)" />
+
+  </node>
+
+</launch>

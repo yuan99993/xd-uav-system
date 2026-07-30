@@ -1,0 +1,11 @@
+<launch>
+  <!-- Start the vision tracker and follower with one transport configuration. -->
+  <arg name="adapter_config"
+       default="$(find follower)/config/mrs_adapter_defaults.yaml" />
+
+  <include file="$(find tracker)/launch/tracker.launch" />
+
+  <include file="$(find follower)/launch/follower_mrs_adapter.launch">
+    <arg name="adapter_config" value="$(arg adapter_config)" />
+  </include>
+</launch>

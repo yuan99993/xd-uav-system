@@ -1,0 +1,53 @@
+# tracker/config/tracker_params.yaml
+# ── Tracker 功能包参数配置文件 ───────────────────────────────────────────
+# MRS-style YAML configuration for the Tracker ROS package.
+#
+# 加载方式:
+#   rosparam load tracker_params.yaml
+#   或在 launch 文件中使用 <rosparam file="$(find tracker)/config/tracker_params.yaml" />
+
+# ── 帧参数 ──────────────────────────────────────────────────────────────
+frame_width: 640
+frame_height: 480
+publish_rate: 30.0
+tracker_name: "TrackerCore"
+direct_observation_hold_time: 0.15  # s; keep the error valid between detector updates
+
+# ── 相机参数 ────────────────────────────────────────────────────────────
+fov_horizontal: 60.0          # 水平视场角 (degrees)
+fov_vertical: 45.0            # 垂直视场角 (degrees)
+mount_offset_yaw: 0.0         # 相机安装偏航偏移 (degrees)
+mount_offset_pitch: 0.0       # 相机安装俯仰偏移 (degrees)
+mount_offset_roll: 0.0        # 相机安装滚转偏移 (degrees)
+
+# ── 跟踪策略 ────────────────────────────────────────────────────────────
+tracking_strategy: "hybrid"   # hybrid | id_only | spatial_only | distance_only
+enable_kalman_filter: true
+enable_motion_predictor: true
+enable_prediction_buffer: true
+
+# ── 跟踪阈值 ────────────────────────────────────────────────────────────
+id_loss_tolerance_frames: 5   # ID 丢失容忍帧数
+spatial_iou_threshold: 0.35   # 空间 IoU 匹配阈值
+target_size_ratio: 0.15       # 目标期望占帧比例
+
+# ── Kalman 滤波器参数 ───────────────────────────────────────────────────
+kalman_process_noise: 1.0           # 过程噪声缩放
+kalman_measurement_noise: 1.0       # 测量噪声缩放
+
+# ── 运动预测参数 ────────────────────────────────────────────────────────
+velocity_alpha: 0.7           # 速度 EMA 平滑因子 (0-1, 越高越灵敏)
+acceleration_alpha: 0.5       # 加速度 EMA 平滑因子 (0-1)
+
+# ── PX4 / Gazebo 接口参数 ───────────────────────────────────────────────
+px4_offboard_rate: 20.0       # Offboard 模式命令频率 (Hz)
+gazebo_update_rate: 30.0      # Gazebo 仿真更新率
+
+# ── Follower 接口参数 ───────────────────────────────────────────────────
+# 归一化误差的发布频率和限幅
+normalized_error_rate: 30.0   # Hz
+error_clamp: 1.0              # 误差限幅 [-clamp, clamp]
+
+# ── 调试 ────────────────────────────────────────────────────────────────
+debug_mode: false
+log_level: "info"             # debug | info | warn | error

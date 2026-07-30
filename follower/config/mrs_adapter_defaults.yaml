@@ -1,0 +1,13 @@
+# Default transport configuration for a standalone PX4/MAVROS setup.
+#
+# This file is loaded by follower_mrs_adapter.launch. The deployment script
+# writes a machine-local override under <workspace>/.mrs_adapter/ instead of
+# modifying this package file.
+tracker_error_topic: "/tracker_node/normalized_error"
+mavros_namespace: "/mavros"
+enable_mavros_output: true
+mavros_velocity_topic: "/mavros/setpoint_velocity/cmd_vel"
+enable_mrs_velocity_reference: false
+mrs_velocity_reference_topic: "/uav1/control_manager/velocity_reference_in"
+mrs_velocity_frame: "uav1/fcu"
+visualization_frame: "map"
