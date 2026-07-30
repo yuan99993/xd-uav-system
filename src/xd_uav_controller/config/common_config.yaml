@@ -3,7 +3,6 @@
 
 state_timeout: 0.20
 reference_timeout: 0.50
-reference_acceleration_timeout: 0.50
 
 reference_frames:
   # 控制器保留参考原始frame，在计算控制量前转换到ControlState.header.frame_id。

@@ -9,8 +9,8 @@
 #include <vector>
 
 #include <Eigen/Dense>
-#include <geometry_msgs/AccelStamped.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <mavros_msgs/PositionTarget.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <ros/message_event.h>
@@ -51,6 +51,28 @@ bool finite(const geometry_msgs::Vector3& value) {
 bool finite(const geometry_msgs::Point& value) {
   return std::isfinite(value.x) && std::isfinite(value.y) &&
          std::isfinite(value.z);
+}
+
+using AxisMask = std::array<bool, 3>;
+
+bool anyAxis(const AxisMask& mask) {
+  return mask[0] || mask[1] || mask[2];
+}
+
+bool finiteSelected(
+    const geometry_msgs::Point& value,
+    const AxisMask& mask) {
+  return (!mask[0] || std::isfinite(value.x)) &&
+         (!mask[1] || std::isfinite(value.y)) &&
+         (!mask[2] || std::isfinite(value.z));
+}
+
+bool finiteSelected(
+    const geometry_msgs::Vector3& value,
+    const AxisMask& mask) {
+  return (!mask[0] || std::isfinite(value.x)) &&
+         (!mask[1] || std::isfinite(value.y)) &&
+         (!mask[2] || std::isfinite(value.z));
 }
 
 bool quaternionToMatrix(const geometry_msgs::Quaternion& message,
@@ -170,9 +192,9 @@ struct Reference {
   geometry_msgs::Vector3 jerk;
   double yaw{0.0};
   double yaw_rate{0.0};
-  bool use_position{false};
-  bool use_velocity{false};
-  bool use_acceleration{false};
+  AxisMask use_position{{false, false, false}};
+  AxisMask use_velocity{{false, false, false}};
+  AxisMask use_acceleration{{false, false, false}};
   bool use_jerk{false};
   bool use_yaw{false};
   bool use_yaw_rate{false};
@@ -187,12 +209,21 @@ class ControllerNode {
     loadParameters();
     state_subscriber_ = nh_.subscribe(
         "state", 20, &ControllerNode::stateCallback, this);
-    reference_odometry_subscriber_ = nh_.subscribe(
-        "reference_odometry", 20,
-        &ControllerNode::referenceOdometryCallback, this);
-    reference_acceleration_subscriber_ = nh_.subscribe(
-        "reference_acceleration", 20,
-        &ControllerNode::referenceAccelerationCallback, this);
+    if (vehicle_type_ == "multirotor") {
+      reference_position_target_subscriber_ = nh_.subscribe(
+          "reference_position_target", 20,
+          &ControllerNode::referencePositionTargetCallback, this);
+      reference_position_target_publisher_ =
+          nh_.advertise<mavros_msgs::PositionTarget>(
+              "reference_position_target", 1, true);
+    } else {
+      reference_odometry_subscriber_ = nh_.subscribe(
+          "reference_odometry", 20,
+          &ControllerNode::referenceOdometryCallback, this);
+      reference_odometry_publisher_ =
+          nh_.advertise<nav_msgs::Odometry>(
+              "reference_odometry", 1, true);
+    }
     reference_trajectory_subscriber_ = nh_.subscribe(
         "reference_trajectory", 5,
         &ControllerNode::referenceTrajectoryCallback, this);
@@ -202,9 +233,6 @@ class ControllerNode {
     local_alignment_valid_subscriber_ = nh_.subscribe(
         "local_alignment_valid", 5,
         &ControllerNode::localAlignmentValidCallback, this);
-    reference_odometry_publisher_ =
-        nh_.advertise<nav_msgs::Odometry>(
-            "reference_odometry", 1, true);
     reference_trajectory_path_publisher_ =
         nh_.advertise<nav_msgs::Path>(
             "reference_trajectory_path", 1, true);
@@ -237,8 +265,6 @@ class ControllerNode {
                       vehicle_type_ == "multirotor" ? 100.0 : 50.0);
     private_nh_.param("state_timeout", state_timeout_, 0.20);
     private_nh_.param("reference_timeout", reference_timeout_, 0.50);
-    private_nh_.param("reference_acceleration_timeout",
-                      reference_acceleration_timeout_, 0.50);
     private_nh_.param("reference_frames/transform_timeout",
                       reference_transform_timeout_, 0.03);
     private_nh_.param("reference_frames/max_transform_age",
@@ -308,6 +334,26 @@ class ControllerNode {
                         max_jerk_xy_, 8.0);
       private_nh_.param("multirotor/mpc/max_jerk_z",
                         max_jerk_z_, 6.0);
+      velocity_integral_gain_ = loadVector3(
+          private_nh_,
+          "multirotor/mpc/velocity_integral_gain",
+          {{1.0, 1.0, 2.0}});
+      velocity_integral_acceleration_limit_ = loadVector3(
+          private_nh_,
+          "multirotor/mpc/velocity_integral_acceleration_limit",
+          {{1.0, 1.0, 1.0}});
+      acceleration_feedback_gain_ = loadVector3(
+          private_nh_,
+          "multirotor/mpc/acceleration_feedback_gain",
+          {{0.25, 0.25, 0.35}});
+      acceleration_integral_gain_ = loadVector3(
+          private_nh_,
+          "multirotor/mpc/acceleration_integral_gain",
+          {{0.20, 0.20, 0.40}});
+      acceleration_integral_acceleration_limit_ = loadVector3(
+          private_nh_,
+          "multirotor/mpc/acceleration_integral_acceleration_limit",
+          {{1.0, 1.0, 1.0}});
     } else {
       private_nh_.param("fixedwing/gravity", gravity_, 9.80665);
       private_nh_.param("fixedwing/cruise_airspeed",
@@ -711,6 +757,27 @@ class ControllerNode {
     return result;
   }
 
+  static bool axisMaskCompatibleWithRotation(
+      const AxisMask& mask,
+      const tf2::Transform& target_source) {
+    const tf2::Matrix3x3 rotation(
+        target_source.getRotation());
+    constexpr double kAxisMixingTolerance = 1e-6;
+    for (int target_axis = 0; target_axis < 3;
+         ++target_axis) {
+      for (int source_axis = 0; source_axis < 3;
+           ++source_axis) {
+        if (mask[target_axis] != mask[source_axis] &&
+            std::abs(
+                rotation[target_axis][source_axis]) >
+                kAxisMixingTolerance) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   bool transformReferenceToControl(
       const Reference& source_reference,
       const std::string& control_frame,
@@ -724,20 +791,36 @@ class ControllerNode {
             timeout, &control_source, reason)) {
       return false;
     }
+    if (!axisMaskCompatibleWithRotation(
+            source_reference.use_position,
+            control_source) ||
+        !axisMaskCompatibleWithRotation(
+            source_reference.use_velocity,
+            control_source) ||
+        !axisMaskCompatibleWithRotation(
+            source_reference.use_acceleration,
+            control_source)) {
+      *reason =
+          "参考TF旋转会混合已启用与已忽略的控制轴；"
+          "逐轴掩码应使用控制odom或轴方向一致的惯性frame";
+      return false;
+    }
 
     *control_reference = source_reference;
     control_reference->header.frame_id =
         canonicalFrame(control_frame);
     control_reference->header.stamp = ros::Time::now();
-    const tf2::Vector3 source_position(
-        source_reference.position.x,
-        source_reference.position.y,
-        source_reference.position.z);
-    const tf2::Vector3 control_position =
-        control_source * source_position;
-    control_reference->position.x = control_position.x();
-    control_reference->position.y = control_position.y();
-    control_reference->position.z = control_position.z();
+    if (anyAxis(source_reference.use_position)) {
+      const tf2::Vector3 source_position(
+          source_reference.position.x,
+          source_reference.position.y,
+          source_reference.position.z);
+      const tf2::Vector3 control_position =
+          control_source * source_position;
+      control_reference->position.x = control_position.x();
+      control_reference->position.y = control_position.y();
+      control_reference->position.z = control_position.z();
+    }
 
     if (source_reference.use_yaw) {
       tf2::Quaternion source_orientation;
@@ -754,11 +837,11 @@ class ControllerNode {
       control_reference->yaw =
           wrapAngle(control_reference->yaw);
     }
-    if (source_reference.use_velocity) {
+    if (anyAxis(source_reference.use_velocity)) {
       control_reference->velocity = rotateVector(
           control_source, source_reference.velocity);
     }
-    if (source_reference.use_acceleration) {
+    if (anyAxis(source_reference.use_acceleration)) {
       control_reference->acceleration = rotateVector(
           control_source, source_reference.acceleration);
     }
@@ -821,8 +904,8 @@ class ControllerNode {
     source_reference.header.frame_id = parent;
     source_reference.position =
         message.pose.pose.position;
-    source_reference.use_position = true;
-    source_reference.use_velocity = true;
+    source_reference.use_position = {{true, true, true}};
+    source_reference.use_velocity = {{true, true, true}};
     source_reference.use_yaw = true;
     source_reference.use_yaw_rate = true;
     source_reference.yaw = std::atan2(
@@ -851,27 +934,149 @@ class ControllerNode {
         control_reference, reason);
   }
 
-  bool accelerationToControlFrame(
-      const geometry_msgs::AccelStamped& message,
-      const std::string& control_frame,
-      const double timeout,
-      geometry_msgs::Vector3* linear_acceleration,
-      std::string* reason) {
-    if (message.header.frame_id.empty() ||
-        !finite(message.accel.linear) ||
-        !finite(message.accel.angular)) {
+  bool positionTargetToSourceReference(
+      const mavros_msgs::PositionTarget& message,
+      Reference* source_reference,
+      std::string* reason) const {
+    if (message.header.frame_id.empty()) {
+      *reason = "PositionTarget.header.frame_id不能为空";
+      return false;
+    }
+    if (message.coordinate_frame !=
+        mavros_msgs::PositionTarget::FRAME_LOCAL_NED) {
       *reason =
-          "AccelStamped无效或frame_id为空";
+          "当前只支持PositionTarget.FRAME_LOCAL_NED；"
+          "字段按ROS ENU惯性坐标语义解释";
       return false;
     }
-    tf2::Transform control_source;
-    if (!lookupReferenceTransform(
-            control_frame, message.header.frame_id,
-            timeout, &control_source, reason)) {
+
+    constexpr std::array<uint16_t, 3> position_bits{{
+        mavros_msgs::PositionTarget::IGNORE_PX,
+        mavros_msgs::PositionTarget::IGNORE_PY,
+        mavros_msgs::PositionTarget::IGNORE_PZ}};
+    constexpr std::array<uint16_t, 3> velocity_bits{{
+        mavros_msgs::PositionTarget::IGNORE_VX,
+        mavros_msgs::PositionTarget::IGNORE_VY,
+        mavros_msgs::PositionTarget::IGNORE_VZ}};
+    constexpr std::array<uint16_t, 3> acceleration_bits{{
+        mavros_msgs::PositionTarget::IGNORE_AFX,
+        mavros_msgs::PositionTarget::IGNORE_AFY,
+        mavros_msgs::PositionTarget::IGNORE_AFZ}};
+    constexpr uint16_t position_group =
+        position_bits[0] | position_bits[1] |
+        position_bits[2];
+    constexpr uint16_t velocity_group =
+        velocity_bits[0] | velocity_bits[1] |
+        velocity_bits[2];
+    constexpr uint16_t acceleration_group =
+        acceleration_bits[0] | acceleration_bits[1] |
+        acceleration_bits[2];
+    constexpr uint16_t known_mask =
+        position_group | velocity_group |
+        acceleration_group |
+        mavros_msgs::PositionTarget::FORCE |
+        mavros_msgs::PositionTarget::IGNORE_YAW |
+        mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+
+    if ((message.type_mask &
+         static_cast<uint16_t>(~known_mask)) != 0U) {
+      *reason = "PositionTarget.type_mask包含未知位";
       return false;
     }
-    *linear_acceleration = rotateVector(
-        control_source, message.accel.linear);
+    if ((message.type_mask &
+         mavros_msgs::PositionTarget::FORCE) != 0U) {
+      *reason =
+          "当前不支持PositionTarget.FORCE，只接受加速度";
+      return false;
+    }
+
+    Reference reference;
+    reference.header = message.header;
+    reference.header.frame_id =
+        canonicalFrame(message.header.frame_id);
+    for (int axis = 0; axis < 3; ++axis) {
+      reference.use_position[axis] =
+          (message.type_mask & position_bits[axis]) == 0U;
+      reference.use_velocity[axis] =
+          (message.type_mask & velocity_bits[axis]) == 0U;
+      reference.use_acceleration[axis] =
+          (message.type_mask &
+           acceleration_bits[axis]) == 0U;
+    }
+    reference.use_yaw =
+        (message.type_mask &
+         mavros_msgs::PositionTarget::IGNORE_YAW) == 0U;
+    reference.use_yaw_rate =
+        (message.type_mask &
+         mavros_msgs::PositionTarget::IGNORE_YAW_RATE) == 0U;
+
+    if (!anyAxis(reference.use_position) &&
+        !anyAxis(reference.use_velocity) &&
+        !anyAxis(reference.use_acceleration)) {
+      *reason =
+          "PositionTarget至少要启用一个位置、速度或加速度轴";
+      return false;
+    }
+    if (!finiteSelected(
+            message.position,
+            reference.use_position)) {
+      *reason = "启用的位置字段包含非法数值";
+      return false;
+    }
+    if (!finiteSelected(
+            message.velocity,
+            reference.use_velocity)) {
+      *reason = "启用的速度字段包含非法数值";
+      return false;
+    }
+    if (!finiteSelected(
+            message.acceleration_or_force,
+            reference.use_acceleration)) {
+      *reason = "启用的加速度字段包含非法数值";
+      return false;
+    }
+    if (reference.use_yaw &&
+        !std::isfinite(message.yaw)) {
+      *reason = "启用的yaw字段包含非法数值";
+      return false;
+    }
+    if (reference.use_yaw_rate &&
+        !std::isfinite(message.yaw_rate)) {
+      *reason = "启用的yaw_rate字段包含非法数值";
+      return false;
+    }
+
+    reference.position.x =
+        reference.use_position[0] ? message.position.x : 0.0;
+    reference.position.y =
+        reference.use_position[1] ? message.position.y : 0.0;
+    reference.position.z =
+        reference.use_position[2] ? message.position.z : 0.0;
+    reference.velocity.x =
+        reference.use_velocity[0] ? message.velocity.x : 0.0;
+    reference.velocity.y =
+        reference.use_velocity[1] ? message.velocity.y : 0.0;
+    reference.velocity.z =
+        reference.use_velocity[2] ? message.velocity.z : 0.0;
+    reference.acceleration.x =
+        reference.use_acceleration[0]
+            ? message.acceleration_or_force.x
+            : 0.0;
+    reference.acceleration.y =
+        reference.use_acceleration[1]
+            ? message.acceleration_or_force.y
+            : 0.0;
+    reference.acceleration.z =
+        reference.use_acceleration[2]
+            ? message.acceleration_or_force.z
+            : 0.0;
+    if (reference.use_yaw) {
+      reference.yaw = message.yaw;
+    }
+    if (reference.use_yaw_rate) {
+      reference.yaw_rate = message.yaw_rate;
+    }
+    *source_reference = reference;
     return true;
   }
 
@@ -884,6 +1089,9 @@ class ControllerNode {
         (!state_.state_valid ||
          !finite(state_.acceleration_odom))) {
       acceleration_command_initialized_ = false;
+      velocity_integral_acceleration_state_.setZero();
+      acceleration_feedback_integral_state_.setZero();
+      acceleration_feedback_active_.fill(false);
     }
     if (!have_reference_ &&
         !internal_reference_active_ &&
@@ -952,33 +1160,48 @@ class ControllerNode {
     reference_odometry_source_ = *message;
     reference_ = normalized;
     trajectory_active_ = false;
+    position_target_active_ = false;
     point_reference_latched_ = from_simple_goal;
-    if (from_simple_goal) {
-      have_reference_acceleration_ = false;
-    }
     activateExternalReference();
   }
 
-  void referenceAccelerationCallback(
-      const geometry_msgs::AccelStamped::ConstPtr& message) {
-    if (!have_state_ || !state_.state_valid) {
-      ROS_WARN_THROTTLE(
-          1.0,
-          "[xd_uav_controller] 控制状态无效，忽略加速度参考");
+  void referencePositionTargetCallback(
+      const mavros_msgs::PositionTarget::ConstPtr& message) {
+    if (!externalReferenceAllowed()) {
       return;
     }
-    geometry_msgs::Vector3 normalized;
+    if (!have_state_ || !state_.state_valid) {
+      rejectExternalReference(
+          "收到PositionTarget参考时控制状态尚未有效");
+      return;
+    }
+
+    Reference source;
     std::string reason;
-    if (!accelerationToControlFrame(
-            *message, state_.header.frame_id,
+    if (!positionTargetToSourceReference(
+            *message, &source, &reason)) {
+      rejectExternalReference(reason);
+      return;
+    }
+    Reference normalized;
+    if (!transformReferenceToControl(
+            source, state_.header.frame_id,
             reference_transform_timeout_,
             &normalized, &reason)) {
       rejectExternalReference(reason);
       return;
     }
-    reference_acceleration_ = *message;
-    last_reference_acceleration_receive_ = ros::Time::now();
-    have_reference_acceleration_ = true;
+
+    reference_source_ = source;
+    reference_ = normalized;
+    trajectory_active_ = false;
+    position_target_active_ = true;
+    point_reference_latched_ =
+        anyAxis(source.use_position) &&
+        !anyAxis(source.use_velocity) &&
+        !anyAxis(source.use_acceleration) &&
+        !source.use_yaw_rate;
+    activateExternalReference();
   }
 
   double altitudeToKeepForSimpleGoal() const {
@@ -988,7 +1211,7 @@ class ControllerNode {
     }
     if (have_reference_ &&
         have_normalized_reference_ &&
-        reference_.use_position) {
+        reference_.use_position[2]) {
       return reference_.position.z;
     }
     if (idle_reference_active_) {
@@ -1032,15 +1255,8 @@ class ControllerNode {
       return;
     }
 
-    nav_msgs::Odometry reference;
-    reference.header = message->header;
-    reference.header.frame_id =
-        canonicalFrame(message->header.frame_id);
-    reference.header.stamp = ros::Time::now();
-    reference.header.seq = ++simple_goal_sequence_counter_;
-    reference.child_frame_id =
-        canonicalFrame(state_.body_frame_id);
-    reference.pose.pose = message->pose;
+    geometry_msgs::Point goal_position =
+        message->pose.position;
     if (!simple_goal_use_message_z_) {
       const double altitude_to_keep =
           altitudeToKeepForSimpleGoal();
@@ -1050,21 +1266,66 @@ class ControllerNode {
           altitude_to_keep);
       const tf2::Vector3 source_position =
           control_source.inverse() * control_position;
-      reference.pose.pose.position.z = source_position.z();
+      goal_position.z = source_position.z();
     }
 
     Reference normalized;
-    if (!odometryToControlReference(
-            reference, state_.header.frame_id, 0.0,
-            &normalized, &reason)) {
-      rejectExternalReference(reason);
-      return;
+    std::string published_frame;
+    if (vehicle_type_ == "multirotor") {
+      mavros_msgs::PositionTarget reference;
+      reference.header = message->header;
+      reference.header.frame_id =
+          canonicalFrame(message->header.frame_id);
+      reference.header.stamp = ros::Time::now();
+      reference.header.seq = ++simple_goal_sequence_counter_;
+      reference.coordinate_frame =
+          mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+      reference.type_mask =
+          mavros_msgs::PositionTarget::IGNORE_VX |
+          mavros_msgs::PositionTarget::IGNORE_VY |
+          mavros_msgs::PositionTarget::IGNORE_VZ |
+          mavros_msgs::PositionTarget::IGNORE_AFX |
+          mavros_msgs::PositionTarget::IGNORE_AFY |
+          mavros_msgs::PositionTarget::IGNORE_AFZ |
+          mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+      reference.position = goal_position;
+      reference.yaw = std::atan2(rotation(1, 0), rotation(0, 0));
+
+      Reference source;
+      if (!positionTargetToSourceReference(
+              reference, &source, &reason) ||
+          !transformReferenceToControl(
+              source, state_.header.frame_id, 0.0,
+              &normalized, &reason)) {
+        rejectExternalReference(reason);
+        return;
+      }
+      published_frame = reference.header.frame_id;
+      reference_position_target_publisher_.publish(reference);
+    } else {
+      nav_msgs::Odometry reference;
+      reference.header = message->header;
+      reference.header.frame_id =
+          canonicalFrame(message->header.frame_id);
+      reference.header.stamp = ros::Time::now();
+      reference.header.seq = ++simple_goal_sequence_counter_;
+      reference.child_frame_id =
+          canonicalFrame(state_.body_frame_id);
+      reference.pose.pose = message->pose;
+      reference.pose.pose.position = goal_position;
+      if (!odometryToControlReference(
+              reference, state_.header.frame_id, 0.0,
+              &normalized, &reason)) {
+        rejectExternalReference(reason);
+        return;
+      }
+      published_frame = reference.header.frame_id;
+      reference_odometry_publisher_.publish(reference);
     }
-    reference_odometry_publisher_.publish(reference);
     ROS_INFO(
         "[xd_uav_controller] simple goal已从%s适配到%s: "
         "x=%.2f y=%.2f z=%.2f yaw=%.2f",
-        reference.header.frame_id.c_str(),
+        published_frame.c_str(),
         normalized.header.frame_id.c_str(),
         normalized.position.x,
         normalized.position.y,
@@ -1160,7 +1421,7 @@ class ControllerNode {
     reference.position.x = transform.translation.x;
     reference.position.y = transform.translation.y;
     reference.position.z = transform.translation.z;
-    reference.use_position = true;
+    reference.use_position = {{true, true, true}};
     reference.use_yaw = true;
     Eigen::Matrix3d rotation;
     quaternionToMatrix(transform.rotation, &rotation);
@@ -1170,13 +1431,13 @@ class ControllerNode {
       reference.velocity = point.velocities.front().linear;
       reference.yaw_rate =
           point.velocities.front().angular.z;
-      reference.use_velocity = true;
+      reference.use_velocity = {{true, true, true}};
       reference.use_yaw_rate = true;
     }
     if (!point.accelerations.empty()) {
       reference.acceleration =
           point.accelerations.front().linear;
-      reference.use_acceleration = true;
+      reference.use_acceleration = {{true, true, true}};
     }
     return reference;
   }
@@ -1243,7 +1504,8 @@ class ControllerNode {
     reference->yaw = wrapAngle(
         first.yaw +
         alpha * wrapAngle(second.yaw - first.yaw));
-    if (first.use_velocity && second.use_velocity) {
+    if (anyAxis(first.use_velocity) &&
+        anyAxis(second.use_velocity)) {
       reference->velocity.x =
           first.velocity.x +
           alpha * (second.velocity.x - first.velocity.x);
@@ -1257,8 +1519,8 @@ class ControllerNode {
           first.yaw_rate +
           alpha * (second.yaw_rate - first.yaw_rate);
     }
-    if (first.use_acceleration &&
-        second.use_acceleration) {
+    if (anyAxis(first.use_acceleration) &&
+        anyAxis(second.use_acceleration)) {
       reference->acceleration.x =
           first.acceleration.x +
           alpha *
@@ -1339,6 +1601,7 @@ class ControllerNode {
             : message->header.stamp;
     publishTrajectoryPath(*message);
     trajectory_active_ = true;
+    position_target_active_ = false;
     point_reference_latched_ = false;
     activateExternalReference();
   }
@@ -1372,11 +1635,11 @@ class ControllerNode {
     reference.position.y = idle_position_.y();
     reference.position.z = idle_position_.z();
     reference.yaw = idle_course_;
-    reference.use_position = true;
-    reference.use_velocity = true;
+    reference.use_position = {{true, true, true}};
+    reference.use_velocity = {{true, true, true}};
     reference.use_yaw = true;
     if (vehicle_type_ == "multirotor") {
-      reference.use_acceleration = true;
+      reference.use_acceleration = {{true, true, true}};
     } else {
       reference.velocity.x =
           idle_airspeed_ * std::cos(idle_course_);
@@ -1533,7 +1796,8 @@ class ControllerNode {
         fixed_home_position_.z();
     home_reference_source_.yaw =
         wrapAngle(fixed_home_yaw_);
-    home_reference_source_.use_position = true;
+    home_reference_source_.use_position =
+        {{true, true, true}};
     home_reference_source_.use_yaw = true;
     have_home_reference_ = true;
     *reason = "固定home已载入: frame=" + home_frame;
@@ -1588,7 +1852,8 @@ class ControllerNode {
           home_position.z();
       home_reference_source_.yaw =
           wrapAngle(home_yaw);
-      home_reference_source_.use_position = true;
+      home_reference_source_.use_position =
+          {{true, true, true}};
       home_reference_source_.use_yaw = true;
       have_home_reference_ = true;
       *message =
@@ -1613,7 +1878,8 @@ class ControllerNode {
         state_.position_odom.z;
     home_reference_source_.yaw =
         wrapAngle(control_course);
-    home_reference_source_.use_position = true;
+    home_reference_source_.use_position =
+        {{true, true, true}};
     home_reference_source_.use_yaw = true;
     have_home_reference_ = true;
     *message =
@@ -1826,11 +2092,14 @@ class ControllerNode {
     have_reference_error_ = false;
     have_normalized_reference_ = false;
     trajectory_active_ = false;
+    position_target_active_ = false;
     point_reference_latched_ = false;
-    have_reference_acceleration_ = false;
     have_takeoff_origin_ = false;
     active_reference_transform_failure_since_ = ros::Time();
     acceleration_command_initialized_ = false;
+    velocity_integral_acceleration_state_.setZero();
+    acceleration_feedback_integral_state_.setZero();
+    acceleration_feedback_active_.fill(false);
     if (have_state_ && state_.state_valid) {
       captureIdleReference();
     }
@@ -1879,8 +2148,8 @@ class ControllerNode {
     have_reference_error_ = false;
     have_normalized_reference_ = false;
     trajectory_active_ = false;
+    position_target_active_ = false;
     point_reference_latched_ = false;
-    have_reference_acceleration_ = false;
     active_reference_transform_failure_since_ = ros::Time();
     ROS_INFO(
         "[xd_uav_controller] 固定翼进入等待盘旋(%s): "
@@ -1898,8 +2167,8 @@ class ControllerNode {
     Reference reference;
     reference.header.stamp = ros::Time::now();
     reference.header.frame_id = state_.header.frame_id;
-    reference.use_position = true;
-    reference.use_velocity = true;
+    reference.use_position = {{true, true, true}};
+    reference.use_velocity = {{true, true, true}};
     reference.use_yaw = true;
     reference.position.x = fixedwing_loiter_center_.x();
     reference.position.y = fixedwing_loiter_center_.y();
@@ -1946,9 +2215,9 @@ class ControllerNode {
     Reference reference;
     reference.header.stamp = ros::Time::now();
     reference.header.frame_id = state_.header.frame_id;
-    reference.use_position = true;
-    reference.use_velocity = true;
-    reference.use_acceleration = true;
+    reference.use_position = {{true, true, true}};
+    reference.use_velocity = {{true, true, true}};
+    reference.use_acceleration = {{true, true, true}};
     reference.use_yaw = true;
     reference.position.x = takeoff_origin_.x();
     reference.position.y = takeoff_origin_.y();
@@ -2099,8 +2368,8 @@ class ControllerNode {
     Reference reference;
     reference.header.stamp = now;
     reference.header.frame_id = state_.header.frame_id;
-    reference.use_position = true;
-    reference.use_velocity = true;
+    reference.use_position = {{true, true, true}};
+    reference.use_velocity = {{true, true, true}};
     reference.use_yaw = true;
     reference.yaw = landing_course_;
 
@@ -2243,9 +2512,9 @@ class ControllerNode {
     Reference reference;
     reference.header.stamp = now;
     reference.header.frame_id = state_.header.frame_id;
-    reference.use_position = true;
-    reference.use_velocity = true;
-    reference.use_acceleration = true;
+    reference.use_position = {{true, true, true}};
+    reference.use_velocity = {{true, true, true}};
+    reference.use_acceleration = {{true, true, true}};
     reference.use_yaw = true;
     if (landing_phase_ == LandingPhase::kApproach) {
       const Eigen::Vector2d target_xy =
@@ -2330,26 +2599,34 @@ class ControllerNode {
       const Reference& reference,
       std::string* reason) const {
     if (vehicle_type_ == "multirotor" &&
-        !reference.use_position && !reference.use_velocity &&
-        !reference.use_acceleration && !reference.use_jerk) {
+        !anyAxis(reference.use_position) &&
+        !anyAxis(reference.use_velocity) &&
+        !anyAxis(reference.use_acceleration) &&
+        !reference.use_jerk) {
       *reason = "四旋翼参考未启用任何平移控制量";
       return false;
     }
     if (vehicle_type_ == "fixedwing" &&
-        !reference.use_position && !reference.use_velocity) {
+        !anyAxis(reference.use_position) &&
+        !anyAxis(reference.use_velocity)) {
       *reason = "固定翼参考至少需要位置或速度";
       return false;
     }
-    if (reference.use_position && !finite(reference.position)) {
+    if (!finiteSelected(
+            reference.position,
+            reference.use_position)) {
       *reason = "位置参考包含非法数值";
       return false;
     }
-    if (reference.use_velocity && !finite(reference.velocity)) {
+    if (!finiteSelected(
+            reference.velocity,
+            reference.use_velocity)) {
       *reason = "速度参考包含非法数值";
       return false;
     }
-    if (reference.use_acceleration &&
-        !finite(reference.acceleration)) {
+    if (!finiteSelected(
+            reference.acceleration,
+            reference.use_acceleration)) {
       *reason = "加速度参考包含非法数值";
       return false;
     }
@@ -2367,6 +2644,24 @@ class ControllerNode {
   ControllerResult multirotorControl(
       const Reference& reference) {
     ControllerResult result;
+    bool acceleration_feedback_required = false;
+    for (int axis = 0; axis < 3; ++axis) {
+      acceleration_feedback_required =
+          acceleration_feedback_required ||
+          (reference.use_acceleration[axis] &&
+           !reference.use_position[axis] &&
+           !reference.use_velocity[axis]);
+    }
+    if (acceleration_feedback_required &&
+        (!state_.acceleration_fresh ||
+         !finite(state_.acceleration_odom))) {
+      acceleration_feedback_integral_state_.setZero();
+      acceleration_feedback_active_.fill(false);
+      result.reason =
+          "纯加速度控制要求有效且新鲜的acceleration_odom";
+      return result;
+    }
+
     Eigen::Matrix3d rotation;
     if (!quaternionToMatrix(state_.orientation_odom_body,
                             &rotation)) {
@@ -2380,49 +2675,49 @@ class ControllerNode {
     const Eigen::Vector3d velocity(
         state_.velocity_odom.x, state_.velocity_odom.y,
         state_.velocity_odom.z);
+    const Eigen::Vector3d measured_acceleration(
+        state_.acceleration_odom.x,
+        state_.acceleration_odom.y,
+        state_.acceleration_odom.z);
     Eigen::Vector3d position_reference = position;
-    Eigen::Vector3d velocity_reference = velocity;
-    Eigen::Vector3d acceleration_reference =
+    Eigen::Vector3d velocity_reference =
         Eigen::Vector3d::Zero();
+    const Eigen::Vector3d requested_position(
+        reference.position.x, reference.position.y,
+        reference.position.z);
+    const Eigen::Vector3d requested_velocity(
+        reference.velocity.x, reference.velocity.y,
+        reference.velocity.z);
+    const Eigen::Vector3d acceleration_reference(
+        reference.acceleration.x, reference.acceleration.y,
+        reference.acceleration.z);
     Eigen::Vector3d jerk_feedforward = Eigen::Vector3d::Zero();
 
-    if (reference.use_position) {
-      position_reference = Eigen::Vector3d(
-          reference.position.x, reference.position.y,
-          reference.position.z);
-      if (!reference.use_velocity) {
-        velocity_reference.setZero();
+    for (int axis = 0; axis < 3; ++axis) {
+      if (reference.use_position[axis]) {
+        position_reference(axis) =
+            requested_position(axis);
+      }
+      if (reference.use_velocity[axis]) {
+        velocity_reference(axis) =
+            requested_velocity(axis);
       }
     }
-    if (reference.use_velocity) {
-      velocity_reference = Eigen::Vector3d(
-          reference.velocity.x, reference.velocity.y,
-          reference.velocity.z);
-      const double horizontal_speed =
-          velocity_reference.head<2>().norm();
-      if (horizontal_speed > max_velocity_xy_) {
-        velocity_reference.head<2>() *=
-            max_velocity_xy_ / horizontal_speed;
-      }
-      velocity_reference.z() = clamp(
-          velocity_reference.z(), -max_velocity_z_,
-          max_velocity_z_);
+    const double horizontal_speed =
+        velocity_reference.head<2>().norm();
+    if (horizontal_speed > max_velocity_xy_) {
+      velocity_reference.head<2>() *=
+          max_velocity_xy_ / horizontal_speed;
     }
-    if (reference.use_acceleration) {
-      acceleration_reference = Eigen::Vector3d(
-          reference.acceleration.x, reference.acceleration.y,
-          reference.acceleration.z);
-    }
+    velocity_reference.z() = clamp(
+        velocity_reference.z(), -max_velocity_z_,
+        max_velocity_z_);
     if (reference.use_jerk) {
       jerk_feedforward = Eigen::Vector3d(
           reference.jerk.x, reference.jerk.y,
           reference.jerk.z);
     }
 
-    const std::array<bool, 2> controlled{{
-        reference.use_position != 0,
-        reference.use_velocity != 0 ||
-            reference.use_position != 0}};
     if (!acceleration_command_initialized_) {
       acceleration_command_state_.setZero();
       acceleration_command_initialized_ = true;
@@ -2430,15 +2725,71 @@ class ControllerNode {
     Eigen::Vector3d desired_acceleration =
         Eigen::Vector3d::Zero();
     for (int axis = 0; axis < 3; ++axis) {
+      const std::array<bool, 2> controlled{{
+          reference.use_position[axis],
+          reference.use_velocity[axis] ||
+              reference.use_position[axis]}};
       const Eigen::Vector2d current(
           position(axis), velocity(axis));
       const Eigen::Vector2d desired(
           position_reference(axis), velocity_reference(axis));
       desired_acceleration(axis) = mpc_.acceleration(
           current, desired, controlled,
-          reference.use_acceleration
+          reference.use_acceleration[axis]
               ? acceleration_reference(axis)
               : 0.0);
+      if (reference.use_velocity[axis] &&
+          !reference.use_position[axis]) {
+        const double velocity_error =
+            velocity_reference(axis) - velocity(axis);
+        velocity_integral_acceleration_state_(axis) =
+            clamp(
+                velocity_integral_acceleration_state_(axis) +
+                    velocity_integral_gain_[axis] *
+                        velocity_error * mpc_dt_,
+                -velocity_integral_acceleration_limit_[axis],
+                velocity_integral_acceleration_limit_[axis]);
+        desired_acceleration(axis) +=
+            velocity_integral_acceleration_state_(axis);
+      } else {
+        velocity_integral_acceleration_state_(axis) = 0.0;
+      }
+      const bool pure_acceleration_axis =
+          reference.use_acceleration[axis] &&
+          !reference.use_position[axis] &&
+          !reference.use_velocity[axis];
+      if (pure_acceleration_axis) {
+        const double feedback_gain =
+            std::max(0.0, acceleration_feedback_gain_[axis]);
+        const double integral_gain =
+            std::max(0.0, acceleration_integral_gain_[axis]);
+        const double integral_limit = std::max(
+            0.0,
+            acceleration_integral_acceleration_limit_[axis]);
+        if (!acceleration_feedback_active_[axis]) {
+          acceleration_feedback_integral_state_(axis) =
+              clamp(
+                  acceleration_command_state_(axis) -
+                      acceleration_reference(axis),
+                  -integral_limit, integral_limit);
+          acceleration_feedback_active_[axis] = true;
+        }
+        const double acceleration_error =
+            acceleration_reference(axis) -
+            measured_acceleration(axis);
+        acceleration_feedback_integral_state_(axis) =
+            clamp(
+                acceleration_feedback_integral_state_(axis) +
+                    integral_gain * acceleration_error *
+                        mpc_dt_,
+                -integral_limit, integral_limit);
+        desired_acceleration(axis) +=
+            feedback_gain * acceleration_error +
+            acceleration_feedback_integral_state_(axis);
+      } else {
+        acceleration_feedback_integral_state_(axis) = 0.0;
+        acceleration_feedback_active_[axis] = false;
+      }
       if (reference.use_jerk) {
         desired_acceleration(axis) +=
             jerk_feedforward(axis) * mpc_dt_;
@@ -2579,7 +2930,8 @@ class ControllerNode {
     double desired_course = current_course;
     double desired_airspeed = cruise_airspeed_;
     const bool use_external_horizontal_position =
-        reference.use_position &&
+        (reference.use_position[0] ||
+         reference.use_position[1]) &&
         !internal_reference_active_ &&
         !idle_reference_active_;
     if (use_external_horizontal_position) {
@@ -2591,7 +2943,8 @@ class ControllerNode {
         desired_course = std::atan2(dy, dx);
       }
     }
-    if (reference.use_velocity) {
+    if (reference.use_velocity[0] ||
+        reference.use_velocity[1]) {
       const double horizontal_speed =
           std::hypot(reference.velocity.x,
                      reference.velocity.y);
@@ -2648,12 +3001,12 @@ class ControllerNode {
         -max_roll_, max_roll_);
 
     double desired_climb_rate = 0.0;
-    if (reference.use_position) {
+    if (reference.use_position[2]) {
       desired_climb_rate +=
           (reference.position.z - state_.position_odom.z) /
           std::max(0.1, altitude_time_constant_);
     }
-    if (reference.use_velocity) {
+    if (reference.use_velocity[2]) {
       desired_climb_rate += reference.velocity.z;
     }
     desired_climb_rate = clamp(
@@ -2753,7 +3106,7 @@ class ControllerNode {
       ROS_WARN_THROTTLE(
           1.0,
           "[xd_uav_controller] 参考TF短暂失效(%.2fs/%.2fs)，"
-          "保持最后一个有效odom目标: %s",
+          "保持最后一个有效控制目标: %s",
           failure_duration,
           reference_transform_failure_grace_,
           transform_reason.c_str());
@@ -2771,10 +3124,15 @@ class ControllerNode {
     Reference candidate;
     std::string transform_reason;
     const bool transformed =
-        odometryToControlReference(
-            reference_odometry_source_,
-            state_.header.frame_id, 0.0,
-            &candidate, &transform_reason);
+        position_target_active_
+            ? transformReferenceToControl(
+                  reference_source_,
+                  state_.header.frame_id, 0.0,
+                  &candidate, &transform_reason)
+            : odometryToControlReference(
+                  reference_odometry_source_,
+                  state_.header.frame_id, 0.0,
+                  &candidate, &transform_reason);
     return useTransformedReference(
         transformed, candidate, transform_reason,
         now, reference, reason);
@@ -2828,6 +3186,9 @@ class ControllerNode {
     if (state_age > state_timeout_ || !state_.state_valid ||
         !state_.odometry_fresh || !state_.imu_fresh) {
       acceleration_command_initialized_ = false;
+      velocity_integral_acceleration_state_.setZero();
+      acceleration_feedback_integral_state_.setZero();
+      acceleration_feedback_active_.fill(false);
       command.rejection_reason = "控制状态无效或超时";
       command_publisher_.publish(command);
       return;
@@ -2864,10 +3225,16 @@ class ControllerNode {
                 "外部Odometry参考超时");
             reference = makeFixedwingLoiterReference();
           } else {
-            command.rejection_reason =
-                "Odometry单点控制参考超时";
-            command_publisher_.publish(command);
-            return;
+            have_reference_ = false;
+            have_normalized_reference_ = false;
+            position_target_active_ = false;
+            point_reference_latched_ = false;
+            captureIdleReference();
+            reference = makeIdleReference();
+            ROS_WARN_THROTTLE(
+                1.0,
+                "[xd_uav_controller] 流式PositionTarget超时，"
+                "已捕获当前位置进入悬停");
           }
         } else {
           std::string point_reason;
@@ -2876,27 +3243,6 @@ class ControllerNode {
             command.rejection_reason = point_reason;
             command_publisher_.publish(command);
             return;
-          }
-          if (have_reference_acceleration_ &&
-              (now - last_reference_acceleration_receive_)
-                      .toSec() <=
-                  reference_acceleration_timeout_) {
-            geometry_msgs::Vector3 acceleration;
-            std::string acceleration_reason;
-            if (accelerationToControlFrame(
-                    reference_acceleration_,
-                    state_.header.frame_id, 0.0,
-                    &acceleration,
-                    &acceleration_reason)) {
-              reference.acceleration = acceleration;
-              reference.use_acceleration = true;
-            } else {
-              ROS_WARN_THROTTLE(
-                  1.0,
-                  "[xd_uav_controller] 加速度前馈坐标转换失败，"
-                  "本周期忽略前馈: %s",
-                  acceleration_reason.c_str());
-            }
           }
         }
       }
@@ -2955,11 +3301,12 @@ class ControllerNode {
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
   ros::Subscriber state_subscriber_;
+  ros::Subscriber reference_position_target_subscriber_;
   ros::Subscriber reference_odometry_subscriber_;
-  ros::Subscriber reference_acceleration_subscriber_;
   ros::Subscriber reference_trajectory_subscriber_;
   ros::Subscriber simple_goal_subscriber_;
   ros::Subscriber local_alignment_valid_subscriber_;
+  ros::Publisher reference_position_target_publisher_;
   ros::Publisher reference_odometry_publisher_;
   ros::Publisher reference_trajectory_path_publisher_;
   ros::Publisher command_publisher_;
@@ -2968,13 +3315,12 @@ class ControllerNode {
 
   xd_uav_controller::ControlState state_;
   Reference reference_;
+  Reference reference_source_;
   nav_msgs::Odometry reference_odometry_source_;
-  geometry_msgs::AccelStamped reference_acceleration_;
   trajectory_msgs::MultiDOFJointTrajectory
       reference_trajectory_;
   ros::Time last_state_receive_;
   ros::Time last_reference_receive_;
-  ros::Time last_reference_acceleration_receive_;
   ros::Time reference_trajectory_start_;
   ros::Time last_local_alignment_valid_receive_;
   ros::Time active_reference_transform_failure_since_;
@@ -2982,10 +3328,10 @@ class ControllerNode {
   bool have_reference_{false};
   bool have_reference_error_{false};
   bool have_normalized_reference_{false};
-  bool have_reference_acceleration_{false};
   bool have_local_alignment_valid_{false};
   bool local_alignment_valid_{false};
   bool trajectory_active_{false};
+  bool position_target_active_{false};
   bool point_reference_latched_{false};
   uint32_t simple_goal_sequence_counter_{0};
   bool internal_reference_active_{false};
@@ -3014,6 +3360,12 @@ class ControllerNode {
   ros::Time last_landing_update_;
   Eigen::Vector3d acceleration_command_state_{
       Eigen::Vector3d::Zero()};
+  Eigen::Vector3d velocity_integral_acceleration_state_{
+      Eigen::Vector3d::Zero()};
+  Eigen::Vector3d acceleration_feedback_integral_state_{
+      Eigen::Vector3d::Zero()};
+  std::array<bool, 3> acceleration_feedback_active_{{
+      false, false, false}};
   Eigen::Vector3d idle_position_{Eigen::Vector3d::Zero()};
   double idle_course_{0.0};
   double idle_airspeed_{15.0};
@@ -3024,7 +3376,6 @@ class ControllerNode {
   double control_rate_{100.0};
   double state_timeout_{0.2};
   double reference_timeout_{0.5};
-  double reference_acceleration_timeout_{0.5};
   double reference_transform_timeout_{0.03};
   double maximum_transform_age_{0.5};
   double reference_transform_failure_grace_{0.5};
@@ -3051,6 +3402,18 @@ class ControllerNode {
   double max_acceleration_z_{4.0};
   double max_jerk_xy_{8.0};
   double max_jerk_z_{6.0};
+  std::array<double, 3> velocity_integral_gain_{{
+      1.0, 1.0, 2.0}};
+  std::array<double, 3>
+      velocity_integral_acceleration_limit_{{
+          1.0, 1.0, 1.0}};
+  std::array<double, 3> acceleration_feedback_gain_{{
+      0.25, 0.25, 0.35}};
+  std::array<double, 3> acceleration_integral_gain_{{
+      0.20, 0.20, 0.40}};
+  std::array<double, 3>
+      acceleration_integral_acceleration_limit_{{
+          1.0, 1.0, 1.0}};
 
   double cruise_airspeed_{15.0};
   double minimum_airspeed_{11.0};

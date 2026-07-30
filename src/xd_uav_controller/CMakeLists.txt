@@ -5,6 +5,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
+  mavros_msgs
   message_generation
   nav_msgs
   roscpp
@@ -38,6 +39,7 @@ generate_messages(
 catkin_package(
   CATKIN_DEPENDS
     geometry_msgs
+    mavros_msgs
     message_runtime
     nav_msgs
     roscpp

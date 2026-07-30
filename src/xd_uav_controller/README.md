@@ -9,8 +9,8 @@
 
 ```text
 /uavX/control_manager/state          xd_uav_controller/ControlState
-/uavX/control/reference/odom         nav_msgs/Odometry
-/uavX/control/reference/acceleration geometry_msgs/AccelStamped
+/uavX/control/reference/setpoint     mavros_msgs/PositionTarget（仅四旋翼）
+/uavX/control/reference/odom         nav_msgs/Odometry（仅固定翼）
 /uavX/control/reference/trajectory   trajectory_msgs/MultiDOFJointTrajectory
 /move_base_simple/goal               geometry_msgs/PoseStamped
 ```
@@ -32,7 +32,7 @@
 `/uavX/control_manager/*`下的公开服务。ROS 1无法把跨节点服务从服务列表隐藏，
 因此用`internal`命名空间明确标识。
 
-外部参考只使用ROS标准消息：
+外部参考使用ROS/MAVROS已有消息，不再额外定义一套模式消息：
 
 - 所有参考保留在消息声明的语义坐标系中；轨迹采样或计算控制量之前，才根据最新TF2
   转换到当前`ControlState.header.frame_id`。控制律内部始终只处理同一个连续odom
@@ -40,14 +40,48 @@
   TF2会自动沿TF树求解变换，不需要为local、map或world分别写控制律。允许的惯性
   frame由`reference_frames/allowed`限制；同名但属于另一架飞机命名空间的frame不会
   被接受。
-- 单点目标使用`nav_msgs/Odometry`。`pose`表达目标位置和姿态；控制器从姿态中提取
-  yaw。`twist`遵循Odometry语义，在`child_frame_id`中表达：当
-  `child_frame_id != header.frame_id`时，控制器使用目标姿态把线速度和角速度旋转到
-  参考父坐标系，再通过TF旋转到控制odom。因此`header.frame_id`和
-  `child_frame_id`都必须填写，后者只能是控制机体frame或与前者相同。
-- 单点加速度前馈可另外发布`geometry_msgs/AccelStamped`。线加速度根据它自己的
-  `header.frame_id`旋转到控制odom，不要求与Odometry参考使用同一个源frame。超时或
-  单次转换失败后本周期不使用该前馈，不影响位置/速度参考。
+- 四旋翼单点/流式目标统一使用`mavros_msgs/PositionTarget`。控制器直接按
+  `type_mask`逐轴判断是否使用位置XYZ、速度XYZ、加速度XYZ、yaw和yaw rate；例如
+  X/Y可以使用速度控制，同时Z使用位置保持。被掩码忽略的字段不会读取，因此可以是
+  NaN。加速度写在`acceleration_or_force`中，原来的独立
+  `/control/reference/acceleration`接口已经取消。
+- `PositionTarget.header.frame_id`必须填写，`coordinate_frame`当前必须设置为
+  `FRAME_LOCAL_NED`。和MAVROS的ROS侧接口一致，消息数值仍按ROS ENU惯性坐标语义
+  表达，并根据`header.frame_id`通过TF转换；这里的枚举用于表明“局部惯性系”，
+  不能据其名称自行交换XY或反转Z。当前不接受`FORCE`或BODY/OFFSET frame。当参考
+  frame与控制odom之间存在旋转时，该旋转不能混合掩码中启用和忽略的轴；这种逐轴
+  指令建议直接使用`ControlState.header.frame_id`。
+- 至少一个位置轴启用、所有速度/加速度轴和yaw rate均忽略的四旋翼目标视为一次性锁存目标，
+  可以只发一次；含速度、加速度或yaw rate的目标属于流式控制，需要持续发布，超过
+  `reference_timeout`后控制器捕获当前位置并转为悬停。yaw是否启用不改变锁存判定。
+- 纯速度模式不要求同时启用任何位置轴。每个启用的速度轴直接跟踪对应速度值；例如
+  启用VX/VY/VZ并填写`[0.3, 0, 0]`就是沿+X运动并把Y、Z速度保持为0。纯速度轴内部
+  带有限幅积分补偿，用于消除阻力、模型误差和悬停推力偏差造成的稳态速度误差。
+  未启用的轴不参与该模式的控制。
+- 某轴只启用加速度时，控制器使用去除重力后的`ControlState.acceleration_odom`
+  对该轴形成PI加速度闭环，并在进入模式时继承切换前已经稳定的加速度补偿量；
+  加速度状态无效或超时时拒绝输出。如果同一轴还启用了位置或速度，加速度字段仍作为
+  MPC前馈，不额外叠加加速度PI。注意`AZ=0`只保持净加速度为0，不负责把已有垂直速度
+  或高度误差恢复为0。
+- 常用掩码应使用消息常量按位或生成，不建议在代码中只写数字。例如：位置+yaw为
+  `IGNORE_VX|IGNORE_VY|IGNORE_VZ|IGNORE_AFX|IGNORE_AFY|IGNORE_AFZ|`
+  `IGNORE_YAW_RATE`（数值2552）；纯速度为
+  `IGNORE_PX|IGNORE_PY|IGNORE_PZ|IGNORE_AFX|IGNORE_AFY|IGNORE_AFZ|`
+  `IGNORE_YAW|IGNORE_YAW_RATE`（3527）；纯加速度为
+  `IGNORE_PX|IGNORE_PY|IGNORE_PZ|IGNORE_VX|IGNORE_VY|IGNORE_VZ|`
+  `IGNORE_YAW|IGNORE_YAW_RATE`（3135）。截图中常见的掩码63只忽略位置和速度，
+  实际会同时启用加速度、yaw和yaw rate。
+- 只启用VX使用掩码3575；只启用AY使用掩码3455。控制器并不要求同一类型的XYZ一起
+  启用，每一个位置、速度和加速度掩码位都会被独立解析。
+- 水平速度加高度位置保持使用
+  `IGNORE_PX|IGNORE_PY|IGNORE_VZ|IGNORE_AFX|IGNORE_AFY|IGNORE_AFZ|`
+  `IGNORE_YAW|IGNORE_YAW_RATE`（3555）：填写`velocity.x/y`和`position.z`，
+  其余被忽略字段可以保持为0或NaN。
+- 固定翼单点目标继续使用`nav_msgs/Odometry`，没有改成掩码接口。`pose`表达目标
+  位置和姿态，控制器从姿态中提取yaw；`twist`遵循Odometry语义，在
+  `child_frame_id`中表达。当`child_frame_id != header.frame_id`时，控制器使用目标
+  姿态把线速度和角速度旋转到参考父坐标系，再通过TF旋转到控制odom。因此两个frame
+  都必须填写，`child_frame_id`只能是控制机体frame或与父frame相同。
 - 多点轨迹使用`trajectory_msgs/MultiDOFJointTrajectory`，当前只接受一个机体：
   每个点必须有一个transform，velocity和acceleration可以整条轨迹一致地提供或省略，
   `time_from_start`必须严格递增。轨迹在点间线性插值，yaw按最短角距离插值；轨迹结束
@@ -62,9 +96,10 @@
   simple goal是一次发布、持续保持的目标；默认只使用XY和yaw，并继承控制器当前的
   期望高度，因为RViz通常会把2D目标的z写成0。连续发送多个2D目标不会反复采样带有
   波动的实测高度，也不会把高度目标逐点向下带。只有显式设置
-  `simple_goal/use_message_z: true`时才使用消息中的z。适配后的
-  `nav_msgs/Odometry`会保留原始参考frame，以latched方式发布到
-  `/uavX/control/reference/odom`，再通过与普通单点输入相同的TF路径进入控制器。
+  `simple_goal/use_message_z: true`时才使用消息中的z。适配结果会保留原始参考
+  frame，并以latched方式进入对应机型的普通单点路径：四旋翼发布到
+  `/uavX/control/reference/setpoint`，固定翼发布到
+  `/uavX/control/reference/odom`。
 
 新到达的单点会取消当前外部轨迹，新到达的轨迹也会接管单点。起飞完成后，任一标准
 外部参考一旦到达都会接管内部悬停参考。降落期间外部参考会被忽略。
@@ -105,14 +140,17 @@ rosrun xd_uav_controller publish_fixedwing_trajectory.py \
 没有外部参考或起飞请求时，控制器会自动捕获当前状态：四旋翼保持当前位置和yaw，
 固定翼保持当前高度、course和空速。这样系统可以先预发送控制量并在未解锁时进入
 OFFBOARD。固定翼完成起飞后会在切入点建立与当前航向相切的等待圆，持续定高盘旋；
-新的单点或轨迹参考会退出等待盘旋。流式Odometry参考超时后不会中断控制输出，而会
-在当前位置重新建立相切等待圆。simple goal属于一次性锁存目标，不受该超时影响。
+新的单点或轨迹参考会退出等待盘旋。固定翼流式Odometry参考超时后不会中断控制输出，
+而会在当前位置重新建立相切等待圆；四旋翼流式PositionTarget超时后转为当前位置
+悬停。simple goal属于一次性锁存目标，不受该超时影响。
 
 ## 控制律
 
 - 四旋翼：每轴状态为`[position, velocity]`的有限时域线性MPC，控制量为期望加速度；
   输出再经过jerk变化率限制形成期望合力，最后由SO(3)姿态误差生成body rates和
-  collective thrust。参考加速度作为MPC前馈量使用。
+  collective thrust。位置/速度控制中的参考加速度作为MPC前馈量使用；没有位置参考
+  的纯速度轴额外使用带抗饱和的速度积分补偿，纯加速度轴则使用估计加速度形成PI闭环，
+  避免靠模型偏差产生非预期的稳态速度或加速度。
 - 固定翼：位置/速度参考先转换为course、高度、爬升率和空速，再生成roll、pitch、
   协调转弯yaw rate与throttle。控制状态使用ROS ENU/FLU约定，因此正爬升对应负pitch，
   正course变化对应负roll；发给MAVROS后再由其转换到PX4的NED/FRD约定。固定翼和

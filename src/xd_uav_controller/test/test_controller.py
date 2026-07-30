@@ -6,13 +6,13 @@ import unittest
 
 import rospy
 from geometry_msgs.msg import (
-    AccelStamped,
     PoseStamped,
     Transform,
     TransformStamped,
     Twist,
 )
-from nav_msgs.msg import Odometry, Path
+from mavros_msgs.msg import PositionTarget
+from nav_msgs.msg import Path
 from std_msgs.msg import Bool
 import tf2_ros
 from trajectory_msgs.msg import (
@@ -33,17 +33,20 @@ class ControllerInterfaceTest(unittest.TestCase):
         self._position_x = 0.0
         self._position_y = 0.0
         self._position_z = 0.0
+        self._acceleration_x = 0.0
+        self._acceleration_y = 0.0
+        self._acceleration_z = 0.0
+        self._acceleration_fresh = True
         self._local_to_odom_x = 10.0
         self._local_alignment_valid = True
         self._tf_broadcaster = tf2_ros.TransformBroadcaster()
         self._state_publisher = rospy.Publisher(
             "state", ControlState, queue_size=10
         )
-        self._reference_odometry_publisher = rospy.Publisher(
-            "reference_odometry", Odometry, queue_size=10
-        )
-        self._reference_acceleration_publisher = rospy.Publisher(
-            "reference_acceleration", AccelStamped, queue_size=10
+        self._reference_position_target_publisher = rospy.Publisher(
+            "reference_position_target",
+            PositionTarget,
+            queue_size=10,
         )
         self._reference_trajectory_publisher = rospy.Publisher(
             "reference_trajectory",
@@ -69,33 +72,168 @@ class ControllerInterfaceTest(unittest.TestCase):
         state.position_odom.x = self._position_x
         state.position_odom.y = self._position_y
         state.position_odom.z = self._position_z
+        state.acceleration_odom.x = self._acceleration_x
+        state.acceleration_odom.y = self._acceleration_y
+        state.acceleration_odom.z = self._acceleration_z
         state.orientation_odom_body.w = 1.0
         state.state_valid = True
         state.localization_valid = True
         state.odometry_fresh = True
         state.imu_fresh = True
-        state.acceleration_fresh = True
+        state.acceleration_fresh = self._acceleration_fresh
         state.stable = True
         return state
 
     @staticmethod
-    def _reference():
-        reference = Odometry()
+    def _reference(frame_id="uav1/odom"):
+        reference = PositionTarget()
         reference.header.stamp = rospy.Time.now()
-        reference.header.frame_id = "uav1/odom"
-        reference.child_frame_id = "uav1/base_link"
-        reference.pose.pose.position.z = 1.0
-        reference.pose.pose.orientation.w = 1.0
+        reference.header.frame_id = frame_id
+        reference.coordinate_frame = (
+            PositionTarget.FRAME_LOCAL_NED
+        )
+        reference.type_mask = PositionTarget.IGNORE_YAW_RATE
+        reference.position.z = 1.0
+        reference.acceleration_or_force.z = 0.1
         return reference
 
     @staticmethod
-    def _acceleration_reference(
-        frame_id="uav1/odom"
-    ):
-        reference = AccelStamped()
+    def _velocity_reference(frame_id="uav1/odom"):
+        reference = PositionTarget()
         reference.header.stamp = rospy.Time.now()
         reference.header.frame_id = frame_id
-        reference.accel.linear.z = 0.1
+        reference.coordinate_frame = (
+            PositionTarget.FRAME_LOCAL_NED
+        )
+        reference.type_mask = (
+            PositionTarget.IGNORE_PX
+            | PositionTarget.IGNORE_PY
+            | PositionTarget.IGNORE_PZ
+            | PositionTarget.IGNORE_AFX
+            | PositionTarget.IGNORE_AFY
+            | PositionTarget.IGNORE_AFZ
+            | PositionTarget.IGNORE_YAW
+            | PositionTarget.IGNORE_YAW_RATE
+        )
+        reference.velocity.x = 1.0
+        return reference
+
+    @staticmethod
+    def _single_axis_velocity_reference(
+        frame_id="uav1/odom"
+    ):
+        reference = PositionTarget()
+        reference.header.stamp = rospy.Time.now()
+        reference.header.frame_id = frame_id
+        reference.coordinate_frame = (
+            PositionTarget.FRAME_LOCAL_NED
+        )
+        reference.type_mask = (
+            PositionTarget.IGNORE_PX
+            | PositionTarget.IGNORE_PY
+            | PositionTarget.IGNORE_PZ
+            | PositionTarget.IGNORE_VY
+            | PositionTarget.IGNORE_VZ
+            | PositionTarget.IGNORE_AFX
+            | PositionTarget.IGNORE_AFY
+            | PositionTarget.IGNORE_AFZ
+            | PositionTarget.IGNORE_YAW
+            | PositionTarget.IGNORE_YAW_RATE
+        )
+        reference.position.x = math.nan
+        reference.position.y = math.nan
+        reference.position.z = math.nan
+        reference.velocity.x = 0.3
+        reference.velocity.y = math.nan
+        reference.velocity.z = math.nan
+        reference.acceleration_or_force.x = math.nan
+        reference.acceleration_or_force.y = math.nan
+        reference.acceleration_or_force.z = math.nan
+        reference.yaw = math.nan
+        reference.yaw_rate = math.nan
+        return reference
+
+    @staticmethod
+    def _horizontal_velocity_altitude_reference(
+        frame_id="uav1/odom"
+    ):
+        reference = PositionTarget()
+        reference.header.stamp = rospy.Time.now()
+        reference.header.frame_id = frame_id
+        reference.coordinate_frame = (
+            PositionTarget.FRAME_LOCAL_NED
+        )
+        reference.type_mask = (
+            PositionTarget.IGNORE_PX
+            | PositionTarget.IGNORE_PY
+            | PositionTarget.IGNORE_VZ
+            | PositionTarget.IGNORE_AFX
+            | PositionTarget.IGNORE_AFY
+            | PositionTarget.IGNORE_AFZ
+            | PositionTarget.IGNORE_YAW
+            | PositionTarget.IGNORE_YAW_RATE
+        )
+        reference.position.x = math.nan
+        reference.position.y = math.nan
+        reference.position.z = 1.0
+        reference.velocity.x = 0.3
+        reference.velocity.y = 0.0
+        reference.velocity.z = math.nan
+        return reference
+
+    @staticmethod
+    def _acceleration_reference(frame_id="uav1/odom"):
+        reference = PositionTarget()
+        reference.header.stamp = rospy.Time.now()
+        reference.header.frame_id = frame_id
+        reference.coordinate_frame = (
+            PositionTarget.FRAME_LOCAL_NED
+        )
+        reference.type_mask = (
+            PositionTarget.IGNORE_PX
+            | PositionTarget.IGNORE_PY
+            | PositionTarget.IGNORE_PZ
+            | PositionTarget.IGNORE_VX
+            | PositionTarget.IGNORE_VY
+            | PositionTarget.IGNORE_VZ
+            | PositionTarget.IGNORE_AFX
+            | PositionTarget.IGNORE_AFZ
+            | PositionTarget.IGNORE_YAW
+            | PositionTarget.IGNORE_YAW_RATE
+        )
+        reference.position.x = math.nan
+        reference.position.y = math.nan
+        reference.position.z = math.nan
+        reference.velocity.x = math.nan
+        reference.velocity.y = math.nan
+        reference.velocity.z = math.nan
+        reference.acceleration_or_force.x = math.nan
+        reference.acceleration_or_force.y = 1.0
+        reference.acceleration_or_force.z = math.nan
+        reference.yaw = math.nan
+        reference.yaw_rate = math.nan
+        return reference
+
+    @staticmethod
+    def _acceleration_vector_reference(
+        frame_id="uav1/odom"
+    ):
+        reference = PositionTarget()
+        reference.header.stamp = rospy.Time.now()
+        reference.header.frame_id = frame_id
+        reference.coordinate_frame = (
+            PositionTarget.FRAME_LOCAL_NED
+        )
+        reference.type_mask = (
+            PositionTarget.IGNORE_PX
+            | PositionTarget.IGNORE_PY
+            | PositionTarget.IGNORE_PZ
+            | PositionTarget.IGNORE_VX
+            | PositionTarget.IGNORE_VY
+            | PositionTarget.IGNORE_VZ
+            | PositionTarget.IGNORE_YAW
+            | PositionTarget.IGNORE_YAW_RATE
+        )
         return reference
 
     @staticmethod
@@ -187,16 +325,31 @@ class ControllerInterfaceTest(unittest.TestCase):
             self._simple_goal_publisher.publish(goal)
             rospy.sleep(0.02)
         adapted_goal = rospy.wait_for_message(
-            "reference_odometry", Odometry, timeout=1.0
+            "reference_position_target",
+            PositionTarget,
+            timeout=1.0,
         )
         self.assertAlmostEqual(
-            adapted_goal.pose.pose.position.x, 1.0
+            adapted_goal.position.x, 1.0
         )
         self.assertAlmostEqual(
-            adapted_goal.pose.pose.position.z, 0.0
+            adapted_goal.position.z, 0.0
         )
         self.assertEqual(
-            adapted_goal.child_frame_id, "uav1/base_link"
+            adapted_goal.coordinate_frame,
+            PositionTarget.FRAME_LOCAL_NED,
+        )
+        self.assertEqual(
+            adapted_goal.type_mask,
+            (
+                PositionTarget.IGNORE_VX
+                | PositionTarget.IGNORE_VY
+                | PositionTarget.IGNORE_VZ
+                | PositionTarget.IGNORE_AFX
+                | PositionTarget.IGNORE_AFY
+                | PositionTarget.IGNORE_AFZ
+                | PositionTarget.IGNORE_YAW_RATE
+            ),
         )
         goal_command = self._wait_for_command(
             lambda value: (
@@ -218,14 +371,16 @@ class ControllerInterfaceTest(unittest.TestCase):
             self._simple_goal_publisher.publish(local_goal)
             rospy.sleep(0.02)
         adapted_local_goal = rospy.wait_for_message(
-            "reference_odometry", Odometry, timeout=1.0
+            "reference_position_target",
+            PositionTarget,
+            timeout=1.0,
         )
         self.assertEqual(
             adapted_local_goal.header.frame_id,
             "uav1/local_origin",
         )
         self.assertAlmostEqual(
-            adapted_local_goal.pose.pose.position.x, 9.0
+            adapted_local_goal.position.x, 9.0
         )
         local_command = self._wait_for_command(
             lambda value: (
@@ -297,7 +452,8 @@ class ControllerInterfaceTest(unittest.TestCase):
         self.assertTrue(held_after_rejection.valid)
 
         # A simple goal is a one-shot latched target, so it must
-        # remain valid beyond the streaming Odometry timeout.
+        # remain valid beyond the streaming PositionTarget
+        # timeout.
         deadline = time.time() + 0.7
         held_command = goal_command
         while time.time() < deadline:
@@ -307,15 +463,36 @@ class ControllerInterfaceTest(unittest.TestCase):
             )
         self.assertTrue(held_command.valid)
 
+        # Per-axis masking combines horizontal velocity with a
+        # vertical position hold. It must command both forward
+        # tilt and additional thrust toward z=1.
+        mixed_reference = (
+            self._horizontal_velocity_altitude_reference()
+        )
+        self.assertEqual(mixed_reference.type_mask, 3555)
+        for _ in range(10):
+            mixed_reference.header.stamp = rospy.Time.now()
+            self._state_publisher.publish(self._state())
+            self._reference_position_target_publisher.publish(
+                mixed_reference
+            )
+            rospy.sleep(0.02)
+        mixed_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and abs(value.body_rate.y) > 0.01
+                and value.thrust > 0.705
+            ),
+            timeout=0.4,
+        )
+        self.assertTrue(mixed_command.valid)
+
         deadline = time.time() + 2.0
         while time.time() < deadline:
             self._state_publisher.publish(self._state())
             self._publish_reference_frames()
-            self._reference_odometry_publisher.publish(
-                self._reference()
-            )
-            self._reference_acceleration_publisher.publish(
-                self._acceleration_reference(
+            self._reference_position_target_publisher.publish(
+                self._reference(
                     frame_id="uav1/local_origin"
                 )
             )
@@ -328,6 +505,117 @@ class ControllerInterfaceTest(unittest.TestCase):
         self.assertTrue(math.isfinite(command.body_rate.z))
         self.assertGreaterEqual(command.thrust, 0.0)
         self.assertLessEqual(command.thrust, 1.0)
+
+        # The same topic selects pure velocity and pure
+        # acceleration control only by changing type_mask.
+        single_axis_velocity_reference = (
+            self._single_axis_velocity_reference()
+        )
+        self.assertEqual(
+            single_axis_velocity_reference.type_mask,
+            3575,
+        )
+        for _ in range(10):
+            single_axis_velocity_reference.header.stamp = (
+                rospy.Time.now()
+            )
+            self._state_publisher.publish(self._state())
+            self._reference_position_target_publisher.publish(
+                single_axis_velocity_reference
+            )
+            rospy.sleep(0.02)
+        single_axis_velocity_command = self._wait_for_command(
+            lambda value: (
+                value.valid and abs(value.body_rate.y) > 0.01
+            ),
+            timeout=0.4,
+        )
+        self.assertTrue(single_axis_velocity_command.valid)
+
+        velocity_reference = self._velocity_reference()
+        for _ in range(10):
+            velocity_reference.header.stamp = rospy.Time.now()
+            self._state_publisher.publish(self._state())
+            self._reference_position_target_publisher.publish(
+                velocity_reference
+            )
+            rospy.sleep(0.02)
+        velocity_command = self._wait_for_command(
+            lambda value: (
+                value.valid and abs(value.body_rate.y) > 0.01
+            ),
+            timeout=0.4,
+        )
+        self.assertTrue(velocity_command.valid)
+
+        acceleration_reference = (
+            self._acceleration_reference()
+        )
+        self.assertEqual(
+            acceleration_reference.type_mask,
+            3455,
+        )
+        for _ in range(10):
+            acceleration_reference.header.stamp = (
+                rospy.Time.now()
+            )
+            self._state_publisher.publish(self._state())
+            self._reference_position_target_publisher.publish(
+                acceleration_reference
+            )
+            rospy.sleep(0.02)
+        acceleration_command = self._wait_for_command(
+            lambda value: (
+                value.valid and abs(value.body_rate.x) > 0.01
+            ),
+            timeout=0.4,
+        )
+        self.assertTrue(acceleration_command.valid)
+
+        # Pure acceleration feedback must reject stale measured
+        # acceleration, then increase thrust when measured AZ is
+        # below a zero-acceleration setpoint.
+        acceleration_vector = (
+            self._acceleration_vector_reference()
+        )
+        self.assertEqual(
+            acceleration_vector.type_mask,
+            3135,
+        )
+        self._acceleration_fresh = False
+        for _ in range(10):
+            acceleration_vector.header.stamp = rospy.Time.now()
+            self._state_publisher.publish(self._state())
+            self._reference_position_target_publisher.publish(
+                acceleration_vector
+            )
+            rospy.sleep(0.02)
+        stale_acceleration_command = self._wait_for_command(
+            lambda value: (
+                not value.valid
+                and "纯加速度控制要求" in value.rejection_reason
+            ),
+            timeout=0.4,
+        )
+        self.assertFalse(stale_acceleration_command.valid)
+
+        self._acceleration_fresh = True
+        self._acceleration_z = -1.0
+        for _ in range(15):
+            acceleration_vector.header.stamp = rospy.Time.now()
+            self._state_publisher.publish(self._state())
+            self._reference_position_target_publisher.publish(
+                acceleration_vector
+            )
+            rospy.sleep(0.02)
+        acceleration_feedback_command = self._wait_for_command(
+            lambda value: (
+                value.valid and value.thrust > 0.705
+            ),
+            timeout=0.4,
+        )
+        self.assertTrue(acceleration_feedback_command.valid)
+        self._acceleration_z = 0.0
 
         trajectory = self._trajectory_reference(
             frame_id="uav1/local_origin"
@@ -392,12 +680,12 @@ class ControllerInterfaceTest(unittest.TestCase):
             )
             try:
                 candidate = rospy.wait_for_message(
-                    "reference_odometry",
-                    Odometry,
+                    "reference_position_target",
+                    PositionTarget,
                     timeout=0.2,
                 )
                 if abs(
-                    candidate.pose.pose.position.z - 1.5
+                    candidate.position.z - 1.5
                 ) < 1e-3:
                     retained_altitude_goal = candidate
                     break
@@ -405,7 +693,7 @@ class ControllerInterfaceTest(unittest.TestCase):
                 pass
         self.assertIsNotNone(retained_altitude_goal)
         self.assertAlmostEqual(
-            retained_altitude_goal.pose.pose.position.z,
+            retained_altitude_goal.position.z,
             1.5,
             delta=1e-3,
         )

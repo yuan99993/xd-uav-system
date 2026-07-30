@@ -114,7 +114,11 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         )
         self.assertTrue(idle_command.valid)
 
-        command = self._wait_for_command(lambda value: value.valid)
+        command = self._wait_for_command(
+            lambda value: (
+                value.valid and value.body_rate.y < -0.05
+            )
+        )
         self.assertEqual(command.vehicle_type, ControlCommand.VEHICLE_FIXEDWING)
         self.assertTrue(math.isfinite(command.body_rate.x))
         self.assertTrue(math.isfinite(command.body_rate.y))
