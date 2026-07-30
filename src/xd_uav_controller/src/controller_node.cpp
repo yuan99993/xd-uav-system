@@ -11,9 +11,7 @@
 #include <Eigen/Dense>
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/PositionTarget.h>
-#include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
-#include <ros/message_event.h>
 #include <ros/ros.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/Bool.h>
@@ -198,6 +196,7 @@ struct Reference {
   bool use_jerk{false};
   bool use_yaw{false};
   bool use_yaw_rate{false};
+  bool trajectory_reference{false};
 };
 
 }  // namespace
@@ -209,21 +208,12 @@ class ControllerNode {
     loadParameters();
     state_subscriber_ = nh_.subscribe(
         "state", 20, &ControllerNode::stateCallback, this);
-    if (vehicle_type_ == "multirotor") {
-      reference_position_target_subscriber_ = nh_.subscribe(
-          "reference_position_target", 20,
-          &ControllerNode::referencePositionTargetCallback, this);
-      reference_position_target_publisher_ =
-          nh_.advertise<mavros_msgs::PositionTarget>(
-              "reference_position_target", 1, true);
-    } else {
-      reference_odometry_subscriber_ = nh_.subscribe(
-          "reference_odometry", 20,
-          &ControllerNode::referenceOdometryCallback, this);
-      reference_odometry_publisher_ =
-          nh_.advertise<nav_msgs::Odometry>(
-              "reference_odometry", 1, true);
-    }
+    reference_position_target_subscriber_ = nh_.subscribe(
+        "reference_position_target", 20,
+        &ControllerNode::referencePositionTargetCallback, this);
+    reference_position_target_publisher_ =
+        nh_.advertise<mavros_msgs::PositionTarget>(
+            "reference_position_target", 1, true);
     reference_trajectory_subscriber_ = nh_.subscribe(
         "reference_trajectory", 5,
         &ControllerNode::referenceTrajectoryCallback, this);
@@ -858,82 +848,6 @@ class ControllerNode {
     return true;
   }
 
-  bool odometryToControlReference(
-      const nav_msgs::Odometry& message,
-      const std::string& control_frame,
-      const double timeout,
-      Reference* control_reference,
-      std::string* reason) {
-    if (message.header.frame_id.empty()) {
-      *reason = "Odometry.header.frame_id不能为空";
-      return false;
-    }
-    if (message.child_frame_id.empty()) {
-      *reason =
-          "Odometry.child_frame_id不能为空；"
-          "它用于声明twist的表达坐标系";
-      return false;
-    }
-    const std::string parent =
-        canonicalFrame(message.header.frame_id);
-    const std::string child =
-        canonicalFrame(message.child_frame_id);
-    if (child != parent &&
-        child != canonicalFrame(state_.body_frame_id)) {
-      *reason =
-          "Odometry.child_frame_id必须是控制机体坐标系"
-          "或与header.frame_id相同";
-      return false;
-    }
-    if (!finite(message.pose.pose.position) ||
-        !finite(message.twist.twist.linear) ||
-        !finite(message.twist.twist.angular)) {
-      *reason = "Odometry位置或速度包含非法数值";
-      return false;
-    }
-    Eigen::Matrix3d source_body_rotation;
-    if (!quaternionToMatrix(
-            message.pose.pose.orientation,
-            &source_body_rotation)) {
-      *reason = "Odometry姿态四元数无效";
-      return false;
-    }
-
-    Reference source_reference;
-    source_reference.header = message.header;
-    source_reference.header.frame_id = parent;
-    source_reference.position =
-        message.pose.pose.position;
-    source_reference.use_position = {{true, true, true}};
-    source_reference.use_velocity = {{true, true, true}};
-    source_reference.use_yaw = true;
-    source_reference.use_yaw_rate = true;
-    source_reference.yaw = std::atan2(
-        source_body_rotation(1, 0),
-        source_body_rotation(0, 0));
-
-    Eigen::Vector3d velocity(
-        message.twist.twist.linear.x,
-        message.twist.twist.linear.y,
-        message.twist.twist.linear.z);
-    Eigen::Vector3d angular_velocity(
-        message.twist.twist.angular.x,
-        message.twist.twist.angular.y,
-        message.twist.twist.angular.z);
-    if (child != parent) {
-      velocity = source_body_rotation * velocity;
-      angular_velocity =
-          source_body_rotation * angular_velocity;
-    }
-    source_reference.velocity.x = velocity.x();
-    source_reference.velocity.y = velocity.y();
-    source_reference.velocity.z = velocity.z();
-    source_reference.yaw_rate = angular_velocity.z();
-    return transformReferenceToControl(
-        source_reference, control_frame, timeout,
-        control_reference, reason);
-  }
-
   bool positionTargetToSourceReference(
       const mavros_msgs::PositionTarget& message,
       Reference* source_reference,
@@ -1080,6 +994,22 @@ class ControllerNode {
     return true;
   }
 
+  bool positionTargetSupportedByVehicle(
+      const Reference& reference,
+      std::string* reason) const {
+    if (vehicle_type_ != "fixedwing") {
+      return true;
+    }
+    if (anyAxis(reference.use_acceleration)) {
+      *reason =
+          "固定翼PositionTarget暂不支持加速度或力控制；"
+          "请掩码忽略AFX/AFY/AFZ，使用位置、速度、yaw"
+          "或yaw_rate";
+      return false;
+    }
+    return true;
+  }
+
   void stateCallback(
       const xd_uav_controller::ControlState::ConstPtr& message) {
     state_ = *message;
@@ -1131,40 +1061,6 @@ class ControllerNode {
         reason.c_str());
   }
 
-  void referenceOdometryCallback(
-      const ros::MessageEvent<
-          nav_msgs::Odometry const>& event) {
-    const nav_msgs::Odometry::ConstPtr message =
-        event.getConstMessage();
-    if (!externalReferenceAllowed()) {
-      return;
-    }
-    if (!have_state_ || !state_.state_valid) {
-      rejectExternalReference(
-          "收到Odometry参考时控制状态尚未有效");
-      return;
-    }
-    Reference normalized;
-    std::string reason;
-    if (!odometryToControlReference(
-            *message, state_.header.frame_id,
-            reference_transform_timeout_,
-            &normalized, &reason)) {
-      rejectExternalReference(reason);
-      return;
-    }
-
-    const bool from_simple_goal =
-        event.getPublisherName() ==
-        ros::this_node::getName();
-    reference_odometry_source_ = *message;
-    reference_ = normalized;
-    trajectory_active_ = false;
-    position_target_active_ = false;
-    point_reference_latched_ = from_simple_goal;
-    activateExternalReference();
-  }
-
   void referencePositionTargetCallback(
       const mavros_msgs::PositionTarget::ConstPtr& message) {
     if (!externalReferenceAllowed()) {
@@ -1183,6 +1079,10 @@ class ControllerNode {
       rejectExternalReference(reason);
       return;
     }
+    if (!positionTargetSupportedByVehicle(source, &reason)) {
+      rejectExternalReference(reason);
+      return;
+    }
     Reference normalized;
     if (!transformReferenceToControl(
             source, state_.header.frame_id,
@@ -1195,7 +1095,6 @@ class ControllerNode {
     reference_source_ = source;
     reference_ = normalized;
     trajectory_active_ = false;
-    position_target_active_ = true;
     point_reference_latched_ =
         anyAxis(source.use_position) &&
         !anyAxis(source.use_velocity) &&
@@ -1269,63 +1168,41 @@ class ControllerNode {
       goal_position.z = source_position.z();
     }
 
-    Reference normalized;
-    std::string published_frame;
-    if (vehicle_type_ == "multirotor") {
-      mavros_msgs::PositionTarget reference;
-      reference.header = message->header;
-      reference.header.frame_id =
-          canonicalFrame(message->header.frame_id);
-      reference.header.stamp = ros::Time::now();
-      reference.header.seq = ++simple_goal_sequence_counter_;
-      reference.coordinate_frame =
-          mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
-      reference.type_mask =
-          mavros_msgs::PositionTarget::IGNORE_VX |
-          mavros_msgs::PositionTarget::IGNORE_VY |
-          mavros_msgs::PositionTarget::IGNORE_VZ |
-          mavros_msgs::PositionTarget::IGNORE_AFX |
-          mavros_msgs::PositionTarget::IGNORE_AFY |
-          mavros_msgs::PositionTarget::IGNORE_AFZ |
-          mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
-      reference.position = goal_position;
-      reference.yaw = std::atan2(rotation(1, 0), rotation(0, 0));
+    mavros_msgs::PositionTarget reference;
+    reference.header = message->header;
+    reference.header.frame_id =
+        canonicalFrame(message->header.frame_id);
+    reference.header.stamp = ros::Time::now();
+    reference.header.seq = ++simple_goal_sequence_counter_;
+    reference.coordinate_frame =
+        mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+    reference.type_mask =
+        mavros_msgs::PositionTarget::IGNORE_VX |
+        mavros_msgs::PositionTarget::IGNORE_VY |
+        mavros_msgs::PositionTarget::IGNORE_VZ |
+        mavros_msgs::PositionTarget::IGNORE_AFX |
+        mavros_msgs::PositionTarget::IGNORE_AFY |
+        mavros_msgs::PositionTarget::IGNORE_AFZ |
+        mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+    reference.position = goal_position;
+    reference.yaw = std::atan2(rotation(1, 0), rotation(0, 0));
 
-      Reference source;
-      if (!positionTargetToSourceReference(
-              reference, &source, &reason) ||
-          !transformReferenceToControl(
-              source, state_.header.frame_id, 0.0,
-              &normalized, &reason)) {
-        rejectExternalReference(reason);
-        return;
-      }
-      published_frame = reference.header.frame_id;
-      reference_position_target_publisher_.publish(reference);
-    } else {
-      nav_msgs::Odometry reference;
-      reference.header = message->header;
-      reference.header.frame_id =
-          canonicalFrame(message->header.frame_id);
-      reference.header.stamp = ros::Time::now();
-      reference.header.seq = ++simple_goal_sequence_counter_;
-      reference.child_frame_id =
-          canonicalFrame(state_.body_frame_id);
-      reference.pose.pose = message->pose;
-      reference.pose.pose.position = goal_position;
-      if (!odometryToControlReference(
-              reference, state_.header.frame_id, 0.0,
-              &normalized, &reason)) {
-        rejectExternalReference(reason);
-        return;
-      }
-      published_frame = reference.header.frame_id;
-      reference_odometry_publisher_.publish(reference);
+    Reference source;
+    Reference normalized;
+    if (!positionTargetToSourceReference(
+            reference, &source, &reason) ||
+        !positionTargetSupportedByVehicle(source, &reason) ||
+        !transformReferenceToControl(
+            source, state_.header.frame_id, 0.0,
+            &normalized, &reason)) {
+      rejectExternalReference(reason);
+      return;
     }
+    reference_position_target_publisher_.publish(reference);
     ROS_INFO(
         "[xd_uav_controller] simple goal已从%s适配到%s: "
         "x=%.2f y=%.2f z=%.2f yaw=%.2f",
-        published_frame.c_str(),
+        reference.header.frame_id.c_str(),
         normalized.header.frame_id.c_str(),
         normalized.position.x,
         normalized.position.y,
@@ -1417,6 +1294,7 @@ class ControllerNode {
     Reference reference;
     reference.header.stamp = stamp;
     reference.header.frame_id = canonicalFrame(frame_id);
+    reference.trajectory_reference = true;
     const auto& transform = point.transforms.front();
     reference.position.x = transform.translation.x;
     reference.position.y = transform.translation.y;
@@ -1601,7 +1479,6 @@ class ControllerNode {
             : message->header.stamp;
     publishTrajectoryPath(*message);
     trajectory_active_ = true;
-    position_target_active_ = false;
     point_reference_latched_ = false;
     activateExternalReference();
   }
@@ -2092,7 +1969,6 @@ class ControllerNode {
     have_reference_error_ = false;
     have_normalized_reference_ = false;
     trajectory_active_ = false;
-    position_target_active_ = false;
     point_reference_latched_ = false;
     have_takeoff_origin_ = false;
     active_reference_transform_failure_since_ = ros::Time();
@@ -2148,7 +2024,6 @@ class ControllerNode {
     have_reference_error_ = false;
     have_normalized_reference_ = false;
     trajectory_active_ = false;
-    position_target_active_ = false;
     point_reference_latched_ = false;
     active_reference_transform_failure_since_ = ros::Time();
     ROS_INFO(
@@ -2927,7 +2802,17 @@ class ControllerNode {
 
     const double current_course =
         std::isfinite(state_.course) ? state_.course : yaw;
-    double desired_course = current_course;
+    const bool external_point_reference =
+        !reference.trajectory_reference &&
+        !internal_reference_active_ &&
+        !idle_reference_active_ &&
+        !landing_active_;
+    double desired_course =
+        reference.use_yaw &&
+                (reference.trajectory_reference ||
+                 external_point_reference)
+            ? reference.yaw
+            : current_course;
     double desired_airspeed = cruise_airspeed_;
     const bool use_external_horizontal_position =
         (reference.use_position[0] ||
@@ -2935,10 +2820,18 @@ class ControllerNode {
         !internal_reference_active_ &&
         !idle_reference_active_;
     if (use_external_horizontal_position) {
+      const double target_x =
+          reference.use_position[0]
+              ? reference.position.x
+              : state_.position_odom.x;
+      const double target_y =
+          reference.use_position[1]
+              ? reference.position.y
+              : state_.position_odom.y;
       const double dx =
-          reference.position.x - state_.position_odom.x;
+          target_x - state_.position_odom.x;
       const double dy =
-          reference.position.y - state_.position_odom.y;
+          target_y - state_.position_odom.y;
       if (std::hypot(dx, dy) > 1.0) {
         desired_course = std::atan2(dy, dx);
       }
@@ -2965,12 +2858,20 @@ class ControllerNode {
           // feedback and shifting the whole flown path.
           const double inverse_speed =
               1.0 / horizontal_speed;
+          const double target_x =
+              reference.use_position[0]
+                  ? reference.position.x
+                  : state_.position_odom.x;
+          const double target_y =
+              reference.use_position[1]
+                  ? reference.position.y
+                  : state_.position_odom.y;
           const double guidance_x =
-              reference.position.x +
+              target_x +
               fixedwing_guidance_lookahead_distance_ *
                   reference.velocity.x * inverse_speed;
           const double guidance_y =
-              reference.position.y +
+              target_y +
               fixedwing_guidance_lookahead_distance_ *
                   reference.velocity.y * inverse_speed;
           const double guidance_dx =
@@ -2992,8 +2893,53 @@ class ControllerNode {
         std::max(minimum_airspeed_, state_.airspeed);
     const double course_error =
         wrapAngle(desired_course - current_course);
+    double course_rate_feedforward = 0.0;
+    if (reference.trajectory_reference) {
+      bool curvature_rate_valid = false;
+      double curvature_rate = 0.0;
+      if (reference.use_velocity[0] &&
+          reference.use_velocity[1] &&
+          reference.use_acceleration[0] &&
+          reference.use_acceleration[1]) {
+        const double velocity_squared =
+            reference.velocity.x * reference.velocity.x +
+            reference.velocity.y * reference.velocity.y;
+        if (velocity_squared > 0.25) {
+          curvature_rate =
+              (reference.velocity.x *
+                   reference.acceleration.y -
+               reference.velocity.y *
+                   reference.acceleration.x) /
+              velocity_squared;
+          curvature_rate_valid =
+              std::isfinite(curvature_rate);
+        }
+      }
+
+      if (reference.use_yaw_rate &&
+          std::abs(reference.yaw_rate) > 1e-6) {
+        course_rate_feedforward = reference.yaw_rate;
+        if (curvature_rate_valid &&
+            std::abs(reference.yaw_rate -
+                     curvature_rate) > 0.10) {
+          ROS_WARN_THROTTLE(
+              1.0,
+              "[xd_uav_controller] 固定翼轨迹yaw_rate"
+              "与速度/加速度曲率不一致"
+              "(yaw_rate=%.3f curvature=%.3f)，"
+              "优先使用显式yaw_rate",
+              reference.yaw_rate, curvature_rate);
+        }
+      } else if (curvature_rate_valid) {
+        course_rate_feedforward = curvature_rate;
+      }
+    } else if (external_point_reference &&
+               reference.use_yaw_rate) {
+      course_rate_feedforward = reference.yaw_rate;
+    }
     const double desired_course_rate = clamp(
-        course_error / std::max(0.1, course_time_constant_),
+        course_error / std::max(0.1, course_time_constant_) +
+            course_rate_feedforward,
         -gravity_ * std::tan(max_roll_) / airspeed,
         gravity_ * std::tan(max_roll_) / airspeed);
     double desired_roll = clamp(
@@ -3124,15 +3070,10 @@ class ControllerNode {
     Reference candidate;
     std::string transform_reason;
     const bool transformed =
-        position_target_active_
-            ? transformReferenceToControl(
-                  reference_source_,
-                  state_.header.frame_id, 0.0,
-                  &candidate, &transform_reason)
-            : odometryToControlReference(
-                  reference_odometry_source_,
-                  state_.header.frame_id, 0.0,
-                  &candidate, &transform_reason);
+        transformReferenceToControl(
+            reference_source_,
+            state_.header.frame_id, 0.0,
+            &candidate, &transform_reason);
     return useTransformedReference(
         transformed, candidate, transform_reason,
         now, reference, reason);
@@ -3222,12 +3163,11 @@ class ControllerNode {
           if (vehicle_type_ == "fixedwing") {
             startFixedwingLoiter(
                 state_.position_odom.z,
-                "外部Odometry参考超时");
+                "外部PositionTarget参考超时");
             reference = makeFixedwingLoiterReference();
           } else {
             have_reference_ = false;
             have_normalized_reference_ = false;
-            position_target_active_ = false;
             point_reference_latched_ = false;
             captureIdleReference();
             reference = makeIdleReference();
@@ -3302,12 +3242,10 @@ class ControllerNode {
   tf2_ros::TransformListener tf_listener_;
   ros::Subscriber state_subscriber_;
   ros::Subscriber reference_position_target_subscriber_;
-  ros::Subscriber reference_odometry_subscriber_;
   ros::Subscriber reference_trajectory_subscriber_;
   ros::Subscriber simple_goal_subscriber_;
   ros::Subscriber local_alignment_valid_subscriber_;
   ros::Publisher reference_position_target_publisher_;
-  ros::Publisher reference_odometry_publisher_;
   ros::Publisher reference_trajectory_path_publisher_;
   ros::Publisher command_publisher_;
   ros::ServiceServer internal_command_server_;
@@ -3316,7 +3254,6 @@ class ControllerNode {
   xd_uav_controller::ControlState state_;
   Reference reference_;
   Reference reference_source_;
-  nav_msgs::Odometry reference_odometry_source_;
   trajectory_msgs::MultiDOFJointTrajectory
       reference_trajectory_;
   ros::Time last_state_receive_;
@@ -3331,7 +3268,6 @@ class ControllerNode {
   bool have_local_alignment_valid_{false};
   bool local_alignment_valid_{false};
   bool trajectory_active_{false};
-  bool position_target_active_{false};
   bool point_reference_latched_{false};
   uint32_t simple_goal_sequence_counter_{0};
   bool internal_reference_active_{false};
