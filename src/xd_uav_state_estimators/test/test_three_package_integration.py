@@ -8,6 +8,7 @@ import unittest
 import rospy
 import tf2_ros
 from geographic_msgs.msg import GeoPointStamped
+from geometry_msgs.msg import AccelWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool
@@ -131,6 +132,30 @@ class ThreePackageIntegration(unittest.TestCase):
         )
         self.assertEqual(main.header.frame_id, "uav1/odom")
         self.assertEqual(main.child_frame_id, "uav1/base_link")
+
+        acceleration = self._wait_for(
+            lambda: rospy.wait_for_message(
+                "/uav1/state_estimator/main/acceleration",
+                AccelWithCovarianceStamped,
+                timeout=0.2,
+            )
+        )
+        self.assertEqual(acceleration.header.frame_id, "uav1/odom")
+        self.assertLess(
+            abs((acceleration.header.stamp - main.header.stamp).to_sec()), 0.2
+        )
+        self.assertTrue(math.isfinite(acceleration.accel.accel.linear.x))
+        self.assertTrue(math.isfinite(acceleration.accel.accel.linear.y))
+        self.assertTrue(math.isfinite(acceleration.accel.accel.linear.z))
+        self.assertTrue(math.isfinite(acceleration.accel.accel.angular.x))
+        self.assertTrue(math.isfinite(acceleration.accel.accel.angular.y))
+        self.assertTrue(math.isfinite(acceleration.accel.accel.angular.z))
+        self.assertGreaterEqual(acceleration.accel.covariance[0], 0.0)
+        self.assertGreaterEqual(acceleration.accel.covariance[7], 0.0)
+        self.assertGreaterEqual(acceleration.accel.covariance[14], 0.0)
+        self.assertGreaterEqual(acceleration.accel.covariance[21], 0.0)
+        self.assertGreaterEqual(acceleration.accel.covariance[28], 0.0)
+        self.assertGreaterEqual(acceleration.accel.covariance[35], 0.0)
 
         self._publish_fastlio = True
         self._wait_for(

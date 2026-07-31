@@ -113,6 +113,7 @@ uavX/odom -> uavX/base_link
 
 ```text
 /uav1/state_estimator/main/odom
+/uav1/state_estimator/main/acceleration
 /uav1/state_estimator/main/frames/world/odom
 /uav1/state_estimator/sources/<来源>/odom
 /uav1/state_estimator/sources/<来源>/frames/world/odom
@@ -124,11 +125,26 @@ uavX/odom -> uavX/base_link
 /uav1/state_estimator/diagnostics
 ```
 
+`sources/<来源>/odom`不是公共`odom`下的副本，而是该来源自身原点下的独立估计。例如：
+
+```text
+sources/mavros/odom：  uav1/mavros_origin  -> uav1/base_link
+sources/fastlio/odom： uav1/fastlio_origin -> uav1/base_link
+```
+
+来源滤波器内部仍统一在`uav1/odom`中运行；发布单来源结果时会逆用该来源的对齐量，
+恢复到来源原点下。单机TF管理器可把消息的`base_link`改名为
+`mavros_estimated_base_link`或`fastlio_estimated_base_link`后广播，避免多个来源
+争用标准`base_link`。
+
 `republish_in_frames`控制每个来源的额外坐标系输出；
 `main_republish_in_frames`控制主来源输出。只有标准主TF会被本包广播，坐标系重发布均为
 `nav_msgs/Odometry`话题。
 
 所有输出Odometry的twist都按消息规范在`child_frame_id`，即`base_link`中表达。
+`main/acceleration`使用`geometry_msgs/AccelWithCovarianceStamped`，其线加速度在
+`uavX/odom`中表达，已经过主滤波器估计且不包含重力。角加速度由IMU三轴角速度差分、
+低通滤波后从机体系旋转到`uavX/odom`，因此线加速度和角加速度遵守同一个`frame_id`。
 
 ## 切换服务
 

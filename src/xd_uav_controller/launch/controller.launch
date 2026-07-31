@@ -22,8 +22,6 @@
       <remap from="state" to="control_manager/state"/>
       <remap from="reference_position_target"
              to="control/reference/setpoint"/>
-      <remap from="reference_odometry"
-             to="control/reference/odom"/>
       <remap from="reference_trajectory"
              to="control/reference/trajectory"/>
       <remap from="reference_trajectory_path"

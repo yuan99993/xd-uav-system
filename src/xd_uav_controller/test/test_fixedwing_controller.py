@@ -5,7 +5,12 @@ import time
 import unittest
 
 import rospy
-from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Transform, Twist
+from mavros_msgs.msg import PositionTarget
+from trajectory_msgs.msg import (
+    MultiDOFJointTrajectory,
+    MultiDOFJointTrajectoryPoint,
+)
 
 from xd_uav_controller.msg import ControlCommand, ControlState
 from xd_uav_controller.srv import (
@@ -21,7 +26,14 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             "state", ControlState, queue_size=10
         )
         self._reference_publisher = rospy.Publisher(
-            "reference_odometry", Odometry, queue_size=10
+            "reference_position_target",
+            PositionTarget,
+            queue_size=10,
+        )
+        self._trajectory_publisher = rospy.Publisher(
+            "reference_trajectory",
+            MultiDOFJointTrajectory,
+            queue_size=2,
         )
 
     @staticmethod
@@ -55,17 +67,23 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         velocity_y=0.0,
         velocity_z=1.0,
     ):
-        reference = Odometry()
+        reference = PositionTarget()
         reference.header.stamp = rospy.Time.now()
         reference.header.frame_id = "uav1/odom"
-        reference.child_frame_id = "uav1/odom"
-        reference.pose.pose.position.x = position_x
-        reference.pose.pose.position.y = position_y
-        reference.pose.pose.position.z = position_z
-        reference.pose.pose.orientation.w = 1.0
-        reference.twist.twist.linear.x = velocity_x
-        reference.twist.twist.linear.y = velocity_y
-        reference.twist.twist.linear.z = velocity_z
+        reference.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+        reference.type_mask = (
+            PositionTarget.IGNORE_AFX
+            | PositionTarget.IGNORE_AFY
+            | PositionTarget.IGNORE_AFZ
+            | PositionTarget.IGNORE_YAW_RATE
+        )
+        reference.position.x = position_x
+        reference.position.y = position_y
+        reference.position.z = position_z
+        reference.velocity.x = velocity_x
+        reference.velocity.y = velocity_y
+        reference.velocity.z = velocity_z
+        reference.yaw = 0.0
         return reference
 
     def _publish(
@@ -107,12 +125,87 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
                 pass
         self.fail("没有在超时前收到固定翼控制输出")
 
+    def _wait_for_trajectory_command(
+        self,
+        trajectory,
+        predicate,
+        timeout=5.0,
+        state=None,
+    ):
+        deadline = time.time() + timeout
+        while time.time() < deadline and not rospy.is_shutdown():
+            self._state_publisher.publish(
+                self._state() if state is None else state
+            )
+            self._trajectory_publisher.publish(trajectory)
+            try:
+                command = rospy.wait_for_message(
+                    "command", ControlCommand, timeout=0.2
+                )
+                if predicate(command):
+                    return command
+            except rospy.ROSException:
+                pass
+        self.fail("没有在超时前收到固定翼轨迹控制输出")
+
+    @staticmethod
+    def _turning_trajectory(yaw_rate=0.15):
+        trajectory = MultiDOFJointTrajectory()
+        trajectory.header.frame_id = "uav1/odom"
+        trajectory.joint_names = ["uav1/base_link"]
+        for point_time in (0.0, 10.0):
+            transform = Transform()
+            transform.translation.z = 100.0
+            transform.rotation.w = 1.0
+
+            velocity = Twist()
+            velocity.linear.x = 15.0
+            velocity.angular.z = yaw_rate
+
+            acceleration = Twist()
+            acceleration.linear.y = 2.25
+
+            point = MultiDOFJointTrajectoryPoint()
+            point.transforms = [transform]
+            point.velocities = [velocity]
+            point.accelerations = [acceleration]
+            point.time_from_start = rospy.Duration(point_time)
+            trajectory.points.append(point)
+        return trajectory
+
     def test_reference_and_takeoff(self):
         idle_command = self._wait_for_command(
             lambda value: value.valid,
             include_reference=False,
         )
         self.assertTrue(idle_command.valid)
+
+        # At a perfect circle tangent the position and course errors
+        # are both zero. The trajectory yaw-rate feed-forward must
+        # still establish the left bank needed for a CCW turn.
+        trajectory_command = self._wait_for_trajectory_command(
+            self._turning_trajectory(),
+            lambda value: (
+                value.valid
+                and value.body_rate.x < -0.05
+                and value.body_rate.z > 0.01
+            ),
+        )
+        self.assertLess(trajectory_command.body_rate.x, -0.05)
+        self.assertGreater(trajectory_command.body_rate.z, 0.01)
+
+        # If angular.z is left at zero, the same turn feed-forward is
+        # recovered from horizontal velocity and acceleration.
+        curvature_command = self._wait_for_trajectory_command(
+            self._turning_trajectory(yaw_rate=0.0),
+            lambda value: (
+                value.valid
+                and value.body_rate.x < -0.05
+                and value.body_rate.z > 0.01
+            ),
+        )
+        self.assertLess(curvature_command.body_rate.x, -0.05)
+        self.assertGreater(curvature_command.body_rate.z, 0.01)
 
         command = self._wait_for_command(
             lambda value: (
@@ -149,6 +242,40 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         )
         self.assertLess(left_turn_command.body_rate.x, 0.0)
         self.assertGreater(left_turn_command.body_rate.z, 0.0)
+
+        # Fixed-wing uses the same per-axis PositionTarget mask as
+        # multirotor. A VY-only command must not require dummy VX/VZ
+        # fields and must command a left turn.
+        velocity_y_only = self._reference(
+            position_x=float("nan"),
+            position_y=float("nan"),
+            position_z=float("nan"),
+            velocity_x=float("nan"),
+            velocity_y=15.0,
+            velocity_z=float("nan"),
+        )
+        velocity_y_only.type_mask = (
+            PositionTarget.IGNORE_PX
+            | PositionTarget.IGNORE_PY
+            | PositionTarget.IGNORE_PZ
+            | PositionTarget.IGNORE_VX
+            | PositionTarget.IGNORE_VZ
+            | PositionTarget.IGNORE_AFX
+            | PositionTarget.IGNORE_AFY
+            | PositionTarget.IGNORE_AFZ
+            | PositionTarget.IGNORE_YAW
+            | PositionTarget.IGNORE_YAW_RATE
+        )
+        velocity_y_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.body_rate.x < -0.05
+                and value.body_rate.z > 0.01
+            ),
+            reference=velocity_y_only,
+        )
+        self.assertLess(velocity_y_command.body_rate.x, 0.0)
+        self.assertGreater(velocity_y_command.body_rate.z, 0.0)
 
         # A trajectory tangent pointing east must still steer left
         # when the sampled path position lies north of the aircraft.

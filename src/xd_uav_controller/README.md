@@ -9,8 +9,7 @@
 
 ```text
 /uavX/control_manager/state          xd_uav_controller/ControlState
-/uavX/control/reference/setpoint     mavros_msgs/PositionTarget（仅四旋翼）
-/uavX/control/reference/odom         nav_msgs/Odometry（仅固定翼）
+/uavX/control/reference/setpoint     mavros_msgs/PositionTarget
 /uavX/control/reference/trajectory   trajectory_msgs/MultiDOFJointTrajectory
 /move_base_simple/goal               geometry_msgs/PoseStamped
 ```
@@ -40,7 +39,7 @@
   TF2会自动沿TF树求解变换，不需要为local、map或world分别写控制律。允许的惯性
   frame由`reference_frames/allowed`限制；同名但属于另一架飞机命名空间的frame不会
   被接受。
-- 四旋翼单点/流式目标统一使用`mavros_msgs/PositionTarget`。控制器直接按
+- 四旋翼和固定翼的单点/流式目标统一使用`mavros_msgs/PositionTarget`。控制器直接按
   `type_mask`逐轴判断是否使用位置XYZ、速度XYZ、加速度XYZ、yaw和yaw rate；例如
   X/Y可以使用速度控制，同时Z使用位置保持。被掩码忽略的字段不会读取，因此可以是
   NaN。加速度写在`acceleration_or_force`中，原来的独立
@@ -51,14 +50,15 @@
   不能据其名称自行交换XY或反转Z。当前不接受`FORCE`或BODY/OFFSET frame。当参考
   frame与控制odom之间存在旋转时，该旋转不能混合掩码中启用和忽略的轴；这种逐轴
   指令建议直接使用`ControlState.header.frame_id`。
-- 至少一个位置轴启用、所有速度/加速度轴和yaw rate均忽略的四旋翼目标视为一次性锁存目标，
+- 至少一个位置轴启用、所有速度/加速度轴和yaw rate均忽略的目标视为一次性锁存目标，
   可以只发一次；含速度、加速度或yaw rate的目标属于流式控制，需要持续发布，超过
-  `reference_timeout`后控制器捕获当前位置并转为悬停。yaw是否启用不改变锁存判定。
-- 纯速度模式不要求同时启用任何位置轴。每个启用的速度轴直接跟踪对应速度值；例如
+  `reference_timeout`后四旋翼捕获当前位置并转为悬停，固定翼进入当前位置相切的等待
+  盘旋。yaw是否启用不改变锁存判定。
+- 四旋翼纯速度模式不要求同时启用任何位置轴。每个启用的速度轴直接跟踪对应速度值；例如
   启用VX/VY/VZ并填写`[0.3, 0, 0]`就是沿+X运动并把Y、Z速度保持为0。纯速度轴内部
   带有限幅积分补偿，用于消除阻力、模型误差和悬停推力偏差造成的稳态速度误差。
   未启用的轴不参与该模式的控制。
-- 某轴只启用加速度时，控制器使用去除重力后的`ControlState.acceleration_odom`
+- 四旋翼某轴只启用加速度时，控制器使用去除重力后的`ControlState.acceleration_odom`
   对该轴形成PI加速度闭环，并在进入模式时继承切换前已经稳定的加速度补偿量；
   加速度状态无效或超时时拒绝输出。如果同一轴还启用了位置或速度，加速度字段仍作为
   MPC前馈，不额外叠加加速度PI。注意`AZ=0`只保持净加速度为0，不负责把已有垂直速度
@@ -77,16 +77,20 @@
   `IGNORE_PX|IGNORE_PY|IGNORE_VZ|IGNORE_AFX|IGNORE_AFY|IGNORE_AFZ|`
   `IGNORE_YAW|IGNORE_YAW_RATE`（3555）：填写`velocity.x/y`和`position.z`，
   其余被忽略字段可以保持为0或NaN。
-- 固定翼单点目标继续使用`nav_msgs/Odometry`，没有改成掩码接口。`pose`表达目标
-  位置和姿态，控制器从姿态中提取yaw；`twist`遵循Odometry语义，在
-  `child_frame_id`中表达。当`child_frame_id != header.frame_id`时，控制器使用目标
-  姿态把线速度和角速度旋转到参考父坐标系，再通过TF旋转到控制odom。因此两个frame
-  都必须填写，`child_frame_id`只能是控制机体frame或与父frame相同。
+- 固定翼也逐轴解析同一套掩码：水平位置用于航迹点制导，水平速度方向用于期望course、
+  模长用于期望空速，PZ/VZ用于高度和爬升率，yaw用于期望course，yaw rate作为转弯率
+  前馈。只启用PX或PY时，未启用的另一个水平位置轴使用飞机当前位置，不会读取消息里
+  的占位值。固定翼当前没有三轴加速度直接控制律，因此启用AFX/AFY/AFZ的
+  `PositionTarget`会被明确拒绝，不能使用纯加速度掩码3135。
 - 多点轨迹使用`trajectory_msgs/MultiDOFJointTrajectory`，当前只接受一个机体：
   每个点必须有一个transform，velocity和acceleration可以整条轨迹一致地提供或省略，
   `time_from_start`必须严格递增。轨迹在点间线性插值，yaw按最短角距离插值；轨迹结束
   后持续保持最后一个点。轨迹采样后根据最新TF转换，因此local全局轨迹会随
   `local_origin -> odom`修正持续保持在原来的全局位置。
+  固定翼轨迹优先使用水平速度切线计算期望course，`velocity.angular.z`作为course-rate
+  转弯前馈；若该值为0但同时提供了水平速度和加速度，则根据轨迹曲率
+  `(vx*ay-vy*ax)/(vx²+vy²)`计算前馈。轨迹yaw只在没有有效水平速度切线时作为
+  course参考。该逻辑只作用于轨迹参考，不会改变单点掩码或内部降落参考。
   每条通过校验并被控制器接受的轨迹还会原样转换为latched的`nav_msgs/Path`，发布到
   `/uavX/control/reference/trajectory_path`。这个话题只用于RViz显示，不参与控制，
   四旋翼和固定翼共用同一套可视化接口。
@@ -97,9 +101,8 @@
   期望高度，因为RViz通常会把2D目标的z写成0。连续发送多个2D目标不会反复采样带有
   波动的实测高度，也不会把高度目标逐点向下带。只有显式设置
   `simple_goal/use_message_z: true`时才使用消息中的z。适配结果会保留原始参考
-  frame，并以latched方式进入对应机型的普通单点路径：四旋翼发布到
-  `/uavX/control/reference/setpoint`，固定翼发布到
-  `/uavX/control/reference/odom`。
+  frame，并以latched方式进入两种机型共用的
+  `/uavX/control/reference/setpoint`单点路径。
 
 新到达的单点会取消当前外部轨迹，新到达的轨迹也会接管单点。起飞完成后，任一标准
 外部参考一旦到达都会接管内部悬停参考。降落期间外部参考会被忽略。
@@ -140,7 +143,7 @@ rosrun xd_uav_controller publish_fixedwing_trajectory.py \
 没有外部参考或起飞请求时，控制器会自动捕获当前状态：四旋翼保持当前位置和yaw，
 固定翼保持当前高度、course和空速。这样系统可以先预发送控制量并在未解锁时进入
 OFFBOARD。固定翼完成起飞后会在切入点建立与当前航向相切的等待圆，持续定高盘旋；
-新的单点或轨迹参考会退出等待盘旋。固定翼流式Odometry参考超时后不会中断控制输出，
+新的单点或轨迹参考会退出等待盘旋。固定翼流式PositionTarget参考超时后不会中断控制输出，
 而会在当前位置重新建立相切等待圆；四旋翼流式PositionTarget超时后转为当前位置
 悬停。simple goal属于一次性锁存目标，不受该超时影响。
 

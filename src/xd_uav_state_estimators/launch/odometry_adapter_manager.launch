@@ -15,6 +15,9 @@
           output="screen"
           respawn="$(arg respawn)"
           clear_params="true">
+      <!-- 保证rosconsole/log4cxx按UTF-8输出中文。 -->
+      <env name="LANG" value="C.UTF-8"/>
+      <env name="LC_ALL" value="C.UTF-8"/>
       <rosparam command="load" file="$(arg sources_config)"/>
       <param name="uav_name" value="$(arg UAV_NAME)"/>
     </node>
