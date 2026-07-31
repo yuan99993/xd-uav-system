@@ -104,6 +104,10 @@ MSG_MAP = {
 rospy.init_node("mock_gcs", anonymous=True)
 uav_name = rospy.get_param("~uav_name", "uav1")
 cmd = rospy.get_param("~cmd", "info").lower()
+cmd = {
+    "formation_config": "swarm",
+    "formation_point": "formation",
+}.get(cmd, cmd)
 topic = f"/{uav_name}/sead/command"
 pub = rospy.Publisher(topic, String, queue_size=5)
 rospy.sleep(0.3)
@@ -117,7 +121,6 @@ else:
 
 # Special handling for airspace_zone: pack binary blob
 if cmd == "airspace_zone":
-    import struct
     points_json = _get_str("points_json", "[[0,0],[100,0],[100,100],[0,100]]")
     zonedef_raw = {
         "zone_id": _get_int("zone_id", 1),
@@ -129,9 +132,8 @@ if cmd == "airspace_zone":
         "maxAlt": _get_float("maxAlt", 500.0),
         "vertices": json.loads(points_json),
     }
-    import base64
-    blob = json.dumps(zonedef_raw).encode("utf-8")
-    info["blob"] = base64.b64encode(blob).decode("ascii")
+    info.update(zonedef_raw)
+    info.pop("blob", None)
 
 payload = {
     "msg_id": msg_id,

@@ -14,9 +14,10 @@
           respawn="$(arg respawn)"
           clear_params="true">
       <rosparam command="load" file="$(arg config)"/>
+      <rosparam command="load" file="$(find xd_uav_sead)/config/sead_planner.yaml"/>
+      <rosparam command="load" file="$(find xd_uav_sead)/config/gps_origin.yaml"/>
       <param name="uav_name" value="$(arg uav_name)"/>
       <param name="use_simulation" value="true"/>
-      <param name="sead_runtime_mode" value="formation"/>
     </node>
   </group>
 </launch>

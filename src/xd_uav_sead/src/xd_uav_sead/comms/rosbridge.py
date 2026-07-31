@@ -7,12 +7,11 @@ import queue
 import json
 import time
 import struct
-import logging
 
 import rospy
 from std_msgs.msg import String
 
-logger = logging.getLogger(__name__)
+U2U_BUS_TOPIC = "/sead/u2u"
 
 # === 消息类型分发 ===
 # 跟 communication_info.Message_ID 保持同步
@@ -81,7 +80,7 @@ class SeadRosBridge:
 
         # 订阅 U2U 广播（多机 GA 协同）
         self._sub_u2u = rospy.Subscriber(
-            f"{self.ns}/u2u", String, self._on_u2u, queue_size=20
+            U2U_BUS_TOPIC, String, self._on_u2u, queue_size=50
         )
 
         # 发布遥测 → GCS
@@ -89,9 +88,9 @@ class SeadRosBridge:
             f"{self.ns}/telemetry", String, queue_size=20
         )
 
-        # 发布广播 → 其他 UAV（多机时走同一个话题）
+        # 所有 UAV 共用一条总线；消息 envelope 中携带 src/dst/broadcast。
         self._pub_u2u = rospy.Publisher(
-            f"{self.ns}/u2u", String, queue_size=20
+            U2U_BUS_TOPIC, String, queue_size=50
         )
 
         # GCS 和 UAV 的"地址"现在是整数 ID
@@ -142,11 +141,27 @@ class SeadRosBridge:
         return self._encode(msg_id, info)
 
     def _parse_u2u(self, raw: str) -> bytes:
-        """其他 UAV 来的 bytes 已由 bridge 编码，这里只是还原。"""
+        """接收共享总线中发给本机的单播或广播，并过滤自身回环。"""
         try:
             obj = json.loads(raw)
         except json.JSONDecodeError:
             return None
+
+        try:
+            src = int(obj.get("src", -1))
+        except (TypeError, ValueError):
+            return None
+        if src == self.uav_id:
+            return None
+
+        is_broadcast = bool(obj.get("broadcast", False))
+        dst = obj.get("dst")
+        if not is_broadcast:
+            try:
+                if int(dst) != self.uav_id:
+                    return None
+            except (TypeError, ValueError):
+                return None
 
         # U2U 消息以 base64 bytes 方式传递
         import base64
@@ -274,25 +289,37 @@ class SeadRosBridge:
             return b""
 
         if msg_id == 21:  # Airspace_ZoneFrag (passed through)
-            import base64
-
-            blob = info.get("blob", "")
-            if blob:
-                return base64.b64decode(blob)
-            return b""
+            zone_id = int(info.get("zone_id", 1))
+            blob = self._encode_zonedef_v1(info)
+            if len(blob) > 255:
+                raise ValueError(
+                    "Airspace ZoneDef exceeds one bridge packet; "
+                    "send pre-fragmented packets instead"
+                )
+            return struct.pack("<HBBB", zone_id, 0, 1, len(blob)) + blob
 
         if msg_id == 24:  # Swarm_Command
-            shape = int(info.get("shape", 1))
-            enable = int(info.get("enable", 1))
-            leader = int(info.get("leader_id", 1))
-            spacing = float(info.get("spacing", 220.0))
-            standoff = float(info.get("standoff", 5000.0))
-            safe_sep = float(info.get("safe_sep", 140.0))
-            alt_step = float(info.get("alt_step", 20.0))
-            desired = float(info.get("desired_target_time", 0.0))
+            params = info.get("params", info)
+            shape = params.get("shape", 1)
+            if isinstance(shape, str):
+                shape = {"TRAIL": 0, "VEE": 1, "ECHELON": 2}.get(
+                    shape.upper(), 1
+                )
+            enable = int(params.get("enable", 1))
+            leader = int(params.get("leader_id", 1))
+            spacing = float(params.get("spacing", 220.0))
+            standoff = float(
+                params.get("standoff", params.get("standoff_distance", 5000.0))
+            )
+            safe_sep = float(
+                params.get("safe_sep", params.get("safe_separation", 140.0))
+            )
+            alt_step = float(
+                params.get("alt_step", params.get("altitude_step", 20.0))
+            )
+            desired = float(params.get("desired_target_time", 0.0))
             return struct.pack(
-                "<BBBBiiiid",
-                self.uav_id,
+                "<BBBiiiid",
                 enable,
                 shape,
                 leader,
@@ -324,6 +351,32 @@ class SeadRosBridge:
         # 其他消息: 直接传 JSON bytes
         return json.dumps(info).encode("utf-8")
 
+    @staticmethod
+    def _encode_zonedef_v1(info) -> bytes:
+        """Encode the ZoneDef v1 payload expected by packet_processing."""
+        zone = info.get("zonedef", info)
+        if "blob" in info and not zone.get("vertices"):
+            import base64
+
+            decoded = base64.b64decode(info["blob"])
+            zone = json.loads(decoded.decode("utf-8"))
+
+        vertices = list(zone.get("vertices", []))
+        blob = struct.pack(
+            "<BBBBBiiH",
+            1,
+            int(zone.get("zone_type", 0)) & 0xFF,
+            1 if bool(zone.get("enabled", True)) else 0,
+            int(zone.get("level2d", 0)) & 0xFF,
+            int(zone.get("levelH", 0)) & 0xFF,
+            int(float(zone.get("minAlt", 0.0)) * 1e3),
+            int(float(zone.get("maxAlt", 500.0)) * 1e3),
+            len(vertices),
+        )
+        for east, north in vertices:
+            blob += struct.pack("<ii", int(float(east) * 1e3), int(float(north) * 1e3))
+        return blob
+
     # ── 发送 → ROS 话题 ──────────────────────────
 
     def send_data_async(self, address, raw_data: bytes):
@@ -333,7 +386,10 @@ class SeadRosBridge:
         """
         try:
             msg_text = self._bytes_to_json(raw_data, address)
-            self._pub_telemetry.publish(String(data=msg_text))
+            if self._is_gcs_address(address):
+                self._pub_telemetry.publish(String(data=msg_text))
+            else:
+                self._pub_u2u.publish(String(data=msg_text))
         except Exception as exc:
             rospy.logwarn_throttle(2.0, f"[bridge] send_async failed: {exc}")
 
@@ -358,6 +414,12 @@ class SeadRosBridge:
             "len": len(raw_data),
         }
         return json.dumps(obj, ensure_ascii=False)
+
+    def _is_gcs_address(self, address) -> bool:
+        try:
+            return int(address) == int(self.gcs_address)
+        except (TypeError, ValueError):
+            return False
 
     # ── 接收 API ────────────────────────────────
 

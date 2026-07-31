@@ -1,16 +1,8 @@
-# GPS Origin 坐标配置
-# 用于 ENU ↔ LLA 坐标系转换。每个 origin 有 lat + lon。
-# 从 onboard node 的 ~gps_origin_* params 读取，这里存默认值。
+# ENU ↔ LLA origins. Keys intentionally match Drone's private parameters.
+gps_origin_0_lat: 47.397742
+gps_origin_0_lon: 8.545594
+gps_origin_0_alt: 1418.0
 
-origins:
-  # 默认原点 (origin_id=0): 瑞士 Dubendorf
-  0:
-    lat: 47.397742
-    lon: 8.545594
-    alt: 1418.0  # meters, MSL
-
-  # 备用原点 (origin_id=1): 高雄
-  1:
-    lat: 22.9105162191694
-    lon: 120.312446057796
-    alt: 1418.0  # meters, MSL
+gps_origin_1_lat: 22.9105162191694
+gps_origin_1_lon: 120.312446057796
+gps_origin_1_alt: 1418.0

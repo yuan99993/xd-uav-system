@@ -9,7 +9,9 @@ except ImportError:
     XBee64BitAddress = None
     DigiMeshDevice = None
     RemoteDigiMeshDevice = None
-    TimeoutException = Exception  # fallback, won't be raised by rosbridge
+    class TimeoutException(Exception):
+        """Fallback type used only when the Digi XBee SDK is unavailable."""
+
     XBEE_HW_AVAILABLE = False
 
 # === ROS simulation bridge (new path, for PX4 SITL / Gazebo without XBee) ===
@@ -33,7 +35,11 @@ import rospy
 import multiprocessing as mp
 import xd_uav_sead.planning.DPGA as DPGA
 from xd_uav_sead.airspace.airspace_manager import AirspaceManager, ZoneDef
-from xd_uav_sead.formation.formation_control import FormationController, FormationShape
+from xd_uav_sead.formation.formation_control import (
+    FormationConfig,
+    FormationController,
+    FormationShape,
+)
 from xd_uav_sead.strike.simple_strike import SimpleStrikeManager
 
 import os
@@ -56,6 +62,8 @@ sead_runtime_mode_env = os.environ.get(
     "SEAD_RUNTIME_MODE",
     "simple_strike",
 ).lower()
+ga_time_interval = 0.5
+ga_population_size = 100
 
 if sead_control_mode in ["swiftwing", "speed"]:
     sead_control_mode = "swiftwing_vector"
@@ -80,10 +88,16 @@ def start_roslaunch(uav_id, launch_pkg=None, launch_file=None):
         print("[LAUNCH] Already running")
         return
 
-    pkg = launch_pkg or rospy.get_param("~formation_launch_pkg", "xd_uav_sead")
+    pkg = launch_pkg or rospy.get_param("~formation_launch_pkg", "")
     lfile = launch_file or rospy.get_param(
-        "~formation_launch_file", "sead_formation_demo.launch"
+        "~formation_launch_file", ""
     )
+    if not pkg or not lfile:
+        rospy.logwarn(
+            "[LAUNCH] external formation launch requested but "
+            "~formation_launch_pkg/~formation_launch_file is not configured"
+        )
+        return
     try:
         print(f"[LAUNCH] Starting formation launch for UAV {uav_id}...")
         launch_process = subprocess.Popen(
@@ -257,8 +271,8 @@ def activate_sead_mission(
         target=DPGA.task_allocation_process,
         args=(
             sead_info[0],
-            0.5,
-            100,
+            ga_time_interval,
+            ga_population_size,
             taskAllocation2main,
             main2taskAllocation,
         ),
@@ -492,8 +506,10 @@ if __name__ == "__main__":
     # 从 param server 读配置（必须在 init_node 之后）
     uav_name = rospy.get_param("~uav_name", "uav0")
     uav_index = int(uav_name.replace("uav", ""))
-    # MRS uses uav1 → id=1; SEAD original uses uav0 → id=0; normalize
-    target_uav_id = rospy.get_param("~uav_id", uav_index + 1)  # 保持 +1 的向后兼容
+    # Support both naming conventions: original uav0 is aircraft 1, while
+    # MRS/PX4 commonly names the first aircraft uav1.
+    default_uav_id = uav_index if uav_index > 0 else 1
+    target_uav_id = int(rospy.get_param("~uav_id", default_uav_id))
 
     # 用 rospy params 覆盖模块级 os.environ 默认值（launch 文件的 param 设置从此生效）
     simple_strike_control_mode = rospy.get_param(
@@ -508,6 +524,8 @@ if __name__ == "__main__":
         "~sead_runtime_mode",
         os.environ.get("SEAD_RUNTIME_MODE", "simple_strike"),
     ).lower()
+    ga_time_interval = float(rospy.get_param("~ga/time_interval", 0.5))
+    ga_population_size = int(rospy.get_param("~ga/population_size", 100))
 
     # re-validate after override
     if sead_control_mode in ["swiftwing", "speed"]:
@@ -530,16 +548,23 @@ if __name__ == "__main__":
         rospy.loginfo(f"[INIT] Using ROS simulation bridge (XBee hardware {'unavailable' if not XBEE_HW_AVAILABLE else 'disabled by param'})")
         comms = SeadRosBridge(uav_name, target_uav_id)
         xbee, uav_id, xbee_lock = comms, target_uav_id, None
+        u2u_address = list(comms.u2u_address)
+        gcs_address = comms.gcs_address
     else:
         rospy.loginfo("[INIT] Using real XBee hardware")
-        # Original XBee init path (kept as-is from SEAD/onboard.py)
-        xbee = DigiMeshDevice(
-            rospy.get_param("~xbee_port", "/dev/ttyUSB0"),
-            rospy.get_param("~xbee_baud", 57600),
+        # Preserve the original device discovery, node-ID match and file lock.
+        xbee, uav_id, xbee_lock = find_xbee_by_id(
+            target_uav_id,
+            baud=int(rospy.get_param("~xbee_baud", 57600)),
         )
-        xbee.open()
-        xbee_lock = None  # no ROS-side locking needed
-        uav_id = target_uav_id
+        u2u_address = [
+            RemoteDigiMeshDevice(xbee, XBee64BitAddress.from_hex_string(xb.value))
+            for xb in XBee_Devices
+            if xb.name != f"UAV{uav_id}"
+        ]
+        gcs_address = RemoteDigiMeshDevice(
+            xbee, XBee64BitAddress.from_hex_string("0013A2004105EB61")
+        )
     mode_banner_lines = [
         "",
         "==================== CURRENT ONBOARD MODES ====================",
@@ -574,12 +599,6 @@ if __name__ == "__main__":
 
     # --- Communication setting ---
     data = packet_processing(uav_id)
-    u2u_address = [
-        int(xb.name.replace("UAV", ""))
-        for xb in XBee_Devices
-        if not xb.name == f"UAV{uav_id}"
-    ]
-    gcs_address = 0  # GCS via ROS topic
     xbee.send_data_async(
         gcs_address,
         data.pack_info_packet(
@@ -597,8 +616,10 @@ if __name__ == "__main__":
 
     # --- Time calibration ---
     new_timer = Timer()
-    comms.time_synchronize_process(gcs_address, xbee, uav_id)
-    new_timer.bias = 0.0  # virtual sync
+    if use_sim or not XBEE_HW_AVAILABLE:
+        new_timer.bias = 0.0
+    else:
+        new_timer.time_synchronize_process(gcs_address, xbee, uav_id)
 
     # --- Mission ---
     Mission = Message_ID.Default
@@ -616,7 +637,20 @@ if __name__ == "__main__":
     pending_task_inserts = []  # list of [E,N]
     pending_sead_payload = None
     pending_sead_received_time = 0.0
-    formation = FormationController(uav_id)
+    formation_config = FormationConfig(
+        spacing=float(rospy.get_param("~formation/spacing", 220.0)),
+        standoff_distance=float(
+            rospy.get_param("~formation/standoff_distance", 5000.0)
+        ),
+        safe_separation=float(
+            rospy.get_param("~formation/safe_separation", 140.0)
+        ),
+        altitude_step=float(rospy.get_param("~formation/altitude_step", 20.0)),
+        broadcast_interval=float(
+            rospy.get_param("~formation/broadcast_interval", 0.2)
+        ),
+    )
+    formation = FormationController(uav_id, config=formation_config)
     previous_formation_u2u = 0
     previous_formation_debug_time = 0.0
     formation_release_reported = False
@@ -785,7 +819,11 @@ if __name__ == "__main__":
                     xbee.send_data_async(
                         gcs_address, data.pack_info_packet(f"U2G frquency: {info}Hz")
                     )
-                    start_roslaunch(uav_index) # 启动 编队launch，id从0开始，类似uav0,uav1 sun
+                    # Preserve the original external-launch hook, but keep it
+                    # opt-in so a frequency command cannot recursively spawn
+                    # another onboard node.
+                    if rospy.get_param("~start_external_formation_launch", False):
+                        start_roslaunch(uav_index)
                 elif (
                     messageType == Message_ID.Origin_Correction
                 ):  # 解包为原点修正则进行原点修正？？？好像没有这个功能？
@@ -1370,18 +1408,14 @@ if __name__ == "__main__":
                     xbee.send_data_async(
                         gcs_address, data.pack_info_packet(f"mission stop and hold")
                     )
+        except TimeoutException:
+            # XBee receive timeout is normal flow control in hardware mode.
+            pass
         except Exception as e:
-            # 仿真模式下 rosbridge.read_data 返回 None，不走异常；
-            # 硬件模式下 XBee TimeoutException 是正常流控，忽略。
-            # 其他所有异常才是代码 bug，需要打日志。
-            if XBEE_HW_AVAILABLE and not use_sim:
-                # 硬件 TimeoutException → 正常流控，pass
-                pass
-            else:
-                import traceback
-                rospy.logerr_throttle(5.0, f"Main Loop Exception: {e}")
-                traceback.print_exc()
-                log_jsonl("main_loop_exception", error=str(e))
+            import traceback
+            rospy.logerr_throttle(5.0, f"Main Loop Exception: {e}")
+            traceback.print_exc()
+            log_jsonl("main_loop_exception", error=str(e))
 
         if pending_formation_point is not None and UAV.armed:
             if UAV.mode == Mode.GUIDED.name:
@@ -1452,7 +1486,10 @@ if __name__ == "__main__":
         if UAV.mode in ["GUIDED", "OFFBOARD"] and UAV.armed:  # OFFBOARD才执行后续的任务模式
             # 1. 如果有之前的任务目标，就在最后一个目标点盘旋
             currtnt_t = time()
-            if currtnt_t - UAV.last_setpoint_time > 0.2:
+            if (
+                not getattr(UAV, "uses_external_control_manager", False)
+                and currtnt_t - UAV.last_setpoint_time > 0.2
+            ):
                 if getattr(UAV, "offboard_control_source", "") == "swiftwing_vector":
                     if (
                         hasattr(UAV, "replay_last_swiftwing_vector_setpoint")

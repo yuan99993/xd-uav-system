@@ -23,6 +23,7 @@ import pymap3d as pm
 from xd_uav_sead.comms.communication_info import *
 import xd_uav_sead.planning.pathFollowing as pf
 from std_srvs.srv import SetBool, Trigger
+from xd_uav_controller.srv import Takeoff as ManagerTakeoff
 from geometry_msgs.msg import Point, Vector3
 from time import time
 
@@ -31,6 +32,21 @@ class Drone(object):
     def __init__(self, uav_name="uav0", message_rate=10):
         self.uav_name = uav_name
         self.ns_mavros = f"/{uav_name}/mavros"
+        self.control_backend = rospy.get_param(
+            "~control_backend", "direct_mavros"
+        ).strip().lower()
+        if self.control_backend not in ("direct_mavros", "xd_control_manager"):
+            rospy.logwarn(
+                f"[{uav_name}] unsupported control_backend={self.control_backend}; "
+                "falling back to direct_mavros"
+            )
+            self.control_backend = "direct_mavros"
+        self.uses_external_control_manager = (
+            self.control_backend == "xd_control_manager"
+        )
+        self.reference_frame = rospy.get_param(
+            "~control_reference_frame", f"{uav_name}/local_origin"
+        )
         # derive a UAV index from name (e.g. 'uav2' -> 2). Default 0 when not present.
         try:
             digits = "".join([c for c in uav_name if c.isdigit()])
@@ -72,6 +88,7 @@ class Drone(object):
         self.transition_sent = False
         self.last_setpoint_time = time()
         self.home = [0, 0, 0]
+        self.home_valid = False
         # classifier 从 mavros param 读取 PX4 机型而非死等
         # SITL 里 param 读不到时默认多旋翼
         self.frame_type = None # 初始化为 None 只等 classifier 确认
@@ -103,9 +120,12 @@ class Drone(object):
         rospy.Subscriber(
             f"{self.ns_mavros}/battery", BatteryState, self.battery_callback
         )
-        self.setpoint_pub = rospy.Publisher(
-            f"{self.ns_mavros}/setpoint_raw/local", PositionTarget, queue_size=1
+        setpoint_topic = (
+            f"/{self.uav_name}/control/reference/setpoint"
+            if self.uses_external_control_manager
+            else f"{self.ns_mavros}/setpoint_raw/local"
         )
+        self.setpoint_pub = rospy.Publisher(setpoint_topic, PositionTarget, queue_size=1)
         self.swiftwing_vector_pub = rospy.Publisher(
             f"/{self.uav_name}/control_signal/vector",
             Vector3,
@@ -114,15 +134,15 @@ class Drone(object):
         " => { Px, Py, Pz, Yaw } "
         self.position_cmd = PositionTarget()
         self.position_cmd.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-        self.position_cmd.type_mask = 0b0000101111111000
+        self.position_cmd.type_mask = 2552
         " => { Px, Py, Pz } "
         self.waypoint_cmd = PositionTarget()
         self.waypoint_cmd.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-        self.waypoint_cmd.type_mask = 0b0000101111111000
+        self.waypoint_cmd.type_mask = 2552
         " => { Vx, Vy, Vz } "
         self.velocity_cmd = PositionTarget()
         self.velocity_cmd.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-        self.velocity_cmd.type_mask = 0b0000111111000111
+        self.velocity_cmd.type_mask = 3527
         " Prameters "
         self.v = 15
         self.Rmin = 50
@@ -131,6 +151,29 @@ class Drone(object):
         self.last_swiftwing_vector_cmd = None
         self.last_swiftwing_vector_cmd_time = 0.0
         self.last_swiftwing_vector_debug_log_time = 0.0
+        rospy.loginfo(
+            f"[Drone] control_backend={self.control_backend}, "
+            f"setpoint_topic={setpoint_topic}, reference_frame={self.reference_frame}"
+        )
+
+    def _publish_control_reference(self, message):
+        if self.uses_external_control_manager:
+            message.header.stamp = rospy.Time.now()
+            message.header.frame_id = self.reference_frame
+        self.setpoint_pub.publish(message)
+        self.last_setpoint_time = time()
+
+    def _call_manager_trigger(self, service_name):
+        full_name = f"/{self.uav_name}/control_manager/{service_name}"
+        try:
+            rospy.wait_for_service(full_name, timeout=2.0)
+            response = rospy.ServiceProxy(full_name, Trigger)()
+            if not response.success:
+                rospy.logwarn(f"[{self.uav_name}] {service_name} rejected: {response.message}")
+            return bool(response.success)
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            rospy.logerr(f"[{self.uav_name}] {service_name} failed: {exc}")
+            return False
 
     def state_callback(self, msg):
         self.armed = msg.armed
@@ -163,6 +206,21 @@ class Drone(object):
             msg.pose.pose.position.y,
             msg.pose.pose.position.z,
         ]
+        if self.uses_external_control_manager:
+            # The estimator and control manager operate in the MAVROS local ENU
+            # frame.  This path must not depend on MAVROS home_position, which is
+            # intentionally blacklisted by the MRS simulation configuration.
+            self.local_pose = [e_h, n_h, u_h]
+            self.local_velo = [
+                msg.twist.twist.linear.x,
+                msg.twist.twist.linear.y,
+                msg.twist.twist.linear.z,
+            ]
+            return
+
+        if not self.home_valid:
+            return
+
         " Transform to the unified ENU coordinates of UAVs and GCS "
         x, y, z = pm.enu2ecef(e_h, n_h, u_h, self.home[0], self.home[1], self.home[2])
         e, n, u = pm.ecef2enu(x, y, z, self.origin[0], self.origin[1], 1418)
@@ -203,6 +261,9 @@ class Drone(object):
 
     def home_callback(self, msg):
         self.home = [msg.geo.latitude, msg.geo.longitude, msg.geo.altitude]
+        self.home_valid = isfinite(self.home[0]) and isfinite(self.home[1]) and (
+            abs(self.home[0]) <= 90.0 and abs(self.home[1]) <= 180.0
+        ) and not (self.home[0] == 0.0 and self.home[1] == 0.0)
 
     def battery_callback(self, msg):
         self.battery_volt = msg.voltage
@@ -222,6 +283,21 @@ class Drone(object):
             print(e)
 
     def takeoff(self, alt):  # 起飞
+        if self.uses_external_control_manager:
+            service_name = f"/{self.uav_name}/control_manager/takeoff"
+            try:
+                rospy.wait_for_service(service_name, timeout=2.0)
+                response = rospy.ServiceProxy(service_name, ManagerTakeoff)(
+                    altitude=float(alt)
+                )
+                if not response.success:
+                    rospy.logwarn(
+                        f"[{self.uav_name}] manager takeoff rejected: {response.message}"
+                    )
+                return bool(response.success)
+            except (ValueError, rospy.ROSException, rospy.ServiceException) as exc:
+                rospy.logerr(f"[{self.uav_name}] manager takeoff failed: {exc}")
+                return False
         ns_mavros = self.ns_mavros
         if self.local_pose[2] < 15.0:
             rospy.loginfo("Fixed-wing: On ground. Setting launch params...")
@@ -278,6 +354,19 @@ class Drone(object):
         - LOITER: 切 AUTO.LOITER
         - TAKEOFF: AUTO.TAKEOFF
         """
+        if self.uses_external_control_manager:
+            requested = str(mode).upper()
+            if requested in ("OFFBOARD", "GUIDED"):
+                return self._call_manager_trigger("offboard")
+            if requested in ("LAND", "AUTO.LAND"):
+                self.keepoffboard = None
+                return self._call_manager_trigger("land")
+            rospy.logwarn(
+                f"[{self.uav_name}] mode {mode} has no public xd_control_manager "
+                "equivalent; command rejected without bypassing the manager"
+            )
+            return False
+
         ns_mavros = self.ns_mavros
         if self.frame_type == FrameType.Quad:
             if mode == "OFFBOARD" or mode == "GUIDED":
@@ -534,6 +623,12 @@ class Drone(object):
         统一解锁接口：
         1. Fixed_wing: 使用原生 MAVROS cmd/arming
         """
+        if self.uses_external_control_manager:
+            rospy.logwarn(
+                f"[{self.uav_name}] xd_control_manager intentionally has no public "
+                "arm-only service; use takeoff instead"
+            )
+            return False
         ns_mavros = f"{self.ns_mavros}"
 
         if self.frame_type == FrameType.Fixed_wing:
@@ -560,6 +655,12 @@ class Drone(object):
         统一上锁接口：
         1. Fixed_wing: 使用原生 MAVROS cmd/arming (False)
         """
+        if self.uses_external_control_manager:
+            rospy.logwarn(
+                f"[{self.uav_name}] xd_control_manager intentionally has no public "
+                "in-flight disarm service; use land instead"
+            )
+            return False
         # 命名空间构建
         ns_mavros = self.ns_mavros
 
@@ -584,15 +685,15 @@ class Drone(object):
                 return False
 
     def get_param(self, param_name):
-        rospy.wait_for_service(f"{self.ns_mavros}/param/get")
         try:
+            rospy.wait_for_service(f"{self.ns_mavros}/param/get", timeout=2.0)
             param_get = rospy.ServiceProxy(f"{self.ns_mavros}/param/get", ParamGet)
             responce = param_get(param_id=param_name)
             if responce.success:
                 return responce.value
             else:
                 return False
-        except rospy.ServiceException as e:
+        except (rospy.ROSException, rospy.ServiceException):
             return False
 
     def uav_classifier(self):
@@ -609,9 +710,7 @@ class Drone(object):
                 rospy.loginfo("[classifier] => Quad")
                 self.frame_type = FrameType.Quad
         else:
-            # SITL 中 param 可能读数失败 → 默认多旋翼
-            rospy.loginfo("[classifier] param read failed, => Quad")
-            self.frame_type = FrameType.Quad
+            rospy.logwarn("[classifier] param read failed; retrying")
 
 
 
@@ -625,20 +724,39 @@ class Drone(object):
     def guide_to_waypoint(self, waypoint, yaw=None):
         "waypoint = [Px, Py, Pz]  with yaw angle"
         self.offboard_control_source = "position"
-        x, y, z = pm.enu2ecef(
-            waypoint[0], waypoint[1], waypoint[2], self.origin[0], self.origin[1], 1418
-        )
-        e, n, u = pm.ecef2enu(x, y, z, self.home[0], self.home[1], self.home[2])
+        if self.uses_external_control_manager:
+            # Mission waypoints are local ENU coordinates in the same odom frame
+            # used by xd_uav_state_estimators and xd_uav_control_manager.
+            e, n = float(waypoint[0]), float(waypoint[1])
+            altitude = float(waypoint[2])
+            if altitude <= 0.0:
+                altitude = self.local_pose[2]
+        else:
+            if not self.home_valid:
+                rospy.logerr_throttle(
+                    2.0,
+                    f"[{self.uav_name}] waypoint rejected: MAVROS home position "
+                    "is not available",
+                )
+                return False
+            x, y, z = pm.enu2ecef(
+                waypoint[0], waypoint[1], waypoint[2],
+                self.origin[0], self.origin[1], 1418,
+            )
+            e, n, u = pm.ecef2enu(
+                x, y, z, self.home[0], self.home[1], self.home[2]
+            )
+            altitude = float(waypoint[2])
+            # Preserve the original direct-MAVROS mission altitude convention.
+            if altitude < 50.0:
+                altitude = self.local_pose[2]
         self.position_cmd.position.x = e
         self.position_cmd.position.y = n
-        # 防止没有给高度，或者给的高度太低，就是飞行中的高度 sun
-        if waypoint[2] < 50:
-            waypoint[2] = self.local_pose[2]
-        self.position_cmd.position.z = waypoint[2]
-        self.keepoffboard = [e, n, waypoint[2]]
+        self.position_cmd.position.z = altitude
+        self.keepoffboard = [e, n, altitude]
         self.position_cmd.yaw = yaw if yaw is not None else self.yaw
-        self.setpoint_pub.publish(self.position_cmd)
-        self.last_setpoint_time = time()
+        self._publish_control_reference(self.position_cmd)
+        return True
 
     def set_offboard_control_source(self, source):
         self.offboard_control_source = str(source or "position")
@@ -649,8 +767,7 @@ class Drone(object):
         self.velocity_cmd.velocity.x = velocity[0]
         self.velocity_cmd.velocity.y = velocity[1]
         self.velocity_cmd.velocity.z = velocity[2]
-        self.setpoint_pub.publish(self.velocity_cmd)
-        self.last_setpoint_time = time()
+        self._publish_control_reference(self.velocity_cmd)
 
     def swiftwing_vector_control(self, speed_mps, heading_rad, vz_mps=0.0):
         """
@@ -673,7 +790,13 @@ class Drone(object):
         msg.y = speed * sin(heading)
         msg.z = vz
 
-        self.swiftwing_vector_pub.publish(msg)
+        if self.uses_external_control_manager:
+            self.velocity_cmd.velocity.x = msg.x
+            self.velocity_cmd.velocity.y = msg.y
+            self.velocity_cmd.velocity.z = msg.z
+            self._publish_control_reference(self.velocity_cmd)
+        else:
+            self.swiftwing_vector_pub.publish(msg)
         self.offboard_control_source = "swiftwing_vector"
         self.keepoffboard = None
         self.defaultoffboard = None
@@ -700,7 +823,13 @@ class Drone(object):
         msg.x = float(vx)
         msg.y = float(vy)
         msg.z = float(vz)
-        self.swiftwing_vector_pub.publish(msg)
+        if self.uses_external_control_manager:
+            self.velocity_cmd.velocity.x = msg.x
+            self.velocity_cmd.velocity.y = msg.y
+            self.velocity_cmd.velocity.z = msg.z
+            self._publish_control_reference(self.velocity_cmd)
+        else:
+            self.swiftwing_vector_pub.publish(msg)
         self.offboard_control_source = "swiftwing_vector"
         self.keepoffboard = None
         self.defaultoffboard = None
