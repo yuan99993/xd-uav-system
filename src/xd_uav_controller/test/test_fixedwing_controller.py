@@ -149,11 +149,15 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.fail("没有在超时前收到固定翼轨迹控制输出")
 
     @staticmethod
-    def _turning_trajectory(yaw_rate=0.15):
+    def _turning_trajectory(
+        yaw_rate=0.15,
+        vertical_acceleration=0.0,
+        duration=10.0,
+    ):
         trajectory = MultiDOFJointTrajectory()
         trajectory.header.frame_id = "uav1/odom"
         trajectory.joint_names = ["uav1/base_link"]
-        for point_time in (0.0, 10.0):
+        for point_time in (0.0, duration):
             transform = Transform()
             transform.translation.z = 100.0
             transform.rotation.w = 1.0
@@ -164,6 +168,7 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
 
             acceleration = Twist()
             acceleration.linear.y = 2.25
+            acceleration.linear.z = vertical_acceleration
 
             point = MultiDOFJointTrajectoryPoint()
             point.transforms = [transform]
@@ -207,6 +212,43 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.assertLess(curvature_command.body_rate.x, -0.05)
         self.assertGreater(curvature_command.body_rate.z, 0.01)
 
+        vertical_feedforward_command = self._wait_for_trajectory_command(
+            self._turning_trajectory(vertical_acceleration=2.0),
+            lambda value: (
+                value.valid and value.body_rate.y < -0.05
+            ),
+        )
+        self.assertLess(
+            vertical_feedforward_command.body_rate.y,
+            -0.05,
+            "正向垂直加速度前馈必须提前产生抬头角速度",
+        )
+
+        # A completed fixed-wing trajectory must not keep chasing its
+        # final static point. It must create a tangent waiting circle,
+        # whose V/R feed-forward already commands bank at circle entry.
+        short_trajectory_command = self._wait_for_trajectory_command(
+            self._turning_trajectory(duration=0.15),
+            lambda value: (
+                value.valid
+                and value.controller == "fixedwing_course_energy"
+            ),
+        )
+        self.assertTrue(short_trajectory_command.valid)
+        completed_trajectory_loiter = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.controller
+                == "fixedwing_course_energy_loiter"
+                and value.body_rate.x < -0.01
+                and value.body_rate.z > 0.01
+            ),
+            include_reference=False,
+            timeout=2.0,
+        )
+        self.assertLess(completed_trajectory_loiter.body_rate.x, 0.0)
+        self.assertGreater(completed_trajectory_loiter.body_rate.z, 0.0)
+
         command = self._wait_for_command(
             lambda value: (
                 value.valid and value.body_rate.y < -0.05
@@ -218,11 +260,32 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.assertTrue(math.isfinite(command.body_rate.z))
         self.assertGreaterEqual(command.thrust, 0.0)
         self.assertLessEqual(command.thrust, 1.0)
+        self.assertGreater(
+            command.thrust,
+            0.25,
+            "爬升率目标必须在配平油门上增加前馈",
+        )
         self.assertLess(
             command.body_rate.y,
             -0.05,
             "ROS FLU中正爬升必须产生负pitch rate",
         )
+
+        # With no altitude error or vertical feed-forward, an actual upward
+        # velocity still needs a nose-down correction. This exercises the
+        # climb-rate feedback that damps altitude overshoot.
+        climbing_state = self._state()
+        climbing_state.velocity_odom.z = 2.0
+        level_reference = self._reference(
+            position_z=100.0,
+            velocity_z=0.0,
+        )
+        climb_damping_command = self._wait_for_command(
+            lambda value: value.valid and value.body_rate.y > 0.05,
+            state=climbing_state,
+            reference=level_reference,
+        )
+        self.assertGreater(climb_damping_command.body_rate.y, 0.05)
 
         left_turn_reference = self._reference(
             position_x=0.0,
@@ -292,13 +355,13 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         offset_path_command = self._wait_for_command(
             lambda value: (
                 value.valid
-                and -1.0 < value.body_rate.x < -0.10
+                and value.body_rate.x < -0.10
                 and value.body_rate.z > 0.01
             ),
             reference=offset_path_reference,
         )
         self.assertLess(offset_path_command.body_rate.x, -0.10)
-        self.assertGreater(offset_path_command.body_rate.x, -1.0)
+        self.assertGreaterEqual(offset_path_command.body_rate.x, -2.0)
         self.assertGreater(offset_path_command.body_rate.z, 0.0)
 
         rospy.wait_for_service(
@@ -338,6 +401,12 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             loiter_command.controller,
             "fixedwing_course_energy_loiter",
         )
+        self.assertLess(
+            loiter_command.body_rate.x,
+            -0.01,
+            "圆周切入点应由V/R前馈立即建立滚转",
+        )
+        self.assertGreater(loiter_command.body_rate.z, 0.01)
 
         # The configured CCW circle is tangent to course=0 at entry.
         # Moving outside that circle must ask for a left bank in ROS
@@ -474,25 +543,59 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             "下滑阶段应给出低头指令",
         )
 
-        flare_state = self._state()
-        flare_state.position_odom.x = 370.0
-        flare_state.position_odom.z = 102.5
-        flare_command = self._wait_for_command(
+        near_ground_airborne_state = self._state()
+        near_ground_airborne_state.position_odom.x = 370.0
+        near_ground_airborne_state.position_odom.z = 102.5
+        near_ground_command = self._wait_for_command(
             lambda value: (
                 value.valid
                 and value.landing_active
-                and value.body_rate.y < -0.02
-                and value.thrust < 0.01
+                and not value.landing_touchdown
+                and value.thrust > 0.05
             ),
             include_reference=False,
-            state=flare_state,
+            state=near_ground_airborne_state,
+        )
+        self.assertFalse(near_ground_command.landing_touchdown)
+        self.assertGreater(
+            near_ground_command.thrust,
+            0.05,
+            "仍在空中时不能因固定距离而提前断油",
+        )
+        self.assertGreater(
+            near_ground_command.body_rate.y,
+            0.05,
+            "低空阶段必须继续跟踪下滑率，不能配平为平飞",
+        )
+
+        low_airborne_state = self._state()
+        low_airborne_state.position_odom.x = 399.0
+        low_airborne_state.position_odom.z = 100.5
+        low_airborne_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.landing_active
+                and not value.landing_touchdown
+                and 0.01 < value.thrust
+                < near_ground_command.thrust
+            ),
+            include_reference=False,
+            state=low_airborne_state,
+        )
+        self.assertGreater(
+            low_airborne_command.thrust,
+            0.01,
+            "最后一米内仍高速飞行时油门应连续衰减而非归零",
         )
         self.assertLess(
-            flare_command.body_rate.y,
-            -0.02,
-            "拉平阶段应给出抬头指令",
+            low_airborne_command.thrust,
+            near_ground_command.thrust,
         )
-        self.assertLess(flare_command.thrust, 0.01)
+        self.assertGreater(
+            low_airborne_command.body_rate.y,
+            0.0,
+            "接地前应保留轻微下沉而不是悬在跑道上方",
+        )
 
         rollout_state = self._state()
         rollout_state.position_odom.x = 409.0

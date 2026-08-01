@@ -26,7 +26,7 @@ home:
   # fixed_local: 始终使用下面配置的固定点，起飞、降落和复位都不会覆盖它。
   mode: fixed_local
   frame: local_origin
-  #fixed_position: [-60.0, 0.0, 0.0] #固定翼要有补偿值，不然落不准
-  fixed_position: [0.0, 0.0, 0.0]
+  fixed_position: [-190.0, 0.0, 0.0] #固定翼要有补偿值，不然落不准
+  #fixed_position: [0.0, 0.0, 0.0]
   fixed_yaw: 0.0
   use_home_yaw: true
