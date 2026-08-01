@@ -30,6 +30,10 @@ def _get_bool(name, default):
 def _get_int(name, default):
     return rospy.get_param("~" + name, default)
 
+def _get_json(name, default):
+    value = rospy.get_param("~" + name, default)
+    return json.loads(value) if isinstance(value, str) else value
+
 
 MSG_MAP = {
     # (msg_id, builder_fn)
@@ -51,7 +55,7 @@ MSG_MAP = {
     "mission_abort":   (8,  lambda: {}),
     "origin":          (9,  lambda: {"origin_id": _get_int("origin_id", 0)}),
     "sead_mission":    (18, lambda: {
-        "targets": json.loads(_get_str("targets_json", "[]")),
+        "targets": _get_json("targets_json", "[]"),
         "unknown_targets": [],
         "uav_type": _get_int("uav_type", 2),
         "velocity": _get_float("velocity", 20.0),
@@ -121,7 +125,6 @@ else:
 
 # Special handling for airspace_zone: pack binary blob
 if cmd == "airspace_zone":
-    points_json = _get_str("points_json", "[[0,0],[100,0],[100,100],[0,100]]")
     zonedef_raw = {
         "zone_id": _get_int("zone_id", 1),
         "enabled": int(_get_bool("enabled", True)),
@@ -130,7 +133,9 @@ if cmd == "airspace_zone":
         "levelH": _get_int("levelH", 0),
         "minAlt": _get_float("minAlt", 0.0),
         "maxAlt": _get_float("maxAlt", 500.0),
-        "vertices": json.loads(points_json),
+        "vertices": _get_json(
+            "points_json", "[[0,0],[100,0],[100,100],[0,100]]"
+        ),
     }
     info.update(zonedef_raw)
     info.pop("blob", None)

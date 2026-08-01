@@ -3,6 +3,14 @@ set -euo pipefail
 
 mode="${1:-check}"
 patterns=(
+  '/opt/ros/noetic/bin/roscore'
+  '/opt/ros/noetic/bin/rosmaster --core -p 11311'
+  '/opt/ros/noetic/bin/roslaunch xd_uav_sead (sead_onboard|sead_xd_control)\.launch'
+  '/devel/lib/xd_uav_sead/sead_onboard_node\.py'
+  'sead_validation_visualizer\.py'
+  '/devel/lib/xd_uav_state_estimators/multi_source_estimator_node'
+  '/devel/lib/xd_uav_control_manager/control_manager_node'
+  '/devel/lib/xd_uav_controller/controller_node'
   '/opt/ros/noetic/share/px4/px4/px4 .* -w sitl_uav[123]'
   '/opt/ros/noetic/lib/mavros/mavros_node .*uav[123]-mavros'
   '/opt/ros/noetic/bin/roslaunch mrs_uav_gazebo_simulation simulation.launch'
@@ -30,7 +38,7 @@ case "$mode" in
   cleanup)
     mapfile -t pids < <(list_matches | awk '{print $1}')
     if ((${#pids[@]})); then
-      echo "停止本验证链识别到的派生 PX4/MAVROS/Gazebo 进程: ${pids[*]}"
+      echo "停止本验证链识别到的派生 ROS/SEAD/PX4/MAVROS/Gazebo 进程: ${pids[*]}"
       kill "${pids[@]}" 2>/dev/null || true
       sleep 4
     fi

@@ -13,6 +13,13 @@ takeoff_all() {
   for ((i=1; i<=count; i++)); do rosservice call "/uav${i}/control_manager/takeoff" '{}'; done
 }
 
+waypoint() {
+  [[ "$scenario" == "v3" ]] || { echo "waypoint 只用于 v3"; return 1; }
+  [[ $# -eq 3 ]] || { echo "用法: waypoint X Y Z"; return 2; }
+  rosrun xd_uav_sead mock_gcs.py _uav_name:=uav1 _cmd:=waypoint \
+    _x:="$1" _y:="$2" _z:="$3" _radius:=1.0
+}
+
 land_all() {
   local i
   for i in 1 2 3; do
@@ -52,6 +59,13 @@ dpga_demo() {
   rosrun xd_uav_sead mock_gcs.py _uav_name:=uav3 _cmd:=sead_mission _targets_json:='[[20,0]]' _uav_type:=3 _velocity:=5.0 _Rmin:=5.0 _waypoint_radius:=2
 }
 
+dpga_insert() {
+  [[ "$scenario" == "v7" ]] || { echo "dpga_insert 只用于 v7"; return 1; }
+  [[ $# -eq 2 ]] || { echo "用法: dpga_insert X Y"; return 2; }
+  rosrun xd_uav_sead mock_gcs.py _uav_name:=uav1 _cmd:=task_insert \
+    _x:="$1" _y:="$2" _task_type:=0
+}
+
 strike_demo() {
   local i
   for i in 1 2 3; do
@@ -59,22 +73,32 @@ strike_demo() {
   done
 }
 
+visualize() {
+  local output_root="/home/promise/catkin_ws/src/xd-uavsystem-test/.codex-tmp/visualizations"
+  rosrun xd_uav_sead sead_validation_visualizer.py \
+    _scenario:="$scenario" _output_root:="$output_root" &
+  echo "可视化窗口启动中（PID $!）；关闭窗口时自动保存 PNG/JSON/CSV 到 $output_root。"
+}
+
 help_sead() {
   echo "scenario=$scenario"
   echo "可用短命令："
   echo "  takeoff_all               v3/v4/v5 起飞"
+  echo "  waypoint X Y Z            v3 下发单机航点"
   echo "  land_all                  所有已启动 UAV 降落"
   echo "  auto_offsets              v5 仅在自动计算失败时手动重试"
   echo "  trail_all                 v5 下发 TRAIL 配置"
   echo "  formation_point X Y       v5 下发集结点"
   echo "  airspace_demo             v6 下发示例禁飞区"
   echo "  dpga_demo                 v7 下发三机分配任务"
+  echo "  dpga_insert X Y           v7 动态插入目标"
   echo "  strike_demo               v8 下发三目标任务"
+  echo "  visualize                 v3-v8 实时显示并保存验证证据"
   echo "  help_sead                 再次显示帮助"
   echo
   echo "切换窗口：Ctrl+B 后按 n/p；直接跳转：Ctrl+B 后按 0/1/2。"
 }
 
-export -f takeoff_all land_all auto_offsets trail_all formation_point airspace_demo dpga_demo strike_demo help_sead
+export -f takeoff_all waypoint land_all auto_offsets trail_all formation_point airspace_demo dpga_demo dpga_insert strike_demo visualize help_sead
 help_sead
 exec bash --noprofile

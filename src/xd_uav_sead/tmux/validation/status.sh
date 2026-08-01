@@ -13,12 +13,12 @@ while true; do
   for uav in uav1 uav2 uav3; do
     if rostopic list 2>/dev/null | grep -q "^/$uav/mavros/state$"; then
       echo "[$uav MAVROS]"
-      timeout 2 rostopic echo -n 1 "/$uav/mavros/state" 2>/dev/null | grep -E 'connected:|armed:|mode:|system_status:' || true
+      timeout -k 1 2 rostopic echo -n 1 "/$uav/mavros/state" 2>/dev/null | grep -E 'connected:|armed:|mode:|system_status:' || true
       echo "[$uav estimator]"
-      timeout 2 rostopic echo -n 1 "/$uav/state_estimator/state_valid" 2>/dev/null | grep 'data:' || true
-      timeout 2 rostopic echo -n 1 "/$uav/state_estimator/localization_valid" 2>/dev/null | grep 'data:' || true
+      timeout -k 1 2 rostopic echo -n 1 "/$uav/state_estimator/state_valid" 2>/dev/null | grep 'data:' || true
+      timeout -k 1 2 rostopic echo -n 1 "/$uav/state_estimator/localization_valid" 2>/dev/null | grep 'data:' || true
       echo "[$uav manager]"
-      timeout 2 rostopic echo -n 1 "/$uav/control_manager/status" 2>/dev/null | grep 'data:' || true
+      timeout -k 1 2 rostopic echo -n 1 "/$uav/control_manager/status" 2>/dev/null | grep 'data:' || true
       echo
     fi
   done

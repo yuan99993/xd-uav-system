@@ -30,6 +30,7 @@ catkin_package(
 catkin_install_python(PROGRAMS
   scripts/sead_onboard_node.py
   scripts/mock_gcs.py
+  scripts/sead_validation_visualizer.py
   tools/xbee_send_formation_test.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
