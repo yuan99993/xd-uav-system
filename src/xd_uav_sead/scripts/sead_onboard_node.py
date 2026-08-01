@@ -649,7 +649,12 @@ if __name__ == "__main__":
         broadcast_interval=float(
             rospy.get_param("~formation/broadcast_interval", 0.2)
         ),
+        minimum_altitude=float(
+            rospy.get_param("~formation/minimum_altitude", 80.0)
+        ),
+        static_hold=bool(rospy.get_param("~formation/static_hold", False)),
     )
+    minimum_hold_altitude = float(rospy.get_param("~minimum_hold_altitude", 80.0))
     formation = FormationController(uav_id, config=formation_config)
     previous_formation_u2u = 0
     previous_formation_debug_time = 0.0
@@ -1546,7 +1551,7 @@ if __name__ == "__main__":
                         [
                             UAV.local_pose[0],
                             UAV.local_pose[1],
-                            max(UAV.local_pose[2], 80),
+                            max(UAV.local_pose[2], minimum_hold_altitude),
                         ]
                     )
                     rospy.loginfo_throttle(2, "Watchdog: Emergency Hold at Current Pos")

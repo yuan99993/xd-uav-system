@@ -47,6 +47,14 @@ class Drone(object):
         self.reference_frame = rospy.get_param(
             "~control_reference_frame", f"{uav_name}/local_origin"
         )
+        self.shared_frame_enabled = bool(
+            rospy.get_param("~shared_frame/enabled", False)
+        )
+        self.shared_frame_offset = [
+            float(rospy.get_param("~shared_frame/offset_x", 0.0)),
+            float(rospy.get_param("~shared_frame/offset_y", 0.0)),
+            float(rospy.get_param("~shared_frame/offset_z", 0.0)),
+        ]
         # derive a UAV index from name (e.g. 'uav2' -> 2). Default 0 when not present.
         try:
             digits = "".join([c for c in uav_name if c.isdigit()])
@@ -78,6 +86,7 @@ class Drone(object):
         " UAV info "
         self.armed = False
         self.mode = None
+        self.control_local_pose = [0, 0, 0]
         self.local_pose, self.local_velo = [0, 0, 0], [0, 0, 0]
         self.gps_pose_lla = [0, 0, 0]
         self.roll, self.pitch, self.yaw = 0, 0, 0
@@ -153,8 +162,19 @@ class Drone(object):
         self.last_swiftwing_vector_debug_log_time = 0.0
         rospy.loginfo(
             f"[Drone] control_backend={self.control_backend}, "
-            f"setpoint_topic={setpoint_topic}, reference_frame={self.reference_frame}"
+            f"setpoint_topic={setpoint_topic}, reference_frame={self.reference_frame}, "
+            f"shared_frame_enabled={self.shared_frame_enabled}, "
+            f"shared_frame_offset={self.shared_frame_offset}"
         )
+
+    def shared_to_control_waypoint(self, waypoint):
+        values = [float(waypoint[0]), float(waypoint[1]), float(waypoint[2])]
+        if not self.shared_frame_enabled:
+            return values
+        return [
+            values[index] - self.shared_frame_offset[index]
+            for index in range(3)
+        ]
 
     def _publish_control_reference(self, message):
         if self.uses_external_control_manager:
@@ -210,7 +230,14 @@ class Drone(object):
             # The estimator and control manager operate in the MAVROS local ENU
             # frame.  This path must not depend on MAVROS home_position, which is
             # intentionally blacklisted by the MRS simulation configuration.
-            self.local_pose = [e_h, n_h, u_h]
+            self.control_local_pose = [e_h, n_h, u_h]
+            if self.shared_frame_enabled:
+                self.local_pose = [
+                    self.control_local_pose[index] + self.shared_frame_offset[index]
+                    for index in range(3)
+                ]
+            else:
+                self.local_pose = list(self.control_local_pose)
             self.local_velo = [
                 msg.twist.twist.linear.x,
                 msg.twist.twist.linear.y,
@@ -727,10 +754,9 @@ class Drone(object):
         if self.uses_external_control_manager:
             # Mission waypoints are local ENU coordinates in the same odom frame
             # used by xd_uav_state_estimators and xd_uav_control_manager.
-            e, n = float(waypoint[0]), float(waypoint[1])
-            altitude = float(waypoint[2])
+            e, n, altitude = self.shared_to_control_waypoint(waypoint)
             if altitude <= 0.0:
-                altitude = self.local_pose[2]
+                altitude = self.control_local_pose[2]
         else:
             if not self.home_valid:
                 rospy.logerr_throttle(

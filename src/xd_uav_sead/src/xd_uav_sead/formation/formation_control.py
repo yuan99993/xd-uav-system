@@ -43,6 +43,8 @@ class FormationConfig:
     broadcast_interval: float = 0.2
     leader_id: int = 0
     desired_target_time: float = 0.0
+    minimum_altitude: float = 80.0
+    static_hold: bool = False
 
 
 @dataclass
@@ -205,7 +207,11 @@ class FormationController:
         rally_alt = (
             float(point[2])
             if len(point) >= 3 and float(point[2]) > 1.0
-            else max(float(nominal_altitude), float(current_position[2]), 80.0)
+            else max(
+                float(nominal_altitude),
+                float(current_position[2]),
+                float(self.config.minimum_altitude),
+            )
         )
         ids = set(int(uid) for uid in (team_ids or []) if uid is not None)
         ids.add(self.uav_id)
@@ -495,7 +501,7 @@ class FormationController:
                 "waypoint": [
                     command_xy[0],
                     command_xy[1],
-                    max(self.nominal_altitude + slot_offset[2], 80.0),
+                    max(self.nominal_altitude + slot_offset[2], self.config.minimum_altitude),
                 ],
                 "yaw": yaw_target,
                 "entry_distance": remaining_to_rally,
@@ -542,7 +548,7 @@ class FormationController:
                 [
                     self.virtual_center[0] + rot.dot(guided_slot_offset[:2])[0],
                     self.virtual_center[1] + rot.dot(guided_slot_offset[:2])[1],
-                    max(self.nominal_altitude + guided_slot_offset[2], 80.0),
+                    max(self.nominal_altitude + guided_slot_offset[2], self.config.minimum_altitude),
                 ],
                 dtype=float,
             )
@@ -924,7 +930,9 @@ class FormationController:
 
         self.virtual_center = self.rally_point[:2].copy()
         slot_target = self.rally_point.copy()
-        slot_target[2] = max(self.nominal_altitude + slot_offset[2], 80.0)
+        slot_target[2] = max(
+            self.nominal_altitude + slot_offset[2], self.config.minimum_altitude
+        )
         team_size = max(len(self.team_ids), 1)
         orbit_point = self._hold_waypoint(
             slot_id,
@@ -1189,7 +1197,7 @@ class FormationController:
             "waypoint": [
                 command_xy[0],
                 command_xy[1],
-                max(self.nominal_altitude + slot_z, 80.0),
+                max(self.nominal_altitude + slot_z, self.config.minimum_altitude),
             ],
             "yaw": yaw_target,
             "entry_distance": entry_distance,
@@ -1210,6 +1218,13 @@ class FormationController:
         slot_target: np.ndarray,
         now: float,
     ) -> np.ndarray:
+        if self.config.static_hold:
+            slot_xy = self.rally_point[:2] + self._rotation().dot(slot_offset[:2])
+            z = max(
+                self.nominal_altitude + slot_offset[2], self.config.minimum_altitude
+            )
+            return np.array([slot_xy[0], slot_xy[1], z], dtype=float)
+
         elapsed = now - (self.rally_started_at or now)
         center_radius = max(self.rally_loiter_radius, 0.75 * self.config.spacing)
         omega = self.cruise_speed / max(center_radius, 1.0)
@@ -1227,7 +1242,9 @@ class FormationController:
             dtype=float,
         )
         slot_xy = center_xy + rot.dot(slot_offset[:2])
-        z = max(self.nominal_altitude + slot_offset[2], 80.0)
+        z = max(
+            self.nominal_altitude + slot_offset[2], self.config.minimum_altitude
+        )
         return np.array([slot_xy[0], slot_xy[1], z], dtype=float)
 
     @staticmethod
@@ -1263,7 +1280,11 @@ class FormationController:
         self.virtual_center = current_xy.copy()
         self.last_local_position = np.asarray(current_position, dtype=float)
         self.last_local_update_time = now
-        self.nominal_altitude = max(float(nominal_altitude), float(current_position[2]), 80.0)
+        self.nominal_altitude = max(
+            float(nominal_altitude),
+            float(current_position[2]),
+            float(self.config.minimum_altitude),
+        )
         self.cruise_speed = max(float(cruise_speed), 12.0)
         ids = set(int(uid) for uid in (team_ids or []) if uid is not None)
         ids.add(self.uav_id)
@@ -2519,7 +2540,7 @@ class FormationController:
             correction, max(self.cruise_speed * self.config.lookahead_time, self.config.spacing)
         )
         command_xy = local_pos[:2] + correction
-        command_z = max(slot_target[2], 80.0)
+        command_z = max(slot_target[2], self.config.minimum_altitude)
         yaw_target = (
             atan2(self.target_center[1] - local_pos[1], self.target_center[0] - local_pos[0])
             if np.linalg.norm(self.target_center - local_pos[:2]) > 1.0

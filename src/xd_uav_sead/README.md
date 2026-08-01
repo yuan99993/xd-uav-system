@@ -33,6 +33,16 @@ UAV_NAME=uav1 roslaunch xd_uav_sead sead_onboard.launch
 
 每架机必须使用唯一的协议 `uav_id`。默认映射兼容 `uav0→1` 和 MRS 风格 `uav1→1`；多机或混合命名时应在 launch 中显式设置 `uav_id`。
 
+原始 SEAD 的航点、编队、空域、DPGA 和 SimpleStrike 都由同一个机载主循环按消息和任务状态切换，并不是不同节点。通用入口可显式选择运行和控制模式，例如：
+
+```bash
+UAV_NAME=uav1 roslaunch xd_uav_sead sead_onboard.launch \
+  sead_runtime_mode:=dpga_sead \
+  sead_control_mode:=position_waypoint
+```
+
+历史 `sead_*_demo.launch` 只是重复启动同一节点，且曾包含 120 m 自动起飞和无消费者控制后端等误导配置，现已合并到该参数化入口。功能是否可用以 `docs/SEAD_FUNCTION_VERIFICATION.md` 中的逐项复现证据为准。
+
 ### XBee 硬件模式
 
 将私有参数 `use_simulation` 设为 `false`。节点会沿用原始行为：扫描 `/dev/ttyUSB*` 和 `/dev/ttyACM*`、匹配 XBee node ID、持有设备锁、构造真实 `RemoteDigiMeshDevice` 地址并执行时间同步。
@@ -80,17 +90,23 @@ manager 后端下，SEAD waypoint 是 `uavX/odom` 中的本地 ENU 米制坐标�
 
 完整的人工起飞—航点—降落操作、安全收尾和已知问题见 [`docs/PHASE3_CONTROL_RUNBOOK.md`](docs/PHASE3_CONTROL_RUNBOOK.md)。
 
-`sead_gazebo_demo.launch` 默认只启动 SEAD 节点，不自动发送起飞命令。仅在明确需要且外部仿真没有自动起飞逻辑时设置 `send_takeoff:=true`。
+全功能逐项验证及简化 tmux 启动器见 [`docs/SEAD_FULL_VALIDATION_RUNBOOK.md`](docs/SEAD_FULL_VALIDATION_RUNBOOK.md)。日常入口：
+
+```bash
+cd /home/promise/catkin_ws/src/xd-uavsystem-test/src/xd_uav_sead/tmux/validation
+./start.sh v4
+```
 
 ## 依赖与验证
 
 ROS 依赖见 `package.xml`。其他 Python 运行依赖包括 `pymap3d`、`dubins` 和硬件模式使用的 `digi.xbee`；安装前应确认使用 ROS Noetic 的系统 Python 3 环境。
 
-协议回归测试：
+协议和核心功能回归测试：
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 nosetests3 -v \
-  src/xd_uav_sead/test/test_rosbridge_protocol.py
+  src/xd_uav_sead/test/test_rosbridge_protocol.py \
+  src/xd_uav_sead/test/test_core_functions.py
 ```
 
-测试覆盖基础 GCS 命令、SEAD mission、Swarm、Airspace Zone、U2U 过滤以及 GCS/UAV 路由。端到端飞行、真实 XBee 和多机任务仍需分别验证。
+测试覆盖基础 GCS 命令、SEAD mission、Swarm、Airspace Zone、U2U 过滤、GCS/UAV 路由、空域判定、固定翼航点推进、队形槽位和 Dubins 禁飞区绕行。端到端飞行、真实 XBee 和多机任务仍需分别验证。

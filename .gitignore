@@ -146,8 +146,3 @@ Thumbs.db
 
 # Codex local scratch files (never commit)
 .codex-tmp/
-
-# Local SEAD development notes and verification helpers
-src/xd_uav_sead/docs/
-src/xd_uav_sead/test/
-src/xd_uav_sead/tools/

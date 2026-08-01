@@ -13,6 +13,17 @@ from std_msgs.msg import String
 
 U2U_BUS_TOPIC = "/sead/u2u"
 
+SWARM_SHAPE_CODES = {
+    "VEE": 1,
+    "ECHELON_LEFT": 2,
+    "ECHELON_RIGHT": 3,
+    "TRAIL": 4,
+    "TRIANGLE": 5,
+    "WEDGE_WIDE": 6,
+    "ARROW": 7,
+    "INVERTED_VEE": 8,
+}
+
 # === 消息类型分发 ===
 # 跟 communication_info.Message_ID 保持同步
 MSG_DISPATCH = {
@@ -302,9 +313,7 @@ class SeadRosBridge:
             params = info.get("params", info)
             shape = params.get("shape", 1)
             if isinstance(shape, str):
-                shape = {"TRAIL": 0, "VEE": 1, "ECHELON": 2}.get(
-                    shape.upper(), 1
-                )
+                shape = SWARM_SHAPE_CODES.get(shape.upper(), 1)
             enable = int(params.get("enable", 1))
             leader = int(params.get("leader_id", 1))
             spacing = float(params.get("spacing", 220.0))

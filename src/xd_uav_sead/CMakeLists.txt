@@ -43,5 +43,6 @@ install(FILES README.md
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_core_functions.py)
   catkin_add_nosetests(test/test_rosbridge_protocol.py)
 endif()
