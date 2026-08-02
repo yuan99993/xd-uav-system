@@ -120,6 +120,49 @@ std::array<double, 2> loadVector2(
   return {{values[0], values[1]}};
 }
 
+template <typename T>
+void loadParameterWithLegacy(
+    const ros::NodeHandle& node_handle,
+    const std::string& name,
+    const std::string& legacy_name,
+    T* value,
+    const T& fallback) {
+  *value = fallback;
+  if (node_handle.getParam(name, *value)) {
+    return;
+  }
+  if (node_handle.getParam(legacy_name, *value)) {
+    ROS_WARN(
+        "[xd_uav_controller] 参数%s已迁移为%s；"
+        "本次仍兼容旧路径",
+        legacy_name.c_str(), name.c_str());
+  }
+}
+
+std::array<double, 3> loadVector3WithLegacy(
+    const ros::NodeHandle& node_handle,
+    const std::string& name,
+    const std::string& legacy_name,
+    const std::array<double, 3>& fallback) {
+  std::vector<double> values;
+  std::string loaded_name = name;
+  if (!node_handle.getParam(name, values)) {
+    loaded_name = legacy_name;
+    if (!node_handle.getParam(legacy_name, values)) {
+      return fallback;
+    }
+    ROS_WARN(
+        "[xd_uav_controller] 参数%s已迁移为%s；"
+        "本次仍兼容旧路径",
+        legacy_name.c_str(), name.c_str());
+  }
+  if (values.size() != 3) {
+    throw std::runtime_error(
+        loaded_name + "必须包含3个数值");
+  }
+  return {{values[0], values[1], values[2]}};
+}
+
 class FiniteHorizonAxisMpc {
  public:
   void configure(const int horizon, const double dt,
@@ -197,6 +240,21 @@ struct Reference {
   bool use_yaw{false};
   bool use_yaw_rate{false};
   bool trajectory_reference{false};
+};
+
+// Canonical target consumed by the fixed-wing control law. Input adapters
+// may start from a trajectory, a masked PositionTarget or an internal mode,
+// but source-specific masks and geometry do not pass beyond this boundary.
+struct FixedwingControlTarget {
+  double course{0.0};
+  double course_rate_feedforward{0.0};
+  double airspeed{0.0};
+  double altitude_error{0.0};
+  double climb_rate_feedforward{0.0};
+  double vertical_acceleration_feedforward{0.0};
+  bool use_altitude_feedback{false};
+  bool enable_course_integrator{false};
+  bool enable_altitude_integrator{false};
 };
 
 }  // namespace
@@ -345,87 +403,179 @@ class ControllerNode {
           "multirotor/mpc/acceleration_integral_acceleration_limit",
           {{1.0, 1.0, 1.0}});
     } else {
-      private_nh_.param("fixedwing/gravity", gravity_, 9.80665);
-      private_nh_.param("fixedwing/cruise_airspeed",
-                        cruise_airspeed_, 15.0);
-      private_nh_.param("fixedwing/minimum_airspeed",
-                        minimum_airspeed_, 11.0);
-      private_nh_.param("fixedwing/maximum_airspeed",
-                        maximum_airspeed_, 24.0);
-      private_nh_.param("fixedwing/trim_throttle",
-                        trim_throttle_, 0.25);
-      private_nh_.param("fixedwing/min_throttle",
-                        minimum_throttle_, 0.05);
-      private_nh_.param("fixedwing/max_throttle",
-                        maximum_throttle_, 1.0);
-      private_nh_.param("fixedwing/airspeed_throttle_gain",
-                        airspeed_throttle_gain_, 0.08);
-      private_nh_.param("fixedwing/course_time_constant",
-                        course_time_constant_, 3.0);
-      private_nh_.param(
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/model/gravity",
+          "fixedwing/gravity", &gravity_, 9.80665);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/energy_control/cruise_airspeed",
+          "fixedwing/cruise_airspeed", &cruise_airspeed_, 15.0);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/energy_control/minimum_airspeed",
+          "fixedwing/minimum_airspeed", &minimum_airspeed_, 11.0);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/energy_control/maximum_airspeed",
+          "fixedwing/maximum_airspeed", &maximum_airspeed_, 24.0);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/energy_control/trim_throttle",
+          "fixedwing/trim_throttle", &trim_throttle_, 0.25);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/limits/minimum_throttle",
+          "fixedwing/min_throttle", &minimum_throttle_, 0.05);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/limits/maximum_throttle",
+          "fixedwing/max_throttle", &maximum_throttle_, 1.0);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/energy_control/airspeed_throttle_gain",
+          "fixedwing/airspeed_throttle_gain",
+          &airspeed_throttle_gain_, 0.08);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/energy_control/climb_rate_throttle_gain",
+          "fixedwing/climb_rate_throttle_gain",
+          &climb_rate_throttle_gain_, 0.03);
+
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/reference_adapter/streaming_course_rate_feedforward",
+          "fixedwing/guidance/streaming_course_rate_feedforward",
+          &fixedwing_streaming_course_rate_feedforward_, true);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/reference_adapter/course_rate_filter_time_constant",
+          "fixedwing/guidance/course_rate_filter_time_constant",
+          &fixedwing_course_rate_filter_time_constant_, 0.25);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/reference_adapter/minimum_course_rate_speed",
+          "fixedwing/guidance/minimum_course_rate_speed",
+          &fixedwing_minimum_course_rate_speed_, 2.0);
+
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/path_guidance/lookahead_distance",
           "fixedwing/guidance/lookahead_distance",
-          fixedwing_guidance_lookahead_distance_, 60.0);
-      private_nh_.param(
+          &fixedwing_guidance_lookahead_distance_, 60.0);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/path_guidance/adaptive_lookahead",
           "fixedwing/guidance/adaptive_lookahead",
-          fixedwing_adaptive_lookahead_, true);
-      private_nh_.param(
+          &fixedwing_adaptive_lookahead_, true);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/path_guidance/minimum_lookahead_distance",
           "fixedwing/guidance/minimum_lookahead_distance",
-          fixedwing_minimum_lookahead_distance_, 30.0);
-      private_nh_.param(
+          &fixedwing_minimum_lookahead_distance_, 30.0);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/path_guidance/maximum_lookahead_distance",
           "fixedwing/guidance/maximum_lookahead_distance",
-          fixedwing_maximum_lookahead_distance_, 60.0);
-      private_nh_.param(
+          &fixedwing_maximum_lookahead_distance_, 60.0);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/path_guidance/turn_radius_gain",
           "fixedwing/guidance/turn_radius_gain",
-          fixedwing_lookahead_turn_radius_gain_, 1.2);
-      private_nh_.param(
+          &fixedwing_lookahead_turn_radius_gain_, 1.2);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/path_guidance/lookahead_filter_time_constant",
           "fixedwing/guidance/lookahead_filter_time_constant",
-          fixedwing_lookahead_filter_time_constant_, 0.50);
-      private_nh_.param("fixedwing/altitude_time_constant",
-                        altitude_time_constant_, 5.0);
-      private_nh_.param("fixedwing/altitude_integral_gain",
-                        altitude_integral_gain_, 0.02);
-      private_nh_.param(
+          &fixedwing_lookahead_filter_time_constant_, 0.50);
+
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/lateral_control/course_time_constant",
+          "fixedwing/course_time_constant",
+          &course_time_constant_, 3.0);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/lateral_control/course_integral_gain",
+          "fixedwing/guidance/course_integral_gain",
+          &fixedwing_course_integral_gain_, 0.08);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/lateral_control/course_integral_rate_limit",
+          "fixedwing/guidance/course_integral_rate_limit",
+          &fixedwing_course_integral_rate_limit_, 0.25);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/lateral_control/roll_time_constant",
+          "fixedwing/roll_time_constant",
+          &roll_time_constant_, 0.45);
+
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/vertical_control/altitude_time_constant",
+          "fixedwing/altitude_time_constant",
+          &altitude_time_constant_, 5.0);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/vertical_control/altitude_integral_gain",
+          "fixedwing/altitude_integral_gain",
+          &altitude_integral_gain_, 0.02);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/vertical_control/altitude_integral_climb_rate_limit",
           "fixedwing/altitude_integral_climb_rate_limit",
-          altitude_integral_climb_rate_limit_, 1.0);
-      private_nh_.param("fixedwing/climb_rate_pitch_gain",
-                        climb_rate_pitch_gain_, 0.06);
-      private_nh_.param(
+          &altitude_integral_climb_rate_limit_, 1.0);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/vertical_control/climb_rate_pitch_gain",
+          "fixedwing/climb_rate_pitch_gain",
+          &climb_rate_pitch_gain_, 0.06);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/vertical_control/climb_rate_filter_time_constant",
           "fixedwing/climb_rate_filter_time_constant",
-          climb_rate_filter_time_constant_, 0.50);
-      private_nh_.param(
+          &climb_rate_filter_time_constant_, 0.50);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/vertical_control/vertical_acceleration_pitch_rate_gain",
           "fixedwing/vertical_acceleration_pitch_rate_gain",
-          vertical_acceleration_pitch_rate_gain_, 1.0);
-      private_nh_.param("fixedwing/climb_rate_throttle_gain",
-                        climb_rate_throttle_gain_, 0.03);
-      private_nh_.param("fixedwing/roll_time_constant",
-                        roll_time_constant_, 0.45);
-      private_nh_.param("fixedwing/pitch_time_constant",
-                        pitch_time_constant_, 0.45);
-      private_nh_.param("fixedwing/max_roll", max_roll_, 0.79);
-      private_nh_.param("fixedwing/max_pitch", max_pitch_, 0.35);
-      private_nh_.param("fixedwing/max_climb_rate",
-                        max_climb_rate_, 4.0);
-      maximum_body_rate_ = loadVector3(
-          private_nh_, "fixedwing/max_body_rate",
-          {{2.0, 1.5, 1.5}});
-      private_nh_.param("fixedwing/loiter/radius",
-                        fixedwing_loiter_radius_, 80.0);
-      private_nh_.param("fixedwing/loiter/airspeed",
-                        fixedwing_loiter_airspeed_, 15.0);
-      private_nh_.param("fixedwing/loiter/direction",
-                        fixedwing_loiter_direction_, 1);
-      private_nh_.param("fixedwing/loiter/radial_gain",
-                        fixedwing_loiter_radial_gain_, 1.0);
-      private_nh_.param(
+          &vertical_acceleration_pitch_rate_gain_, 1.0);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/vertical_control/pitch_time_constant",
+          "fixedwing/pitch_time_constant",
+          &pitch_time_constant_, 0.45);
+
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/limits/maximum_roll",
+          "fixedwing/max_roll", &max_roll_, 0.79);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/limits/maximum_pitch",
+          "fixedwing/max_pitch", &max_pitch_, 0.35);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/limits/maximum_climb_rate",
+          "fixedwing/max_climb_rate", &max_climb_rate_, 4.0);
+      maximum_body_rate_ = loadVector3WithLegacy(
+          private_nh_, "fixedwing/limits/maximum_body_rate",
+          "fixedwing/max_body_rate", {{2.0, 1.5, 1.5}});
+
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/modes/loiter/radius",
+          "fixedwing/loiter/radius", &fixedwing_loiter_radius_, 80.0);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/modes/loiter/airspeed",
+          "fixedwing/loiter/airspeed",
+          &fixedwing_loiter_airspeed_, 15.0);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/modes/loiter/direction",
+          "fixedwing/loiter/direction",
+          &fixedwing_loiter_direction_, 1);
+      loadParameterWithLegacy(
+          private_nh_, "fixedwing/modes/loiter/radial_gain",
+          "fixedwing/loiter/radial_gain",
+          &fixedwing_loiter_radial_gain_, 1.0);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/modes/loiter/max_course_correction",
           "fixedwing/loiter/max_course_correction",
-          fixedwing_loiter_max_course_correction_, 0.70);
+          &fixedwing_loiter_max_course_correction_, 0.70);
       if (fixedwing_loiter_radius_ < 5.0) {
         throw std::runtime_error(
-            "fixedwing/loiter/radius必须不小于5米");
+            "fixedwing/modes/loiter/radius必须不小于5米");
       }
       if (fixedwing_guidance_lookahead_distance_ < 5.0) {
         throw std::runtime_error(
-            "fixedwing/guidance/lookahead_distance"
+            "fixedwing/path_guidance/lookahead_distance"
             "必须不小于5米");
       }
       fixedwing_loiter_airspeed_ = clamp(
@@ -561,6 +711,10 @@ class ControllerNode {
              fixedwing_minimum_lookahead_distance_ ||
          fixedwing_lookahead_turn_radius_gain_ <= 0.0 ||
          fixedwing_lookahead_filter_time_constant_ < 0.0 ||
+         fixedwing_course_rate_filter_time_constant_ < 0.0 ||
+         fixedwing_minimum_course_rate_speed_ < 0.0 ||
+         fixedwing_course_integral_gain_ < 0.0 ||
+         fixedwing_course_integral_rate_limit_ < 0.0 ||
          altitude_time_constant_ <= 0.0 ||
          altitude_integral_gain_ < 0.0 ||
          altitude_integral_climb_rate_limit_ < 0.0 ||
@@ -573,6 +727,11 @@ class ControllerNode {
          !std::isfinite(fixedwing_maximum_lookahead_distance_) ||
          !std::isfinite(fixedwing_lookahead_turn_radius_gain_) ||
          !std::isfinite(fixedwing_lookahead_filter_time_constant_) ||
+         !std::isfinite(
+             fixedwing_course_rate_filter_time_constant_) ||
+         !std::isfinite(fixedwing_minimum_course_rate_speed_) ||
+         !std::isfinite(fixedwing_course_integral_gain_) ||
+         !std::isfinite(fixedwing_course_integral_rate_limit_) ||
          !std::isfinite(altitude_time_constant_) ||
          !std::isfinite(altitude_integral_gain_) ||
          !std::isfinite(altitude_integral_climb_rate_limit_) ||
@@ -581,7 +740,8 @@ class ControllerNode {
          !std::isfinite(vertical_acceleration_pitch_rate_gain_) ||
          !std::isfinite(climb_rate_throttle_gain_))) {
       throw std::runtime_error(
-          "固定翼guidance/高度控制参数不在安全范围内");
+          "固定翼reference_adapter/path_guidance/控制参数"
+          "不在安全范围内");
     }
     fixedwing_landing_approach_airspeed_ = clamp(
         fixedwing_landing_approach_airspeed_,
@@ -1047,11 +1207,31 @@ class ControllerNode {
     if (vehicle_type_ != "fixedwing") {
       return true;
     }
-    if (anyAxis(reference.use_acceleration)) {
+    if (!anyAxis(reference.use_position) &&
+        !anyAxis(reference.use_velocity)) {
       *reason =
-          "固定翼PositionTarget暂不支持加速度或力控制；"
-          "请掩码忽略AFX/AFY/AFZ，使用位置、速度、yaw"
-          "或yaw_rate";
+          "固定翼不支持纯加速度PositionTarget；"
+          "加速度只能与位置或速度一起作为前馈";
+      return false;
+    }
+    const bool any_horizontal_acceleration =
+        reference.use_acceleration[0] ||
+        reference.use_acceleration[1];
+    if (any_horizontal_acceleration &&
+        !(reference.use_acceleration[0] &&
+          reference.use_acceleration[1] &&
+          reference.use_velocity[0] &&
+          reference.use_velocity[1])) {
+      *reason =
+          "固定翼水平加速度前馈要求同时启用VX、VY、AX、AY，"
+          "用于统一计算路径曲率";
+      return false;
+    }
+    if (reference.use_acceleration[2] &&
+        !reference.use_position[2] &&
+        !reference.use_velocity[2]) {
+      *reason =
+          "固定翼AZ前馈要求同时启用PZ或VZ";
       return false;
     }
     return true;
@@ -1103,10 +1283,125 @@ class ControllerNode {
     fixedwing_altitude_integral_climb_rate_ = 0.0;
     filtered_climb_rate_ = 0.0;
     filtered_climb_rate_initialized_ = false;
+    fixedwing_course_integral_rate_ = 0.0;
+    filtered_fixedwing_setpoint_course_rate_ = 0.0;
+    previous_fixedwing_setpoint_course_ = 0.0;
+    fixedwing_setpoint_course_rate_initialized_ = false;
+    last_fixedwing_setpoint_course_sample_time_ = ros::Time();
+    fixedwing_setpoint_course_hold_ = 0.0;
+    fixedwing_setpoint_course_hold_initialized_ = false;
+    fixedwing_external_setpoint_mode_initialized_ = false;
+    fixedwing_external_setpoint_mode_signature_ = 0U;
     last_fixedwing_control_time_ = ros::Time();
     filtered_fixedwing_lookahead_distance_ =
         fixedwing_guidance_lookahead_distance_;
     fixedwing_lookahead_initialized_ = false;
+  }
+
+  static uint16_t fixedwingSetpointModeSignature(
+      const Reference& reference) {
+    uint16_t signature = 0U;
+    for (int axis = 0; axis < 3; ++axis) {
+      if (reference.use_position[axis]) {
+        signature |= static_cast<uint16_t>(1U << axis);
+      }
+      if (reference.use_velocity[axis]) {
+        signature |= static_cast<uint16_t>(1U << (axis + 3));
+      }
+      if (reference.use_acceleration[axis]) {
+        signature |= static_cast<uint16_t>(1U << (axis + 6));
+      }
+    }
+    if (reference.use_yaw) {
+      signature |= static_cast<uint16_t>(1U << 9);
+    }
+    if (reference.use_yaw_rate) {
+      signature |= static_cast<uint16_t>(1U << 10);
+    }
+    return signature;
+  }
+
+  void updateFixedwingExternalSetpointGuidance(
+      const Reference& reference,
+      const bool starting_new_mode) {
+    if (vehicle_type_ != "fixedwing") {
+      return;
+    }
+
+    const uint16_t signature =
+        fixedwingSetpointModeSignature(reference);
+    const bool mode_changed =
+        starting_new_mode ||
+        !fixedwing_external_setpoint_mode_initialized_ ||
+        signature != fixedwing_external_setpoint_mode_signature_;
+    if (mode_changed) {
+      resetFixedwingControlState();
+      fixedwing_external_setpoint_mode_initialized_ = true;
+      fixedwing_external_setpoint_mode_signature_ = signature;
+      fixedwing_setpoint_course_hold_ = currentFixedwingCourse();
+      fixedwing_setpoint_course_hold_initialized_ =
+          std::isfinite(fixedwing_setpoint_course_hold_);
+    }
+
+    const double horizontal_speed =
+        std::hypot(reference.velocity.x, reference.velocity.y);
+    const bool can_estimate_course_rate =
+        fixedwing_streaming_course_rate_feedforward_ &&
+        !reference.use_yaw_rate &&
+        (reference.use_velocity[0] ||
+         reference.use_velocity[1]) &&
+        horizontal_speed >= fixedwing_minimum_course_rate_speed_;
+    if (!can_estimate_course_rate) {
+      filtered_fixedwing_setpoint_course_rate_ = 0.0;
+      fixedwing_setpoint_course_rate_initialized_ = false;
+      last_fixedwing_setpoint_course_sample_time_ = ros::Time();
+      return;
+    }
+
+    const ros::Time now = ros::Time::now();
+    const double velocity_course = std::atan2(
+        reference.velocity.y, reference.velocity.x);
+    if (!fixedwing_setpoint_course_rate_initialized_) {
+      previous_fixedwing_setpoint_course_ = velocity_course;
+      filtered_fixedwing_setpoint_course_rate_ = 0.0;
+      last_fixedwing_setpoint_course_sample_time_ = now;
+      fixedwing_setpoint_course_rate_initialized_ = true;
+      return;
+    }
+
+    const double sample_dt =
+        (now - last_fixedwing_setpoint_course_sample_time_).toSec();
+    if (sample_dt <= 1e-3 || !std::isfinite(sample_dt) ||
+        sample_dt > std::max(0.1, reference_timeout_)) {
+      previous_fixedwing_setpoint_course_ = velocity_course;
+      filtered_fixedwing_setpoint_course_rate_ = 0.0;
+      last_fixedwing_setpoint_course_sample_time_ = now;
+      return;
+    }
+
+    const double airspeed = std::max(
+        minimum_airspeed_,
+        state_.airspeed_valid ? state_.airspeed
+                              : minimum_airspeed_);
+    const double maximum_course_rate =
+        gravity_ * std::tan(max_roll_) / airspeed;
+    const double measured_course_rate = clamp(
+        wrapAngle(
+            velocity_course - previous_fixedwing_setpoint_course_) /
+            sample_dt,
+        -maximum_course_rate, maximum_course_rate);
+    const double filter_alpha =
+        fixedwing_course_rate_filter_time_constant_ <= 1e-6
+            ? 1.0
+            : sample_dt /
+                  (fixedwing_course_rate_filter_time_constant_ +
+                   sample_dt);
+    filtered_fixedwing_setpoint_course_rate_ +=
+        filter_alpha *
+        (measured_course_rate -
+         filtered_fixedwing_setpoint_course_rate_);
+    previous_fixedwing_setpoint_course_ = velocity_course;
+    last_fixedwing_setpoint_course_sample_time_ = now;
   }
 
   void rejectExternalReference(const std::string& reason) {
@@ -1148,6 +1443,13 @@ class ControllerNode {
       rejectExternalReference(reason);
       return;
     }
+
+    const bool starting_new_mode =
+        trajectory_active_ || internal_reference_active_ ||
+        idle_reference_active_ || fixedwing_loiter_active_ ||
+        !have_reference_;
+    updateFixedwingExternalSetpointGuidance(
+        normalized, starting_new_mode);
 
     reference_source_ = source;
     reference_ = normalized;
@@ -1973,6 +2275,8 @@ class ControllerNode {
       fixedwing_landing_phase_ =
           FixedwingLandingPhase::kApproach;
       fixedwing_landing_throttle_scale_ = 1.0;
+      fixedwing_landing_guidance_course_ = landing_course_;
+      fixedwing_landing_guidance_course_initialized_ = false;
       ROS_INFO(
           "[xd_uav_controller] 固定翼%s降落航线: "
           "approach=(%.1f, %.1f, %.1f) "
@@ -2024,6 +2328,8 @@ class ControllerNode {
     landing_phase_ = LandingPhase::kNone;
     fixedwing_landing_phase_ =
         FixedwingLandingPhase::kNone;
+    fixedwing_landing_guidance_course_ = 0.0;
+    fixedwing_landing_guidance_course_initialized_ = false;
     internal_reference_active_ = false;
     idle_reference_active_ = false;
     have_reference_ = false;
@@ -2230,6 +2536,16 @@ class ControllerNode {
 
   Reference makeFixedwingLandingReference() {
     const ros::Time now = ros::Time::now();
+    double guidance_dt =
+        1.0 / std::max(1.0, control_rate_);
+    if (!last_landing_update_.isZero()) {
+      const double measured_dt =
+          (now - last_landing_update_).toSec();
+      if (measured_dt > 0.0 && std::isfinite(measured_dt)) {
+        guidance_dt = clamp(measured_dt, 1e-3, 0.10);
+      }
+    }
+    last_landing_update_ = now;
 
     if (landing_return_home_) {
       Eigen::Vector3d latest_home;
@@ -2272,6 +2588,12 @@ class ControllerNode {
         landing_origin_.head<2>();
     const Eigen::Vector2d approach_position =
         fixedwing_landing_approach_point_.head<2>();
+    const Eigen::Vector2d to_approach =
+        approach_position - current_position;
+    const double approach_course =
+        to_approach.norm() > 1.0
+            ? std::atan2(to_approach.y(), to_approach.x())
+            : landing_course_;
     const double height_above_touchdown =
         std::max(0.0, state_.position_odom.z -
                           landing_ground_z_);
@@ -2297,16 +2619,62 @@ class ControllerNode {
     const double cross_track_error =
         left_normal.dot(
             current_position - touchdown_position);
+    const double course_correction = clamp(
+        std::atan2(
+            cross_track_error,
+            fixedwing_landing_line_lookahead_distance_),
+        -fixedwing_landing_max_course_correction_,
+        fixedwing_landing_max_course_correction_);
+    const double path_course = wrapAngle(
+        landing_course_ - course_correction);
     const double course_error = std::abs(wrapAngle(
         currentFixedwingCourse() - landing_course_));
 
     if (fixedwing_landing_phase_ ==
             FixedwingLandingPhase::kApproach &&
-        distance_to_approach <= approach_capture_radius &&
+        distance_to_approach <= approach_capture_radius) {
+      // Reconstruct a course target that produces the aircraft's current
+      // bank. This preserves the established turn even if the bearing to
+      // the static approach point has just flipped after passing it.
+      double current_roll = 0.0;
+      Eigen::Matrix3d landing_rotation;
+      if (quaternionToMatrix(
+              state_.orientation_odom_body,
+              &landing_rotation)) {
+        current_roll = std::atan2(
+            landing_rotation(2, 1),
+            landing_rotation(2, 2));
+      }
+      current_roll = clamp(
+          current_roll,
+          -fixedwing_landing_max_roll_,
+          fixedwing_landing_max_roll_);
+      const double bank_continuous_course_rate =
+          -gravity_ * std::tan(current_roll) /
+          std::max(
+              minimum_airspeed_,
+              fixedwing_landing_approach_airspeed_);
+      fixedwing_landing_phase_ =
+          FixedwingLandingPhase::kLineCapture;
+      fixedwing_landing_guidance_course_ = wrapAngle(
+          currentFixedwingCourse() +
+          bank_continuous_course_rate *
+              std::max(0.1, course_time_constant_));
+      fixedwing_landing_guidance_course_initialized_ = true;
+      ROS_INFO(
+          "[xd_uav_controller] 固定翼进入进近直线捕获，"
+          "保持进近高度(capture_radius=%.1fm)",
+          approach_capture_radius);
+    } else if (fixedwing_landing_phase_ ==
+               FixedwingLandingPhase::kLineCapture &&
         std::abs(state_.position_odom.z -
                  fixedwing_landing_approach_point_.z()) <=
             fixedwing_landing_approach_altitude_tolerance_ &&
         course_error <=
+            fixedwing_landing_approach_course_tolerance_ &&
+        std::abs(wrapAngle(
+            path_course -
+            fixedwing_landing_guidance_course_)) <=
             fixedwing_landing_approach_course_tolerance_) {
       fixedwing_landing_phase_ =
           FixedwingLandingPhase::kGlideSlope;
@@ -2314,6 +2682,27 @@ class ControllerNode {
           "[xd_uav_controller] 固定翼已对准进近航线，"
           "开始下滑(capture_radius=%.1fm)",
           approach_capture_radius);
+    }
+    if (fixedwing_landing_phase_ !=
+        FixedwingLandingPhase::kApproach) {
+      if (!fixedwing_landing_guidance_course_initialized_) {
+        fixedwing_landing_guidance_course_ =
+            currentFixedwingCourse();
+        fixedwing_landing_guidance_course_initialized_ = true;
+      }
+      const double maximum_landing_course_rate =
+          gravity_ * std::tan(fixedwing_landing_max_roll_) /
+          std::max(
+              minimum_airspeed_,
+              fixedwing_landing_approach_airspeed_);
+      const double course_step = clamp(
+          wrapAngle(
+              path_course -
+              fixedwing_landing_guidance_course_),
+          -maximum_landing_course_rate * guidance_dt,
+          maximum_landing_course_rate * guidance_dt);
+      fixedwing_landing_guidance_course_ = wrapAngle(
+          fixedwing_landing_guidance_course_ + course_step);
     }
 
     if (fixedwing_landing_phase_ ==
@@ -2337,13 +2726,6 @@ class ControllerNode {
 
     if (fixedwing_landing_phase_ ==
         FixedwingLandingPhase::kApproach) {
-      const Eigen::Vector2d to_approach =
-          approach_position - current_position;
-      const double approach_course =
-          to_approach.norm() > 1.0
-              ? std::atan2(to_approach.y(),
-                           to_approach.x())
-              : landing_course_;
       reference.position.x =
           fixedwing_landing_approach_point_.x();
       reference.position.y =
@@ -2359,15 +2741,23 @@ class ControllerNode {
       reference.velocity.z = 0.0;
       reference.yaw = approach_course;
     } else if (fixedwing_landing_phase_ ==
+               FixedwingLandingPhase::kLineCapture) {
+      // Horizontal line capture and vertical descent are deliberately
+      // separate. Hold approach altitude while the existing point-turn
+      // course slews into the final-line course.
+      reference.use_position = {{false, false, true}};
+      reference.position.z =
+          fixedwing_landing_approach_point_.z();
+      reference.velocity.x =
+          fixedwing_landing_approach_airspeed_ *
+          std::cos(fixedwing_landing_guidance_course_);
+      reference.velocity.y =
+          fixedwing_landing_approach_airspeed_ *
+          std::sin(fixedwing_landing_guidance_course_);
+      reference.velocity.z = 0.0;
+      reference.yaw = fixedwing_landing_guidance_course_;
+    } else if (fixedwing_landing_phase_ ==
                FixedwingLandingPhase::kGlideSlope) {
-      const double course_correction = clamp(
-          std::atan2(
-              cross_track_error,
-              fixedwing_landing_line_lookahead_distance_),
-          -fixedwing_landing_max_course_correction_,
-          fixedwing_landing_max_course_correction_);
-      const double path_course = wrapAngle(
-          landing_course_ - course_correction);
       const double desired_height = clamp(
           along_track_remaining *
               std::tan(fixedwing_landing_glide_slope_angle_),
@@ -2404,50 +2794,38 @@ class ControllerNode {
           -nominal_sink_rate +
           (desired_height - height_above_touchdown) /
               std::max(0.1, altitude_time_constant_);
-      reference.position.x = landing_origin_.x();
-      reference.position.y = landing_origin_.y();
-      reference.position.z = state_.position_odom.z;
-      reference.use_position[2] = false;
+      reference.use_position = {{false, false, false}};
       reference.velocity.x =
           fixedwing_landing_approach_airspeed_ *
-          std::cos(path_course);
+          std::cos(fixedwing_landing_guidance_course_);
       reference.velocity.y =
           fixedwing_landing_approach_airspeed_ *
-          std::sin(path_course);
+          std::sin(fixedwing_landing_guidance_course_);
       reference.velocity.z = clamp(
           path_climb_rate,
           -sink_rate_limit, sink_rate_limit);
-      reference.yaw = path_course;
+      reference.yaw = fixedwing_landing_guidance_course_;
     } else {
-      const double course_correction = clamp(
-          std::atan2(
-              cross_track_error,
-              fixedwing_landing_line_lookahead_distance_),
-          -fixedwing_landing_max_course_correction_,
-          fixedwing_landing_max_course_correction_);
-      const double path_course = wrapAngle(
-          landing_course_ - course_correction);
       const Eigen::Vector2d rollout_target =
           touchdown_position +
           fixedwing_landing_rollout_distance_ *
               landing_direction;
+      reference.use_position = {{true, true, false}};
       reference.position.x = rollout_target.x();
       reference.position.y = rollout_target.y();
-      reference.position.z = state_.position_odom.z;
-      reference.use_position[2] = false;
       reference.velocity.x =
           fixedwing_landing_approach_airspeed_ *
-          std::cos(path_course);
+          std::cos(fixedwing_landing_guidance_course_);
       reference.velocity.y =
           fixedwing_landing_approach_airspeed_ *
-          std::sin(path_course);
+          std::sin(fixedwing_landing_guidance_course_);
       const double contact_height =
           fixedwingLandingContactHeight();
       reference.velocity.z =
           height_above_touchdown <= contact_height
               ? 0.0
               : -0.5 * fixedwingLandingNominalSinkRate();
-      reference.yaw = path_course;
+      reference.yaw = fixedwing_landing_guidance_course_;
     }
 
     if (!landing_touchdown_) {
@@ -2901,6 +3279,194 @@ class ControllerNode {
     return result;
   }
 
+  FixedwingControlTarget makeFixedwingControlTarget(
+      const Reference& reference,
+      const double current_course,
+      const double fallback_yaw,
+      const double dt) {
+    FixedwingControlTarget target;
+    target.course = current_course;
+    target.airspeed = cruise_airspeed_;
+
+    const bool external_reference =
+        !internal_reference_active_ &&
+        !idle_reference_active_ &&
+        !landing_active_ &&
+        !fixedwing_loiter_active_;
+    const bool external_setpoint =
+        external_reference && !reference.trajectory_reference;
+    const bool use_horizontal_position =
+        external_reference &&
+        (reference.use_position[0] ||
+         reference.use_position[1]);
+    const bool use_horizontal_velocity =
+        reference.use_velocity[0] ||
+        reference.use_velocity[1];
+
+    // Yaw and captured-course hold are fallbacks. Position and velocity
+    // guidance below take precedence whenever they define a horizontal path.
+    if (external_reference && reference.use_yaw) {
+      target.course = reference.yaw;
+    } else if (external_setpoint &&
+               fixedwing_setpoint_course_hold_initialized_) {
+      target.course = fixedwing_setpoint_course_hold_;
+    }
+
+    bool curvature_rate_valid = false;
+    double curvature_rate = 0.0;
+    if (reference.use_velocity[0] &&
+        reference.use_velocity[1] &&
+        reference.use_acceleration[0] &&
+        reference.use_acceleration[1]) {
+      const double velocity_squared =
+          reference.velocity.x * reference.velocity.x +
+          reference.velocity.y * reference.velocity.y;
+      if (velocity_squared > 0.25) {
+        curvature_rate =
+            (reference.velocity.x * reference.acceleration.y -
+             reference.velocity.y * reference.acceleration.x) /
+            velocity_squared;
+        curvature_rate_valid = std::isfinite(curvature_rate);
+      }
+    }
+
+    // MultiDOFJointTrajectory has no mask for angular.z: zero conventionally
+    // means "not supplied" there. PositionTarget does have an explicit mask,
+    // so an enabled zero yaw_rate remains authoritative for that interface.
+    const bool explicit_course_rate =
+        reference.use_yaw_rate &&
+        (!reference.trajectory_reference ||
+         std::abs(reference.yaw_rate) > 1e-6);
+    if (explicit_course_rate) {
+      target.course_rate_feedforward = reference.yaw_rate;
+      if (curvature_rate_valid &&
+          std::abs(reference.yaw_rate - curvature_rate) > 0.10) {
+        ROS_WARN_THROTTLE(
+            1.0,
+            "[xd_uav_controller] 固定翼参考yaw_rate"
+            "与速度/加速度曲率不一致"
+            "(yaw_rate=%.3f curvature=%.3f)，"
+            "优先使用显式yaw_rate",
+            reference.yaw_rate, curvature_rate);
+      }
+    } else if (curvature_rate_valid) {
+      target.course_rate_feedforward = curvature_rate;
+    } else if (external_setpoint && use_horizontal_velocity) {
+      target.course_rate_feedforward =
+          filtered_fixedwing_setpoint_course_rate_;
+    }
+
+    if (use_horizontal_position) {
+      const double target_x =
+          reference.use_position[0]
+              ? reference.position.x
+              : state_.position_odom.x;
+      const double target_y =
+          reference.use_position[1]
+              ? reference.position.y
+              : state_.position_odom.y;
+      const double dx = target_x - state_.position_odom.x;
+      const double dy = target_y - state_.position_odom.y;
+      if (std::hypot(dx, dy) > 1.0) {
+        target.course = std::atan2(dy, dx);
+      }
+    }
+
+    if (use_horizontal_velocity) {
+      const double horizontal_speed =
+          std::hypot(reference.velocity.x,
+                     reference.velocity.y);
+      if (horizontal_speed > 0.5) {
+        target.course = std::atan2(
+            reference.velocity.y, reference.velocity.x);
+        target.airspeed = clamp(
+            horizontal_speed, minimum_airspeed_,
+            maximum_airspeed_);
+
+        if (use_horizontal_position) {
+          double guidance_lookahead_distance =
+              fixedwing_guidance_lookahead_distance_;
+          if (fixedwing_adaptive_lookahead_) {
+            double target_lookahead =
+                fixedwing_maximum_lookahead_distance_;
+            if (std::abs(target.course_rate_feedforward) > 1e-6) {
+              const double turn_radius =
+                  horizontal_speed /
+                  std::abs(target.course_rate_feedforward);
+              target_lookahead = clamp(
+                  fixedwing_lookahead_turn_radius_gain_ * turn_radius,
+                  fixedwing_minimum_lookahead_distance_,
+                  fixedwing_maximum_lookahead_distance_);
+            }
+            if (!fixedwing_lookahead_initialized_) {
+              filtered_fixedwing_lookahead_distance_ =
+                  target_lookahead;
+              fixedwing_lookahead_initialized_ = true;
+            } else {
+              const double filter_alpha =
+                  fixedwing_lookahead_filter_time_constant_ <= 1e-6
+                      ? 1.0
+                      : dt /
+                            (fixedwing_lookahead_filter_time_constant_ +
+                             dt);
+              filtered_fixedwing_lookahead_distance_ +=
+                  filter_alpha *
+                  (target_lookahead -
+                   filtered_fixedwing_lookahead_distance_);
+            }
+            guidance_lookahead_distance =
+                filtered_fixedwing_lookahead_distance_;
+          }
+
+          const double inverse_speed = 1.0 / horizontal_speed;
+          const double path_x =
+              reference.use_position[0]
+                  ? reference.position.x
+                  : state_.position_odom.x;
+          const double path_y =
+              reference.use_position[1]
+                  ? reference.position.y
+                  : state_.position_odom.y;
+          const double guidance_x =
+              path_x + guidance_lookahead_distance *
+                           reference.velocity.x * inverse_speed;
+          const double guidance_y =
+              path_y + guidance_lookahead_distance *
+                           reference.velocity.y * inverse_speed;
+          const double guidance_dx =
+              guidance_x - state_.position_odom.x;
+          const double guidance_dy =
+              guidance_y - state_.position_odom.y;
+          if (std::hypot(guidance_dx, guidance_dy) > 1.0) {
+            target.course =
+                std::atan2(guidance_dy, guidance_dx);
+          }
+        }
+      }
+    }
+
+    if (!std::isfinite(target.course)) {
+      target.course = fallback_yaw;
+    }
+    target.enable_course_integrator = external_reference;
+    target.use_altitude_feedback = reference.use_position[2];
+    if (target.use_altitude_feedback) {
+      target.altitude_error =
+          reference.position.z - state_.position_odom.z;
+    }
+    if (reference.use_velocity[2]) {
+      target.climb_rate_feedforward = reference.velocity.z;
+    }
+    if (reference.use_acceleration[2]) {
+      target.vertical_acceleration_feedforward =
+          reference.acceleration.z;
+    }
+    target.enable_altitude_integrator =
+        target.use_altitude_feedback &&
+        !takeoff_active_ && !landing_active_;
+    return target;
+  }
+
   ControllerResult fixedwingControl(
       const Reference& reference,
       const ros::Time& now) {
@@ -2937,195 +3503,56 @@ class ControllerNode {
     }
     last_fixedwing_control_time_ = now;
 
-    const bool external_point_reference =
-        !reference.trajectory_reference &&
-        !internal_reference_active_ &&
-        !idle_reference_active_ &&
-        !landing_active_;
-    double desired_course =
-        reference.use_yaw &&
-                (reference.trajectory_reference ||
-                 external_point_reference)
-            ? reference.yaw
-            : current_course;
-    double desired_airspeed = cruise_airspeed_;
-    bool curvature_rate_valid = false;
-    double curvature_rate = 0.0;
-    if (reference.trajectory_reference &&
-        reference.use_velocity[0] &&
-        reference.use_velocity[1] &&
-        reference.use_acceleration[0] &&
-        reference.use_acceleration[1]) {
-      const double velocity_squared =
-          reference.velocity.x * reference.velocity.x +
-          reference.velocity.y * reference.velocity.y;
-      if (velocity_squared > 0.25) {
-        curvature_rate =
-            (reference.velocity.x * reference.acceleration.y -
-             reference.velocity.y * reference.acceleration.x) /
-            velocity_squared;
-        curvature_rate_valid = std::isfinite(curvature_rate);
-      }
-    }
-    const bool explicit_trajectory_yaw_rate =
-        reference.trajectory_reference &&
-        reference.use_yaw_rate &&
-        std::abs(reference.yaw_rate) > 1e-6;
-    double course_rate_feedforward = 0.0;
-    if (explicit_trajectory_yaw_rate) {
-      course_rate_feedforward = reference.yaw_rate;
-      if (curvature_rate_valid &&
-          std::abs(reference.yaw_rate - curvature_rate) > 0.10) {
-        ROS_WARN_THROTTLE(
-            1.0,
-            "[xd_uav_controller] 固定翼轨迹yaw_rate"
-            "与速度/加速度曲率不一致"
-            "(yaw_rate=%.3f curvature=%.3f)，"
-            "优先使用显式yaw_rate",
-            reference.yaw_rate, curvature_rate);
-      }
-    } else if (reference.trajectory_reference &&
-               curvature_rate_valid) {
-      course_rate_feedforward = curvature_rate;
-    } else if ((external_point_reference ||
-                fixedwing_loiter_active_) &&
-               reference.use_yaw_rate) {
-      course_rate_feedforward = reference.yaw_rate;
-    }
-    const bool use_external_horizontal_position =
-        (reference.use_position[0] ||
-         reference.use_position[1]) &&
-        !internal_reference_active_ &&
-        !idle_reference_active_;
-    if (use_external_horizontal_position) {
-      const double target_x =
-          reference.use_position[0]
-              ? reference.position.x
-              : state_.position_odom.x;
-      const double target_y =
-          reference.use_position[1]
-              ? reference.position.y
-              : state_.position_odom.y;
-      const double dx =
-          target_x - state_.position_odom.x;
-      const double dy =
-          target_y - state_.position_odom.y;
-      if (std::hypot(dx, dy) > 1.0) {
-        desired_course = std::atan2(dy, dx);
-      }
-    }
-    if (reference.use_velocity[0] ||
-        reference.use_velocity[1]) {
-      const double horizontal_speed =
-          std::hypot(reference.velocity.x,
-                     reference.velocity.y);
-      if (horizontal_speed > 0.5) {
-        const double velocity_course =
-            std::atan2(reference.velocity.y,
-                       reference.velocity.x);
-        desired_course = velocity_course;
-        desired_airspeed = clamp(
-            horizontal_speed, minimum_airspeed_,
-            maximum_airspeed_);
-        if (use_external_horizontal_position) {
-          double guidance_lookahead_distance =
-              fixedwing_guidance_lookahead_distance_;
-          if (reference.trajectory_reference &&
-              fixedwing_adaptive_lookahead_) {
-            double target_lookahead =
-                fixedwing_maximum_lookahead_distance_;
-            if (std::abs(course_rate_feedforward) > 1e-6) {
-              const double turn_radius =
-                  horizontal_speed /
-                  std::abs(course_rate_feedforward);
-              target_lookahead = clamp(
-                  fixedwing_lookahead_turn_radius_gain_ *
-                      turn_radius,
-                  fixedwing_minimum_lookahead_distance_,
-                  fixedwing_maximum_lookahead_distance_);
-            }
-            if (!fixedwing_lookahead_initialized_) {
-              filtered_fixedwing_lookahead_distance_ =
-                  target_lookahead;
-              fixedwing_lookahead_initialized_ = true;
-            } else {
-              const double filter_alpha =
-                  fixedwing_lookahead_filter_time_constant_ <=
-                          1e-6
-                      ? 1.0
-                      : dt /
-                            (fixedwing_lookahead_filter_time_constant_ +
-                             dt);
-              filtered_fixedwing_lookahead_distance_ +=
-                  filter_alpha *
-                  (target_lookahead -
-                   filtered_fixedwing_lookahead_distance_);
-            }
-            guidance_lookahead_distance =
-                filtered_fixedwing_lookahead_distance_;
-          }
-          // Track a virtual point in front of the sampled trajectory
-          // position. The velocity supplies the path tangent while
-          // the vector from the aircraft to this look-ahead point
-          // closes the horizontal position error. This prevents the
-          // velocity feed-forward from discarding cross-track
-          // feedback and shifting the whole flown path.
-          const double inverse_speed =
-              1.0 / horizontal_speed;
-          const double target_x =
-              reference.use_position[0]
-                  ? reference.position.x
-                  : state_.position_odom.x;
-          const double target_y =
-              reference.use_position[1]
-                  ? reference.position.y
-                  : state_.position_odom.y;
-          const double guidance_x =
-              target_x +
-              guidance_lookahead_distance *
-                  reference.velocity.x * inverse_speed;
-          const double guidance_y =
-              target_y +
-              guidance_lookahead_distance *
-                  reference.velocity.y * inverse_speed;
-          const double guidance_dx =
-              guidance_x - state_.position_odom.x;
-          const double guidance_dy =
-              guidance_y - state_.position_odom.y;
-          if (std::hypot(guidance_dx, guidance_dy) > 1.0) {
-            desired_course =
-                std::atan2(guidance_dy, guidance_dx);
-          }
-        }
-      }
-    }
-    if (!std::isfinite(desired_course)) {
-      desired_course = yaw;
-    }
+    const FixedwingControlTarget target =
+        makeFixedwingControlTarget(
+            reference, current_course, yaw, dt);
 
     const double airspeed =
         std::max(minimum_airspeed_, state_.airspeed);
     const double course_error =
-        wrapAngle(desired_course - current_course);
+        wrapAngle(target.course - current_course);
+    const double maximum_course_rate =
+        gravity_ * std::tan(max_roll_) / airspeed;
+    const bool course_integrator_enabled =
+        target.enable_course_integrator &&
+        fixedwing_course_integral_gain_ > 0.0 &&
+        fixedwing_course_integral_rate_limit_ > 0.0;
+    if (course_integrator_enabled) {
+      const double integral_delta =
+          fixedwing_course_integral_gain_ * course_error * dt;
+      const double candidate = clamp(
+          fixedwing_course_integral_rate_ + integral_delta,
+          -fixedwing_course_integral_rate_limit_,
+          fixedwing_course_integral_rate_limit_);
+      const double candidate_course_rate =
+          course_error / std::max(0.1, course_time_constant_) +
+          target.course_rate_feedforward + candidate;
+      const bool winds_up_high =
+          candidate_course_rate > maximum_course_rate &&
+          integral_delta > 0.0;
+      const bool winds_up_low =
+          candidate_course_rate < -maximum_course_rate &&
+          integral_delta < 0.0;
+      if (!winds_up_high && !winds_up_low) {
+        fixedwing_course_integral_rate_ = candidate;
+      }
+    } else {
+      fixedwing_course_integral_rate_ = 0.0;
+    }
     const double desired_course_rate = clamp(
         course_error / std::max(0.1, course_time_constant_) +
-            course_rate_feedforward,
-        -gravity_ * std::tan(max_roll_) / airspeed,
-        gravity_ * std::tan(max_roll_) / airspeed);
+            target.course_rate_feedforward +
+            fixedwing_course_integral_rate_,
+        -maximum_course_rate, maximum_course_rate);
     double desired_roll = clamp(
         -std::atan2(airspeed * desired_course_rate, gravity_),
         -max_roll_, max_roll_);
 
-    double desired_climb_rate = 0.0;
-    double altitude_error = 0.0;
-    if (reference.use_position[2]) {
-      altitude_error =
-          reference.position.z - state_.position_odom.z;
+    double desired_climb_rate = target.climb_rate_feedforward;
+    if (target.use_altitude_feedback) {
       desired_climb_rate +=
-          altitude_error / std::max(0.1, altitude_time_constant_);
-    }
-    if (reference.use_velocity[2]) {
-      desired_climb_rate += reference.velocity.z;
+          target.altitude_error /
+          std::max(0.1, altitude_time_constant_);
     }
 
     // The integral output is expressed directly as a climb-rate correction.
@@ -3133,12 +3560,12 @@ class ControllerNode {
     // feed-forward. Disable it for takeoff/landing, where dedicated pitch
     // laws and saturation would otherwise cause wind-up.
     const bool altitude_integrator_enabled =
-        reference.use_position[2] && !takeoff_active_ &&
-        !landing_active_ && altitude_integral_gain_ > 0.0 &&
+        target.enable_altitude_integrator &&
+        altitude_integral_gain_ > 0.0 &&
         altitude_integral_climb_rate_limit_ > 0.0;
     if (altitude_integrator_enabled) {
       const double integral_delta =
-          altitude_integral_gain_ * altitude_error * dt;
+          altitude_integral_gain_ * target.altitude_error * dt;
       const double candidate = clamp(
           fixedwing_altitude_integral_climb_rate_ +
               integral_delta,
@@ -3184,20 +3611,16 @@ class ControllerNode {
                          -0.95, 0.95)) -
             climb_rate_pitch_gain_ * climb_rate_error,
         -max_pitch_, max_pitch_);
-    double pitch_rate_feedforward = 0.0;
-    if (reference.use_acceleration[2]) {
-      // With the repository's ROS FLU convention, positive inertial-z
-      // acceleration requires a negative (nose-up) pitch rate. This term
-      // anticipates the changing flight-path angle of a 3-D trajectory.
-      pitch_rate_feedforward =
-          -vertical_acceleration_pitch_rate_gain_ *
-          reference.acceleration.z /
-          std::max(minimum_airspeed_, airspeed);
-    }
+    // With the repository's ROS FLU convention, positive inertial-z
+    // acceleration requires a negative (nose-up) pitch rate.
+    const double pitch_rate_feedforward =
+        -vertical_acceleration_pitch_rate_gain_ *
+        target.vertical_acceleration_feedforward /
+        std::max(minimum_airspeed_, airspeed);
     double throttle = clamp(
         trim_throttle_ +
             airspeed_throttle_gain_ *
-                (desired_airspeed - state_.airspeed) +
+                (target.airspeed - state_.airspeed) +
             climb_rate_throttle_gain_ * desired_climb_rate,
         minimum_throttle_, maximum_throttle_);
 
@@ -3218,8 +3641,10 @@ class ControllerNode {
           FixedwingLandingPhase::kRollout) {
         desired_roll = clamp(desired_roll, -0.15, 0.15);
       }
-      if (fixedwing_landing_phase_ !=
-          FixedwingLandingPhase::kApproach) {
+      if (fixedwing_landing_phase_ ==
+              FixedwingLandingPhase::kGlideSlope ||
+          fixedwing_landing_phase_ ==
+              FixedwingLandingPhase::kRollout) {
         const double height_above_touchdown = std::max(
             0.0, state_.position_odom.z - landing_ground_z_);
         const double contact_height =
@@ -3258,10 +3683,37 @@ class ControllerNode {
     result.body_rate.z() = clamp(
         -gravity_ * std::tan(desired_roll) / airspeed,
         -maximum_body_rate_[2], maximum_body_rate_[2]);
+
+    if (landing_active_ &&
+        fixedwing_landing_phase_ ==
+            FixedwingLandingPhase::kRollout) {
+      // Airborne course-to-bank control has progressively less authority
+      // and becomes inappropriate as the aircraft stops on the ground.
+      // Reuse the measured groundspeed and configured approach speed to
+      // remove that control continuously, without introducing another
+      // rollout tuning parameter. At touchdown the commanded body rates
+      // are zero immediately; the control manager still performs its
+      // independent sustained-touchdown check before disarming.
+      const double rollout_body_rate_scale =
+          std::isfinite(state_.groundspeed)
+              ? clamp(
+                    state_.groundspeed /
+                        std::max(
+                            0.1,
+                            fixedwing_landing_approach_airspeed_),
+                    0.0, 1.0)
+              : 1.0;
+      result.body_rate *= rollout_body_rate_scale;
+      if (landing_touchdown_) {
+        result.body_rate.setZero();
+      }
+    }
     const bool landing_allows_zero_throttle =
         landing_active_ &&
-        fixedwing_landing_phase_ !=
-            FixedwingLandingPhase::kApproach;
+        (fixedwing_landing_phase_ ==
+             FixedwingLandingPhase::kGlideSlope ||
+         fixedwing_landing_phase_ ==
+             FixedwingLandingPhase::kRollout);
     result.thrust = clamp(
         throttle,
         landing_allows_zero_throttle ? 0.0
@@ -3632,6 +4084,20 @@ class ControllerNode {
   double fixedwing_lookahead_filter_time_constant_{0.50};
   double filtered_fixedwing_lookahead_distance_{60.0};
   bool fixedwing_lookahead_initialized_{false};
+  bool fixedwing_streaming_course_rate_feedforward_{true};
+  double fixedwing_course_rate_filter_time_constant_{0.25};
+  double fixedwing_minimum_course_rate_speed_{2.0};
+  double fixedwing_course_integral_gain_{0.08};
+  double fixedwing_course_integral_rate_limit_{0.25};
+  double fixedwing_course_integral_rate_{0.0};
+  double filtered_fixedwing_setpoint_course_rate_{0.0};
+  double previous_fixedwing_setpoint_course_{0.0};
+  bool fixedwing_setpoint_course_rate_initialized_{false};
+  ros::Time last_fixedwing_setpoint_course_sample_time_;
+  double fixedwing_setpoint_course_hold_{0.0};
+  bool fixedwing_setpoint_course_hold_initialized_{false};
+  bool fixedwing_external_setpoint_mode_initialized_{false};
+  uint16_t fixedwing_external_setpoint_mode_signature_{0U};
   double altitude_time_constant_{5.0};
   double altitude_integral_gain_{0.02};
   double altitude_integral_climb_rate_limit_{1.0};
@@ -3672,6 +4138,7 @@ class ControllerNode {
   enum class FixedwingLandingPhase {
     kNone,
     kApproach,
+    kLineCapture,
     kGlideSlope,
     kRollout,
   };
@@ -3704,6 +4171,8 @@ class ControllerNode {
   double fixedwing_landing_touchdown_groundspeed_{2.0};
   double fixedwing_landing_touchdown_vertical_speed_{2.0};
   double fixedwing_landing_throttle_scale_{1.0};
+  double fixedwing_landing_guidance_course_{0.0};
+  bool fixedwing_landing_guidance_course_initialized_{false};
   std::string home_mode_{"takeoff"};
   std::string home_frame_config_{"local_origin"};
   Eigen::Vector3d fixed_home_position_{

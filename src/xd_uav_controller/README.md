@@ -79,11 +79,25 @@
   `IGNORE_PX|IGNORE_PY|IGNORE_VZ|IGNORE_AFX|IGNORE_AFY|IGNORE_AFZ|`
   `IGNORE_YAW|IGNORE_YAW_RATE`（3555）：填写`velocity.x/y`和`position.z`，
   其余被忽略字段可以保持为0或NaN。
-- 固定翼也逐轴解析同一套掩码：水平位置用于航迹点制导，水平速度方向用于期望course、
-  模长用于期望空速，PZ/VZ用于高度和爬升率，yaw用于期望course，yaw rate作为转弯率
-  前馈。只启用PX或PY时，未启用的另一个水平位置轴使用飞机当前位置，不会读取消息里
-  的占位值。固定翼当前没有三轴加速度直接控制律，因此启用AFX/AFY/AFZ的
-  `PositionTarget`会被明确拒绝，不能使用纯加速度掩码3135。
+- 固定翼也逐轴解析同一套掩码，并把所有有效组合统一归一化为course、course rate、
+  空速、高度和爬升率参考：
+
+  | 启用字段 | 横向解释 | 纵向解释 |
+  |---|---|---|
+  | PXY / PXYZ | 指向水平目标点 | PZ经高度PI生成爬升率 |
+  | VXY / VXYZ | 速度方向给course、模长给空速；连续方向变化自动估计course-rate前馈 | VZ直接给爬升率 |
+  | VXY + PZ（可再加VZ） | 同上 | 高度反馈与VZ前馈叠加 |
+  | PXY + VXY（可带PZ/VZ） | 沿速度切线建立前视点，同时闭环消除水平位置偏差 | 按PZ/VZ组合处理 |
+  | PXY + VXY + AXY | AXY与VXY统一计算曲率/course-rate前馈 | 按PZ/VZ/AZ组合处理 |
+  | 仅PZ、仅VZ或PZ+VZ | 保持进入该掩码模式时的course | 按PZ/VZ组合处理 |
+  | 任一上述模式 + yaw_rate | 显式course-rate前馈，优先于速度方向差分估计 | 不变 |
+  | 任一上述模式 + yaw | 没有有效水平位置/速度方向时作为course参考 | 不变 |
+
+  只启用PX或PY时，未启用的另一个水平位置轴使用飞机当前位置，不会读取消息里的
+  占位值。固定翼不能悬停，因此零水平速度不会命令停车，而是保持course并使用巡航
+  空速。固定翼把加速度解释为前馈而不是独立控制模式：水平加速度必须同时启用
+  VX、VY、AX、AY，用于计算曲率；AZ必须与PZ或VZ一起使用，形成俯仰角速度前馈。
+  纯加速度掩码3135仍会被明确拒绝。
 - 多点轨迹使用`trajectory_msgs/MultiDOFJointTrajectory`，当前只接受一个机体：
   每个点必须有一个transform，velocity和acceleration可以整条轨迹一致地提供或省略，
   `time_from_start`必须严格递增。轨迹在点间线性插值，yaw按最短角距离插值；轨迹结束
@@ -92,10 +106,15 @@
   固定翼轨迹优先使用水平速度切线计算期望course，`velocity.angular.z`作为course-rate
   转弯前馈；若该值为0但同时提供了水平速度和加速度，则根据轨迹曲率
   `(vx*ay-vy*ax)/(vx²+vy²)`计算前馈。轨迹yaw只在没有有效水平速度切线时作为
-  course参考。该逻辑只作用于轨迹参考，不会改变单点掩码或内部降落参考。
+  course参考。流式`PositionTarget`没有加速度字段时，则从相邻水平速度方向的变化率
+  估计并滤波course-rate；如果消息显式启用yaw_rate（包括值为0），始终以显式值为准。
+  内部起飞、盘旋和降落参考不使用该差分估计。
   每条通过校验并被控制器接受的轨迹还会原样转换为latched的`nav_msgs/Path`，发布到
   `/uavX/control/reference/trajectory_path`。这个话题只用于RViz显示，不参与控制，
   四旋翼和固定翼共用同一套可视化接口。
+- 固定翼进入近地滑跑阶段后，控制器使用当前地速与已有的进近空速自动连续衰减滚转、
+  俯仰和偏航角速度指令；达到已有的触地速度条件时立即输出零角速度和零油门。该逻辑
+  不引入额外滑跑参数，控制管理器仍独立执行持续触地确认后再上锁。
 - 启动文件默认把全局`/move_base_simple/goal`接入控制器，便于使用RViz的“2D Nav
   Goal”。RViz的Fixed Frame既可以使用`uav1/odom`，也可以使用允许且对齐有效的
   `uav1/local_origin`。
@@ -156,19 +175,26 @@ OFFBOARD。固定翼完成起飞后会在切入点建立与当前航向相切的
   collective thrust。位置/速度控制中的参考加速度作为MPC前馈量使用；没有位置参考
   的纯速度轴额外使用带抗饱和的速度积分补偿，纯加速度轴则使用估计加速度形成PI闭环，
   避免靠模型偏差产生非预期的稳态速度或加速度。
-- 固定翼：位置/速度参考先转换为course、高度、爬升率和空速，再生成roll、pitch、
+- 固定翼：轨迹、`PositionTarget`和内部参考先经过独立适配层，统一生成只包含course、
+  course-rate、空速、高度误差、爬升率和垂直加速度的`FixedwingControlTarget`；核心
+  控制律不再按消息来源分别实现公式。同一组P/V/A从轨迹和`PositionTarget`进入时，
+  会产生相同的固定翼控制目标和输出。随后统一目标生成roll、pitch、
   协调转弯yaw rate与throttle。控制状态使用ROS ENU/FLU约定，因此正爬升对应负pitch，
   正course变化对应负roll；发给MAVROS后再由其转换到PX4的NED/FRD约定。固定翼和
   四旋翼不共享动力学控制律。外部参考同时包含水平位置和速度时，控制器沿速度切线
-  构造`fixedwing/guidance/lookahead_distance`指定的前视点，再从飞机当前位置指向
+  构造`fixedwing/path_guidance/lookahead_distance`指定的前视点，再从飞机当前位置指向
   前视点生成course。这样速度提供轨迹方向前馈，位置误差负责把飞机拉回发布的空间
-  轨迹，不会再出现“飞出的形状正确但整条轨迹平移”的开环现象。轨迹同时提供速度
-  和加速度时，控制器根据曲率计算转弯半径，并在
+  轨迹，不会再出现“飞出的形状正确但整条轨迹平移”的开环现象。参考同时提供速度
+  和加速度时，适配层根据曲率计算转弯半径，并在
   `guidance/minimum_lookahead_distance`与`maximum_lookahead_distance`之间平滑调整
-  前视距离；急弯缩短、直线增大，非轨迹参考仍使用固定`lookahead_distance`。高度
+  前视距离；急弯缩短、直线增大。轨迹和`PositionTarget`共用该逻辑。
+  常规外部参考的course环带有抗饱和积分；缺少AXY的流式速度方向经过差分和低通形成
+  转弯率前馈；前者消除风和舵效偏差，后者避免圆弧跟踪必须先积累航向误差才滚转。
+  两者在掩码模式切换、参考源切换、超时或状态失效时清零，连续发布同一掩码不会每帧
+  重置。高度
   通道使用带
-  抗饱和的高度PI生成爬升率修正，叠加轨迹垂直速度前馈；滤波后的实际爬升率形成
-  俯仰反馈，轨迹垂直加速度形成俯仰角速度前馈。爬升率还提供小幅油门前馈，使飞机
+  抗饱和的高度PI生成爬升率修正，叠加VZ前馈；滤波后的实际爬升率形成俯仰反馈，
+  AZ形成俯仰角速度前馈。爬升率还提供小幅油门前馈，使飞机
   在改变势能时不必等空速下降后才补油。高度积分在起飞、降落、轨迹重启和状态失效
   时清零，避免模式切换后保留旧偏置。
 
@@ -182,6 +208,19 @@ OFFBOARD。固定翼完成起飞后会在切入点建立与当前航向相切的
 - `config/common_config.yaml`：状态与参考超时、参考坐标系/TF检查、simple goal和home。
 - `config/multirotor.yaml`：四旋翼控制律、MPC、起飞和降落参数。
 - `config/fixedwing.yaml`：固定翼控制律、起飞、进近和降落参数。
+
+固定翼参数按职责分层，避免把输入适配、制导、控制增益和安全限制混为一组：
+
+- `fixedwing/reference_adapter/*`：流式参考缺少AXY/yaw_rate时的course-rate估计。
+- `fixedwing/path_guidance/*`：PXY+VXY前视点和自适应前视距离。
+- `fixedwing/lateral_control/*`：course PI和滚转内环。
+- `fixedwing/vertical_control/*`：高度PI、爬升率反馈、AZ前馈和俯仰内环。
+- `fixedwing/energy_control/*`：空速、配平油门和能量补偿。
+- `fixedwing/limits/*`：姿态、爬升率、body-rate和油门硬限制。
+- `fixedwing/modes/loiter/*`：等待盘旋参考生成器。
+
+旧版扁平路径和`fixedwing/guidance/*`仍可在未配置新路径时兼容读取，并在启动时输出迁移
+提示；新配置或launch覆盖应使用上述新路径。
 
 `controller.launch`先加载公共配置，再加载机型配置，因此机型文件或用户传入的自定义
 机型文件可以覆盖公共默认值。完整系统launch也提供`controller_common_config`参数，
@@ -214,7 +253,8 @@ rosservice call /uav1/control_manager/takeoff "altitude: 2.0"
 
 四旋翼会锁定当前XY和yaw并生成平滑垂直参考。固定翼会锁定当前course，先以起飞油门
 加速，达到`rotate_airspeed`后给定爬升pitch；达到目标高度后建立相切等待圆并持续
-定高盘旋，直到收到外部控制参考。盘旋半径、速度和方向由`fixedwing/loiter/*`配置。
+定高盘旋，直到收到外部控制参考。盘旋半径、速度和方向由
+`fixedwing/modes/loiter/*`配置。
 固定翼OFFBOARD起飞必须先在仿真中验证跑道、舵面方向和PX4失效参数，不能直接用于
 真机。
 
@@ -233,7 +273,9 @@ rosservice call /uav1/control_manager/takeoff "altitude: 2.0"
 
 固定翼使用独立的降落状态机，不能执行垂直原地下降。`land`会在当前course前方、
 本次起飞地面高度上建立临时接地点；`land_home`把公共home配置解析出的三维位置作为
-接地点。飞机先飞向接地点上游的进近点并对准着陆course，随后按固定下滑角下降，
+接地点。飞机先飞向接地点上游的进近点；进入捕获半径后，控制器保持进近高度，
+把原来的指点航向按可实现转弯率连续过渡到最终进近直线。完成直线捕获后只开启纵向
+下滑，横向参考保持连续，随后按固定下滑角下降，
 近地时从“标称下滑率×高度时间常数”自动得到的过渡高度开始，连续减小下沉率和
 油门并把机头平滑拉向水平；接地前仍保留一半标称下沉率，避免切换固定拉平俯仰、
 瞬间断油或渐近悬在跑道上方，

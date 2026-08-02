@@ -1,6 +1,6 @@
 safety:
   odometry_timeout: 0.20
-  imu_timeout: 0.30
+  imu_timeout: 0.50
   acceleration_timeout: 0.20
   airspeed_timeout: 0.30
   # 固定翼SITL静止时VFR_HUD可能出现轻微负空速；容差内按0m/s处理。
