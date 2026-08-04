@@ -713,6 +713,27 @@ class ControllerInterfaceTest(unittest.TestCase):
         )
         self.assertTrue(landing_command.landing_active)
 
+        response = internal_command(
+            InternalCommandRequest.CANCEL_LANDING, 0.0
+        )
+        self.assertTrue(response.success, response.message)
+        cancelled_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and not value.landing_active
+                and value.controller == "finite_horizon_mpc_so3"
+            )
+        )
+        self.assertFalse(cancelled_command.landing_active)
+
+        response = internal_command(
+            InternalCommandRequest.LAND, 0.0
+        )
+        self.assertTrue(response.success, response.message)
+        self._wait_for_command(
+            lambda value: value.valid and value.landing_active
+        )
+
         self._position_z = 0.0
         touchdown_command = self._wait_for_command(
             lambda value: (

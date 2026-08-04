@@ -1,36 +1,54 @@
 control_rate: 100.0
 
 multirotor:
-  gravity: 9.80665
-  hover_throttle: 0.7
-  min_throttle: 0.05
-  max_throttle: 0.90
-  max_tilt: 0.61
-  max_body_rate: [3.0, 3.0, 2.0]
-  attitude_gain: [5.0, 5.0, 2.0]
+  # 机体模型与悬停工作点。
+  model:
+    gravity: 9.80665
+    hover_throttle: 0.7
 
-  mpc:
-    horizon: 26
+  # 期望姿态到body-rate的内环增益。
+  attitude_control:
+    gain: [5.0, 5.0, 2.0]
+
+  position_control:
     # 状态为[position, velocity]，MPC直接输出期望加速度。
-    q: [500.0, 100.0]
-    terminal_q: [1000.0, 300.0]
-    r: 20.0
-    max_velocity_xy: 15.0
-    max_velocity_z: 5.0
-    max_acceleration_xy: 2.5
-    max_acceleration_z: 2.0
-    max_jerk_xy: 3.0
-    max_jerk_z: 3.0
-    # 仅启用速度轴时，用积分补偿模型、阻力和悬停推力偏差。
-    # 状态直接表示附加加速度，并由下面的限制执行抗饱和。
-    velocity_integral_gain: [1.0, 1.0, 2.0]
-    velocity_integral_acceleration_limit: [1.0, 1.0, 1.0]
-    # 某轴只启用加速度时，使用去重力后的acceleration_odom形成PI闭环。
-    # 一旦同轴启用位置或速度，加速度恢复为轨迹前馈，不重复闭环。
-    acceleration_feedback_gain: [0.25, 0.25, 0.35]
-    acceleration_integral_gain: [0.20, 0.20, 0.40]
-    acceleration_integral_acceleration_limit: [1.0, 1.0, 1.0]
+    mpc:
+      horizon: 26
+      q: [500.0, 100.0]
+      terminal_q: [1000.0, 300.0]
+      r: 20.0
 
+    # 对位置、速度和纯加速度控制模式分别补偿低频扰动。
+    # 积分状态直接表示附加加速度；专用起飞/降落阶段自动停用。
+    disturbance_rejection:
+      position_integral_gain: [0.08, 0.08, 0.15]
+      position_integral_acceleration_limit: [0.60, 0.60, 0.80]
+
+      velocity_integral_gain: [1.0, 1.0, 2.0]
+      velocity_integral_acceleration_limit: [1.0, 1.0, 1.0]
+
+      # 纯加速度模式使用去重力后的acceleration_odom形成PI闭环。
+      acceleration_feedback_gain: [0.25, 0.25, 0.35]
+      acceleration_integral_gain: [0.20, 0.20, 0.40]
+      acceleration_integral_acceleration_limit: [1.0, 1.0, 1.0]
+
+      # 根据最终可实现加速度冻结或释放积分，防止执行器饱和后wind-up。
+      anti_windup_gain: 1.5
+
+  # 控制器最终输出的统一安全限制，不属于MPC代价参数。
+  limits:
+    minimum_throttle: 0.05
+    maximum_throttle: 0.90
+    maximum_tilt: 0.61
+    maximum_body_rate: [3.0, 3.0, 2.0]
+    maximum_velocity_xy: 15.0
+    maximum_velocity_z: 5.0
+    maximum_acceleration_xy: 2.5
+    maximum_acceleration_z: 2.0
+    maximum_jerk_xy: 3.0
+    maximum_jerk_z: 3.0
+
+# 起飞与降落保持为两种机型一致的顶层业务阶段；具体参数由当前机型文件定义。
 takeoff:
   default_altitude: 3.0
   max_velocity: 0.8

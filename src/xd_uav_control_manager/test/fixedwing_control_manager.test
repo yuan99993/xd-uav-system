@@ -6,23 +6,24 @@
           output="screen"
           clear_params="true">
       <param name="vehicle_type" value="fixedwing"/>
-      <param name="offboard/setpoint_rate" value="50.0"/>
-      <param name="offboard/prestream_duration" value="0.1"/>
-      <param name="offboard/request_retry_interval" value="0.05"/>
-      <param name="offboard/request_timeout" value="3.0"/>
-      <param name="safety/stable_duration" value="0.1"/>
-      <param name="safety/invalid_grace_duration" value="0.3"/>
-      <param name="safety/landed_confirm_duration" value="0.1"/>
-      <param name="safety/touchdown_idle_duration" value="0.05"/>
-      <param name="safety/allow_force_disarm" value="true"/>
-      <param name="safety/force_disarm_timeout" value="0.2"/>
-      <param name="safety/odometry_timeout" value="0.5"/>
-      <param name="safety/imu_timeout" value="0.5"/>
-      <param name="safety/acceleration_timeout" value="0.5"/>
-      <param name="safety/airspeed_negative_tolerance" value="3.0"/>
-      <param name="safety/command_timeout" value="0.5"/>
-      <param name="safety/estimator_status_timeout" value="0.1"/>
-      <param name="safety/fixedwing_touchdown_max_groundspeed"
+      <param name="offboard/stream/setpoint_rate" value="50.0"/>
+      <param name="offboard/stream/prestream_duration" value="0.1"/>
+      <param name="offboard/mode_request/retry_interval" value="0.05"/>
+      <param name="offboard/mode_request/timeout" value="3.0"/>
+      <param name="safety/activation/stable_duration" value="0.1"/>
+      <param name="safety/controller_command/invalid_grace_duration"
+             value="0.3"/>
+      <param name="safety/touchdown/confirm_duration" value="0.1"/>
+      <param name="safety/touchdown/zero_thrust_duration" value="0.05"/>
+      <param name="safety/touchdown/force_disarm/enabled" value="true"/>
+      <param name="safety/touchdown/force_disarm/timeout" value="0.2"/>
+      <param name="safety/inputs/odometry_timeout" value="0.5"/>
+      <param name="safety/inputs/imu_timeout" value="0.5"/>
+      <param name="safety/inputs/acceleration_timeout" value="0.5"/>
+      <param name="safety/inputs/airspeed_negative_tolerance" value="3.0"/>
+      <param name="safety/controller_command/timeout" value="0.5"/>
+      <param name="safety/inputs/estimator_status_timeout" value="0.1"/>
+      <param name="safety/touchdown/fixedwing_max_groundspeed"
              value="1.0"/>
     </node>
     <test test-name="fixedwing_control_manager_interface"

@@ -77,6 +77,25 @@ void addDiagnostic(diagnostic_msgs::DiagnosticStatus* status,
   status->values.push_back(item);
 }
 
+template <typename T>
+void loadParameterWithLegacy(
+    const ros::NodeHandle& node_handle,
+    const std::string& name,
+    const std::string& legacy_name,
+    T* value,
+    const T& fallback) {
+  *value = fallback;
+  if (node_handle.getParam(name, *value)) {
+    return;
+  }
+  if (node_handle.getParam(legacy_name, *value)) {
+    ROS_WARN(
+        "[xd_uav_control_manager] 参数%s已迁移为%s；"
+        "本次仍兼容旧路径",
+        legacy_name.c_str(), name.c_str());
+  }
+}
+
 }  // namespace
 
 class ControlManagerNode {
@@ -128,6 +147,9 @@ class ControlManagerNode {
         "land", &ControlManagerNode::landCallback, this);
     land_home_server_ = private_nh_.advertiseService(
         "land_home", &ControlManagerNode::landHomeCallback, this);
+    cancel_land_server_ = private_nh_.advertiseService(
+        "cancel_land", &ControlManagerNode::cancelLandingCallback,
+        this);
     reset_failsafe_server_ = private_nh_.advertiseService(
         "reset_failsafe",
         &ControlManagerNode::resetFailsafeCallback, this);
@@ -175,64 +197,149 @@ class ControlManagerNode {
             ? xd_uav_controller::ControlState::VEHICLE_MULTIROTOR
             : xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
 
-    private_nh_.param("offboard/setpoint_rate",
-                      setpoint_rate_, 100.0);
-    private_nh_.param("offboard/prestream_duration",
-                      prestream_duration_, 1.5);
-    private_nh_.param("offboard/request_retry_interval",
-                      request_retry_interval_, 1.0);
-    private_nh_.param("offboard/request_timeout",
-                      request_timeout_, 10.0);
-    private_nh_.param("offboard/cancel_mode",
-                      cancel_mode_, std::string("POSCTL"));
+    loadParameterWithLegacy(
+        private_nh_, "offboard/stream/setpoint_rate",
+        "offboard/setpoint_rate", &setpoint_rate_, 100.0);
+    loadParameterWithLegacy(
+        private_nh_, "offboard/stream/prestream_duration",
+        "offboard/prestream_duration", &prestream_duration_, 1.5);
+    loadParameterWithLegacy(
+        private_nh_, "offboard/mode_request/retry_interval",
+        "offboard/request_retry_interval",
+        &request_retry_interval_, 1.0);
+    loadParameterWithLegacy(
+        private_nh_, "offboard/mode_request/timeout",
+        "offboard/request_timeout", &request_timeout_, 10.0);
+    loadParameterWithLegacy(
+        private_nh_, "offboard/exit/cancel_mode",
+        "offboard/cancel_mode", &cancel_mode_,
+        std::string("POSCTL"));
 
-    private_nh_.param("safety/odometry_timeout",
-                      odometry_timeout_, 0.20);
-    private_nh_.param("safety/imu_timeout", imu_timeout_, 0.10);
-    private_nh_.param("safety/acceleration_timeout",
-                      acceleration_timeout_, 0.20);
-    private_nh_.param("safety/airspeed_timeout",
-                      airspeed_timeout_, 0.30);
-    private_nh_.param(
+    loadParameterWithLegacy(
+        private_nh_, "safety/inputs/odometry_timeout",
+        "safety/odometry_timeout", &odometry_timeout_, 0.20);
+    loadParameterWithLegacy(
+        private_nh_, "safety/inputs/imu_timeout",
+        "safety/imu_timeout", &imu_timeout_, 0.50);
+    loadParameterWithLegacy(
+        private_nh_, "safety/inputs/acceleration_timeout",
+        "safety/acceleration_timeout", &acceleration_timeout_, 0.20);
+    loadParameterWithLegacy(
+        private_nh_, "safety/inputs/airspeed_timeout",
+        "safety/airspeed_timeout", &airspeed_timeout_, 0.30);
+    loadParameterWithLegacy(
+        private_nh_, "safety/inputs/estimator_status_timeout",
+        "safety/estimator_status_timeout",
+        &estimator_status_timeout_, 0.30);
+    private_nh_.param("safety/inputs/mavros_state_timeout",
+                      mavros_state_timeout_, 1.0);
+    private_nh_.param("safety/inputs/extended_state_timeout",
+                      extended_state_timeout_, 1.0);
+    loadParameterWithLegacy(
+        private_nh_,
+        "safety/inputs/airspeed_negative_tolerance",
         "safety/airspeed_negative_tolerance",
-        airspeed_negative_tolerance_, 3.0);
-    private_nh_.param("safety/command_timeout",
-                      command_timeout_, 0.10);
-    private_nh_.param("safety/estimator_status_timeout",
-                      estimator_status_timeout_, 0.30);
-    private_nh_.param("safety/stable_duration",
-                      stable_duration_, 1.5);
-    private_nh_.param("safety/invalid_grace_duration",
-                      invalid_grace_duration_, 0.5);
-    private_nh_.param("safety/landed_confirm_duration",
-                      landed_confirm_duration_, 0.5);
-    private_nh_.param("safety/touchdown_idle_duration",
-                      touchdown_idle_duration_, 0.75);
-    private_nh_.param("safety/force_disarm_timeout",
-                      force_disarm_timeout_, 2.0);
-    private_nh_.param("safety/allow_force_disarm",
-                      allow_force_disarm_, true);
-    private_nh_.param("safety/require_acceleration",
-                      require_acceleration_, true);
-    private_nh_.param("safety/require_localization",
-                      require_localization_, false);
-    private_nh_.param("safety/minimum_groundspeed_for_course",
-                      minimum_groundspeed_for_course_, 0.5);
-    private_nh_.param(
-        "safety/fixedwing_touchdown_max_groundspeed",
-        fixedwing_touchdown_max_groundspeed_, 2.0);
+        &airspeed_negative_tolerance_, 3.0);
+    loadParameterWithLegacy(
+        private_nh_,
+        "safety/inputs/minimum_groundspeed_for_course",
+        "safety/minimum_groundspeed_for_course",
+        &minimum_groundspeed_for_course_, 0.5);
+    loadParameterWithLegacy(
+        private_nh_, "safety/inputs/require_acceleration",
+        "safety/require_acceleration", &require_acceleration_, true);
+    loadParameterWithLegacy(
+        private_nh_, "safety/inputs/require_localization",
+        "safety/require_localization", &require_localization_, false);
 
-    landed_confirm_duration_ =
-        std::max(0.1, landed_confirm_duration_);
-    airspeed_negative_tolerance_ =
-        std::max(0.0, airspeed_negative_tolerance_);
-    touchdown_idle_duration_ =
-        std::max(0.0, touchdown_idle_duration_);
-    force_disarm_timeout_ =
-        std::max(touchdown_idle_duration_ + 0.1,
-                 force_disarm_timeout_);
-    fixedwing_touchdown_max_groundspeed_ =
-        std::max(0.1, fixedwing_touchdown_max_groundspeed_);
+    loadParameterWithLegacy(
+        private_nh_, "safety/controller_command/timeout",
+        "safety/command_timeout", &command_timeout_, 0.20);
+    loadParameterWithLegacy(
+        private_nh_,
+        "safety/controller_command/invalid_grace_duration",
+        "safety/invalid_grace_duration",
+        &invalid_grace_duration_, 0.5);
+    loadParameterWithLegacy(
+        private_nh_, "safety/activation/stable_duration",
+        "safety/stable_duration", &stable_duration_, 1.5);
+
+    loadParameterWithLegacy(
+        private_nh_, "safety/touchdown/confirm_duration",
+        "safety/landed_confirm_duration",
+        &landed_confirm_duration_, 0.5);
+    loadParameterWithLegacy(
+        private_nh_, "safety/touchdown/zero_thrust_duration",
+        "safety/touchdown_idle_duration",
+        &touchdown_idle_duration_, 0.75);
+    loadParameterWithLegacy(
+        private_nh_,
+        "safety/touchdown/fixedwing_max_groundspeed",
+        "safety/fixedwing_touchdown_max_groundspeed",
+        &fixedwing_touchdown_max_groundspeed_, 2.0);
+    loadParameterWithLegacy(
+        private_nh_,
+        "safety/touchdown/force_disarm/enabled",
+        "safety/allow_force_disarm", &allow_force_disarm_, true);
+    loadParameterWithLegacy(
+        private_nh_,
+        "safety/touchdown/force_disarm/timeout",
+        "safety/force_disarm_timeout", &force_disarm_timeout_, 2.0);
+
+    const auto positive = [](const double value) {
+      return std::isfinite(value) && value > 0.0;
+    };
+    const auto nonnegative = [](const double value) {
+      return std::isfinite(value) && value >= 0.0;
+    };
+    if (!positive(setpoint_rate_) || setpoint_rate_ < 2.0 ||
+        !nonnegative(prestream_duration_) ||
+        !positive(request_retry_interval_) ||
+        !positive(request_timeout_) ||
+        request_timeout_ < request_retry_interval_ ||
+        cancel_mode_.empty()) {
+      throw std::runtime_error(
+          "offboard发送、模式请求或退出参数不在有效范围内");
+    }
+    if (!positive(odometry_timeout_) ||
+        !positive(imu_timeout_) ||
+        !positive(acceleration_timeout_) ||
+        !positive(airspeed_timeout_) ||
+        !positive(estimator_status_timeout_) ||
+        !positive(mavros_state_timeout_) ||
+        !positive(extended_state_timeout_) ||
+        !nonnegative(airspeed_negative_tolerance_) ||
+        !nonnegative(minimum_groundspeed_for_course_) ||
+        !positive(command_timeout_) ||
+        !nonnegative(invalid_grace_duration_) ||
+        !nonnegative(stable_duration_)) {
+      throw std::runtime_error(
+          "safety输入、控制器命令或激活参数不在有效范围内");
+    }
+    if (!positive(landed_confirm_duration_) ||
+        !nonnegative(touchdown_idle_duration_) ||
+        !positive(fixedwing_touchdown_max_groundspeed_) ||
+        !positive(force_disarm_timeout_) ||
+        (allow_force_disarm_ &&
+         force_disarm_timeout_ <= touchdown_idle_duration_)) {
+      throw std::runtime_error(
+          "safety触地确认或上锁参数不在有效范围内");
+    }
+  }
+
+  bool mavrosStateFresh(const ros::Time& now) const {
+    return have_mavros_state_ &&
+           messageAge(now, mavros_state_.header.stamp,
+                      mavros_state_receive_) <=
+               mavros_state_timeout_;
+  }
+
+  bool mavrosExtendedStateFresh(const ros::Time& now) const {
+    return have_mavros_extended_state_ &&
+           messageAge(
+               now, mavros_extended_state_.header.stamp,
+               mavros_extended_state_receive_) <=
+               extended_state_timeout_;
   }
 
   void odometryCallback(
@@ -811,7 +918,9 @@ class ControlManagerNode {
       response.message = "降落已经在执行";
       return true;
     }
+    const ros::Time now = ros::Time::now();
     if (state_machine_state_ != State::kActive ||
+        !mavrosStateFresh(now) ||
         !mavros_state_.armed ||
         mavros_state_.mode != offboard_mode_) {
       response.success = false;
@@ -819,12 +928,12 @@ class ControlManagerNode {
           "只有已解锁并处于OFFBOARD主动控制时才能降落";
       return true;
     }
-    if (!have_mavros_extended_state_ ||
+    if (!mavrosExtendedStateFresh(now) ||
         mavros_extended_state_.landed_state !=
             mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR) {
       response.success = false;
       response.message =
-          "mavros/extended_state未确认飞机在空中";
+          "mavros/extended_state未实时确认飞机在空中";
       return true;
     }
 
@@ -874,6 +983,82 @@ class ControlManagerNode {
         return_home
             ? "已接受返航降落请求"
             : "已接受原地降落请求";
+    return true;
+  }
+
+  bool cancelLandingCallback(
+      std_srvs::Trigger::Request&,
+      std_srvs::Trigger::Response& response) {
+    if (state_machine_state_ != State::kLanding) {
+      response.success = true;
+      response.message = "当前没有正在执行的降落";
+      return true;
+    }
+    const ros::Time now = ros::Time::now();
+    if (!mavrosStateFresh(now) || !mavros_state_.armed ||
+        mavros_state_.mode != offboard_mode_) {
+      response.success = false;
+      response.message =
+          "飞机未保持解锁OFFBOARD，不能按普通飞行状态取消降落";
+      return true;
+    }
+    if (!mavrosExtendedStateFresh(now) ||
+        mavros_extended_state_.landed_state !=
+            mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR) {
+      response.success = false;
+      response.message =
+          "PX4未实时确认飞机仍在空中，拒绝取消降落";
+      return true;
+    }
+    if (touchdown_confirmed_ || !landed_since_.isZero() ||
+        (have_command_ && command_.landing_touchdown)) {
+      response.success = false;
+      response.message =
+          "已经进入触地确认阶段，不能取消降落";
+      return true;
+    }
+
+    std::string command_reason;
+    if (!current_control_state_.state_valid ||
+        !validCommand(now, &command_reason)) {
+      response.success = false;
+      response.message =
+          "当前飞行控制输入无效，拒绝取消降落: " +
+          command_reason;
+      return true;
+    }
+
+    xd_uav_controller::InternalCommand service;
+    service.request.command =
+        xd_uav_controller::InternalCommand::Request::CANCEL_LANDING;
+    if (!controller_internal_command_client_.call(service)) {
+      response.success = false;
+      response.message = "无法调用控制器取消降落命令";
+      return true;
+    }
+    if (!service.response.success) {
+      response.success = false;
+      response.message = service.response.message;
+      return true;
+    }
+
+    landing_requested_ = false;
+    arm_requested_ = true;
+    landing_seen_in_air_ = false;
+    touchdown_confirmed_ = false;
+    normal_disarm_attempted_ = false;
+    force_disarm_requested_ = false;
+    invalid_since_ = ros::Time();
+    landed_since_ = ros::Time();
+    touchdown_confirmed_at_ = ros::Time();
+    transition(
+        State::kActive,
+        vehicle_type_ == "fixedwing"
+            ? "用户取消降落，保持OFFBOARD并进入等待盘旋"
+            : "用户取消降落，保持OFFBOARD并悬停");
+    response.success = true;
+    response.message = service.response.message +
+                       "；OFFBOARD和解锁状态保持不变";
     return true;
   }
 
@@ -1040,9 +1225,9 @@ class ControlManagerNode {
         current_control_state_.state_valid &&
         current_control_state_.stable;
     const bool mavros_connected =
-        have_mavros_state_ && mavros_state_.connected &&
-        messageAge(now, mavros_state_.header.stamp,
-                   mavros_state_receive_) <= 1.0;
+        mavrosStateFresh(now) && mavros_state_.connected;
+    const bool extended_state_fresh =
+        mavrosExtendedStateFresh(now);
     const bool active_inputs_healthy =
         current_control_state_.state_valid &&
         command_valid && mavros_connected;
@@ -1183,12 +1368,12 @@ class ControlManagerNode {
           break;
         }
         const bool px4_reports_in_air =
-            have_mavros_extended_state_ &&
+            extended_state_fresh &&
             mavros_extended_state_.landed_state ==
                 mavros_msgs::ExtendedState::
                     LANDED_STATE_IN_AIR;
         const bool px4_reports_landed =
-            have_mavros_extended_state_ &&
+            extended_state_fresh &&
             mavros_extended_state_.landed_state ==
                 mavros_msgs::ExtendedState::
                     LANDED_STATE_ON_GROUND;
@@ -1268,6 +1453,7 @@ class ControlManagerNode {
   ros::ServiceServer takeoff_server_;
   ros::ServiceServer land_server_;
   ros::ServiceServer land_home_server_;
+  ros::ServiceServer cancel_land_server_;
   ros::ServiceServer reset_failsafe_server_;
   ros::ServiceClient set_mode_client_;
   ros::ServiceClient arming_client_;
@@ -1333,12 +1519,14 @@ class ControlManagerNode {
   std::string cancel_mode_{"POSCTL"};
 
   double odometry_timeout_{0.20};
-  double imu_timeout_{0.10};
+  double imu_timeout_{0.50};
   double acceleration_timeout_{0.20};
   double airspeed_timeout_{0.30};
   double airspeed_negative_tolerance_{3.0};
-  double command_timeout_{0.10};
+  double command_timeout_{0.20};
   double estimator_status_timeout_{0.30};
+  double mavros_state_timeout_{1.0};
+  double extended_state_timeout_{1.0};
   double stable_duration_{1.5};
   double invalid_grace_duration_{0.5};
   double landed_confirm_duration_{0.5};

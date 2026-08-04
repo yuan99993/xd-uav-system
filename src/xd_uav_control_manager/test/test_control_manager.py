@@ -148,6 +148,13 @@ class ControlManagerInterfaceTest(unittest.TestCase):
             return InternalCommandResponse(
                 success=True, message="accepted"
             )
+        if request.command == InternalCommandRequest.CANCEL_LANDING:
+            self._landing_active = False
+            self._landing_mode = ""
+            self._touchdown = False
+            return InternalCommandResponse(
+                success=True, message="landing cancelled"
+            )
         if request.command == InternalCommandRequest.RESET:
             self._controller_reset = True
             self._landing_active = False
@@ -411,10 +418,49 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         self.assertTrue(self._landing_active)
         self.assertEqual(self._landing_mode, "home")
 
+        rospy.wait_for_service(
+            "control_manager/cancel_land", timeout=3.0
+        )
+        cancel_land = rospy.ServiceProxy(
+            "control_manager/cancel_land", Trigger
+        )
+        response = cancel_land()
+        self.assertTrue(response.success, response.message)
+        self.assertFalse(self._landing_active)
+        self.assertTrue(self._armed)
+        self.assertEqual(self._mode, "OFFBOARD")
+        self._wait_for(
+            lambda: (
+                message
+                if (
+                    message := rospy.wait_for_message(
+                        "control_manager/status",
+                        String,
+                        timeout=0.2,
+                    )
+                ).data.startswith("ACTIVE")
+                else None
+            )
+        )
+
+        response = land_home()
+        self.assertTrue(response.success, response.message)
+        self.assertTrue(self._landing_active)
+        self.assertEqual(self._landing_mode, "home")
+
         # PX4 may keep reporting IN_AIR while the controller still
         # supplies thrust on the ground. Verify the independent
         # controller touchdown path still disarms the vehicle.
         self._touchdown = True
+        deadline = time.time() + 0.08
+        while time.time() < deadline:
+            self._publish_inputs()
+            rospy.sleep(0.02)
+        response = cancel_land()
+        self.assertFalse(response.success)
+        self.assertTrue(self._landing_active)
+        self.assertTrue(self._armed)
+        self.assertEqual(self._mode, "OFFBOARD")
         if self._vehicle_type == "fixedwing":
             # The fixed-wing manager must not treat a contact signal
             # at high ground speed as a safe point to stop publishing

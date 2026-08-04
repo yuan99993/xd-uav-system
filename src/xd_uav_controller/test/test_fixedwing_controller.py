@@ -728,6 +728,38 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         )
         self.assertGreater(line_capture_command.body_rate.z, 0.10)
 
+        cancel_land_response = internal_command(
+            InternalCommandRequest.CANCEL_LANDING, 0.0
+        )
+        self.assertTrue(
+            cancel_land_response.success,
+            cancel_land_response.message,
+        )
+        cancel_loiter_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and not value.landing_active
+                and value.controller
+                == "fixedwing_course_energy_loiter"
+            ),
+            include_reference=False,
+            state=offtrack_approach_state,
+        )
+        self.assertFalse(cancel_loiter_command.landing_active)
+
+        restart_land_response = internal_command(
+            InternalCommandRequest.LAND_HOME, 0.0
+        )
+        self.assertTrue(
+            restart_land_response.success,
+            restart_land_response.message,
+        )
+        self._wait_for_command(
+            lambda value: value.valid and value.landing_active,
+            include_reference=False,
+            state=offtrack_approach_state,
+        )
+
         aligned_approach_state = self._state()
         aligned_approach_state.position_odom.x = 100.0
         aligned_approach_state.position_odom.y = 0.0

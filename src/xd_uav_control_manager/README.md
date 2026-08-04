@@ -23,6 +23,7 @@ STANDBY
                                   -> REQUEST_ARM -> ACTIVE/悬停
 
 ACTIVE -- land/land_home --> LANDING -> 上锁 -> STANDBY
+LANDING -- cancel_land（确认仍在空中）--> ACTIVE
 ACTIVE -- cancel_offboard/人工切模式 --> STANDBY
 ACTIVE -- 持续输入失效 --> FAILSAFE
 ```
@@ -35,7 +36,7 @@ setpoint，从而维持OFFBOARD。起飞结束后控制器保留同一个位置�
 回到`STANDBY`。`cancel_offboard`服务会先请求PX4切换到配置的`cancel_mode`，确认
 PX4接受模式请求后才停止setpoint。
 
-短于`safety/invalid_grace_duration`的单次输入抖动会暂时复用最后一条安全控制量，
+短于`safety/controller_command/invalid_grace_duration`的单次输入抖动会暂时复用最后一条安全控制量，
 不会立即退出OFFBOARD。持续失效仍会停止输出，由PX4执行其配置的OFFBOARD-loss
 策略；这是安全例外，不能承诺任何传感器故障下都永不降落。
 
@@ -76,6 +77,17 @@ rosservice call /uav1/control_manager/land
 rosservice call /uav1/control_manager/land_home
 ```
 
+触地前取消当前降落，并保持解锁和OFFBOARD：
+
+```bash
+rosservice call /uav1/control_manager/cancel_land
+```
+
+取消后四旋翼会捕获当前位置悬停，固定翼会沿当前航向平滑进入等待盘旋；之后和普通
+`ACTIVE`状态一样，可以接收新的外部参考或再次调用降落。为避免触地后突然恢复推力，
+控制器已经报告触地、管理器已经进入触地持续确认，或PX4不能实时确认飞机仍在空中时，
+`cancel_land`会拒绝请求并继续原降落流程。
+
 `land_home`使用控制器公共配置中的home语义。`home/mode: takeoff`会在起飞时记录
 当前位置；仓库提供的`common_config.yaml`当前使用`fixed_local`，其
 `home/fixed_position`和`home/fixed_yaw`定义固定Home。执行返航时，Home会按最新TF
@@ -93,7 +105,7 @@ rosservice call /uav1/control_manager/land_home
 垂直下降。`land`在当前course前方建立临时接地点，`land_home`以公共Home三维位置为
 接地点；若`home/use_home_yaw: true`，公共Home yaw同时作为跑道着陆方向。固定翼
 即使收到PX4触地状态或控制器触地信号，地速高于
-`safety/fixedwing_touchdown_max_groundspeed`时也不会停桨解锁。
+`safety/touchdown/fixedwing_max_groundspeed`时也不会停桨解锁。
 
 复位FAILSAFE：
 
@@ -129,15 +141,20 @@ rates来自IMU；固定翼空速来自`mavros/vfr_hud`。
 
 ## 配置
 
-- `config/offboard.yaml`：setpoint频率、预发送时长、PX4请求超时和取消后的接管模式。
-- `config/safety.yaml`：输入超时、进入控制前的稳定时长、短暂失效宽限、着陆确认、
-  零推力等待时间和强制上锁回退。真机使用前必须重新验证触地容差，并可通过
-  `safety/allow_force_disarm: false`关闭强制上锁。
-  固定翼还通过`safety/fixedwing_touchdown_max_groundspeed`限制可确认触地和解锁
-  的最大地速。
+- `config/offboard.yaml`按职责分为三组：`offboard/stream/*`负责setpoint发送和预发送，
+  `offboard/mode_request/*`负责PX4请求重试与超时，`offboard/exit/*`负责主动退出后的
+  接管模式。
+- `config/safety.yaml`按职责分为四组：`safety/inputs/*`检查传感器、估计器和PX4状态，
+  `safety/controller_command/*`监督控制器输出，`safety/activation/*`控制进入OFFBOARD前
+  的稳定等待，`safety/touchdown/*`负责触地确认、零推力等待和上锁回退。
+- 真机使用前必须重新验证触地容差，并可通过
+  `safety/touchdown/force_disarm/enabled: false`关闭强制上锁。固定翼还通过
+  `safety/touchdown/fixedwing_max_groundspeed`限制可确认触地和解锁的最大地速。
   固定翼SITL地面静止时若`mavros/vfr_hud.airspeed`出现轻微负噪声，
-  `safety/airspeed_negative_tolerance`范围内会按`0m/s`输入控制器；超过该负值容差
-  仍判定为空速无效。
+  `safety/inputs/airspeed_negative_tolerance`范围内会按`0m/s`输入控制器；超过该负值
+  容差仍判定为空速无效。
+- 旧版扁平参数路径仍可在未配置新路径时兼容读取，并在启动时输出迁移提示；新配置和
+  launch覆盖应使用上述分层路径。
 - 控制器公共参数放在`xd_uav_controller/config/common_config.yaml`，四旋翼和固定翼
   参数分别放在`multirotor.yaml`与`fixedwing.yaml`。系统launch先加载公共配置，再加载
   机型配置。

@@ -107,19 +107,6 @@ std::array<double, 3> loadVector3(
   return {{values[0], values[1], values[2]}};
 }
 
-std::array<double, 2> loadVector2(
-    const ros::NodeHandle& node_handle, const std::string& name,
-    const std::array<double, 2>& fallback) {
-  std::vector<double> values;
-  if (!node_handle.getParam(name, values)) {
-    return fallback;
-  }
-  if (values.size() != 2) {
-    throw std::runtime_error(name + "必须包含2个数值");
-  }
-  return {{values[0], values[1]}};
-}
-
 template <typename T>
 void loadParameterWithLegacy(
     const ros::NodeHandle& node_handle,
@@ -161,6 +148,30 @@ std::array<double, 3> loadVector3WithLegacy(
         loaded_name + "必须包含3个数值");
   }
   return {{values[0], values[1], values[2]}};
+}
+
+std::array<double, 2> loadVector2WithLegacy(
+    const ros::NodeHandle& node_handle,
+    const std::string& name,
+    const std::string& legacy_name,
+    const std::array<double, 2>& fallback) {
+  std::vector<double> values;
+  std::string loaded_name = name;
+  if (!node_handle.getParam(name, values)) {
+    loaded_name = legacy_name;
+    if (!node_handle.getParam(legacy_name, values)) {
+      return fallback;
+    }
+    ROS_WARN(
+        "[xd_uav_controller] 参数%s已迁移为%s；"
+        "本次仍兼容旧路径",
+        legacy_name.c_str(), name.c_str());
+  }
+  if (values.size() != 2) {
+    throw std::runtime_error(
+        loaded_name + "必须包含2个数值");
+  }
+  return {{values[0], values[1]}};
 }
 
 class FiniteHorizonAxisMpc {
@@ -311,95 +322,159 @@ class ControllerNode {
             : xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
     private_nh_.param("control_rate", control_rate_,
                       vehicle_type_ == "multirotor" ? 100.0 : 50.0);
-    private_nh_.param("state_timeout", state_timeout_, 0.20);
-    private_nh_.param("reference_timeout", reference_timeout_, 0.50);
-    private_nh_.param("reference_frames/transform_timeout",
-                      reference_transform_timeout_, 0.03);
-    private_nh_.param("reference_frames/max_transform_age",
-                      maximum_transform_age_, 0.50);
-    private_nh_.param("reference_frames/failure_grace_duration",
-                      reference_transform_failure_grace_, 0.50);
-    private_nh_.param("reference_frames/max_inertial_frame_tilt",
-                      maximum_inertial_frame_tilt_, 0.10);
-    private_nh_.param("reference_frames/require_global_alignment",
-                      require_global_alignment_, true);
-    private_nh_.param("reference_frames/global_alignment_timeout",
-                      global_alignment_timeout_, 1.0);
-    if (!private_nh_.getParam(
-            "reference_frames/allowed",
-            allowed_reference_frames_)) {
-      allowed_reference_frames_ = {
-          "local_origin", "/world", "/map"};
-    }
-    if (!private_nh_.getParam(
-            "reference_frames/global_alignment_frames",
-            global_alignment_frames_)) {
-      global_alignment_frames_ = {
-          "local_origin", "/world", "/map"};
-    }
-    private_nh_.param("simple_goal/use_message_z",
-                      simple_goal_use_message_z_, false);
+    loadParameterWithLegacy(
+        private_nh_, "state_input/timeout", "state_timeout",
+        &state_timeout_, 0.20);
+    loadParameterWithLegacy(
+        private_nh_, "reference_input/timeout", "reference_timeout",
+        &reference_timeout_, 0.50);
+    loadParameterWithLegacy(
+        private_nh_, "reference_input/transform/timeout",
+        "reference_frames/transform_timeout",
+        &reference_transform_timeout_, 0.03);
+    loadParameterWithLegacy(
+        private_nh_, "reference_input/transform/max_age",
+        "reference_frames/max_transform_age",
+        &maximum_transform_age_, 0.50);
+    loadParameterWithLegacy(
+        private_nh_,
+        "reference_input/transform/failure_grace_duration",
+        "reference_frames/failure_grace_duration",
+        &reference_transform_failure_grace_, 0.50);
+    loadParameterWithLegacy(
+        private_nh_,
+        "reference_input/transform/max_inertial_frame_tilt",
+        "reference_frames/max_inertial_frame_tilt",
+        &maximum_inertial_frame_tilt_, 0.10);
+    loadParameterWithLegacy(
+        private_nh_, "reference_input/global_alignment/required",
+        "reference_frames/require_global_alignment",
+        &require_global_alignment_, true);
+    loadParameterWithLegacy(
+        private_nh_, "reference_input/global_alignment/timeout",
+        "reference_frames/global_alignment_timeout",
+        &global_alignment_timeout_, 1.0);
+    loadParameterWithLegacy(
+        private_nh_, "reference_input/allowed_frames",
+        "reference_frames/allowed", &allowed_reference_frames_,
+        std::vector<std::string>{"local_origin", "/world", "/map"});
+    loadParameterWithLegacy(
+        private_nh_, "reference_input/global_alignment/frames",
+        "reference_frames/global_alignment_frames",
+        &global_alignment_frames_,
+        std::vector<std::string>{"local_origin", "/world", "/map"});
+    loadParameterWithLegacy(
+        private_nh_, "reference_input/simple_goal/use_message_z",
+        "simple_goal/use_message_z", &simple_goal_use_message_z_,
+        false);
 
     if (vehicle_type_ == "multirotor") {
-      private_nh_.param("multirotor/gravity", gravity_, 9.80665);
-      private_nh_.param("multirotor/hover_throttle",
-                        hover_throttle_, 0.5);
-      private_nh_.param("multirotor/min_throttle",
-                        minimum_throttle_, 0.05);
-      private_nh_.param("multirotor/max_throttle",
-                        maximum_throttle_, 0.9);
-      private_nh_.param("multirotor/max_tilt", maximum_tilt_, 0.61);
-      attitude_gain_ = loadVector3(
-          private_nh_, "multirotor/attitude_gain",
-          {{5.0, 5.0, 2.0}});
-      maximum_body_rate_ = loadVector3(
-          private_nh_, "multirotor/max_body_rate",
-          {{3.0, 3.0, 2.0}});
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/model/gravity",
+          "multirotor/gravity", &gravity_, 9.80665);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/model/hover_throttle",
+          "multirotor/hover_throttle", &hover_throttle_, 0.5);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/limits/minimum_throttle",
+          "multirotor/min_throttle", &minimum_throttle_, 0.05);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/limits/maximum_throttle",
+          "multirotor/max_throttle", &maximum_throttle_, 0.9);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/limits/maximum_tilt",
+          "multirotor/max_tilt", &maximum_tilt_, 0.61);
+      attitude_gain_ = loadVector3WithLegacy(
+          private_nh_, "multirotor/attitude_control/gain",
+          "multirotor/attitude_gain", {{5.0, 5.0, 2.0}});
+      maximum_body_rate_ = loadVector3WithLegacy(
+          private_nh_, "multirotor/limits/maximum_body_rate",
+          "multirotor/max_body_rate", {{3.0, 3.0, 2.0}});
 
       int horizon = 26;
       const double dt =
           1.0 / std::max(1.0, control_rate_);
       double r = 20.0;
-      private_nh_.param("multirotor/mpc/horizon", horizon, 26);
-      private_nh_.param("multirotor/mpc/r", r, 20.0);
-      const auto q = loadVector2(
-          private_nh_, "multirotor/mpc/q",
-          {{500.0, 100.0}});
-      const auto terminal_q = loadVector2(
-          private_nh_, "multirotor/mpc/terminal_q",
-          {{1000.0, 300.0}});
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/position_control/mpc/horizon",
+          "multirotor/mpc/horizon", &horizon, 26);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/position_control/mpc/r",
+          "multirotor/mpc/r", &r, 20.0);
+      const auto q = loadVector2WithLegacy(
+          private_nh_, "multirotor/position_control/mpc/q",
+          "multirotor/mpc/q", {{500.0, 100.0}});
+      const auto terminal_q = loadVector2WithLegacy(
+          private_nh_, "multirotor/position_control/mpc/terminal_q",
+          "multirotor/mpc/terminal_q", {{1000.0, 300.0}});
       mpc_.configure(horizon, dt, q, terminal_q, r);
       mpc_dt_ = dt;
-      private_nh_.param("multirotor/mpc/max_velocity_xy",
-                        max_velocity_xy_, 5.0);
-      private_nh_.param("multirotor/mpc/max_velocity_z",
-                        max_velocity_z_, 3.0);
-      private_nh_.param("multirotor/mpc/max_acceleration_xy",
-                        max_acceleration_xy_, 5.0);
-      private_nh_.param("multirotor/mpc/max_acceleration_z",
-                        max_acceleration_z_, 4.0);
-      private_nh_.param("multirotor/mpc/max_jerk_xy",
-                        max_jerk_xy_, 8.0);
-      private_nh_.param("multirotor/mpc/max_jerk_z",
-                        max_jerk_z_, 6.0);
-      velocity_integral_gain_ = loadVector3(
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/limits/maximum_velocity_xy",
+          "multirotor/mpc/max_velocity_xy", &max_velocity_xy_, 5.0);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/limits/maximum_velocity_z",
+          "multirotor/mpc/max_velocity_z", &max_velocity_z_, 3.0);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/limits/maximum_acceleration_xy",
+          "multirotor/mpc/max_acceleration_xy",
+          &max_acceleration_xy_, 5.0);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/limits/maximum_acceleration_z",
+          "multirotor/mpc/max_acceleration_z",
+          &max_acceleration_z_, 4.0);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/limits/maximum_jerk_xy",
+          "multirotor/mpc/max_jerk_xy", &max_jerk_xy_, 8.0);
+      loadParameterWithLegacy(
+          private_nh_, "multirotor/limits/maximum_jerk_z",
+          "multirotor/mpc/max_jerk_z", &max_jerk_z_, 6.0);
+      velocity_integral_gain_ = loadVector3WithLegacy(
           private_nh_,
+          "multirotor/position_control/disturbance_rejection/"
+          "velocity_integral_gain",
           "multirotor/mpc/velocity_integral_gain",
           {{1.0, 1.0, 2.0}});
-      velocity_integral_acceleration_limit_ = loadVector3(
+      velocity_integral_acceleration_limit_ = loadVector3WithLegacy(
           private_nh_,
+          "multirotor/position_control/disturbance_rejection/"
+          "velocity_integral_acceleration_limit",
           "multirotor/mpc/velocity_integral_acceleration_limit",
           {{1.0, 1.0, 1.0}});
-      acceleration_feedback_gain_ = loadVector3(
+      position_integral_gain_ = loadVector3WithLegacy(
           private_nh_,
+          "multirotor/position_control/disturbance_rejection/"
+          "position_integral_gain",
+          "multirotor/mpc/position_integral_gain",
+          {{0.08, 0.08, 0.15}});
+      position_integral_acceleration_limit_ = loadVector3WithLegacy(
+          private_nh_,
+          "multirotor/position_control/disturbance_rejection/"
+          "position_integral_acceleration_limit",
+          "multirotor/mpc/position_integral_acceleration_limit",
+          {{0.60, 0.60, 0.80}});
+      loadParameterWithLegacy(
+          private_nh_,
+          "multirotor/position_control/disturbance_rejection/"
+          "anti_windup_gain",
+          "multirotor/mpc/anti_windup_gain",
+          &multirotor_anti_windup_gain_, 1.5);
+      acceleration_feedback_gain_ = loadVector3WithLegacy(
+          private_nh_,
+          "multirotor/position_control/disturbance_rejection/"
+          "acceleration_feedback_gain",
           "multirotor/mpc/acceleration_feedback_gain",
           {{0.25, 0.25, 0.35}});
-      acceleration_integral_gain_ = loadVector3(
+      acceleration_integral_gain_ = loadVector3WithLegacy(
           private_nh_,
+          "multirotor/position_control/disturbance_rejection/"
+          "acceleration_integral_gain",
           "multirotor/mpc/acceleration_integral_gain",
           {{0.20, 0.20, 0.40}});
-      acceleration_integral_acceleration_limit_ = loadVector3(
+      acceleration_integral_acceleration_limit_ = loadVector3WithLegacy(
           private_nh_,
+          "multirotor/position_control/disturbance_rejection/"
+          "acceleration_integral_acceleration_limit",
           "multirotor/mpc/acceleration_integral_acceleration_limit",
           {{1.0, 1.0, 1.0}});
     } else {
@@ -688,6 +763,85 @@ class ControllerNode {
         home_mode_ != "fixed_local") {
       throw std::runtime_error(
           "home/mode必须是takeoff或fixed_local");
+    }
+    const auto frames_valid = [](const std::vector<std::string>& frames) {
+      return !frames.empty() &&
+             std::all_of(
+                 frames.begin(), frames.end(),
+                 [](const std::string& frame) {
+                   return !frame.empty();
+                 });
+    };
+    if (!std::isfinite(control_rate_) || control_rate_ <= 0.0 ||
+        !std::isfinite(state_timeout_) || state_timeout_ <= 0.0 ||
+        !std::isfinite(reference_timeout_) ||
+        reference_timeout_ <= 0.0 ||
+        !std::isfinite(reference_transform_timeout_) ||
+        reference_transform_timeout_ < 0.0 ||
+        !std::isfinite(maximum_transform_age_) ||
+        maximum_transform_age_ <= 0.0 ||
+        !std::isfinite(reference_transform_failure_grace_) ||
+        reference_transform_failure_grace_ < 0.0 ||
+        !std::isfinite(maximum_inertial_frame_tilt_) ||
+        maximum_inertial_frame_tilt_ < 0.0 ||
+        maximum_inertial_frame_tilt_ >= 0.5 * kPi ||
+        !std::isfinite(global_alignment_timeout_) ||
+        global_alignment_timeout_ <= 0.0 ||
+        !frames_valid(allowed_reference_frames_) ||
+        (require_global_alignment_ &&
+         !frames_valid(global_alignment_frames_))) {
+      throw std::runtime_error(
+          "公共状态输入或参考输入参数不在有效范围内");
+    }
+    if (home_frame_config_.empty() ||
+        !fixed_home_position_.allFinite() ||
+        !std::isfinite(fixed_home_yaw_)) {
+      throw std::runtime_error("公共home配置包含空frame或非法数值");
+    }
+    if (vehicle_type_ == "multirotor") {
+      const auto valid_nonnegative_vector = [](
+          const std::array<double, 3>& values) {
+        return std::all_of(
+            values.begin(), values.end(),
+            [](const double value) {
+              return std::isfinite(value) && value >= 0.0;
+            });
+      };
+      if (!std::isfinite(control_rate_) || control_rate_ <= 0.0 ||
+          !std::isfinite(hover_throttle_) || hover_throttle_ <= 0.0 ||
+          hover_throttle_ > 1.0 ||
+          !std::isfinite(minimum_throttle_) ||
+          !std::isfinite(maximum_throttle_) ||
+          minimum_throttle_ < 0.0 ||
+          maximum_throttle_ <= minimum_throttle_ ||
+          maximum_throttle_ > 1.0 ||
+          !std::isfinite(maximum_tilt_) || maximum_tilt_ <= 0.0 ||
+          maximum_tilt_ >= 0.5 * kPi ||
+          !std::isfinite(max_velocity_xy_) || max_velocity_xy_ <= 0.0 ||
+          !std::isfinite(max_velocity_z_) || max_velocity_z_ <= 0.0 ||
+          !std::isfinite(max_acceleration_xy_) ||
+          max_acceleration_xy_ <= 0.0 ||
+          !std::isfinite(max_acceleration_z_) ||
+          max_acceleration_z_ <= 0.0 ||
+          !std::isfinite(max_jerk_xy_) || max_jerk_xy_ <= 0.0 ||
+          !std::isfinite(max_jerk_z_) || max_jerk_z_ <= 0.0 ||
+          !std::isfinite(multirotor_anti_windup_gain_) ||
+          multirotor_anti_windup_gain_ < 0.0 ||
+          !valid_nonnegative_vector(attitude_gain_) ||
+          !valid_nonnegative_vector(maximum_body_rate_) ||
+          !valid_nonnegative_vector(position_integral_gain_) ||
+          !valid_nonnegative_vector(
+              position_integral_acceleration_limit_) ||
+          !valid_nonnegative_vector(velocity_integral_gain_) ||
+          !valid_nonnegative_vector(
+              velocity_integral_acceleration_limit_) ||
+          !valid_nonnegative_vector(acceleration_feedback_gain_) ||
+          !valid_nonnegative_vector(acceleration_integral_gain_) ||
+          !valid_nonnegative_vector(
+              acceleration_integral_acceleration_limit_)) {
+        throw std::runtime_error(
+            "multirotor控制、限制或抗积分饱和参数不在安全范围内");
+      }
     }
     if (fixedwing_landing_approach_distance_ < 50.0 ||
         fixedwing_landing_approach_height_ <= 0.0 ||
@@ -1245,10 +1399,7 @@ class ControllerNode {
     if (vehicle_type_ == "multirotor" &&
         (!state_.state_valid ||
          !finite(state_.acceleration_odom))) {
-      acceleration_command_initialized_ = false;
-      velocity_integral_acceleration_state_.setZero();
-      acceleration_feedback_integral_state_.setZero();
-      acceleration_feedback_active_.fill(false);
+      resetMultirotorControlState();
     }
     if (!have_reference_ &&
         !internal_reference_active_ &&
@@ -1277,6 +1428,16 @@ class ControllerNode {
     idle_reference_active_ = false;
     takeoff_active_ = false;
     fixedwing_loiter_active_ = false;
+  }
+
+  void resetMultirotorControlState() {
+    acceleration_command_initialized_ = false;
+    acceleration_command_state_.setZero();
+    position_integral_acceleration_state_.setZero();
+    velocity_integral_acceleration_state_.setZero();
+    acceleration_feedback_integral_state_.setZero();
+    acceleration_feedback_active_.fill(false);
+    last_multirotor_control_time_ = ros::Time();
   }
 
   void resetFixedwingControlState() {
@@ -1917,6 +2078,14 @@ class ControllerNode {
         response.message = land_response.message;
         return true;
       }
+      case xd_uav_controller::InternalCommand::Request::CANCEL_LANDING: {
+        std_srvs::Trigger::Request cancel_request;
+        std_srvs::Trigger::Response cancel_response;
+        cancelLandingCallback(cancel_request, cancel_response);
+        response.success = cancel_response.success;
+        response.message = cancel_response.message;
+        return true;
+      }
       case xd_uav_controller::InternalCommand::Request::RESET: {
         std_srvs::Trigger::Request reset_request;
         std_srvs::Trigger::Response reset_response;
@@ -1999,7 +2168,7 @@ class ControllerNode {
     if (vehicle_type_ == "multirotor") {
       // Start a takeoff from hover. The acceleration command is then
       // slew-limited by the configured jerk limits.
-      acceleration_command_state_.setZero();
+      resetMultirotorControlState();
       acceleration_command_initialized_ = true;
     }
     takeoff_active_ = true;
@@ -2317,6 +2486,67 @@ class ControllerNode {
     return true;
   }
 
+  bool cancelLandingCallback(
+      std_srvs::Trigger::Request&,
+      std_srvs::Trigger::Response& response) {
+    if (!landing_active_) {
+      response.success = true;
+      response.message = "当前没有正在执行的降落";
+      return true;
+    }
+    if (!have_state_ || !state_.state_valid ||
+        !state_.odometry_fresh || !state_.imu_fresh) {
+      response.success = false;
+      response.message =
+          "当前控制状态无效，拒绝取消降落并恢复飞行推力";
+      return true;
+    }
+    if (landing_touchdown_) {
+      response.success = false;
+      response.message = "已经检测到触地，不能取消降落";
+      return true;
+    }
+
+    landing_active_ = false;
+    landing_touchdown_ = false;
+    landing_return_home_ = false;
+    landing_phase_ = LandingPhase::kNone;
+    fixedwing_landing_phase_ =
+        FixedwingLandingPhase::kNone;
+    fixedwing_landing_guidance_course_ = 0.0;
+    fixedwing_landing_guidance_course_initialized_ = false;
+    fixedwing_landing_throttle_scale_ = 1.0;
+    last_landing_update_ = ros::Time();
+    takeoff_active_ = false;
+
+    // A cancelled landing must not resume a stale point or trajectory.
+    // Capture a fresh, continuous safe reference at the aircraft's current
+    // state; a later external command can replace it normally.
+    have_reference_ = false;
+    have_reference_error_ = false;
+    have_normalized_reference_ = false;
+    trajectory_active_ = false;
+    point_reference_latched_ = false;
+    active_reference_transform_failure_since_ = ros::Time();
+
+    if (vehicle_type_ == "fixedwing") {
+      startFixedwingLoiter(
+          state_.position_odom.z, "用户取消降落");
+      response.message =
+          "已取消固定翼降落，将从当前位置平滑进入等待盘旋";
+    } else {
+      internal_reference_active_ = false;
+      fixedwing_loiter_active_ = false;
+      idle_reference_active_ = false;
+      resetMultirotorControlState();
+      captureIdleReference();
+      response.message =
+          "已取消多旋翼降落，将在当前位置悬停";
+    }
+    response.success = true;
+    return true;
+  }
+
   bool resetCallback(
       std_srvs::Trigger::Request&,
       std_srvs::Trigger::Response& response) {
@@ -2339,10 +2569,7 @@ class ControllerNode {
     point_reference_latched_ = false;
     have_takeoff_origin_ = false;
     active_reference_transform_failure_since_ = ros::Time();
-    acceleration_command_initialized_ = false;
-    velocity_integral_acceleration_state_.setZero();
-    acceleration_feedback_integral_state_.setZero();
-    acceleration_feedback_active_.fill(false);
+    resetMultirotorControlState();
     resetFixedwingControlState();
     if (have_state_ && state_.state_valid) {
       captureIdleReference();
@@ -3018,9 +3245,57 @@ class ControllerNode {
     return true;
   }
 
+  void updateMultirotorIntegral(
+      const double error, const double gain, const double limit,
+      const double raw_acceleration,
+      const double realizable_acceleration, const double dt,
+      double* state) const {
+    const double safe_gain = std::max(0.0, gain);
+    const double safe_limit = std::max(0.0, limit);
+    if (safe_gain <= 0.0 || safe_limit <= 0.0) {
+      *state = 0.0;
+      return;
+    }
+
+    const double integral_delta = safe_gain * error * dt;
+    const double saturation_error =
+        raw_acceleration - realizable_acceleration;
+    const bool saturated = std::abs(saturation_error) > 1e-3;
+    const bool pushes_further_into_saturation =
+        saturated && integral_delta * saturation_error > 0.0;
+
+    if (!pushes_further_into_saturation) {
+      *state = clamp(*state + integral_delta,
+                     -safe_limit, safe_limit);
+      return;
+    }
+
+    // Clamping prevents new wind-up. If an existing integral has the same
+    // sign as the unavailable acceleration, unwind only toward zero so a
+    // large proportional command cannot create an opposite-sign integral.
+    if (*state * saturation_error > 0.0 &&
+        multirotor_anti_windup_gain_ > 0.0) {
+      const double unwind = std::min(
+          std::abs(*state),
+          multirotor_anti_windup_gain_ *
+              std::abs(saturation_error) * dt);
+      *state -= std::copysign(unwind, *state);
+    }
+  }
+
   ControllerResult multirotorControl(
-      const Reference& reference) {
+      const Reference& reference, const ros::Time& now) {
     ControllerResult result;
+    double control_dt = mpc_dt_;
+    if (!last_multirotor_control_time_.isZero()) {
+      const double measured_dt =
+          (now - last_multirotor_control_time_).toSec();
+      if (measured_dt > 0.0 && std::isfinite(measured_dt)) {
+        control_dt = clamp(measured_dt, 1e-3, 0.05);
+      }
+    }
+    last_multirotor_control_time_ = now;
+
     bool acceleration_feedback_required = false;
     for (int axis = 0; axis < 3; ++axis) {
       acceleration_feedback_required =
@@ -3115,17 +3390,19 @@ class ControllerNode {
           reference.use_acceleration[axis]
               ? acceleration_reference(axis)
               : 0.0);
-      if (reference.use_velocity[axis] &&
-          !reference.use_position[axis]) {
-        const double velocity_error =
-            velocity_reference(axis) - velocity(axis);
-        velocity_integral_acceleration_state_(axis) =
-            clamp(
-                velocity_integral_acceleration_state_(axis) +
-                    velocity_integral_gain_[axis] *
-                        velocity_error * mpc_dt_,
-                -velocity_integral_acceleration_limit_[axis],
-                velocity_integral_acceleration_limit_[axis]);
+      const bool position_integrator_enabled =
+          reference.use_position[axis] &&
+          !takeoff_active_ && !landing_active_;
+      if (position_integrator_enabled) {
+        desired_acceleration(axis) +=
+            position_integral_acceleration_state_(axis);
+      } else {
+        position_integral_acceleration_state_(axis) = 0.0;
+      }
+      const bool velocity_integrator_enabled =
+          reference.use_velocity[axis] &&
+          !reference.use_position[axis];
+      if (velocity_integrator_enabled) {
         desired_acceleration(axis) +=
             velocity_integral_acceleration_state_(axis);
       } else {
@@ -3138,8 +3415,6 @@ class ControllerNode {
       if (pure_acceleration_axis) {
         const double feedback_gain =
             std::max(0.0, acceleration_feedback_gain_[axis]);
-        const double integral_gain =
-            std::max(0.0, acceleration_integral_gain_[axis]);
         const double integral_limit = std::max(
             0.0,
             acceleration_integral_acceleration_limit_[axis]);
@@ -3154,12 +3429,6 @@ class ControllerNode {
         const double acceleration_error =
             acceleration_reference(axis) -
             measured_acceleration(axis);
-        acceleration_feedback_integral_state_(axis) =
-            clamp(
-                acceleration_feedback_integral_state_(axis) +
-                    integral_gain * acceleration_error *
-                        mpc_dt_,
-                -integral_limit, integral_limit);
         desired_acceleration(axis) +=
             feedback_gain * acceleration_error +
             acceleration_feedback_integral_state_(axis);
@@ -3169,9 +3438,11 @@ class ControllerNode {
       }
       if (reference.use_jerk) {
         desired_acceleration(axis) +=
-            jerk_feedforward(axis) * mpc_dt_;
+            jerk_feedforward(axis) * control_dt;
       }
     }
+    const Eigen::Vector3d raw_desired_acceleration =
+        desired_acceleration;
     const double desired_horizontal =
         desired_acceleration.head<2>().norm();
     if (desired_horizontal > max_acceleration_xy_) {
@@ -3186,7 +3457,7 @@ class ControllerNode {
         desired_acceleration.head<2>() -
         acceleration_command_state_.head<2>();
     const double maximum_horizontal_step =
-        max_jerk_xy_ * mpc_dt_;
+        max_jerk_xy_ * control_dt;
     if (horizontal_step.norm() > maximum_horizontal_step) {
       horizontal_step *=
           maximum_horizontal_step / horizontal_step.norm();
@@ -3195,8 +3466,8 @@ class ControllerNode {
     acceleration_command_state_.z() += clamp(
         desired_acceleration.z() -
             acceleration_command_state_.z(),
-        -max_jerk_z_ * mpc_dt_,
-        max_jerk_z_ * mpc_dt_);
+        -max_jerk_z_ * control_dt,
+        max_jerk_z_ * control_dt);
     const double horizontal_acceleration =
         acceleration_command_state_.head<2>().norm();
     if (horizontal_acceleration > max_acceleration_xy_) {
@@ -3267,10 +3538,61 @@ class ControllerNode {
 
     const double acceleration_along_current_z =
         total_acceleration.dot(rotation.col(2));
+    const double raw_thrust =
+        hover_throttle_ * acceleration_along_current_z / gravity_;
     result.thrust = clamp(
-        hover_throttle_ * acceleration_along_current_z /
-            gravity_,
+        raw_thrust,
         minimum_throttle_, maximum_throttle_);
+
+    // Express all hard limits back in acceleration coordinates. This is
+    // used only by the integrator update; attitude dynamics remain handled
+    // by the SO(3) body-rate loop and PX4 rate controller.
+    Eigen::Vector3d realizable_acceleration =
+        total_acceleration - Eigen::Vector3d(0.0, 0.0, gravity_);
+    realizable_acceleration +=
+        rotation.col(2) *
+        ((result.thrust - raw_thrust) * gravity_ /
+         hover_throttle_);
+    for (int axis = 0; axis < 3; ++axis) {
+      const bool position_integrator_enabled =
+          reference.use_position[axis] &&
+          !takeoff_active_ && !landing_active_;
+      const bool velocity_integrator_enabled =
+          reference.use_velocity[axis] &&
+          !reference.use_position[axis];
+      const bool pure_acceleration_axis =
+          reference.use_acceleration[axis] &&
+          !reference.use_position[axis] &&
+          !reference.use_velocity[axis];
+      if (position_integrator_enabled) {
+        updateMultirotorIntegral(
+            position_reference(axis) - position(axis),
+            position_integral_gain_[axis],
+            position_integral_acceleration_limit_[axis],
+            raw_desired_acceleration(axis),
+            realizable_acceleration(axis), control_dt,
+            &position_integral_acceleration_state_(axis));
+      }
+      if (velocity_integrator_enabled) {
+        updateMultirotorIntegral(
+            velocity_reference(axis) - velocity(axis),
+            velocity_integral_gain_[axis],
+            velocity_integral_acceleration_limit_[axis],
+            raw_desired_acceleration(axis),
+            realizable_acceleration(axis), control_dt,
+            &velocity_integral_acceleration_state_(axis));
+      }
+      if (pure_acceleration_axis) {
+        updateMultirotorIntegral(
+            acceleration_reference(axis) -
+                measured_acceleration(axis),
+            acceleration_integral_gain_[axis],
+            acceleration_integral_acceleration_limit_[axis],
+            raw_desired_acceleration(axis),
+            realizable_acceleration(axis), control_dt,
+            &acceleration_feedback_integral_state_(axis));
+      }
+    }
     result.valid = result.body_rate.allFinite() &&
                    std::isfinite(result.thrust);
     if (!result.valid) {
@@ -3844,10 +4166,7 @@ class ControllerNode {
         (now - last_state_receive_).toSec();
     if (state_age > state_timeout_ || !state_.state_valid ||
         !state_.odometry_fresh || !state_.imu_fresh) {
-      acceleration_command_initialized_ = false;
-      velocity_integral_acceleration_state_.setZero();
-      acceleration_feedback_integral_state_.setZero();
-      acceleration_feedback_active_.fill(false);
+      resetMultirotorControlState();
       resetFixedwingControlState();
       command.rejection_reason = "控制状态无效或超时";
       command_publisher_.publish(command);
@@ -3932,7 +4251,7 @@ class ControllerNode {
     }
     const ControllerResult result =
         vehicle_type_ == "multirotor"
-            ? multirotorControl(reference)
+            ? multirotorControl(reference, now)
             : fixedwingControl(reference, now);
     command.body_rate.x = result.body_rate.x();
     command.body_rate.y = result.body_rate.y();
@@ -4015,6 +4334,8 @@ class ControllerNode {
   ros::Time last_landing_update_;
   Eigen::Vector3d acceleration_command_state_{
       Eigen::Vector3d::Zero()};
+  Eigen::Vector3d position_integral_acceleration_state_{
+      Eigen::Vector3d::Zero()};
   Eigen::Vector3d velocity_integral_acceleration_state_{
       Eigen::Vector3d::Zero()};
   Eigen::Vector3d acceleration_feedback_integral_state_{
@@ -4057,6 +4378,11 @@ class ControllerNode {
   double max_acceleration_z_{4.0};
   double max_jerk_xy_{8.0};
   double max_jerk_z_{6.0};
+  std::array<double, 3> position_integral_gain_{{
+      0.08, 0.08, 0.15}};
+  std::array<double, 3>
+      position_integral_acceleration_limit_{{
+          0.60, 0.60, 0.80}};
   std::array<double, 3> velocity_integral_gain_{{
       1.0, 1.0, 2.0}};
   std::array<double, 3>
@@ -4069,6 +4395,8 @@ class ControllerNode {
   std::array<double, 3>
       acceleration_integral_acceleration_limit_{{
           1.0, 1.0, 1.0}};
+  double multirotor_anti_windup_gain_{1.5};
+  ros::Time last_multirotor_control_time_;
 
   double cruise_airspeed_{15.0};
   double minimum_airspeed_{11.0};

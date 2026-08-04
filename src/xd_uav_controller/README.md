@@ -37,7 +37,7 @@
   转换到当前`ControlState.header.frame_id`。控制律内部始终只处理同一个连续odom
   坐标系。
   TF2会自动沿TF树求解变换，不需要为local、map或world分别写控制律。允许的惯性
-  frame由`reference_frames/allowed`限制；同名但属于另一架飞机命名空间的frame不会
+  frame由`reference_input/allowed_frames`限制；同名但属于另一架飞机命名空间的frame不会
   被接受。
 - 四旋翼和固定翼的单点/流式目标统一使用`mavros_msgs/PositionTarget`。控制器直接按
   `type_mask`逐轴判断是否使用位置XYZ、速度XYZ、加速度XYZ、yaw和yaw rate；例如
@@ -52,7 +52,7 @@
   指令建议直接使用`ControlState.header.frame_id`。
 - 至少一个位置轴启用、所有速度/加速度轴和yaw rate均忽略的目标视为一次性锁存目标，
   可以只发一次；含速度、加速度或yaw rate的目标属于流式控制，需要持续发布，超过
-  `reference_timeout`后四旋翼捕获当前位置并转为悬停，固定翼进入当前位置相切的等待
+  `reference_input/timeout`后四旋翼捕获当前位置并转为悬停，固定翼进入当前位置相切的等待
   盘旋。固定翼轨迹到达最后一个时间点后也会立即建立相切等待圆，不会继续追逐最后
   一个静止轨迹点；等待圆使用`V/R`角速度前馈维持配置半径。yaw是否启用不改变锁存
   判定。
@@ -121,7 +121,7 @@
   simple goal是一次发布、持续保持的目标；默认只使用XY和yaw，并继承控制器当前的
   期望高度，因为RViz通常会把2D目标的z写成0。连续发送多个2D目标不会反复采样带有
   波动的实测高度，也不会把高度目标逐点向下带。只有显式设置
-  `simple_goal/use_message_z: true`时才使用消息中的z。适配结果会保留原始参考
+  `reference_input/simple_goal/use_message_z: true`时才使用消息中的z。适配结果会保留原始参考
   frame，并以latched方式进入两种机型共用的
   `/uavX/control/reference/setpoint`单点路径。
 
@@ -131,9 +131,9 @@
 新参考只有在消息、frame白名单、全局对齐和TF转换全部通过后才会替换当前目标。
 错误frame或暂时找不到TF的新消息只会被拒绝，控制器继续保持最后一个有效目标。活动
 local/map/world目标所依赖的TF短暂失效时，在
-`reference_frames/failure_grace_duration`内保持最后一个odom目标；持续失效后才把
+`reference_input/transform/failure_grace_duration`内保持最后一个odom目标；持续失效后才把
 控制输出标记为无效，交给控制管理器执行安全策略。对
-`reference_frames/global_alignment_frames`中的frame还会检查
+`reference_input/global_alignment/frames`中的frame还会检查
 `/uavX/single_tf_manager/local_alignment_valid`，避免把尚未对齐时的单位TF误当成
 有效全局定位。
 
@@ -172,9 +172,12 @@ OFFBOARD。固定翼完成起飞后会在切入点建立与当前航向相切的
 
 - 四旋翼：每轴状态为`[position, velocity]`的有限时域线性MPC，控制量为期望加速度；
   输出再经过jerk变化率限制形成期望合力，最后由SO(3)姿态误差生成body rates和
-  collective thrust。位置/速度控制中的参考加速度作为MPC前馈量使用；没有位置参考
-  的纯速度轴额外使用带抗饱和的速度积分补偿，纯加速度轴则使用估计加速度形成PI闭环，
-  避免靠模型偏差产生非预期的稳态速度或加速度。
+  collective thrust。位置/速度控制中的参考加速度作为MPC前馈量使用；位置轴使用
+  限幅扰动积分消除风、载重和悬停推力偏差造成的定点静差，没有位置参考的纯速度轴
+  使用速度积分补偿，纯加速度轴则使用估计加速度形成PI闭环。三类积分统一根据经过
+  加速度、jerk、倾角和推力限制后的可实现加速度执行clamping与平滑退回，避免执行器
+  饱和后的wind-up；专用起飞/降落阶段不启用位置积分。积分和jerk变化率限制使用实测
+  控制周期，控制定时器短时抖动不会改变等效积分强度。
 - 固定翼：轨迹、`PositionTarget`和内部参考先经过独立适配层，统一生成只包含course、
   course-rate、空速、高度误差、爬升率和垂直加速度的`FixedwingControlTarget`；核心
   控制律不再按消息来源分别实现公式。同一组P/V/A从轨迹和`PositionTarget`进入时，
@@ -205,9 +208,23 @@ OFFBOARD。固定翼完成起飞后会在切入点建立与当前航向相切的
 
 控制参数按两层组织：
 
-- `config/common_config.yaml`：状态与参考超时、参考坐标系/TF检查、simple goal和home。
+- `config/common_config.yaml`：状态输入、参考输入/TF检查和home。
 - `config/multirotor.yaml`：四旋翼控制律、MPC、起飞和降落参数。
 - `config/fixedwing.yaml`：固定翼控制律、起飞、进近和降落参数。
+
+四旋翼参数也按职责分层：
+
+- `multirotor/model/*`：重力常量和悬停推力工作点。
+- `multirotor/attitude_control/*`：期望姿态到body-rate的内环增益。
+- `multirotor/position_control/mpc/*`：MPC预测长度和代价权重。
+- `multirotor/position_control/disturbance_rejection/*`：位置、速度和纯加速度模式的低频扰动补偿及抗积分饱和。
+- `multirotor/limits/*`：推力、倾角、body-rate、速度、加速度和jerk限制。
+
+公共参数分为三组：
+
+- `state_input/*`：控制管理器状态消息的接收超时。
+- `reference_input/*`：外部参考超时、允许坐标系、TF检查、全局对齐和simple goal适配。
+- `home/*`：两种机型共用的Home语义、坐标系、位置和航向。
 
 固定翼参数按职责分层，避免把输入适配、制导、控制增益和安全限制混为一组：
 
@@ -219,8 +236,9 @@ OFFBOARD。固定翼完成起飞后会在切入点建立与当前航向相切的
 - `fixedwing/limits/*`：姿态、爬升率、body-rate和油门硬限制。
 - `fixedwing/modes/loiter/*`：等待盘旋参考生成器。
 
-旧版扁平路径和`fixedwing/guidance/*`仍可在未配置新路径时兼容读取，并在启动时输出迁移
-提示；新配置或launch覆盖应使用上述新路径。
+旧版公共扁平路径与`reference_frames/*`、四旋翼扁平路径与`multirotor/mpc/*`中的限制
+和积分路径，以及旧版固定翼扁平路径和`fixedwing/guidance/*`，仍可在未配置新路径时
+兼容读取，并在启动时输出迁移提示；新配置或launch覆盖应使用上述新路径。
 
 `controller.launch`先加载公共配置，再加载机型配置，因此机型文件或用户传入的自定义
 机型文件可以覆盖公共默认值。完整系统launch也提供`controller_common_config`参数，
@@ -270,6 +288,12 @@ rosservice call /uav1/control_manager/takeoff "altitude: 2.0"
 下降末段的参考会略低于本次降落目标的地面高度，避免飞机接地后重新回到悬停推力；
 位置、高度和垂直速度满足容差时，`ControlCommand.landing_touchdown`会通知管理器
 执行停桨。
+
+降落触地判定前，控制管理器可通过内部`CANCEL_LANDING`命令撤销降落。撤销时不会
+恢复此前可能已经过期的点或轨迹参考：四旋翼捕获当前三维位置和yaw悬停，固定翼以
+当前位置、当前高度和当前course建立相切等待圆。两者都继续输出有效控制量，供管理器
+保持解锁OFFBOARD；后续外部参考仍可正常接管。控制器一旦报告`landing_touchdown`，
+取消命令会被拒绝，避免接地后恢复飞行推力。
 
 固定翼使用独立的降落状态机，不能执行垂直原地下降。`land`会在当前course前方、
 本次起飞地面高度上建立临时接地点；`land_home`把公共home配置解析出的三维位置作为
