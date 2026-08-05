@@ -200,6 +200,21 @@ class AxisKalman {
     covariance_ = 0.5 * (covariance_ + covariance_.transpose());
   }
 
+  void reacquire(const int index, const double measurement) {
+    if (!initialized_ || index < 0 || index > 2 ||
+        !std::isfinite(measurement)) {
+      return;
+    }
+    state_(index) = measurement;
+    covariance_.row(index).setZero();
+    covariance_.col(index).setZero();
+    covariance_(index, index) =
+        index == 0 ? parameters_.initial_position_variance
+                   : (index == 1
+                          ? parameters_.initial_velocity_variance
+                          : parameters_.initial_acceleration_variance);
+  }
+
   double position() const { return state_(0); }
   double velocity() const { return state_(1); }
   double acceleration() const { return state_(2); }
@@ -280,6 +295,17 @@ class YawKalman {
 
   void correctRate(const double rate, const double variance) {
     correct(1, rateInnovation(rate), variance);
+  }
+
+  void reacquire(const int index, const double measurement) {
+    if (!initialized_ || index < 0 || index > 1 ||
+        !std::isfinite(measurement)) {
+      return;
+    }
+    state_(index) = index == 0 ? wrapAngle(measurement) : measurement;
+    covariance_.row(index).setZero();
+    covariance_.col(index).setZero();
+    covariance_(index, index) = 0.25;
   }
 
   double yaw() const { return state_(0); }
@@ -391,6 +417,9 @@ struct CorrectionRuntime {
   int consecutive_rejections{0};
   int recovery_samples{0};
   bool recovering{false};
+  bool have_recovery_candidate{false};
+  Eigen::Vector2d recovery_vector{Eigen::Vector2d::Zero()};
+  double recovery_scalar{0.0};
 };
 
 struct SourceConfig {
@@ -965,6 +994,7 @@ class MultiSourceEstimatorNode {
       correction->recovering = true;
       correction->recovery_started = correction->last_received;
       correction->recovery_samples = 0;
+      correction->have_recovery_candidate = false;
     }
 
     std::string reason;
@@ -1014,6 +1044,17 @@ class MultiSourceEstimatorNode {
 
     predictSourceTo(source, sample.stamp);
     CorrectionSample aligned = alignSample(*source, sample);
+    if (correction->recovering) {
+      if (!recoverySampleReady(source, correction, aligned)) {
+        updateSelection(ros::Time::now());
+        return;
+      }
+      finishRecovery(source, correction, aligned);
+      updateRawState(source, sample);
+      publishAlignment(*source, sample.stamp);
+      updateSelection(ros::Time::now());
+      return;
+    }
     if (!innovationAccepted(source->axis, source->yaw_filter,
                             aligned, &reason)) {
       registerRejection(source, correction, reason);
@@ -1307,6 +1348,113 @@ class MultiSourceEstimatorNode {
     return true;
   }
 
+  bool recoverySampleReady(SourceRuntime* source,
+                           CorrectionRuntime* correction,
+                           const CorrectionSample& sample) {
+    bool consistent = correction->have_recovery_candidate;
+    if (consistent) {
+      switch (sample.kind) {
+        case CorrectionKind::kPositionXY:
+          consistent =
+              (sample.vector - correction->recovery_vector).norm() <=
+              position_xy_limit_;
+          break;
+        case CorrectionKind::kPositionZ:
+          consistent = std::abs(sample.scalar -
+                                correction->recovery_scalar) <=
+                       position_z_limit_;
+          break;
+        case CorrectionKind::kVelocityXY:
+          consistent =
+              (sample.vector - correction->recovery_vector).norm() <=
+              velocity_xy_limit_;
+          break;
+        case CorrectionKind::kVelocityZ:
+          consistent = std::abs(sample.scalar -
+                                correction->recovery_scalar) <=
+                       velocity_z_limit_;
+          break;
+        case CorrectionKind::kHeading:
+          consistent = std::abs(wrapAngle(
+                           sample.scalar - correction->recovery_scalar)) <=
+                       heading_limit_;
+          break;
+        case CorrectionKind::kYawRate:
+          consistent = std::abs(sample.scalar -
+                                correction->recovery_scalar) <=
+                       yaw_rate_limit_;
+          break;
+      }
+    }
+
+    const ros::Time now = ros::Time::now();
+    if (!consistent) {
+      correction->recovery_samples = 1;
+      correction->recovery_started = now;
+    } else {
+      correction->recovery_samples++;
+    }
+    correction->have_recovery_candidate = true;
+    correction->recovery_vector = sample.vector;
+    correction->recovery_scalar = sample.scalar;
+    return correction->recovery_samples >=
+               source->config.recovery_min_samples &&
+           (now - correction->recovery_started).toSec() >=
+               source->config.recovery_stable_time;
+  }
+
+  void reacquireFilterComponent(std::array<AxisKalman, 3>* axis,
+                                YawKalman* yaw_filter,
+                                const CorrectionSample& sample) {
+    switch (sample.kind) {
+      case CorrectionKind::kPositionXY:
+        (*axis)[0].reacquire(0, sample.vector.x());
+        (*axis)[1].reacquire(0, sample.vector.y());
+        break;
+      case CorrectionKind::kPositionZ:
+        (*axis)[2].reacquire(0, sample.scalar);
+        break;
+      case CorrectionKind::kVelocityXY:
+        (*axis)[0].reacquire(1, sample.vector.x());
+        (*axis)[1].reacquire(1, sample.vector.y());
+        break;
+      case CorrectionKind::kVelocityZ:
+        (*axis)[2].reacquire(1, sample.scalar);
+        break;
+      case CorrectionKind::kHeading:
+        yaw_filter->reacquire(0, sample.scalar);
+        break;
+      case CorrectionKind::kYawRate:
+        yaw_filter->reacquire(1, sample.scalar);
+        break;
+    }
+  }
+
+  void finishRecovery(SourceRuntime* source,
+                      CorrectionRuntime* correction,
+                      const CorrectionSample& sample) {
+    // A quarantined correction cannot recover through the normal innovation
+    // gate once its predictor has drifted beyond that same gate. Reacquire only
+    // this state component after a stable run of mutually consistent samples;
+    // normal-flight thresholds and all other filter components remain intact.
+    reacquireFilterComponent(&source->axis, &source->yaw_filter, sample);
+    if (source->config.name == active_source_ && main_state_->initialized) {
+      reacquireFilterComponent(&main_state_->axis,
+                               &main_state_->yaw_filter, sample);
+    }
+    const ros::Time now = ros::Time::now();
+    correction->accepted++;
+    correction->last_accepted = now;
+    correction->consecutive_rejections = 0;
+    correction->recovering = false;
+    correction->quarantine_until = ros::Time();
+    correction->recovery_samples = 0;
+    correction->have_recovery_candidate = false;
+    ROS_INFO("[xd_uav_state_estimators] 修正%s/%s稳定重捕获",
+             source->config.name.c_str(),
+             correction->config.name.c_str());
+  }
+
   void correctSource(SourceRuntime* source,
                      const CorrectionSample& sample) {
     switch (sample.kind) {
@@ -1459,6 +1607,7 @@ class MultiSourceEstimatorNode {
           ros::Duration(source->config.quarantine_duration);
       correction->recovering = false;
       correction->recovery_samples = 0;
+      correction->have_recovery_candidate = false;
       ROS_WARN(
           "[xd_uav_state_estimators] 修正%s/%s已隔离: %s",
           source->config.name.c_str(),

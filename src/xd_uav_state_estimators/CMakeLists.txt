@@ -88,6 +88,7 @@ target_link_libraries(odometry_adapter_manager_node
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
+  add_rostest(test/quarantine_recovery.test)
   add_rostest(test/three_package_integration.test)
 endif()
 
