@@ -28,11 +28,11 @@
 - V8 完成 leader 分配、两从机 ACK、路径状态聚合与共同命中时间冻结。
 - V4 证据：`.codex-tmp/sead_v4_two_uav_20260801.bag`、`.codex-tmp/sead_v4_vmstat_20260801.log`；V5 证据：`.codex-tmp/sead_v5_formation_20260801.bag`。
 
-已登记但暂不阻塞的间歇性问题：
+已登记的间歇性问题：
 
-- V4 第一次 `takeoff_all` 时 uav2 瞬时因控制状态无效拒绝；valid 恢复后重试成功。触地末段两机短暂隔离 `mavros/velocity_z`，未进入 FAILSAFE并安全上锁。
+- V4 第一次 `takeoff_all` 时 uav2 瞬时因控制状态无效拒绝；valid 恢复后重试成功。2026-08-05 定向复现确认 `start.sh` 返回后仍可能短暂出现单机 `state_valid=False`，现已增加连续 readiness gate；修复后 V5 启动返回即执行 `takeoff_all`，三机首次请求全部接受并进入 ACTIVE/OFFBOARD。触地末段两机短暂隔离 `mavros/velocity_z`，未进入 FAILSAFE 并安全上锁。
 - V5 起飞初段 uav1/uav2 各一次 `PRESTREAM -> WAIT_STATE -> PRESTREAM` 后自动恢复；触地安全上锁后 uav2 valid 未在采集结束前恢复。
-- 用户已同意先登记这类可恢复、未破坏安全闭环的问题，后续统一处理。若同类问题在空中持续、触发 FAILSAFE 或影响安全，应立即终止对应验证。
+- 历史轮次中 uav2 独立 `AUTO.LAND`/意外上锁尚未在 2026-08-05 两轮 V5 定向运行中复现，不能宣称已由 readiness gate 修复；若再次出现，必须同步采集后单独归因。若同类问题在空中持续、触发 FAILSAFE 或影响安全，应立即终止对应验证。
 
 ## 通用启动、观察与清理
 
@@ -79,6 +79,8 @@ localization_valid: True
 
 `start.sh` 会拒绝叠加到既有 PX4/MAVROS/Gazebo/ROS/SEAD 验证进程。`kill.sh` 会停止专用 tmux session，并按本验证链的明确特征清理和复查上述进程；不会做无范围的全局 `pkill`。
 
+V3–V5 启动时，`start.sh` 还会等待本场景全部 UAV 同时满足 MAVROS `connected=True`、estimator 的 `state_valid=True`/`localization_valid=True`，并存在 manager takeoff 服务；上述条件连续 3 次成立后才返回或 attach。初始化期间会打印具体未就绪项。默认 180 秒超时，超时后脚本返回非零但保留 tmux 供诊断，不能在超时状态下继续下发任务。该门槛用于避免 estimator 初始化窗口中的首次起飞拒绝，不代表后续飞行任务已经通过。
+
 ### 实时可视化与证据保存
 
 V3–V8 启动后，先在 `commands` 输入：
@@ -89,7 +91,7 @@ visualize
 
 它会打开 SEAD 专用实时面板，且不向控制链发布任何消息：
 
-- V3–V5：绘制各 UAV 的 XY 飞行轨迹、当前位置和高度摘要；
+- V3–V4：绘制各 UAV 的 MAVROS local ENU 轨迹；V5 自动读取并校验本轮 offset，绘制统一 shared ENU 轨迹、集结点、uav2 中心机及实际/理论 VEE 距离；
 - V6：绘制禁飞区多边形、高度范围和接收事件；
 - V7：绘制任务目标，并显示各节点 DPGA cost/chromosome 和 U2U 事件；
 - V8：绘制一机一目标分配，并显示 ACK 集合和共同命中时间。
@@ -100,9 +102,10 @@ visualize
 .codex-tmp/visualizations/<场景>_<时间>/summary.png
 .codex-tmp/visualizations/<场景>_<时间>/events.json
 .codex-tmp/visualizations/<场景>_<时间>/trajectories.csv
+.codex-tmp/visualizations/<V5时间>/offsets.env
 ```
 
-建议在 `airspace_demo`、`dpga_demo`、`strike_demo` 之前启动面板，以免漏掉瞬时命令。PNG 用于快速查看，JSON/CSV 用于以后复盘和重新制图；可视化进程异常不影响控制链。
+建议在 `airspace_demo`、`dpga_demo`、`strike_demo` 之前启动面板，以免漏掉瞬时命令。PNG 用于快速查看，JSON/CSV 用于以后复盘和重新制图；V5 的 `offsets.env` 保证历史轨迹能恢复到当轮 shared frame。offset 文件缺失或 run ID 不匹配时 V5 面板拒绝启动，避免把三路不同 local odom 误画成编队几何。可视化进程异常不影响控制链。
 
 ## V0–V2：离线与协议回归
 

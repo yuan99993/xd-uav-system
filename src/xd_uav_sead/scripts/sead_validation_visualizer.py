@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import signal
+import shutil
 import struct
 import threading
 from datetime import datetime
@@ -31,6 +32,16 @@ class ValidationVisualizer:
         )
         self.output_dir = os.path.join(root, "%s_%s" % (self.scenario, stamp))
         os.makedirs(self.output_dir, exist_ok=True)
+        self.offset_file = rospy.get_param("~offset_file", "")
+        self.expected_run_id = rospy.get_param("~expected_run_id", "")
+        self.offsets = {i: (0.0, 0.0, 0.0) for i in (1, 2, 3)}
+        self.coordinate_frame = "mavros_local_enu"
+        if self.scenario == "v5":
+            self.offsets = self._load_offsets(
+                self.offset_file,
+                self.expected_run_id,
+            )
+            self.coordinate_frame = "sead_shared_enu"
         self.paths = {i: [] for i in (1, 2, 3)}
         self.events = []
         self.targets = []
@@ -39,6 +50,8 @@ class ValidationVisualizer:
         self.acks = set()
         self.common_hit_time = None
         self.dpga = {}
+        self.formation_config = {}
+        self.formation_point = None
         self.saved = False
 
         count = {"v3": 1, "v4": 2, "v5": 3}.get(self.scenario, 0)
@@ -72,6 +85,35 @@ class ValidationVisualizer:
         self._event("visualizer started", scenario=self.scenario)
         rospy.loginfo("[SEAD VIS] live dashboard; output=%s", self.output_dir)
 
+    @staticmethod
+    def _load_offsets(path, expected_run_id):
+        if not path or not os.path.isfile(path):
+            raise RuntimeError("V5 offset file missing: %s" % path)
+        values = {}
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip()
+        actual_run_id = values.get("VALIDATION_RUN_ID", "")
+        if expected_run_id and actual_run_id != expected_run_id:
+            raise RuntimeError(
+                "V5 offset run mismatch: expected=%s actual=%s"
+                % (expected_run_id, actual_run_id)
+            )
+        result = {}
+        for uid in (1, 2, 3):
+            try:
+                result[uid] = tuple(
+                    float(values["U%d_%s" % (uid, axis)])
+                    for axis in ("X", "Y", "Z")
+                )
+            except (KeyError, ValueError) as exc:
+                raise RuntimeError("invalid V5 offset for uav%d: %s" % (uid, exc))
+        return result
+
     def _elapsed(self):
         return max(0.0, rospy.Time.now().to_sec() - self.started)
 
@@ -83,8 +125,12 @@ class ValidationVisualizer:
 
     def _odom(self, msg, uid):
         p = msg.pose.pose.position
+        offset = self.offsets[uid]
+        shared = (p.x + offset[0], p.y + offset[1], p.z + offset[2])
         with self.lock:
-            self.paths[uid].append((self._elapsed(), p.x, p.y, p.z))
+            self.paths[uid].append(
+                (self._elapsed(), shared[0], shared[1], shared[2], p.x, p.y, p.z)
+            )
 
     def _command(self, msg, uid):
         try:
@@ -106,6 +152,12 @@ class ValidationVisualizer:
                 point = info.get("point", [])
                 if len(point) >= 2:
                     self.targets.append(list(point[:2]))
+            elif msg_id == 24:
+                self.formation_config = dict(info.get("params", {}))
+            elif msg_id == 26:
+                point = info.get("point", [])
+                if len(point) >= 2:
+                    self.formation_point = list(point)
 
     @staticmethod
     def _packet(raw):
@@ -156,6 +208,8 @@ class ValidationVisualizer:
             dpga = dict(self.dpga)
             hit = self.common_hit_time
             events = list(self.events)
+            formation_config = dict(self.formation_config)
+            formation_point = list(self.formation_point) if self.formation_point else None
 
         self.map_ax.clear()
         self.info_ax.clear()
@@ -179,20 +233,58 @@ class ValidationVisualizer:
         for idx, point in enumerate(targets, 1):
             self.map_ax.scatter(point[0], point[1], marker="x", s=80, color="black")
             self.map_ax.text(point[0], point[1], " T%d" % idx)
+        if formation_point is not None:
+            self.map_ax.scatter(
+                formation_point[0], formation_point[1], marker="P", s=110,
+                color="purple", label="formation center",
+            )
+            self.map_ax.text(
+                formation_point[0], formation_point[1], " rally",
+                color="purple",
+            )
         for uid, assignment in assignments.items():
             point = assignment["point"]
             self.map_ax.scatter(point[0], point[1], marker="*", s=140, color=COLORS.get(uid, "black"))
             self.map_ax.text(point[0], point[1], " uav%d→T%d" % (uid, assignment["target_id"]))
-        if any(paths.values()) or zones or targets or assignments:
+        if any(paths.values()) or zones or targets or assignments or formation_point:
             self.map_ax.legend(loc="best")
 
         self.info_ax.axis("off")
         lines = ["%s   elapsed %.1f s" % (self.scenario.upper(), self._elapsed())]
         if self.scenario in ("v3", "v4", "v5"):
+            lines.append("frame: %s" % self.coordinate_frame)
             for uid, samples in paths.items():
                 if samples:
                     last = samples[-1]
                     lines.append("uav%d: x=%+.2f y=%+.2f z=%+.2f  samples=%d" % (uid, last[1], last[2], last[3], len(samples)))
+            if self.scenario == "v5":
+                lines.append("VEE center/reference: uav2")
+                if formation_point:
+                    lines.append(
+                        "rally: (%+.2f,%+.2f,%+.2f)"
+                        % tuple((formation_point + [0.0, 0.0, 0.0])[:3])
+                    )
+                latest = {
+                    uid: samples[-1]
+                    for uid, samples in paths.items()
+                    if samples
+                }
+                if all(uid in latest for uid in (1, 2, 3)):
+                    def distance(a, b):
+                        dx = latest[a][1] - latest[b][1]
+                        dy = latest[a][2] - latest[b][2]
+                        return (dx * dx + dy * dy) ** 0.5
+                    lines.append(
+                        "d(2,1)=%.2f  d(2,3)=%.2f  d(1,3)=%.2f m"
+                        % (distance(2, 1), distance(2, 3), distance(1, 3))
+                    )
+                spacing = float(formation_config.get("spacing", 4.0))
+                expected_leg = spacing * ((0.95 ** 2 + 0.82 ** 2) ** 0.5)
+                expected_wings = spacing * 1.64
+                lines.append(
+                    "expected VEE: legs=%.2f/%.2f wings=%.2f m"
+                    % (expected_leg, expected_leg, expected_wings)
+                )
         elif self.scenario == "v6":
             lines.append("stored zones: %s" % (sorted(zones) or "等待 airspace_demo"))
             for zid, zone in zones.items():
@@ -228,16 +320,29 @@ class ValidationVisualizer:
                 "acks": sorted(self.acks),
                 "common_hit_time": self.common_hit_time,
                 "dpga": self.dpga,
+                "coordinate_frame": self.coordinate_frame,
+                "offsets": {str(k): list(v) for k, v in self.offsets.items()},
+                "formation_config": self.formation_config,
+                "formation_point": self.formation_point,
             }
             paths = {k: list(v) for k, v in self.paths.items()}
         with open(os.path.join(self.output_dir, "events.json"), "w", encoding="utf-8") as handle:
             json.dump(snapshot, handle, ensure_ascii=False, indent=2)
         with open(os.path.join(self.output_dir, "trajectories.csv"), "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            writer.writerow(["uav_id", "elapsed_s", "x_m", "y_m", "z_m"])
+            writer.writerow([
+                "uav_id", "elapsed_s",
+                "shared_x_m", "shared_y_m", "shared_z_m",
+                "raw_odom_x_m", "raw_odom_y_m", "raw_odom_z_m",
+            ])
             for uid, samples in paths.items():
                 for row in samples:
                     writer.writerow([uid] + list(row))
+        if self.scenario == "v5" and self.offset_file:
+            shutil.copy2(
+                self.offset_file,
+                os.path.join(self.output_dir, "offsets.env"),
+            )
         try:
             self._draw()
             self.fig.savefig(os.path.join(self.output_dir, "summary.png"), dpi=160, bbox_inches="tight")

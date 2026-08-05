@@ -21,10 +21,29 @@ waypoint() {
 }
 
 land_all() {
-  local i
+  local i attempt output accepted failures=0
   for i in 1 2 3; do
-    rosservice list 2>/dev/null | grep -q "^/uav${i}/control_manager/land$" && rosservice call "/uav${i}/control_manager/land" '{}'
+    rosservice list 2>/dev/null | grep -q "^/uav${i}/control_manager/land$" || continue
+    accepted=0
+    # A loaded three-UAV simulation can briefly report stale MAVROS/controller
+    # inputs.  LAND is idempotent, so bounded retries are safer than silently
+    # leaving one aircraft airborne after a single transient rejection.
+    for attempt in 1 2 3 4 5; do
+      output="$(rosservice call "/uav${i}/control_manager/land" '{}' 2>&1)" || true
+      printf '%s\n' "$output"
+      if grep -q '^success: True$' <<<"$output"; then
+        accepted=1
+        echo "uav${i}: 降落请求已接受（第 ${attempt} 次）"
+        break
+      fi
+      ((attempt < 5)) && sleep 1
+    done
+    if ((accepted == 0)); then
+      echo "uav${i}: 降落请求连续 5 次未接受；保持现场并检查 manager/estimator/MAVROS 状态。" >&2
+      ((failures += 1))
+    fi
   done
+  ((failures == 0))
 }
 
 auto_offsets() {
@@ -75,9 +94,13 @@ strike_demo() {
 
 visualize() {
   local output_root="/home/promise/catkin_ws/src/xd-uavsystem-test/.codex-tmp/visualizations"
+  local offset_file="${SEAD_VALIDATION_RUNTIME:-/home/promise/catkin_ws/src/xd-uavsystem-test/.codex-tmp/sead_validation_offsets.env}"
+  local run_id="${SEAD_VALIDATION_RUN_ID:-}"
   rosrun xd_uav_sead sead_validation_visualizer.py \
-    _scenario:="$scenario" _output_root:="$output_root" &
-  echo "可视化窗口启动中（PID $!）；关闭窗口时自动保存 PNG/JSON/CSV 到 $output_root。"
+    _scenario:="$scenario" _output_root:="$output_root" \
+    _offset_file:="$offset_file" _expected_run_id:="$run_id" &
+  echo "可视化窗口启动中（PID $!）；V5 自动使用本轮 offset。"
+  echo "关闭窗口时保存 PNG/JSON/CSV，V5 额外保存 offsets.env 到 $output_root。"
 }
 
 help_sead() {

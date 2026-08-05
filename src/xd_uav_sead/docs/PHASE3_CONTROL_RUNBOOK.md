@@ -94,6 +94,28 @@ catkin_make --pkg xd_uav_controller xd_uav_control_manager \
 - 未真正触地时就触发零推力或强制上锁。
 - 警告频率持续增加，或隔离后没有恢复记录。
 
+### 8. 三机长时间运行后 `land_all` 偶发只降落部分飞机
+
+2026-08-05 定向复现确认，这个现象不只有 estimator 隔离一种原因。三机
+Gazebo/PX4/MAVROS 同机运行时，旧 `sead_onboard_node.py` 主循环没有调度
+让步，三个实例各占用约 32% CPU；同时周期性 `Formation_State` 每包都写
+INFO 日志。高负载下会短暂出现 MAVROS、IMU、Odometry 或控制器输出超时。
+manager 会正确拒绝恰好落在该瞬间的降落请求，但旧 `land_all` 只调用一次，
+因此可能留下某架飞机继续 ACTIVE/OFFBOARD 悬停。
+
+最小处理全部位于 `xd_uav_sead`，没有放宽 manager/estimator 安全阈值：
+
+- onboard 主循环以 100 Hz 主动让出调度；Formation 业务仍按原有 10 Hz 周期执行；
+- 周期性 `Formation_State` 收包日志改为 5 秒节流 DEBUG；
+- `land_all` 对幂等的 LAND 请求最多重试 5 次、间隔 1 秒，并逐机报告结果；
+  连续失败时返回非零并要求保留现场诊断。
+
+修改后同机三实例 CPU 降至约 13.8%–14.5%。回归中 uav2 第一次明确返回
+“当前控制状态无效，不能开始降落”，第二次请求即被接受；三机最终均为
+disarmed、ON_GROUND、两个 estimator valid=true、manager STANDBY。这只证明
+有限重试覆盖了瞬时拒绝；若 manager 已进入 FAILSAFE，重试不会绕过状态机，
+仍必须按日志定位输入失效根因。
+
 ## 人工可控验证流程
 
 ### 0. 前置检查

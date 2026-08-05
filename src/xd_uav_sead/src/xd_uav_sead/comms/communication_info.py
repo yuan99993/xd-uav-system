@@ -356,7 +356,14 @@ class packet_processing(object):
     def unpack_packet(self, packet):
         try:
             msg_id = Message_ID(packet[0])
-            rospy.loginfo(f"Received message ID: {msg_id.name}")
+            # Formation state is periodic U2U telemetry.  Logging every packet
+            # from every peer creates avoidable scheduler and rosout pressure.
+            if msg_id == Message_ID.Formation_State:
+                rospy.logdebug_throttle(
+                    5.0, f"Received periodic message ID: {msg_id.name}"
+                )
+            else:
+                rospy.loginfo(f"Received message ID: {msg_id.name}")
         except ValueError:
             return Message_ID.info, "invalid message ID"
 

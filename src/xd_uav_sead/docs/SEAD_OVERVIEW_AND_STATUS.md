@@ -2,6 +2,18 @@
 
 本文面向未阅读过原始 `src/SEAD` 源码的操作者，解释系统用途、主要数据流、已经验证的能力和仍待验证的能力。完成度以代码和可重复证据为准，不以文件存在或 launch 名称推断。
 
+## 文档怎么读
+
+本文件是操作者入口，不要求每次把 `docs/` 全部读完。各文档职责如下：
+
+- 当前 AI 任务状态、范围和下一动作以仓库 `.codex-tmp/ACTIVE_TASK.md` 为唯一权威入口。
+- 阶段 4 QGC/UDP 协议与适配器设计见 `PHASE4_QGC_UDP_INTEGRATION_DESIGN.md`，只在阶段 4 设计或实现时读取。
+- V0–V10 的启动、观察、通过标准和清理见 `SEAD_FULL_VALIDATION_RUNBOOK.md`，只在执行验证时读取。
+- 原始功能映射、静态/节点/算法证据见 `SEAD_FUNCTION_VERIFICATION.md`，只在核对功能覆盖时读取。
+- 阶段 3 控制链问题、故障证据和排障命令见 `PHASE3_CONTROL_RUNBOOK.md`，只在相关故障复发时读取。
+
+文档没有相互叠加的权威性：当前状态以 ACTIVE_TASK 和实际现场为准；本文件负责概要；其他文档按任务需要提供专题证据。
+
 ## SEAD 是什么
 
 SEAD 是 Suppression of Enemy Air Defenses，即“压制敌方防空系统”。原始项目让多架无人机分别运行同一个机载程序，通过 XBee DigiMesh 交换状态，由地面站下发目标、禁飞区和编队要求，再协同执行侦察、打击和战损评估。
@@ -85,12 +97,12 @@ SEAD 将任务区分为侦察、打击和战损评估，并按 UAV 能力进行�
 3. **真实 XBee**：代码路径存在，但需要真实 DigiMesh/GCS 电台和真机安全授权。
 4. **固定翼飞行效果**：当前以 x500 验证控制接口；固定翼 Dubins 跟随、速度矢量和盘旋需要独立环境。
 5. **间歇性/触地问题**：只在可恢复或安全上锁后出现的 valid 瞬态已登记，后续统一归因；若空中持续或触发 FAILSAFE，应立即升级。
-6. **QGC/UDP**：阶段 4 尚未实施。
+6. **QGC/UDP**：阶段 4 首轮只读审计和协议设计已完成，适配器、QGC 修改与端到端运行尚未实施。现有 QGC 源码已有 SEAD UI 和裸二进制 UDP/XBee 路径，但缺少版本化 envelope、任务 ID、通用校验、ACK/重试和去重；现有 Release 产物也不对应当前源码 HEAD。
 
 ## 当前正确的下一步
 
-阶段 3 按现有仿真边界结束，下一步进入阶段 4。第一步不是直接修改 QGC，而是只读审计 `src/Release` 与 `src/qgroundcontrol` 的版本/产物对应关系、已有 SEAD UI 或 UDP 代码，以及 SEAD 当前 ROS 命令接口；随后形成版本化最小 UDP 协议、坐标系/单位、任务 ID、校验、ACK/重试和错误处理方案。
+阶段 3 按现有仿真边界结束。阶段 4 首轮只读审计已经完成：`src/Release` 确实包含 CustomXbee/SEAD 产物，但时间和功能提交证据表明它不对应当前 `sead-dev` HEAD；源码已有 SEAD UI、任务点模型和 UDP/XBee 裸包发送。版本化最小 UDP 协议、坐标系/单位、任务 ID、校验、ACK/重试、去重、超时和错误响应草案见 `PHASE4_QGC_UDP_INTEGRATION_DESIGN.md`。
 
-协议与适配器边界确认后，先在 QGC 外实现并验证本地 UDP 发送器 → 独立 Python UDP→ROS 适配器 → `xd_uav_sead`，最后才申请修改 QGC UI/发送逻辑。阶段 3 延期项不冒充通过，也不阻塞这条软件集成主线。
+当前正确的下一步是先由用户确认协议选择和 adapter acceptance ACK 边界，再在 QGC 外的仓库级 `tools/sead_udp_adapter/` 实现并验证本地 UDP 发送器 → 独立 Python UDP→ROS 适配器 → `xd_uav_sead`；最后才申请修改 QGC UI/发送逻辑。阶段 3 延期项不冒充通过，也不阻塞这条软件集成主线。
 
 更详细的功能证据见 `SEAD_FUNCTION_VERIFICATION.md`，控制链和历史故障见 `PHASE3_CONTROL_RUNBOOK.md`。

@@ -708,6 +708,10 @@ if __name__ == "__main__":
             rospy.logwarn_throttle(2.0, f"[LOG] jsonl write failed: {ex}")
 
     # ==================== MainProgram ====================
+    # Keep the idle path from busy-spinning.  Three onboard instances share the
+    # simulator host with Gazebo/PX4/MAVROS, so yielding here is also part of
+    # keeping their safety-critical state and service callbacks responsive.
+    main_loop_rate = rospy.Rate(100)
     while not rospy.is_shutdown():
         "receive data (U2U)(G2U)"
         try:
@@ -1905,6 +1909,7 @@ if __name__ == "__main__":
             formation.reset()
             if mainProcess is not None:
                 mainProcess.mission_flag = False
+        main_loop_rate.sleep()
     # 退出时，确保停止 roslaunch
     stop_roslaunch()
     xbee.send_data_async(gcs_address, data.pack_info_packet(f"rospy is shutdown!!"))
