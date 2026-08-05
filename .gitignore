@@ -4,7 +4,6 @@
 build/
 devel/
 install/
-logs/
 .catkin_workspace
 src/CMakeLists.txt
 cmake-build-*/
@@ -46,6 +45,8 @@ logs/
 *.log
 *.bag
 *.bag.active
+*.bag.orig
+*.bag.orig.active
 *.db3
 *.mcap
 *.launch.xml
@@ -143,3 +144,6 @@ profile/
 # ============================================================
 .DS_Store
 Thumbs.db
+
+# Codex local scratch files (never commit)
+.codex-tmp/
