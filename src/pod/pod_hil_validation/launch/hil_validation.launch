@@ -1,0 +1,6 @@
+<launch>
+  <arg name="config" default="$(find pod_hil_validation)/config/hil_validation.yaml" />
+  <node pkg="pod_hil_validation" type="pod_hil_validation_node" name="pod_hil_validation" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+</launch>

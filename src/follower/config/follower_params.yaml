@@ -7,13 +7,15 @@
 #   或在 launch 文件中使用 <rosparam file="$(find follower)/config/follower_params.yaml" />
 
 # ── 控制模式 ────────────────────────────────────────────────────────────
+follower_profile: "mc_velocity_chase"
+vehicle_type: ""                           # launch supplies multirotor/fixedwing
 lateral_guidance_mode: "coordinated_turn"   # coordinated_turn | sideslip
 enable_auto_mode_switching: false
 mode_switch_velocity: 3.0                    # m/s
 mode_switch_hysteresis: 0.5                  # m/s
 
 # ── 发布频率 ────────────────────────────────────────────────────────────
-publish_rate: 30.0                           # Hz
+publish_rate: 60.0                           # Hz; latest-only tracker queue limits latency
 
 # ── 速度限制 ────────────────────────────────────────────────────────────
 max_velocity_forward: 8.0                    # m/s
@@ -23,8 +25,11 @@ max_velocity_magnitude: 15.0                 # m/s (total magnitude limit)
 max_yaw_rate_deg_s: 90.0                     # deg/s
 
 # ── 高度限制 ────────────────────────────────────────────────────────────
-min_altitude: 2.0                            # m
+# PX4 SITL 默认下限；实机任务应在任务 launch 中覆写为 2.0 m 或更高。
+min_altitude: 1.0                            # m
 max_altitude: 120.0                          # m
+altitude_timeout_sec: 0.5                    # stale altitude is unsafe
+altitude_fail_safe: true                     # command hold if altitude data is stale
 altitude_warning_buffer: 5.0                 # m
 altitude_check_interval: 1.0                 # s
 
@@ -41,6 +46,7 @@ min_forward_velocity_threshold: 0.2          # m/s
 yaw_smoothing_enabled: true
 yaw_deadzone_deg_s: 0.5                      # deg/s
 yaw_max_rate_change_deg_s2: 90.0             # deg/s² (yaw acceleration limit)
+yaw_feasibility_max_jerk_deg_s3: 360.0       # deg/s³; also limits controller override yaw
 yaw_smoothing_alpha: 0.7                     # EMA factor [0, 1]
 yaw_speed_scaling_enabled: true
 yaw_min_speed_threshold: 0.5                 # m/s
@@ -59,6 +65,22 @@ pid_right:
 pid_down:
   kp: 1.0
   ki: 0.03
+  kd: 0.05
+pid_ground_forward:
+  kp: 2.0
+  ki: 0.03
+  kd: 0.05
+pid_mc_attitude_altitude:
+  kp: 0.08
+  ki: 0.01
+  kd: 0.03
+pid_mc_coordinated_roll:
+  kp: 2.0
+  ki: 0.02
+  kd: 0.05
+pid_fw_bank:
+  kp: 2.0
+  ki: 0.01
   kd: 0.05
 
 # ── 自适应俯冲/爬升 ──────────────────────────────────────────────────────
@@ -99,9 +121,38 @@ log_level: "info"
 # ── 接口与新鲜度 ────────────────────────────────────────────────────────
 tracker_error_topic: "/tracker_node/normalized_error"
 error_timeout_sec: 0.25
+require_capture_timestamp: true          # 产品模式拒绝无采集时刻的控制输入
+tracker_future_tolerance_sec: 0.02       # 允许的小时钟抖动，超过即拒绝
+reject_out_of_order_capture: true
+tracker_capture_timeout_sec: 0.25       # capture-to-control safety limit
+tracker_latency_warning_sec: 0.12        # begin authority reduction
+tracker_latency_abort_sec: 0.25          # reject stale target control
+use_angular_error: true                    # use tracker line-of-sight angles when available
+use_tracker_control_confidence: true       # honor SmartTracker re-acquisition readiness/association quality
+camera_fov_horizontal_deg: 60.0            # must match tracker camera calibration
+camera_fov_vertical_deg: 45.0
+gimbal_state_topic: /pod/gimbal/state
+gimbal_state_timeout_sec: 0.15
+# The product launch turns this on.  The generic package remains compatible
+# with legacy standalone Tracker→Follower deployments by default.
+require_gimbal_state_for_control: false
+controller_command_timeout_sec: 0.25         # stale controller override/limits are ignored
 mavros_namespace: "/mavros"
-enable_mavros_output: true
+# 产品默认只发布 FollowerCommand 控制意图。直接飞机输出必须在任务 launch
+# 中显式选择唯一后端并取得短时控制租约。
+control_output_backend: "command_only"       # command_only | mavros_body | mavros_twist_legacy | mrs_velocity
+require_control_lease: true
+minimum_control_lease_sec: 0.10
+maximum_control_lease_sec: 30.0
+flight_state_timeout_sec: 0.5
+require_mavros_connected: true
+require_mavros_armed: true
+required_mavros_mode: "OFFBOARD"
+require_controller_ready_for_mrs: true
+trusted_controller_name: ""
+enable_mavros_output: false                  # deprecated compatibility switch
 mavros_velocity_topic: "/mavros/setpoint_velocity/cmd_vel"
+mavros_body_velocity_topic: "/mavros/setpoint_raw/local"
 enable_mrs_velocity_reference: false
 mrs_velocity_reference_topic: "/uav1/control_manager/velocity_reference_in"
 mrs_velocity_frame: "uav1/fcu"
@@ -111,3 +162,109 @@ velocity_marker_min_speed: 0.02
 actual_velocity_marker_scale: 1.0
 actual_velocity_marker_min_speed: 0.02
 pid_proportional_on_measurement: false
+pid_anti_windup_gain: 0.1
+min_tracking_confidence: 0.5
+
+# ── 三维相对状态制导 ────────────────────────────────────────────────────
+# tracker 提供 range_valid 时，mc/gm velocity chase 使用 body-frame
+# 相对位置反馈和相对速度前馈；否则沿用 bbox-size/像素误差。
+enable_relative_state_control: true
+relative_target_distance_m: 5.0
+relative_target_down_m: 0.0
+relative_position_kp: 0.4
+relative_velocity_feedforward_gain: 0.8
+relative_max_correction: 3.0
+uncertainty_control_enabled: true
+uncertainty_nominal_sigma_m: 0.75
+uncertainty_nominal_sigma_px: 40.0
+uncertainty_slow_sigma_ratio: 1.0
+uncertainty_abort_sigma_ratio: 2.5
+uncertainty_min_control_scale: 0.25
+uncertainty_yaw_scale: 0.65
+reid_initial_control_scale: 0.35
+reid_recovery_duration_sec: 0.6
+
+# ── PixEagle follower profiles ──────────────────────────────────────────
+# Velocity profiles are accepted by the XD adapter. Attitude-rate profiles
+# require a dedicated PX4 attitude adapter and therefore default fail-closed.
+ground_descent_velocity: 0.25                # mc_velocity_ground, m/s down
+ground_min_descent_height: 2.0               # stop commanded descent below this
+ground_altitude_scaling_enabled: true
+ground_altitude_factor: 0.005                # PixEagle altitude response factor, 1/m
+ground_base_adjustment_x: 0.2
+ground_base_adjustment_y: 0.2
+ground_min_error_scale: 1.0
+ground_max_error_scale: 1.5
+gm_vector_speed: 3.0                         # direct gimbal vector magnitude, m/s
+gimbal_mount_type: "HORIZONTAL"             # HORIZONTAL | VERTICAL | TILTED_45
+gimbal_mount_yaw_offset_deg: 0.0
+gimbal_mount_pitch_offset_deg: 0.0
+gimbal_mount_roll_offset_deg: 0.0
+gimbal_invert_yaw: false
+gimbal_invert_pitch: false
+gimbal_invert_roll: false
+gimbal_angle_smoothing_alpha: 0.7            # previous-sample weight
+gimbal_angle_deadzone_deg: 0.25
+gm_vector_enable_altitude_control: true
+gm_chase_forward_mode: "CONSTANT"            # CONSTANT | PITCH_BASED
+gm_chase_base_forward_speed: 2.0
+gm_chase_forward_acceleration: 2.0
+gm_chase_pitch_velocity_scaling: 0.15         # (m/s)/deg
+gm_chase_pitch_deadzone_deg: 2.0
+gm_chase_max_lateral_angle_deg: 90.0
+gm_chase_max_vertical_angle_deg: 90.0
+allow_attitude_rate_profiles: false
+allow_fixed_wing_profile: false
+enable_profile_sensor_fallback: true         # GM angles missing -> related MC profile
+enable_profile_transition_blending: true    # bumpless velocity-profile switching
+profile_transition_duration_sec: 0.5
+profile_switch_min_interval_sec: 0.5         # dwell time; prevents rapid service toggling
+target_confidence_hysteresis: 0.08           # retain lock below acquisition threshold
+mc_hover_thrust: 0.5
+mc_min_thrust: 0.1
+mc_max_thrust: 0.9
+mc_max_roll_rate_deg_s: 45.0
+mc_max_pitch_rate_deg_s: 45.0
+mc_altitude_hold_enabled: true
+mc_target_altitude_offset: 0.0               # capture-and-hold current altitude
+mc_altitude_thrust_min_correction: -0.3
+mc_altitude_thrust_max_correction: 0.3
+mc_thrust_compensation_enabled: true
+mc_thrust_compensation_gain: 1.0
+mc_coordinated_roll_enabled: true
+mc_turn_coordination_gain: 1.0
+mc_max_bank_angle_deg: 35.0
+mc_yaw_error_gating_enabled: true
+mc_yaw_error_gate: 0.35
+fw_cruise_thrust: 0.6
+fw_max_roll_rate_deg_s: 35.0
+fw_max_pitch_rate_deg_s: 25.0
+fw_min_airspeed: 12.0
+fw_cruise_airspeed: 18.0
+fw_max_airspeed: 30.0
+fw_airspeed_timeout_sec: 0.5
+fw_max_bank_angle_deg: 35.0
+fw_max_load_factor: 2.5
+fw_l1_distance: 50.0
+fw_l1_damping: 0.75
+fw_l1_adaptive: true
+fw_l1_min_distance: 20.0
+fw_l1_max_distance: 100.0
+fw_l1_lateral_scale: 50.0
+fw_tecs_enabled: true
+fw_tecs_time_constant: 5.0
+fw_tecs_pitch_damping: 0.15
+fw_tecs_throttle_damping: 0.05
+fw_tecs_spe_weight: 1.0
+fw_tecs_altitude_scale: 20.0
+fw_tecs_max_integral: 50.0
+fw_min_thrust: 0.2
+fw_max_thrust: 1.0
+fw_thrust_slew_rate: 0.5
+fw_stall_protection_enabled: true
+fw_stall_margin_buffer: 3.0
+fw_stall_recovery_pitch_rate_deg_s: -5.0
+fw_stall_recovery_thrust: 1.0
+fw_orbit_on_target_loss: true
+fw_orbit_radius: 100.0
+fw_orbit_direction: 1.0                    # +1 clockwise/body-right, -1 opposite

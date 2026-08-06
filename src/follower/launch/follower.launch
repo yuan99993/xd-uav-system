@@ -12,11 +12,12 @@
   -->
 
   <!-- ── 控制模式 ──────────────────────────────────────────────────────── -->
+  <arg name="config" default="$(find follower)/config/follower_params.yaml" />
   <arg name="lateral_guidance_mode"     default="coordinated_turn" />
   <arg name="enable_auto_mode_switching" default="false" />
 
   <!-- ── 发布参数 ──────────────────────────────────────────────────────── -->
-  <arg name="publish_rate"              default="30.0" />
+  <arg name="publish_rate"              default="60.0" />
 
   <!-- ── 速度限制 ──────────────────────────────────────────────────────── -->
   <arg name="max_velocity_forward"      default="8.0" />
@@ -44,8 +45,11 @@
   <env name="PYTHONNOUSERSITE" value="1" />
 
   <!-- ── 节点定义 ──────────────────────────────────────────────────────── -->
-  <node name="follower_node" pkg="follower" type="follower_node.py" output="screen"
+  <node name="follower_node" pkg="follower" type="follower_node" output="screen"
         required="false">
+
+    <!-- 产品安全默认值；下方 launch 参数仅覆盖常用调参项。 -->
+    <rosparam command="load" file="$(arg config)" />
 
     <!-- 控制模式 -->
     <param name="lateral_guidance_mode"      value="$(arg lateral_guidance_mode)" />

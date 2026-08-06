@@ -11,6 +11,9 @@ frame_width: 640
 frame_height: 480
 publish_rate: 30.0
 tracker_name: "TrackerCore"
+image_source: "eo"             # logical source; header.frame_id remains the optical TF frame
+allow_image_source_switch: false # EO/IR 切换时安全清空旧轨迹，等待任务层重新选择
+require_image_source_metadata: false # 产品 EO/IR 输入可设 true；旧检测器保持 false
 direct_observation_hold_time: 0.15  # s; keep the error valid between detector updates
 
 # ── 相机参数 ────────────────────────────────────────────────────────────
@@ -19,9 +22,31 @@ fov_vertical: 45.0            # 垂直视场角 (degrees)
 mount_offset_yaw: 0.0         # 相机安装偏航偏移 (degrees)
 mount_offset_pitch: 0.0       # 相机安装俯仰偏移 (degrees)
 mount_offset_roll: 0.0        # 相机安装滚转偏移 (degrees)
+use_camera_info: true
+camera_info_topic: "/pod/camera/eo/camera_info"
+secondary_camera_info_topic: "/pod/camera/ir/camera_info"
+use_dynamic_camera_tf: true
+gimbal_state_topic: /pod/gimbal/state
+gimbal_state_timeout_sec: 0.15
+# Enable this in product/HIL launches when camera-to-body output is used for
+# aircraft control. Tracker then fails closed on stale, limited or faulted
+# gimbal feedback while retaining legacy standalone compatibility by default.
+require_gimbal_state_for_body_los: false
+body_frame: "base_link"
+tf_lookup_timeout_sec: 0.02
+selection_timestamp_tolerance_sec: 0.25
 
 # ── 跟踪策略 ────────────────────────────────────────────────────────────
 tracking_strategy: "hybrid"   # hybrid | id_only | spatial_only | distance_only
+# PixEagle SmartTracker profiles.  The detector remains an independent node;
+# this C++ node performs the bounded target association/control handoff.
+tracker_profile: "smart_botsort"           # classic_hybrid | smart_botsort | smart_bytetrack | smart_reid_hybrid
+smart_tracker_backend: "botsort"           # botsort | bytetrack | custom_reid; profile takes precedence
+reacquisition_mode: "balanced"             # aggressive | balanced | strict
+class_match_flexible: true                  # stable detector IDs may survive class-label flicker
+search_expansion_rate: 0.20                 # bounded distance-association expansion per missing frame
+search_expansion_cap: 2.0                   # maximum expansion multiplier
+appearance_distance_gate_factor: 3.0        # ReID remains spatially bounded
 enable_kalman_filter: true
 enable_motion_predictor: true
 enable_prediction_buffer: true
@@ -29,7 +54,53 @@ enable_prediction_buffer: true
 # ── 跟踪阈值 ────────────────────────────────────────────────────────────
 id_loss_tolerance_frames: 5   # ID 丢失容忍帧数
 spatial_iou_threshold: 0.35   # 空间 IoU 匹配阈值
+center_distance_threshold: 2.0 # 无 IoU 时允许的归一化中心距离
+min_detection_confidence: 0.0  # 0 保持兼容未提供置信度的旧检测器
+innovation_gate_nis: 16.0      # 卡尔曼创新门限，拒绝突变检测框
+association_gate_nis: 9.21     # 2D 位置 Mahalanobis 门限（99%）
+max_size_change_ratio: 2.5     # 关联/重捕获允许的最大宽高变化倍数
+max_detection_age_sec: 0.25    # 有 header.stamp 时拒绝超过该时长的检测
+reacquisition_confirm_frames: 2 # 长丢失后的非 ID 重捕获确认帧数
+prediction_fusion_max_offset_ratio: 0.75 # 加速度预测相对 Kalman 的最大偏移
+enable_appearance_reid: false    # 需要上游 DetectionCandidate.appearance_embedding；smart_reid_hybrid 自动启用
+appearance_min_cosine: 0.75      # ReID 余弦相似度门限
+appearance_update_alpha: 0.1     # 参考 embedding 的保守 EMA 更新
+bytetrack_high_confidence: 0.50   # ByteTrack 第一阶段阈值
+bytetrack_low_confidence: 0.10    # ByteTrack 第二阶段下限
+bytetrack_low_iou_threshold: 0.15 # 低分框只允许贴近已有轨迹
+bytetrack_low_nis_scale: 2.0      # 低分框 Mahalanobis 门限放宽倍数
 target_size_ratio: 0.15       # 目标期望占帧比例
+
+# ── 持续多目标轨迹 ──────────────────────────────────────────────────────
+multi_track_confirmation_hits: 2
+multi_track_occlusion_frames: 5
+multi_track_removal_frames: 30
+multi_track_maximum_tracks: 128
+multi_track_maximum_embedding_dimension: 2048
+multi_track_new_confidence: 0.20
+multi_track_update_confidence: 0.05
+multi_track_iou_threshold: 0.20
+multi_track_center_distance: 1.50
+multi_track_appearance_cosine: 0.78
+
+# ── BoT-SORT 轻量全局运动补偿 ───────────────────────────────────────────
+# ORB + RANSAC 仿射估计。默认关闭，启用时需要同步提供 camera/image_raw。
+enable_gmc: false
+gmc_image_topic: "/camera/image_raw"
+gmc_max_features: 300
+gmc_min_inliers: 12
+gmc_ransac_reproj_threshold: 3.0
+gmc_max_image_width: 320
+gmc_max_age_sec: 0.15
+gmc_detection_sync_tolerance_sec: 0.05
+gmc_require_detection_sync: false
+
+# ── 延迟观测/OOSM ───────────────────────────────────────────────────────
+# Delayed samples inside this window are projected from a historical Kalman
+# snapshot to the current state; older/future samples are rejected.
+oosm_history_duration_sec: 0.5
+oosm_max_future_sec: 0.02
+oosm_max_snapshots: 40
 
 # ── Kalman 滤波器参数 ───────────────────────────────────────────────────
 kalman_process_noise: 1.0           # 过程噪声缩放

@@ -1,0 +1,28 @@
+<launch>
+  <node pkg="tracker" type="tracker_node" name="tracker" ns="product_test"
+        output="screen" required="true">
+    <param name="frame_width" value="640" />
+    <param name="frame_height" value="480" />
+    <param name="publish_rate" value="40.0" />
+    <param name="auto_start_on_detection" value="false" />
+    <param name="use_camera_info" value="false" />
+    <param name="use_dynamic_camera_tf" value="false" />
+  </node>
+
+  <node pkg="pod_tracker_adapter" type="pod_tracker_adapter_node"
+        name="adapter" ns="product_test" output="screen" required="true">
+    <param name="detection_topic" value="/product_test/pod/perception/detections" />
+    <param name="tracker_candidates_topic" value="/product_test/tracker/detection_candidates" />
+    <param name="tracking_output_topic" value="/product_test/tracker/tracking_output" />
+    <param name="tracker_track_states_topic" value="/product_test/tracker/track_states" />
+    <param name="tracker_select_service" value="/product_test/tracker/select_track" />
+    <param name="tracks_topic" value="/product_test/pod/perception/tracks" />
+    <param name="selected_target_topic" value="/product_test/pod/target/selected" />
+    <param name="select_target_service" value="/product_test/pod/mission/select_target" />
+    <param name="image_source" value="eo" />
+    <param name="use_persistent_track_states" value="true" />
+  </node>
+
+  <test test-name="tracker_product_integration" pkg="pod_tracker_adapter"
+        type="test_tracker_product_integration.py" time-limit="30" />
+</launch>

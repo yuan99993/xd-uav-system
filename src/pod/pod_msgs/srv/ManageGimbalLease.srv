@@ -1,0 +1,12 @@
+# Acquires/releases the sole active non-emergency gimbal command authority.
+# Higher priority may replace a lower-priority holder; equal priority may only
+# renew the holder's own lease.
+bool acquire
+string requester
+string resource
+uint8 priority
+float32 ttl_sec
+---
+bool success
+string message
+pod_msgs/ControlLease lease

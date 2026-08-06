@@ -1,0 +1,9 @@
+# A vendor backend publishes tracker/DetectionArray here.  This bridge adds
+# product provenance without changing the detector's inference implementation.
+vendor_detections_topic: /pod/vendor/detections
+detections_topic: /pod/perception/detections
+image_source: eo
+sensor_id: eo_primary
+detector_name: external_detector
+model_version: unknown
+allow_vendor_provenance: true

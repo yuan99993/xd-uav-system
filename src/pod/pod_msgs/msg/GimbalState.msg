@@ -1,0 +1,16 @@
+std_msgs/Header header
+geometry_msgs/Vector3 attitude_deg
+geometry_msgs/Vector3 angular_rate_deg_s
+float32 zoom_level
+float32 focus_position
+bool connected
+bool stabilized
+bool limit_active
+bool range_valid
+float32 range_m
+string mode
+string fault_code
+bool attitude_valid
+string parent_frame
+string gimbal_frame
+string optical_frame

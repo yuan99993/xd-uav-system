@@ -1,0 +1,28 @@
+<launch>
+  <arg name="config" default="$(find pod_tracker_adapter)/config/tracker_adapter.yaml" />
+  <arg name="detection_topic" default="/pod/perception/detections" />
+  <arg name="tracker_candidates_topic" default="/tracker_node/detection_candidates" />
+  <arg name="tracking_output_topic" default="/tracker_node/tracking_output" />
+  <arg name="tracker_track_states_topic" default="/tracker_node/track_states" />
+  <arg name="tracker_select_service" default="/tracker_node/select_track" />
+  <arg name="tracks_topic" default="/pod/perception/tracks" />
+  <arg name="selected_target_topic" default="/pod/target/selected" />
+  <arg name="select_target_service" default="/pod/mission/select_target" />
+  <arg name="image_source" default="eo" />
+  <arg name="enable_body_los_compensation" default="false" />
+
+  <node pkg="pod_tracker_adapter" type="pod_tracker_adapter_node"
+        name="pod_tracker_adapter" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="detection_topic" value="$(arg detection_topic)" />
+    <param name="tracker_candidates_topic" value="$(arg tracker_candidates_topic)" />
+    <param name="tracking_output_topic" value="$(arg tracking_output_topic)" />
+    <param name="tracker_track_states_topic" value="$(arg tracker_track_states_topic)" />
+    <param name="tracker_select_service" value="$(arg tracker_select_service)" />
+    <param name="tracks_topic" value="$(arg tracks_topic)" />
+    <param name="selected_target_topic" value="$(arg selected_target_topic)" />
+    <param name="select_target_service" value="$(arg select_target_service)" />
+    <param name="image_source" value="$(arg image_source)" />
+    <param name="enable_body_los_compensation" value="$(arg enable_body_los_compensation)" />
+  </node>
+</launch>

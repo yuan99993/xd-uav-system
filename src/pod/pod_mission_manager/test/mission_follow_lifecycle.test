@@ -1,0 +1,25 @@
+<launch>
+  <node pkg="pod_mission_manager" type="pod_mission_manager_node"
+        name="manager" ns="mission_manager_test" output="screen" required="true">
+    <param name="selected_target_topic" value="/mission_manager_test/selected" />
+    <param name="gimbal_state_topic" value="/mission_manager_test/gimbal" />
+    <param name="uav_state_topic" value="/mission_manager_test/uav" />
+    <param name="uav_execution_topic" value="/mission_manager_test/execution" />
+    <param name="follower_status_topic" value="/mission_manager_test/follower_status" />
+    <param name="mission_state_topic" value="/mission_manager_test/state" />
+    <param name="event_topic" value="/mission_manager_test/events" />
+    <param name="track_action_name" value="/mission_manager_test/track_target" />
+    <param name="reset_service_name" value="/mission_manager_test/reset" />
+    <param name="select_target_service" value="/mission_manager_test/select_target" />
+    <param name="gimbal_tracking_service" value="/mission_manager_test/set_gimbal" />
+    <param name="uav_prepare_follow_service" value="/mission_manager_test/prepare" />
+    <param name="follower_lease_service" value="/mission_manager_test/lease" />
+    <param name="follower_start_service" value="/mission_manager_test/follower_start" />
+    <param name="follower_stop_service" value="/mission_manager_test/follower_stop" />
+    <param name="lease_duration_sec" value="0.4" />
+    <param name="lease_renew_interval_sec" value="0.1" />
+    <param name="require_execution_ack" value="true" />
+  </node>
+  <test test-name="mission_follow_lifecycle" pkg="pod_mission_manager"
+        type="test_mission_follow_lifecycle.py" time-limit="30" />
+</launch>

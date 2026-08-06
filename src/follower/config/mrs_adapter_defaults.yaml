@@ -5,8 +5,10 @@
 # modifying this package file.
 tracker_error_topic: "/tracker_node/normalized_error"
 mavros_namespace: "/mavros"
-enable_mavros_output: true
+control_output_backend: "mavros_body"
+enable_mavros_output: false
 mavros_velocity_topic: "/mavros/setpoint_velocity/cmd_vel"
+mavros_body_velocity_topic: "/mavros/setpoint_raw/local"
 enable_mrs_velocity_reference: false
 mrs_velocity_reference_topic: "/uav1/control_manager/velocity_reference_in"
 mrs_velocity_frame: "uav1/fcu"

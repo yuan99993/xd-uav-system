@@ -1,0 +1,15 @@
+<launch>
+  <node pkg="pod_command_arbiter" type="pod_command_arbiter_node"
+        name="pod_command_arbiter" output="screen">
+    <param name="manual_command_topic" value="/arbiter_test/manual" />
+    <param name="mission_command_topic" value="/arbiter_test/mission" />
+    <param name="safety_command_topic" value="/arbiter_test/safety" />
+    <param name="state_topic" value="/arbiter_test/state" />
+    <param name="command_topic" value="/arbiter_test/command" />
+    <param name="lease_topic" value="/arbiter_test/lease" />
+    <param name="command_timeout_sec" value="0.4" />
+    <param name="state_timeout_sec" value="0.4" />
+  </node>
+  <test test-name="command_arbiter" pkg="pod_command_arbiter"
+        type="test_command_arbiter.py" time-limit="20" />
+</launch>

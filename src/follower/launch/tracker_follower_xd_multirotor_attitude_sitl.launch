@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="start_tracker" default="true"/>
+  <arg name="gui" default="false"/>
+  <arg name="paused" default="false"/>
+  <arg name="world"
+       default="$(find mavlink_sitl_gazebo)/worlds/empty.world"/>
+  <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
+
+  <include file="$(find follower)/launch/tracker_follower_xd_attitude_sitl.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle" value="iris"/>
+    <arg name="vehicle_type" value="multirotor"/>
+    <arg name="follower_profile" value="mc_attitude_rate"/>
+    <arg name="start_tracker" value="$(arg start_tracker)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="fcu_url" value="$(arg fcu_url)"/>
+  </include>
+</launch>

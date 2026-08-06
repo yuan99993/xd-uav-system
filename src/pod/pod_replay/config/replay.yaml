@@ -1,0 +1,9 @@
+# The replayer intentionally handles the two safety-critical recorded streams
+# and republishes them to vendor bridge topics; it never publishes actuator commands.
+bag_path: ""
+source_gimbal_topic: /pod/gimbal/state
+source_detections_topic: /pod/perception/detections
+gimbal_state_topic: /pod/vendor/gimbal/state
+detections_topic: /pod/vendor/detections
+rate: 1.0
+loop: false

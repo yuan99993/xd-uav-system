@@ -1,0 +1,9 @@
+manual_command_topic: /pod/gimbal/manual_command
+mission_command_topic: /pod/gimbal/mission_command
+safety_command_topic: /pod/gimbal/safety_command
+state_topic: /pod/gimbal/state
+command_topic: /pod/gimbal/command
+lease_topic: /pod/gimbal/control_lease
+command_timeout_sec: 0.20
+state_timeout_sec: 0.25
+publish_rate: 50.0

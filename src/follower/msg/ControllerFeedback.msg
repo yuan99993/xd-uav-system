@@ -16,6 +16,8 @@ bool suggestion_valid              # 建议是否有效
 # ── 当前控制模式 ─────────────────────────────────────────────────────────
 string control_mode                # "velocity_body" | "attitude_rate"
 string lateral_guidance_mode       # "coordinated_turn" | "sideslip"
+string follower_profile
+bool profile_supported
 
 # ── 目标状态 ─────────────────────────────────────────────────────────────
 float32 target_error_x             # 当前 X 误差（归一化）

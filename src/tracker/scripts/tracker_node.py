@@ -48,6 +48,10 @@ class TrackerNode:
 
     def __init__(self):
         rospy.init_node('tracker_node', anonymous=False)
+        rospy.logwarn(
+            '[TrackerNode] Python reference implementation is deprecated for '
+            'product use. Launch type="tracker_node" to run the C++ production '
+            'implementation with multi-track, selection, CameraInfo/TF and diagnostics.')
 
         # ── Load parameters ──────────────────────────────────────────────
         self.frame_width = rospy.get_param('~frame_width', 640)
@@ -268,6 +272,9 @@ class TrackerNode:
         msg.error_valid = error_is_fresh
         msg.target_visible = error_is_fresh
         msg.is_estimated = not error_is_fresh and result.is_predicted
+        msg.confidence = result.confidence
+        msg.tracking_quality = result.tracking_quality
+        msg.frames_since_detection = result.frames_since_detection
         msg.dt_since_detection = dt_since_detection
 
         self.normalized_error_pub.publish(msg)

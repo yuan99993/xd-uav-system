@@ -1,0 +1,58 @@
+<launch>
+  <arg name="uav_name" default="uav1" />
+  <arg name="uav_control_backend" default="none" />
+  <arg name="interfaces_config"
+       default="$(find pod_bringup)/config/interfaces.yaml" />
+  <arg name="start_tracker" default="false" />
+  <arg name="start_camera_driver" default="false" />
+  <arg name="start_detector" default="false" />
+  <arg name="start_gimbal_driver" default="false" />
+  <arg name="start_command_arbiter" default="false" />
+  <arg name="start_tracker_adapter" default="false" />
+  <arg name="start_gimbal_controller" default="false" />
+  <arg name="start_uav_adapter" default="false" />
+  <arg name="start_mission_manager" default="false" />
+  <arg name="start_follower" default="false" />
+  <arg name="start_sim" default="false" />
+  <arg name="start_replay" default="false" />
+  <arg name="start_hil_validation" default="false" />
+  <arg name="enable_body_los_compensation" default="false" />
+
+  <!-- Product-level API contract. Node launch files must consume these
+       names instead of hard-coding /pod paths. -->
+  <rosparam command="load" file="$(arg interfaces_config)" />
+  <param name="/pod/uav_name" value="$(arg uav_name)" />
+  <param name="/pod/uav_control_backend" value="$(arg uav_control_backend)" />
+
+  <!-- Tracker remains separately switchable so an integrator can replace it
+       with a validated hardware/vendor tracker without creating a second
+       consumer for the detection stream. -->
+  <include if="$(arg start_camera_driver)"
+           file="$(find pod_camera_driver)/launch/camera_driver.launch" />
+  <include if="$(arg start_detector)" file="$(find pod_detector)/launch/detector.launch" />
+  <include if="$(arg start_gimbal_driver)"
+           file="$(find pod_gimbal_driver)/launch/gimbal_driver.launch" />
+  <include if="$(arg start_command_arbiter)"
+           file="$(find pod_command_arbiter)/launch/command_arbiter.launch" />
+  <include if="$(arg start_sim)" file="$(find pod_sim)/launch/pod_sim.launch" />
+  <include if="$(arg start_replay)" file="$(find pod_replay)/launch/replay.launch" />
+  <include if="$(arg start_tracker)" file="$(find tracker)/launch/tracker.launch">
+    <arg name="require_gimbal_state_for_body_los" value="true" />
+  </include>
+  <include if="$(arg start_tracker_adapter)"
+           file="$(find pod_tracker_adapter)/launch/tracker_adapter.launch">
+    <arg name="enable_body_los_compensation" value="$(arg enable_body_los_compensation)" />
+  </include>
+  <include if="$(arg start_gimbal_controller)"
+           file="$(find pod_gimbal_controller)/launch/gimbal_controller.launch" />
+  <include if="$(arg start_uav_adapter)"
+           file="$(find pod_uav_adapter)/launch/uav_adapter.launch">
+    <arg name="backend" value="$(arg uav_control_backend)" />
+  </include>
+  <include if="$(arg start_mission_manager)"
+           file="$(find pod_mission_manager)/launch/mission_manager.launch" />
+  <include if="$(arg start_follower)"
+           file="$(find follower)/launch/pod_follower.launch" />
+  <include if="$(arg start_hil_validation)"
+           file="$(find pod_hil_validation)/launch/hil_validation.launch" />
+</launch>

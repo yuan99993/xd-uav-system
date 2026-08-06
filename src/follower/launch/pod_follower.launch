@@ -1,0 +1,18 @@
+<launch>
+  <!-- Product integration: Follower consumes body-compensated LOS from the
+       Pod tracker adapter and only publishes intent for pod_uav_adapter. -->
+  <arg name="config" default="$(find follower)/config/follower_params.yaml" />
+  <arg name="tracker_error_topic" default="/pod/perception/body_normalized_error" />
+  <arg name="gimbal_state_topic" default="/pod/gimbal/state" />
+  <node pkg="follower" type="follower_node" name="follower_node" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="tracker_error_topic" value="$(arg tracker_error_topic)" />
+    <param name="gimbal_state_topic" value="$(arg gimbal_state_topic)" />
+    <param name="require_gimbal_state_for_control" value="true" />
+    <param name="control_output_backend" value="command_only" />
+    <param name="require_control_lease" value="true" />
+    <param name="require_capture_timestamp" value="true" />
+    <param name="enable_mavros_output" value="false" />
+    <param name="enable_mrs_velocity_reference" value="false" />
+  </node>
+</launch>

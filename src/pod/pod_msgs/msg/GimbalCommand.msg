@@ -1,0 +1,11 @@
+std_msgs/Header header
+string source
+string mode
+geometry_msgs/Vector3 target_attitude_deg
+geometry_msgs/Vector3 target_rate_deg_s
+float32 zoom_level
+bool zoom_valid
+bool focus_auto
+bool recenter
+bool stow
+bool emergency_stop

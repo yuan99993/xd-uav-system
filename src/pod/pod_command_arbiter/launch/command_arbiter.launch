@@ -1,0 +1,6 @@
+<launch>
+  <arg name="config" default="$(find pod_command_arbiter)/config/command_arbiter.yaml" />
+  <node pkg="pod_command_arbiter" type="pod_command_arbiter_node" name="pod_command_arbiter" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+</launch>

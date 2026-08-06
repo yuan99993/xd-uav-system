@@ -1,0 +1,2 @@
+<?xml version="1.0"?>
+<package format="2"><name>pod_gimbal_driver</name><version>0.1.0</version><description>Hardware abstraction for gimbal and payload protocols.</description><maintainer email="maintainers@example.com">Pod Software Team</maintainer><license>BSD-3-Clause</license><buildtool_depend>catkin</buildtool_depend><depend>diagnostic_msgs</depend><depend>geometry_msgs</depend><depend>roscpp</depend><depend>std_srvs</depend><depend>pod_msgs</depend></package>

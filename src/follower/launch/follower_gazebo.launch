@@ -24,7 +24,7 @@
   <!-- ── Follower ──────────────────────────────────────────────────────── -->
   <arg name="lateral_guidance_mode" default="coordinated_turn" />
   <arg name="max_forward_velocity"  default="5.0" />
-  <arg name="publish_rate"          default="30.0" />
+  <arg name="publish_rate"          default="60.0" />
 
   <!-- ── 启动 MAVROS ───────────────────────────────────────────────────── -->
   <include file="$(find mavros)/launch/px4.launch">

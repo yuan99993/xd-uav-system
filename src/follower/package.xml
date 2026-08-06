@@ -32,14 +32,20 @@
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>visualization_msgs</depend>
+  <depend>diagnostic_updater</depend>
   <depend>tf</depend>
   <depend>mavros_msgs</depend>
   <depend>mrs_msgs</depend>
   <depend>tracker</depend>
+  <depend>xd_uav_controller</depend>
+  <depend>pod_msgs</depend>
   <depend>message_generation</depend>
   <depend>message_runtime</depend>
 
   <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>rostest</test_depend>
+  <test_depend>gtest</test_depend>
 
   <export>
   </export>

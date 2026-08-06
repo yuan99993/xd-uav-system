@@ -1,0 +1,272 @@
+# Product-level ROS interface contract for the optical-pod task system.
+#
+# This is the single source of truth for public /pod endpoints. Implementing
+# nodes shall read these parameters or remap to their values; they shall not
+# silently invent a second public topic name. `owner` denotes the sole normal
+# publisher for state/command topics. Event and diagnostic streams may have
+# multiple producers only through their designated aggregators.
+
+pod:
+  interface_contract:
+    name: optical_pod_product_api
+    version: 1
+    namespace: /pod
+    timestamp_policy: capture_time_in_header
+    frame_policy: tf2_namespaced_frames
+
+  # Set by pod_system.launch. Aircraft motion remains disabled until a future
+  # safety-reviewed adapter explicitly selects a single backend.
+  uav_name: uav1
+  uav_control_backend: none
+  safety:
+    enforce_single_uav_control_writer: true
+    allowed_uav_control_backends: [none, xd, mrs, mavros_direct]
+    default_gimbal_mode: hold
+    command_lease_required: true
+    ui_may_publish_continuous_actuator_commands: false
+
+  nodes:
+    camera_driver:
+      launch_file: pod_camera_driver/camera_driver.launch
+      enabled_by_default: false
+      vendor_eo_input: /pod/vendor/eo/image_raw
+    detector:
+      launch_file: pod_detector/detector.launch
+      enabled_by_default: false
+      vendor_detections_input: /pod/vendor/detections
+    gimbal_driver:
+      launch_file: pod_gimbal_driver/gimbal_driver.launch
+      enabled_by_default: false
+      vendor_state_input: /pod/vendor/gimbal/state
+      vendor_command_output: /pod/vendor/gimbal/command
+    command_arbiter:
+      launch_file: pod_command_arbiter/command_arbiter.launch
+      enabled_by_default: false
+      sole_gimbal_command_writer: true
+    tracker:
+      launch_file: tracker/tracker.launch
+      enabled_by_default: false
+      detection_candidates_input: /tracker_node/detection_candidates
+      normalized_error_output: /tracker_node/normalized_error
+      track_states_output: /tracker_node/track_states
+      gimbal_state_input: /pod/gimbal/state
+    tracker_adapter:
+      launch_file: pod_tracker_adapter/tracker_adapter.launch
+      enabled_by_default: false
+      detector_input: /pod/perception/detections
+      tracker_candidates_output: /tracker_node/detection_candidates
+      tracker_selection_input: /tracker_node/tracking_output
+      tracker_track_states_input: /tracker_node/track_states
+      tracker_select_service: /tracker_node/select_track
+      all_tracks_output: /pod/perception/tracks
+    gimbal_controller:
+      launch_file: pod_gimbal_controller/gimbal_controller.launch
+      enabled_by_default: false
+      normalized_error_input: /tracker_node/normalized_error
+      gimbal_state_input: /pod/gimbal/state
+      mission_command_output: /pod/gimbal/mission_command
+    mission_manager:
+      launch_file: pod_mission_manager/mission_manager.launch
+      enabled_by_default: false
+      follower_lease_service: /follower_node/manage_control_lease
+      gimbal_lease_service: /pod/gimbal/manage_control_lease
+    uav_adapter:
+      launch_file: pod_uav_adapter/uav_adapter.launch
+      enabled_by_default: false
+      sole_aircraft_control_writer: true
+    hil_validation:
+      launch_file: pod_hil_validation/hil_validation.launch
+      enabled_by_default: false
+      preflight_service: /pod/hil/run_preflight
+
+  public_topics:
+    camera:
+      eo_image_raw:
+        name: /pod/camera/eo/image_raw
+        type: sensor_msgs/Image
+        owner: pod_camera_driver
+        direction: publish
+      eo_camera_info:
+        name: /pod/camera/eo/camera_info
+        type: sensor_msgs/CameraInfo
+        owner: pod_camera_driver
+        direction: publish
+      ir_image_raw:
+        name: /pod/camera/ir/image_raw
+        type: sensor_msgs/Image
+        owner: pod_camera_driver
+        direction: publish_optional
+
+    perception:
+      detections:
+        name: /pod/perception/detections
+        type: tracker/DetectionArray
+        owner: pod_detector
+        direction: publish
+      tracks:
+        name: /pod/perception/tracks
+        type: pod_msgs/TargetTrackArray
+        owner: pod_tracker_adapter
+        direction: publish
+      selected_target:
+        name: /pod/target/selected
+        type: pod_msgs/SelectedTarget
+        owner: pod_tracker_adapter
+        direction: publish
+
+    gimbal:
+      state:
+        name: /pod/gimbal/state
+        type: pod_msgs/GimbalState
+        owner: pod_gimbal_driver
+        direction: publish
+      command:
+        name: /pod/gimbal/command
+        type: pod_msgs/GimbalCommand
+        owner: pod_command_arbiter
+        direction: publish
+      manual_command:
+        name: /pod/gimbal/manual_command
+        type: pod_msgs/GimbalCommand
+        owner: pod_gateway
+        direction: internal_publish
+      mission_command:
+        name: /pod/gimbal/mission_command
+        type: pod_msgs/GimbalCommand
+        owner: pod_gimbal_controller
+        direction: internal_publish
+      control_lease:
+        name: /pod/gimbal/control_lease
+        type: pod_msgs/ControlLease
+        owner: pod_command_arbiter
+        direction: publish
+
+    mission:
+      state:
+        name: /pod/mission/state
+        type: pod_msgs/MissionState
+        owner: pod_mission_manager
+        direction: publish
+
+    uav:
+      state:
+        name: /pod/uav/state
+        type: pod_msgs/UavState
+        owner: pod_uav_adapter
+        direction: publish
+      control_execution:
+        name: /pod/uav/control_execution
+        type: pod_msgs/UavControlExecution
+        owner: pod_uav_adapter
+        direction: publish
+
+    geolocation:
+      target:
+        name: /pod/geolocation/target
+        type: pod_msgs/GeoTarget
+        owner: pod_geolocator
+        direction: publish
+
+    observability:
+      health:
+        name: /pod/health
+        type: diagnostic_msgs/DiagnosticArray
+        owner: pod_gateway
+        direction: aggregate_publish
+      events:
+        name: /pod/events
+        type: pod_msgs/TaskEvent
+        owner: pod_gateway
+        direction: aggregate_publish
+
+  actions:
+    track_target:
+      name: /pod/mission/track_target
+      type: pod_msgs/TrackTargetAction
+      owner: pod_mission_manager
+    search_area:
+      name: /pod/mission/search_area
+      type: pod_msgs/SearchAreaAction
+      owner: pod_mission_manager
+    point_to_geo:
+      name: /pod/mission/point_to_geo
+      type: pod_msgs/PointToGeoAction
+      owner: pod_mission_manager
+    stow_gimbal:
+      name: /pod/mission/stow_gimbal
+      type: pod_msgs/StowGimbalAction
+      owner: pod_mission_manager
+
+  services:
+    select_target:
+      name: /pod/mission/select_target
+      type: pod_msgs/SelectTarget
+      owner: pod_tracker_adapter
+    reset_mission:
+      name: /pod/mission/reset
+      type: std_srvs/Trigger
+      owner: pod_mission_manager
+    recenter_gimbal:
+      name: /pod/gimbal/recenter
+      type: std_srvs/Trigger
+      owner: pod_gimbal_driver
+    emergency_stop:
+      name: /pod/gimbal/emergency_stop
+      type: std_srvs/SetBool
+      owner: pod_command_arbiter
+    manage_gimbal_control_lease:
+      name: /pod/gimbal/manage_control_lease
+      type: pod_msgs/ManageGimbalLease
+      owner: pod_command_arbiter
+    hil_preflight:
+      name: /pod/hil/run_preflight
+      type: std_srvs/Trigger
+      owner: pod_hil_validation
+
+  # Existing endpoints remain implementation inputs. Templates containing
+  # {uav_name} are resolved by pod_uav_adapter at runtime.
+  compatibility_inputs:
+    tracker_detection_candidates:
+      name: /tracker_node/detection_candidates
+      type: tracker/DetectionArray
+      consumer: pod_tracker_adapter
+    tracker_tracking_output:
+      name: /tracker_node/tracking_output
+      type: tracker/TrackingOutput
+      consumer: pod_tracker_adapter
+    tracker_track_states:
+      name: /tracker_node/track_states
+      type: tracker/TrackStateArray
+      consumer: pod_tracker_adapter
+    tracker_select_track:
+      name: /tracker_node/select_track
+      type: tracker/SelectTrack
+      consumer: pod_tracker_adapter
+    tracker_normalized_error:
+      name: /tracker_node/normalized_error
+      type: tracker/NormalizedError
+      consumer: pod_gimbal_controller
+    tracker_body_normalized_error:
+      name: /pod/perception/body_normalized_error
+      type: tracker/NormalizedError
+      consumer: follower
+    follower_command:
+      name: /follower_node/follower_command
+      type: follower/FollowerCommand
+      consumer: pod_uav_adapter
+    follower_status:
+      name: /follower_node/follower_status
+      type: follower/FollowerStatus
+      consumer: pod_uav_adapter
+    follower_control_lease:
+      name: /follower_node/manage_control_lease
+      type: follower/ManageControlLease
+      consumer: pod_mission_manager
+    xd_main_odom:
+      name_template: /{uav_name}/state_estimator/main/odom
+      type: nav_msgs/Odometry
+      consumer: pod_uav_adapter
+    xd_control_state:
+      name_template: /{uav_name}/control_manager/state
+      type: xd_uav_controller/ControlState
+      consumer: pod_uav_adapter

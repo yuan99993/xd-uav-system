@@ -64,6 +64,8 @@
   <arg name="frame_width"      default="640" />
   <arg name="frame_height"     default="480" />
   <arg name="tracker_rate"     default="30.0" />
+  <arg name="tracker_profile"  default="smart_botsort" />
+  <arg name="reacquisition_mode" default="balanced" />
 
   <!-- Follower -->
   <arg name="follower_enabled" default="true" />
@@ -104,6 +106,8 @@
     <arg name="frame_width"   value="$(arg frame_width)" />
     <arg name="frame_height"  value="$(arg frame_height)" />
     <arg name="publish_rate"  value="$(arg tracker_rate)" />
+    <arg name="tracker_profile" value="$(arg tracker_profile)" />
+    <arg name="reacquisition_mode" value="$(arg reacquisition_mode)" />
   </include>
 
   <!-- ════════════════════════════════════════════════════════════════════ -->

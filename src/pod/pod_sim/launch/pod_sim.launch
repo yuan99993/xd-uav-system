@@ -1,0 +1,6 @@
+<launch>
+  <arg name="config" default="$(find pod_sim)/config/pod_sim.yaml" />
+  <node pkg="pod_sim" type="pod_sim_node" name="pod_sim" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+</launch>

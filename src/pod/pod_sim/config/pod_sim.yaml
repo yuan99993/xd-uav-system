@@ -1,0 +1,7 @@
+gimbal_state_topic: /pod/vendor/gimbal/state
+detections_topic: /pod/vendor/detections
+publish_rate: 20.0
+image_source: eo
+sensor_id: sim_eo
+detector_name: pod_sim
+model_version: sim-1

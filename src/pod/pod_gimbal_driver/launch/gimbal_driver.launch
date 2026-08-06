@@ -1,0 +1,6 @@
+<launch>
+  <arg name="config" default="$(find pod_gimbal_driver)/config/gimbal_driver.yaml" />
+  <node pkg="pod_gimbal_driver" type="pod_gimbal_driver_node" name="pod_gimbal_driver" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+</launch>

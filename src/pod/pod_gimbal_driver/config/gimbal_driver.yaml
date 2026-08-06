@@ -1,0 +1,10 @@
+# Hardware-specific code publishes/subscribes these vendor bridge topics using
+# pod_msgs types, or remaps them at launch after translating the native protocol.
+vendor_state_topic: /pod/vendor/gimbal/state
+vendor_command_topic: /pod/vendor/gimbal/command
+state_topic: /pod/gimbal/state
+command_topic: /pod/gimbal/command
+parent_frame: base_link
+gimbal_frame: pod_gimbal_link
+optical_frame: pod_camera_optical_frame
+state_timeout_sec: 0.25

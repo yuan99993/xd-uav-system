@@ -1,0 +1,6 @@
+<launch>
+  <arg name="config" default="$(find pod_camera_driver)/config/camera_driver.yaml" />
+  <node pkg="pod_camera_driver" type="pod_camera_driver_node" name="pod_camera_driver" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+</launch>

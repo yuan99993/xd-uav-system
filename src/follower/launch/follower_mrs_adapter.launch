@@ -8,7 +8,7 @@
 
   <env name="PYTHONNOUSERSITE" value="1" />
 
-  <node name="follower_node" pkg="follower" type="follower_node.py"
+  <node name="follower_node" pkg="follower" type="follower_node"
         output="screen" required="false">
     <!-- Load algorithm defaults first, then machine-specific endpoint mapping. -->
     <rosparam command="load" file="$(find follower)/config/follower_params.yaml" />

@@ -1,0 +1,16 @@
+<launch>
+  <node pkg="pod_uav_adapter" type="pod_uav_adapter_node"
+        name="adapter" ns="uav_execution_test" output="screen" required="true">
+    <param name="control_backend" value="mavros_direct" />
+    <param name="follower_command_topic" value="/uav_execution_test/follower_command" />
+    <param name="uav_state_topic" value="/uav_execution_test/state" />
+    <param name="execution_topic" value="/uav_execution_test/execution" />
+    <param name="mavros_state_topic" value="/uav_execution_test/mavros/state" />
+    <param name="mavros_setpoint_topic" value="/uav_execution_test/mavros/setpoint" />
+    <param name="required_mavros_mode" value="OFFBOARD" />
+    <param name="command_timeout_sec" value="0.15" />
+    <param name="publish_rate" value="50.0" />
+  </node>
+  <test test-name="uav_execution" pkg="pod_uav_adapter"
+        type="test_uav_execution.py" time-limit="25" />
+</launch>

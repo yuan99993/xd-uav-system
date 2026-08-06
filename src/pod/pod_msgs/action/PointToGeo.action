@@ -1,0 +1,9 @@
+float64 latitude
+float64 longitude
+float64 altitude
+bool altitude_valid
+---
+bool success
+string message
+---
+float32 angular_error_deg

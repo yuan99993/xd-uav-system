@@ -1,0 +1,7 @@
+<launch>
+  <arg name="config" default="$(find pod_mission_manager)/config/mission_manager.yaml" />
+  <node pkg="pod_mission_manager" type="pod_mission_manager_node"
+        name="pod_mission_manager" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+</launch>

@@ -1,0 +1,12 @@
+<launch>
+  <node pkg="pod_tracker_adapter" type="pod_tracker_adapter_node"
+        name="pod_tracker_adapter_test" output="screen">
+    <param name="detection_topic" value="/adapter_test/pod/perception/detections" />
+    <param name="tracker_candidates_topic" value="/adapter_test/tracker/detection_candidates" />
+    <param name="tracking_output_topic" value="/adapter_test/tracker/tracking_output" />
+    <param name="tracks_topic" value="/adapter_test/pod/perception/tracks" />
+    <param name="image_source" value="eo_test" />
+  </node>
+  <test test-name="tracker_adapter" pkg="pod_tracker_adapter"
+        type="test_tracker_adapter.py" time-limit="30" />
+</launch>

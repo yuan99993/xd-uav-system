@@ -1,0 +1,9 @@
+int32 target_id
+bool enable_gimbal_tracking
+bool enable_aircraft_follow
+---
+bool success
+string message
+---
+bool target_visible
+float32 tracking_confidence

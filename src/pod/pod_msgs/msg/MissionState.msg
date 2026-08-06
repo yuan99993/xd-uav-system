@@ -1,0 +1,10 @@
+std_msgs/Header header
+string state
+string active_mode
+int32 selected_target_id
+bool gimbal_control_enabled
+bool aircraft_follow_enabled
+bool control_authorized
+bool aircraft_command_executing
+string aircraft_follow_state
+string reason

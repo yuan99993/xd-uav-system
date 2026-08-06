@@ -1,0 +1,10 @@
+std_msgs/Header header
+geometry_msgs/Pose pose
+geometry_msgs/Twist twist
+bool connected
+string flight_mode
+bool armed
+bool offboard_active
+bool localization_valid
+float32 battery_percent
+string control_backend

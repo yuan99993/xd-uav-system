@@ -1,0 +1,38 @@
+# Product detector -> existing Tracker -> product all-target-list adapter.
+detection_topic: /pod/perception/detections
+tracker_candidates_topic: /tracker_node/detection_candidates
+tracking_output_topic: /tracker_node/tracking_output
+tracker_track_states_topic: /tracker_node/track_states
+tracker_select_service: /tracker_node/select_track
+tracks_topic: /pod/perception/tracks
+selected_target_topic: /pod/target/selected
+select_target_service: /pod/mission/select_target
+image_source: eo
+# The detector must set DetectionArray.image_source to "eo" or "ir" in dual
+# spectrum deployments. The adapter carries the provenance through to every
+# product track without changing the Tracker input contract.
+passthrough_to_tracker: true
+use_persistent_track_states: true
+enable_select_service: true
+tracker_select_wait_timeout_sec: 3.0
+queue_size: 10
+
+# Publish a second Tracker error stream whose LOS is transformed from the
+# camera optical axis through the measured gimbal pose into aircraft FRD.
+# Configure follower/tracker_error_topic to body_normalized_error_topic when
+# aircraft following is enabled. Missing/stale gimbal feedback fails closed.
+enable_body_los_compensation: false
+tracker_normalized_error_topic: /tracker_node/normalized_error
+body_normalized_error_topic: /pod/perception/body_normalized_error
+gimbal_state_topic: /pod/gimbal/state
+gimbal_state_timeout_sec: 0.15
+require_gimbal_state_for_body_los: true
+camera_mount_roll_deg: 0.0
+camera_mount_pitch_deg: 0.0
+camera_mount_yaw_deg: 0.0
+camera_fov_horizontal_deg: 60.0
+camera_fov_vertical_deg: 45.0
+
+# Optional mappings. A map uses detector class ID as the key; an array index
+# also maps to class ID. Unmapped entries are exposed as class_<id>.
+class_labels: {}

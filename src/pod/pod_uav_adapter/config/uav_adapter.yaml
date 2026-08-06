@@ -1,0 +1,21 @@
+# none | mavros_direct | xd | mrs. The product launch overrides this from the
+# single /pod/uav_control_backend contract parameter.
+control_backend: none
+follower_command_topic: /follower_node/follower_command
+follower_status_topic: /follower_node/follower_status
+uav_state_topic: /pod/uav/state
+execution_topic: /pod/uav/control_execution
+mavros_state_topic: /mavros/state
+odom_topic: /uav1/state_estimator/main/odom
+battery_topic: /mavros/battery
+mavros_setpoint_topic: /mavros/setpoint_raw/local
+mavros_set_mode_service: /mavros/set_mode
+required_mavros_mode: OFFBOARD
+mrs_velocity_reference_topic: /uav1/control_manager/velocity_reference_in
+mrs_velocity_frame: uav1/fcu
+xd_reference_topic: /uav1/control/reference/odom
+command_timeout_sec: 0.25
+state_timeout_sec: 0.5
+publish_rate: 50.0
+prestream_count: 30
+prestream_rate_hz: 30.0

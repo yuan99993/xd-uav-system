@@ -1,0 +1,9 @@
+std_msgs/Header header
+int32 target_id
+int32 class_id
+string class_label
+float32 confidence
+bool selected
+bool tracking_active
+bool control_measurement_ready
+string association_method

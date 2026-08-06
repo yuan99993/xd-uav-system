@@ -1,0 +1,9 @@
+<launch>
+  <arg name="config" default="$(find pod_uav_adapter)/config/uav_adapter.yaml" />
+  <arg name="backend" default="none" />
+  <node pkg="pod_uav_adapter" type="pod_uav_adapter_node"
+        name="pod_uav_adapter" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="control_backend" value="$(arg backend)" />
+  </node>
+</launch>

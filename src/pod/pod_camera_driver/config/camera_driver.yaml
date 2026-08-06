@@ -1,0 +1,11 @@
+# Vendor bridge inputs are intentionally distinct from product outputs.  A
+# hardware-specific plugin/bridge only has to publish these standard ROS types.
+eo_vendor_image_topic: /pod/vendor/eo/image_raw
+eo_vendor_camera_info_topic: /pod/vendor/eo/camera_info
+eo_image_topic: /pod/camera/eo/image_raw
+eo_camera_info_topic: /pod/camera/eo/camera_info
+enable_ir: false
+ir_vendor_image_topic: /pod/vendor/ir/image_raw
+ir_vendor_camera_info_topic: /pod/vendor/ir/camera_info
+ir_image_topic: /pod/camera/ir/image_raw
+ir_camera_info_topic: /pod/camera/ir/camera_info

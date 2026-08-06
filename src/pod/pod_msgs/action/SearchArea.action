@@ -1,0 +1,12 @@
+string pattern
+float32 yaw_min_deg
+float32 yaw_max_deg
+float32 pitch_min_deg
+float32 pitch_max_deg
+float32 rate_deg_s
+float32 duration_sec
+---
+bool success
+string message
+---
+float32 progress

@@ -52,6 +52,28 @@ float32 tracking_quality          # 跟踪质量 [0.0, 1.0]
 int32 frames_since_detection      # 自上次检测以来的帧数
 bool is_predicted                 # 当前位置是否为预测值
 
+# ── SmartTracker 关联诊断/控制协同 ───────────────────────────────────────
+# 关联来源：direct / id / spatial / distance / appearance / tentative / predicted / lost
+string association_method
+bool reidentification_match        # 本帧是否经外观 ReID 恢复
+bool control_measurement_ready     # 此测量是否已通过重捕获确认，可供控制器使用
+float32 control_confidence         # 已结合关联可靠性的控制置信度 [0.0, 1.0]
+
+# ── 时间/滤波诊断 ───────────────────────────────────────────────────────
+time capture_timestamp             # 检测/图像采集时间（不是发布时刻）
+float32 inference_latency_ms       # 从采集时间到当前发布的估计延迟
+float32[4] state_covariance        # [cx, cy, log_width, log_height] 对角协方差
+string fusion_status               # FUSED_CURRENT/FUSED_OOSM/REJECT_NIS/PREDICTED/...
+bool gmc_active                     # 本周期是否应用了视觉全局运动补偿
+uint32 gmc_inlier_count             # GMC RANSAC 内点数
+
+# ── 可选三维相对状态（body: forward, right, down） ──────────────────────
+float32[3] target_relative_position_body
+float32[3] target_relative_velocity_body
+float32[9] position_covariance
+float32[9] velocity_covariance
+bool range_valid
+
 # ── 元数据 ───────────────────────────────────────────────────────────────
 string tracker_name               # 跟踪器名称
 string tracker_type               # 跟踪器类型 (yolo/kalman/csrt/...)

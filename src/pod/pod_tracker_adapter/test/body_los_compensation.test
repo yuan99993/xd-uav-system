@@ -1,0 +1,13 @@
+<launch>
+  <node pkg="pod_tracker_adapter" type="pod_tracker_adapter_node"
+        name="adapter" ns="body_los_test" output="screen" required="true">
+    <param name="enable_body_los_compensation" value="true" />
+    <param name="tracker_normalized_error_topic" value="/body_los_test/input" />
+    <param name="body_normalized_error_topic" value="/body_los_test/output" />
+    <param name="gimbal_state_topic" value="/body_los_test/gimbal" />
+    <param name="gimbal_state_timeout_sec" value="0.5" />
+    <param name="camera_fov_horizontal_deg" value="60.0" />
+  </node>
+  <test test-name="body_los_compensation" pkg="pod_tracker_adapter"
+        type="test_body_los_compensation.py" time-limit="20" />
+</launch>

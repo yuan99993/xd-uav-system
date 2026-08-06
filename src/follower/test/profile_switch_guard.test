@@ -1,0 +1,11 @@
+<launch>
+  <node pkg="follower" type="follower_node" name="profile_guard_test" output="screen">
+    <param name="enable_mavros_output" value="false"/>
+    <param name="enable_mrs_velocity_reference" value="false"/>
+    <param name="altitude_fail_safe" value="false"/>
+    <param name="profile_switch_min_interval_sec" value="0.5"/>
+    <param name="follower_profile" value="mc_velocity_chase"/>
+  </node>
+  <test test-name="profile_switch_guard" pkg="follower"
+        type="test_profile_switch_guard.py" time-limit="15"/>
+</launch>

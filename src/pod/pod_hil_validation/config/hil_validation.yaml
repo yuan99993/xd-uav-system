@@ -1,0 +1,11 @@
+gimbal_state_topic: /pod/gimbal/state
+detections_topic: /pod/perception/detections
+uav_state_topic: /pod/uav/state
+uav_execution_topic: /pod/uav/control_execution
+expected_parent_frame: base_link
+expected_gimbal_frame: pod_gimbal_link
+expected_optical_frame: pod_camera_optical_frame
+sample_timeout_sec: 0.5
+require_detections: true
+# Set true only after the bench/aircraft interface is deliberately configured.
+require_uav: false

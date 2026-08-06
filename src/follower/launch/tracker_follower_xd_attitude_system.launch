@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- The XD control manager remains the only MAVROS attitude publisher. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="vehicle_type" default="multirotor"/>
+  <arg name="follower_profile" default="mc_attitude_rate"/>
+  <arg name="tuning_config"
+       default="$(find follower)/config/$(arg vehicle_type)_attitude_sitl.yaml"/>
+  <arg name="mavros_namespace" default="/$(arg UAV_NAME)/mavros"/>
+  <arg name="tracker_error_topic" default="/tracker_node/normalized_error"/>
+  <arg name="start_tracker" default="true"/>
+  <arg name="start_xd_localization" default="true"/>
+
+  <env name="PYTHONNOUSERSITE" value="1"/>
+
+  <include if="$(arg start_xd_localization)"
+           file="$(find xd_uav_state_estimators)/launch/uav_localization_stack.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+  </include>
+
+  <include file="$(find xd_uav_control_manager)/launch/control_manager.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+    <arg name="controller_command_topic"
+         value="controller/selected_command"/>
+  </include>
+  <include file="$(find xd_uav_controller)/launch/controller.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+  </include>
+
+  <include if="$(arg start_tracker)"
+           file="$(find tracker)/launch/tracker.launch"/>
+
+  <node pkg="follower" type="follower_node"
+        name="follower_node" output="screen" required="false">
+    <rosparam command="load"
+              file="$(find follower)/config/follower_params.yaml"/>
+    <rosparam command="load" file="$(arg tuning_config)"/>
+    <param name="follower_profile" value="$(arg follower_profile)"/>
+    <param name="tracker_error_topic" value="$(arg tracker_error_topic)"/>
+    <param name="mavros_namespace" value="$(arg mavros_namespace)"/>
+    <param name="vehicle_type" value="$(arg vehicle_type)"/>
+    <param name="enable_mavros_output" value="false"/>
+    <param name="enable_mrs_velocity_reference" value="false"/>
+  </node>
+
+  <include file="$(find follower)/launch/follower_px4_attitude_rate_adapter.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+    <arg name="command_topic" value="/follower_node/follower_command"/>
+  </include>
+</launch>

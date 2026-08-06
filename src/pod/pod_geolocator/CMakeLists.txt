@@ -1,0 +1,4 @@
+cmake_minimum_required(VERSION 3.0.2)
+project(pod_geolocator)
+find_package(catkin REQUIRED COMPONENTS diagnostic_msgs geographic_msgs geometry_msgs nav_msgs roscpp sensor_msgs tf2_geometry_msgs tf2_ros pod_msgs)
+catkin_package(CATKIN_DEPENDS diagnostic_msgs geographic_msgs geometry_msgs nav_msgs roscpp sensor_msgs tf2_geometry_msgs tf2_ros pod_msgs)

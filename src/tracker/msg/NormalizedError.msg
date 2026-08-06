@@ -16,5 +16,37 @@ bool error_valid                  # 误差是否有效
 bool target_visible               # 目标是否可见
 bool is_estimated                 # 是否为估计值（非直接检测）
 
+# ── 质量与生命周期 ───────────────────────────────────────────────────────
+float32 confidence                # 当前检测/跟踪置信度 [0, 1]
+float32 tracking_quality          # 综合质量（置信度、预测衰减、边缘惩罚）[0, 1]
+uint32 frames_since_detection     # 自最后一帧直接检测后的帧数
+
 # ── 时间戳 ───────────────────────────────────────────────────────────────
 float32 dt_since_detection        # 自上次检测以来的时间（秒）
+
+# ── SmartTracker → Follower 协同 ─────────────────────────────────────────
+# Legacy publishers leave association_method empty.  Follower then falls back
+# to error_valid/confidence semantics for backward compatibility.
+string association_method          # direct / id / spatial / distance / appearance / tentative / predicted / lost
+bool control_measurement_ready     # 重捕获已确认且允许驱动飞行控制
+float32 control_confidence         # 置信度与关联来源质量融合后的控制置信度
+
+# ── 时间/滤波诊断 ───────────────────────────────────────────────────────
+time capture_timestamp
+float32 inference_latency_ms
+float32[4] state_covariance         # [cx, cy, log_width, log_height] 对角协方差
+string fusion_status
+bool gmc_active
+uint32 gmc_inlier_count
+
+# 可选三维相对状态，供 follower 优先使用；不可用时回退 bbox-size。
+float32[3] target_relative_position_body
+float32[3] target_relative_velocity_body
+float32[9] position_covariance
+float32[9] velocity_covariance
+bool range_valid
+
+# ── 相机/机体系视线角 ───────────────────────────────────────────────────
+float32 yaw_error_rad             # target line-of-sight yaw relative to body
+float32 pitch_error_rad           # target line-of-sight pitch relative to body
+bool has_angular_error
