@@ -3,7 +3,7 @@ output_rate: 100.0
 diagnostics_rate: 2.0
 max_localization_delay: 0.15
 max_dead_reckoning_time: 1.0
-imu_timeout: 0.30
+imu_timeout: 1.0
 require_imu: true #true：IMU 掉线会停止有效主输出；false：定位健康时仍能输出，定位失效时则依赖最后状态做纯模型预测
 frame_lookup_timeout: 0.03
 

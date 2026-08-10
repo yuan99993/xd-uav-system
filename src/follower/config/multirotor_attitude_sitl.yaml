@@ -1,0 +1,30 @@
+# Conservative Iris-class PX4 SITL tuning for mc_attitude_rate.
+follower_profile: mc_attitude_rate
+allow_attitude_rate_profiles: true
+allow_fixed_wing_profile: false
+
+mc_hover_thrust: 0.72
+mc_min_thrust: 0.10
+mc_max_thrust: 0.90
+mc_max_roll_rate_deg_s: 45.0
+mc_max_pitch_rate_deg_s: 40.0
+max_yaw_rate_deg_s: 75.0
+mc_altitude_hold_enabled: true
+mc_target_altitude_offset: 0.0
+mc_altitude_thrust_min_correction: -0.20
+mc_altitude_thrust_max_correction: 0.20
+mc_thrust_compensation_enabled: true
+mc_thrust_compensation_gain: 0.8
+mc_coordinated_roll_enabled: true
+mc_turn_coordination_gain: 0.8
+mc_max_bank_angle_deg: 25.0
+mc_yaw_error_gating_enabled: true
+mc_yaw_error_gate: 0.30
+
+pid_mc_attitude_altitude: {kp: 0.08, ki: 0.012, kd: 0.02}
+pid_mc_coordinated_roll: {kp: 1.6, ki: 0.01, kd: 0.04}
+
+min_altitude: 1.0
+max_altitude: 80.0
+altitude_timeout_sec: 0.5
+altitude_fail_safe: true

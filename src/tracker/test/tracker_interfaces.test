@@ -1,0 +1,21 @@
+<launch>
+  <node pkg="tracker" type="tracker_node" name="tracker_interface_test"
+        output="screen" required="true">
+    <param name="frame_width" value="640" />
+    <param name="frame_height" value="480" />
+    <param name="publish_rate" value="40.0" />
+    <!-- Keep the interface test insensitive to scheduler contention when
+         several ROS integration tests share one master. -->
+    <param name="oosm_history_duration_sec" value="2.0" />
+    <param name="auto_start_on_detection" value="false" />
+    <param name="use_camera_info" value="true" />
+    <param name="camera_info_topic" value="/tracker_interface_test/camera_info" />
+    <param name="secondary_camera_info_topic" value="" />
+    <param name="use_dynamic_camera_tf" value="false" />
+    <param name="gimbal_state_topic" value="/tracker_interface_test/gimbal_state" />
+    <param name="require_gimbal_state_for_body_los" value="true" />
+    <param name="enable_gmc" value="false" />
+  </node>
+  <test test-name="tracker_interfaces" pkg="tracker"
+        type="test_tracker_interfaces.py" time-limit="30" />
+</launch>

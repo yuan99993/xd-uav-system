@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="vehicle_type" default="multirotor"/>
+  <arg name="command_topic" default="/follower_node/follower_command"/>
+  <arg name="base_command_topic"
+       default="/$(arg UAV_NAME)/controller/command"/>
+  <arg name="selected_command_topic"
+       default="/$(arg UAV_NAME)/controller/selected_command"/>
+  <arg name="fallback_to_base_controller" default="true"/>
+  <arg name="enabled_on_start" default="false"/>
+
+  <node pkg="follower" type="px4_attitude_rate_adapter_node"
+        name="follower_px4_attitude_rate_adapter" output="screen">
+    <param name="vehicle_type" value="$(arg vehicle_type)"/>
+    <param name="fallback_to_base_controller"
+           value="$(arg fallback_to_base_controller)"/>
+    <param name="enabled_on_start" value="$(arg enabled_on_start)"/>
+    <param name="command_timeout_sec" value="0.20"/>
+    <param name="base_command_timeout_sec" value="0.20"/>
+    <remap from="follower_command" to="$(arg command_topic)"/>
+    <remap from="base_command" to="$(arg base_command_topic)"/>
+    <remap from="selected_command" to="$(arg selected_command_topic)"/>
+  </node>
+</launch>

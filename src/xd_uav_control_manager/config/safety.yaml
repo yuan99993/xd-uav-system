@@ -1,8 +1,8 @@
 safety:
   # 传感器、估计器与PX4状态的有效性检查。
   inputs:
-    odometry_timeout: 0.20
-    imu_timeout: 0.50
+    odometry_timeout: 0.50
+    imu_timeout: 1.0
     acceleration_timeout: 0.20
     airspeed_timeout: 0.30
     estimator_status_timeout: 0.30

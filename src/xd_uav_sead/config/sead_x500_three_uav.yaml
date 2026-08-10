@@ -1,0 +1,22 @@
+# Low-risk SEAD profile for the three-uav MRS Gazebo x500 verification only.
+# PX4, MAVROS and each xd control stack are launched separately.
+
+control_backend: "xd_control_manager"
+sead_control_mode: "position_waypoint"
+simple_strike_control_mode: "position_waypoint"
+sead_runtime_mode: "simple_strike"
+minimum_hold_altitude: 1.0
+
+xbee_baud: 57600
+start_external_formation_launch: false
+formation_launch_pkg: ""
+formation_launch_file: ""
+
+formation:
+  spacing: 4.0
+  standoff_distance: 12.0
+  safe_separation: 2.0
+  altitude_step: 0.5
+  broadcast_interval: 0.2
+  minimum_altitude: 1.0
+  static_hold: true

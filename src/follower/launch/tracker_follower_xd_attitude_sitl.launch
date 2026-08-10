@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="vehicle" default="iris"/>
+  <arg name="vehicle_type" default="multirotor"/>
+  <arg name="follower_profile" default="mc_attitude_rate"/>
+  <arg name="start_tracker" default="true"/>
+  <arg name="gui" default="false"/>
+  <arg name="paused" default="false"/>
+  <arg name="world"
+       default="$(find mavlink_sitl_gazebo)/worlds/empty.world"/>
+  <!-- The binary ROS PX4 package may only install the Iris model.  Keep the
+       model tree selectable so fixed-wing tests can use the matching PX4
+       source checkout without copying or modifying installed assets. -->
+  <arg name="vehicle_model_root"
+       default="$(find mavlink_sitl_gazebo)/models"/>
+  <arg name="vehicle_plugin_root" default="/opt/ros/noetic/lib"/>
+  <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
+
+  <include file="$(find follower)/launch/tracker_follower_xd_sitl.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle" value="$(arg vehicle)"/>
+    <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+    <arg name="tracking_system_launch"
+         value="tracker_follower_xd_attitude_system.launch"/>
+    <arg name="follower_profile" value="$(arg follower_profile)"/>
+    <arg name="start_tracker" value="$(arg start_tracker)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="vehicle_model_root" value="$(arg vehicle_model_root)"/>
+    <arg name="vehicle_plugin_root" value="$(arg vehicle_plugin_root)"/>
+    <arg name="fcu_url" value="$(arg fcu_url)"/>
+  </include>
+</launch>

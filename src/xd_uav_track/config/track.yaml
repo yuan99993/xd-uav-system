@@ -1,0 +1,198 @@
+# xd_uav_track 主配置
+# 单位约定：时间 s，角度 rad，距离 m，速度 m/s；图像量标注 normalized 时为 [-1, 1]。
+
+# 1. 车辆与运行方式 -----------------------------------------------------------
+vehicle:
+  uav_name: "uav1"
+  body_frame: "uav1/base_link"
+
+runtime:
+  publish_rate_hz: 30.0
+  state_timeout_sec: 0.30
+  # true：直接接 xd_uav_controller；false：只观察 track 下的诊断输出。
+  publish_control_reference: true
+
+# 2. ROS 接口（所有话题均可改成绝对或相对名称） ------------------------------
+interfaces:
+  input:
+    # 简单模式：上游只给一个已经选好的框。
+    bounding_box: "/uav1/track/bounding_box"
+    # 完整模式：上游给一帧内的全部候选，需开启 tracker.multi_target.enabled。
+    detections: "/uav1/track/detections"
+    camera_info: "/uav1/camera/camera_info"
+    vehicle_state: "/uav1/state_estimator/main/odom"
+    gimbal_state: "/uav1/track/gimbal_state"
+  output:
+    # 真正送给现有控制器的速度参考。
+    control_reference: "/uav1/control/reference/setpoint"
+    # 以下为可观测/调试输出，不是额外的飞控输入。
+    body_velocity: "/uav1/track/velocity_body"
+    follower_command: "/uav1/track/command"
+    tracks: "/uav1/track/tracks"
+    status: "/uav1/track/status"
+
+# 3. Tracker：检测框 -> 稳定目标状态 -----------------------------------------
+tracker:
+  # false 时必须调用 ~start_tracker，避免检测器一启动飞机立即跟随。
+  enabled_at_startup: false
+  input_timeout_sec: 0.25
+  minimum_confidence: 0.50
+  confidence_hysteresis: 0.08
+
+  # 单框通道以及多目标选中框进入 follower 前的轻量平滑。
+  position_filter_alpha: 0.40
+  velocity_filter_alpha: 0.25
+  target_x: 0.0                    # 期望框中心，normalized
+  target_y: 0.0
+
+  image_geometry:
+    # BoundingBox/DetectionArray 未填写尺寸时，使用最新 CameraInfo。
+    use_camera_info_fallback: true
+
+  multi_target:
+    enabled: false                 # 红框脚本测试时保持 false
+    auto_select: true              # 未手选时选择质量最高的 confirmed 轨迹
+    image_source: ""               # 空=接收全部；也可锁定 eo/ir/逻辑相机名
+    confidence:
+      new_track: 0.20
+      update: 0.05
+    lifecycle:
+      confirmation_hits: 2
+      occlusion_frames: 5          # 该阶段允许 Kalman 预测继续短时控制
+      removal_frames: 30
+    limits:
+      maximum_tracks: 128
+      maximum_embedding_dimension: 2048
+    association:
+      iou_threshold: 0.20
+      center_distance: 1.50
+      appearance_cosine: 0.78      # 候选含 embedding 时启用外观重识别
+    kalman:
+      process_noise: 1.0
+      measurement_noise: 1.0
+
+# 4. Follower：目标状态 -> 单一机体系速度向量 -------------------------------
+follower:
+  # mc_velocity_ground | mc_velocity_position | mc_velocity_distance
+  # mc_velocity_chase | gm_velocity_chase | gm_velocity_vector
+  # fw_velocity_vector
+  profile: "mc_velocity_chase"
+  lateral_guidance_mode: "coordinated_turn"  # coordinated_turn | sideslip
+  enable_vertical_control: true
+  distance_enable_yaw: false
+  horizontal_deadband: 0.03
+  vertical_deadband: 0.03
+
+  pid:
+    lateral:       {kp: 1.5, ki: 0.08, kd: 0.20, integral_limit: 1.0}
+    vertical:      {kp: 1.0, ki: 0.08, kd: 0.15, integral_limit: 1.0}
+    yaw:           {kp: 2.0, ki: 0.05, kd: 0.10, integral_limit: 0.8}
+    ground_forward: {kp: 4.5, ki: 0.10, kd: 1.50, integral_limit: 1.0}
+
+  limits:
+    maximum_forward_velocity: 5.0
+    maximum_reverse_velocity: 2.0
+    maximum_lateral_velocity: 2.0
+    maximum_vertical_velocity: 1.5
+    maximum_yaw_rate: 1.2
+
+  smoothing:
+    velocity:
+      enabled: true
+      ema_alpha: 0.20
+    yaw:
+      enabled: true
+      deadzone: 0.01
+      maximum_acceleration: 1.57
+      ema_alpha: 0.70
+      speed_scaling_enabled: true
+      minimum_speed: 0.5
+      maximum_speed: 5.0
+      low_speed_factor: 0.5
+
+  target_loss:
+    forward_velocity: 0.0
+    reset_after_sec: 3.0
+
+  chase:
+    initial_forward_velocity: 0.0
+    forward_velocity: 3.0
+    forward_ramp_rate: 0.5
+
+  # 候选检测含 body forward/right/down 相对位置/速度时，追逐模式自动叠加米制控制。
+  relative_state:
+    enabled: true
+    target_forward_m: 8.0
+    target_down_m: 0.0
+    position_gain: 0.50
+    velocity_feedforward: 1.0
+    maximum_correction_mps: 3.0
+
+  ground:
+    altitude_scaling_enabled: true
+    attitude_compensation_enabled: true
+    base_adjustment_x: 0.2
+    base_adjustment_y: 0.2
+    altitude_factor: 0.005
+    descend_to_target: false
+    target_altitude: 3.0
+    maximum_descent_velocity: 0.5
+
+  gimbal:
+    input_timeout_sec: 0.20
+    mount_type: "HORIZONTAL"       # HORIZONTAL | VERTICAL | TILTED_45
+    angle_filter_previous_weight: 0.70
+    angle_deadzone: 0.035
+    yaw_offset: 0.0
+    pitch_offset: 0.0
+    roll_offset: 0.0
+    invert_yaw: false
+    invert_pitch: false
+    invert_roll: false
+
+  gm_velocity_chase:
+    lateral_guidance_mode: "coordinated_turn"
+    forward_mode: "CONSTANT"       # CONSTANT | PITCH_BASED
+    base_forward_speed: 2.0
+    forward_acceleration: 2.0
+    pitch_velocity_scaling: 0.15
+    pitch_deadzone: 0.035
+    maximum_lateral_angle: 1.57
+    maximum_vertical_angle: 1.57
+
+  gm_velocity_vector:
+    lateral_guidance_mode: "sideslip"
+    velocity: 3.0
+    ramp_acceleration: 0.25
+    enable_vertical_control: false
+    yaw_rate_gain: 0.5
+
+  # 只生成速度向量；姿态、能量和油门全部由 xd_uav_controller 负责。
+  fw_velocity_vector:
+    pid:
+      course:     {kp: 1.2, ki: 0.05, kd: 0.10, integral_limit: 0.35}
+      climb_rate: {kp: 2.0, ki: 0.05, kd: 0.10, integral_limit: 0.8}
+    airspeed: 15.0
+    maximum_course_offset: 0.70
+    maximum_climb_rate: 3.0
+
+# 5. 跨模块安全策略 -----------------------------------------------------------
+safety:
+  # normalized Kalman 位置协方差的标准差比例；不受 640x480/1920x1080 影响。
+  uncertainty:
+    enabled: true
+    nominal_sigma_normalized: 0.05
+    slow_ratio: 1.0
+    abort_ratio: 2.5
+    minimum_scale: 0.25
+    yaw_scale: 0.65
+  reidentification:
+    initial_scale: 0.35
+    recovery_sec: 0.60
+  profile_switch:
+    minimum_interval_sec: 0.50
+    blend_duration_sec: 0.50
+  gimbal_fallback:
+    # GM 姿态失效时：chase -> mc chase，vector -> mc distance。
+    enabled: true
+  emergency_stop_at_startup: false

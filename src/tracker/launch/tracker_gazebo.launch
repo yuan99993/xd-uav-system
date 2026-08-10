@@ -1,0 +1,39 @@
+<launch>
+  <!--
+    tracker_gazebo.launch — Tracker + Gazebo 仿真启动文件
+
+    同时启动 Tracker 节点和 Gazebo 仿真环境，
+    用于 PX4-Autopilot SITL 场景下的目标跟踪测试。
+  -->
+
+  <!-- ── Gazebo 仿真参数 ───────────────────────────────────────────────── -->
+  <arg name="world"              default="empty" />
+  <arg name="gui"                default="true" />
+  <arg name="paused"             default="false" />
+  <arg name="use_sim_time"       default="true" />
+  <arg name="debug"              default="false" />
+
+  <!-- ── Tracker 参数 ──────────────────────────────────────────────────── -->
+  <arg name="frame_width"        default="640" />
+  <arg name="frame_height"       default="480" />
+  <arg name="publish_rate"       default="30.0" />
+
+  <!-- ── 设置仿真时间 ──────────────────────────────────────────────────── -->
+  <param name="/use_sim_time" value="$(arg use_sim_time)" />
+
+  <!-- ── 启动 Gazebo ───────────────────────────────────────────────────── -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find tracker)/worlds/$(arg world).world" />
+    <arg name="gui"        value="$(arg gui)" />
+    <arg name="paused"     value="$(arg paused)" />
+    <arg name="debug"      value="$(arg debug)" />
+  </include>
+
+  <!-- ── 启动 Tracker 节点 ─────────────────────────────────────────────── -->
+  <include file="$(find tracker)/launch/tracker.launch">
+    <arg name="frame_width"  value="$(arg frame_width)" />
+    <arg name="frame_height" value="$(arg frame_height)" />
+    <arg name="publish_rate" value="$(arg publish_rate)" />
+  </include>
+
+</launch>

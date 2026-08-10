@@ -1,0 +1,128 @@
+<launch>
+  <!--
+    tracker_follower_sim.launch — 完整仿真启动链
+
+    启动顺序:
+      1. Gazebo + PX4 SITL + 无人机模型
+      2. MAVROS (PX4 ↔ ROS 通信桥)
+      3. Tracker 节点 (目标检测/跟踪)
+      4. Follower 节点 (目标跟随控制)
+      5. RViz (可视化)
+
+    用法:
+      roslaunch tracker tracker_follower_sim.launch
+      roslaunch tracker tracker_follower_sim.launch world:=grass_plane
+      roslaunch tracker tracker_follower_sim.launch gui:=false rviz:=false
+
+    依赖:
+      - PX4-Autopilot (已编译 SITL)
+      - mavlink_sitl_gazebo
+      - mavros
+      - gazebo-ros
+      - rviz
+  -->
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  全局参数                                                          -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+
+  <!-- Gazebo 环境变量（确保能找到 PX4 模型和插件，禁用在线下载防止黑屏） -->
+  <env name="PYTHONNOUSERSITE" value="1" />
+  <env name="GAZEBO_MODEL_DATABASE_URI" value="" />
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find px4)/Tools/sitl_gazebo/models:$(optenv GAZEBO_MODEL_PATH)" />
+  <env name="GAZEBO_PLUGIN_PATH"
+       value="/opt/ros/noetic/lib:$(optenv GAZEBO_PLUGIN_PATH)" />
+  <env name="GAZEBO_RESOURCE_PATH"
+       value="$(find px4)/Tools/sitl_gazebo:$(optenv GAZEBO_RESOURCE_PATH)" />
+
+  <arg name="world"        default="$(find mavlink_sitl_gazebo)/worlds/empty.world" />
+  <arg name="vehicle"      default="iris" />
+  <arg name="est"          default="ekf2" />
+
+  <!-- 无人机初始位姿 -->
+  <arg name="x" default="0" />
+  <arg name="y" default="0" />
+  <arg name="z" default="0.5" />
+  <arg name="R" default="0" />
+  <arg name="P" default="0" />
+  <arg name="Y" default="0" />
+
+  <!-- Gazebo -->
+  <arg name="gui"          default="true" />
+  <arg name="paused"       default="false" />
+  <arg name="debug"        default="false" />
+  <arg name="verbose"      default="false" />
+  <arg name="use_sim_time" default="true" />
+
+  <!-- RViz -->
+  <arg name="rviz"         default="true" />
+  <arg name="rviz_config"  default="$(find tracker)/config/tracker_follower.rviz" />
+
+  <!-- Tracker -->
+  <arg name="tracker_enabled"  default="true" />
+  <arg name="frame_width"      default="640" />
+  <arg name="frame_height"     default="480" />
+  <arg name="tracker_rate"     default="30.0" />
+  <arg name="tracker_profile"  default="smart_botsort" />
+  <arg name="reacquisition_mode" default="balanced" />
+
+  <!-- Follower -->
+  <arg name="follower_enabled" default="true" />
+  <arg name="follower_rate"    default="30.0" />
+  <arg name="lateral_mode"     default="coordinated_turn" />
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  Step 1: PX4 SITL + Gazebo                                         -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <include file="$(find px4)/launch/posix_sitl.launch">
+    <arg name="x"         value="$(arg x)" />
+    <arg name="y"         value="$(arg y)" />
+    <arg name="z"         value="$(arg z)" />
+    <arg name="R"         value="$(arg R)" />
+    <arg name="P"         value="$(arg P)" />
+    <arg name="Y"         value="$(arg Y)" />
+    <arg name="world"     value="$(arg world)" />
+    <arg name="vehicle"   value="$(arg vehicle)" />
+    <arg name="sdf"       value="$(find mavlink_sitl_gazebo)/models/$(arg vehicle)/$(arg vehicle).sdf" />
+    <arg name="gui"       value="$(arg gui)" />
+    <arg name="paused"    value="$(arg paused)" />
+    <arg name="debug"     value="$(arg debug)" />
+    <arg name="verbose"   value="$(arg verbose)" />
+  </include>
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  Step 2: MAVROS                                                     -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <include file="$(find mavros)/launch/px4.launch">
+    <arg name="fcu_url" value="udp://:14540@localhost:14557" />
+    <arg name="gcs_url" value="" />
+  </include>
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  Step 3: Tracker 节点                                               -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <include if="$(arg tracker_enabled)" file="$(find tracker)/launch/tracker.launch">
+    <arg name="frame_width"   value="$(arg frame_width)" />
+    <arg name="frame_height"  value="$(arg frame_height)" />
+    <arg name="publish_rate"  value="$(arg tracker_rate)" />
+    <arg name="tracker_profile" value="$(arg tracker_profile)" />
+    <arg name="reacquisition_mode" value="$(arg reacquisition_mode)" />
+  </include>
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  Step 4: Follower 节点                                              -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <include if="$(arg follower_enabled)" file="$(find follower)/launch/follower.launch">
+    <arg name="lateral_guidance_mode" value="$(arg lateral_mode)" />
+    <arg name="publish_rate"          value="$(arg follower_rate)" />
+  </include>
+
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <!--  Step 5: RViz                                                        -->
+  <!-- ════════════════════════════════════════════════════════════════════ -->
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz_tracker_follower"
+        args="-d $(arg rviz_config)"
+        output="log" />
+
+</launch>

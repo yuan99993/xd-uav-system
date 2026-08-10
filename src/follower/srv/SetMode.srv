@@ -1,0 +1,5 @@
+# SetMode.srv — 设置跟随模式服务
+string mode    # "coordinated_turn" or "sideslip"
+---
+bool success
+string message

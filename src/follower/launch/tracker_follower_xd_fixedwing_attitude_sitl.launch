@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- PX4 plane SITL with the model and aerodynamic/airspeed plugins from
+       the same local PX4 build.  The ROS binary install contains Iris only. -->
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="start_tracker" default="true"/>
+  <arg name="gui" default="false"/>
+  <arg name="paused" default="false"/>
+  <arg name="px4_source_root" default="/home/promise/PX4-Autopilot"/>
+  <arg name="world"
+       default="$(find mavlink_sitl_gazebo)/worlds/empty.world"/>
+  <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
+
+  <include file="$(find follower)/launch/tracker_follower_xd_attitude_sitl.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle" value="plane"/>
+    <arg name="vehicle_type" value="fixedwing"/>
+    <arg name="follower_profile" value="fw_attitude_rate"/>
+    <arg name="start_tracker" value="$(arg start_tracker)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="fcu_url" value="$(arg fcu_url)"/>
+    <arg name="vehicle_model_root"
+         value="$(arg px4_source_root)/Tools/sitl_gazebo/models"/>
+    <arg name="vehicle_plugin_root"
+         value="$(arg px4_source_root)/build/px4_sitl_default/build_gazebo"/>
+  </include>
+</launch>

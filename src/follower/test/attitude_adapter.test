@@ -1,0 +1,28 @@
+<launch>
+  <node pkg="follower" type="px4_attitude_rate_adapter_node"
+        name="mc_adapter_test" output="screen">
+    <param name="vehicle_type" value="multirotor"/>
+    <param name="publish_rate" value="50.0"/>
+    <param name="command_timeout_sec" value="0.15"/>
+    <param name="base_command_timeout_sec" value="0.15"/>
+    <param name="fallback_to_base_controller" value="true"/>
+    <param name="enabled_on_start" value="false"/>
+    <remap from="follower_command" to="/adapter_test/mc/follower"/>
+    <remap from="base_command" to="/adapter_test/mc/base"/>
+    <remap from="selected_command" to="/adapter_test/mc/selected"/>
+  </node>
+  <node pkg="follower" type="px4_attitude_rate_adapter_node"
+        name="fw_adapter_test" output="screen">
+    <param name="vehicle_type" value="fixedwing"/>
+    <param name="publish_rate" value="50.0"/>
+    <param name="command_timeout_sec" value="0.15"/>
+    <param name="base_command_timeout_sec" value="0.15"/>
+    <param name="fallback_to_base_controller" value="false"/>
+    <param name="enabled_on_start" value="true"/>
+    <remap from="follower_command" to="/adapter_test/fw/follower"/>
+    <remap from="base_command" to="/adapter_test/fw/base"/>
+    <remap from="selected_command" to="/adapter_test/fw/selected"/>
+  </node>
+  <test test-name="attitude_adapter" pkg="follower"
+        type="test_attitude_adapter.py" time-limit="25"/>
+</launch>

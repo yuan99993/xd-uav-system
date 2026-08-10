@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+udp_port="${1:-14560}"
+px4_root="/opt/ros/noetic/share/px4"
+source_rcs="${px4_root}/build/px4_sitl_default/etc/init.d-posix/rcS"
+runtime_rcs="$(mktemp /tmp/xd_px4_rcS.XXXXXX)"
+
+cleanup() {
+  rm -f "${runtime_rcs}"
+}
+trap cleanup EXIT INT TERM
+
+# Keep the packaged PX4 startup sequence intact, changing only the simulator
+# transport. Starting UDP directly avoids abandoned TCP IMU instances.
+sed -e 's#^[[:space:]]*\. px4-rc\.simulator[[:space:]]*$#  simulator start -u '"${udp_port}"'#' \
+  -e '/param set-default COM_RC_IN_MODE 1/a\
+param set COM_RC_IN_MODE 4\
+param set COM_RCL_EXCEPT 4\
+param set COM_OF_LOSS_T 1.0\
+param set COM_OBL_ACT 1\
+param set COM_OBL_RC_ACT 5' \
+  "${source_rcs}" > "${runtime_rcs}"
+
+"${px4_root}/px4/px4" \
+  "${px4_root}/build/px4_sitl_default/etc" \
+  -s "${runtime_rcs}" \
+  -d

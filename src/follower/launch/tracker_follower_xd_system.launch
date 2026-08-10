@@ -1,0 +1,65 @@
+<?xml version="1.0"?>
+<launch>
+  <!--
+    Complete Tracker/Follower integration for the XD control stack.
+
+    Control path:
+      tracker -> follower -> follower_xd_controller_adapter
+      -> /<uav>/control/reference/odom -> xd_uav_controller
+      -> xd_uav_control_manager -> MAVROS/PX4
+
+    The follower's direct MAVROS and MRS outputs are deliberately disabled.
+    The XD control manager is the only component allowed to send setpoints to
+    PX4 in this launch configuration.
+  -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="vehicle_type" default="multirotor"/>
+  <arg name="mavros_namespace" default="/$(arg UAV_NAME)/mavros"/>
+  <arg name="tracker_error_topic"
+       default="/tracker_node/normalized_error"/>
+
+  <arg name="start_tracker" default="true"/>
+  <arg name="start_xd_localization" default="true"/>
+  <arg name="start_xd_control_stack" default="true"/>
+
+  <env name="PYTHONNOUSERSITE" value="1"/>
+
+  <include if="$(arg start_xd_localization)"
+           file="$(find xd_uav_state_estimators)/launch/uav_localization_stack.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+  </include>
+
+  <include if="$(arg start_xd_control_stack)"
+           file="$(find xd_uav_control_manager)/launch/control_manager.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+  </include>
+
+  <include if="$(arg start_xd_control_stack)"
+           file="$(find xd_uav_controller)/launch/controller.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle_type" value="$(arg vehicle_type)"/>
+  </include>
+
+  <include if="$(arg start_tracker)"
+           file="$(find tracker)/launch/tracker.launch"/>
+
+  <node pkg="follower" type="follower_node"
+        name="follower_node" output="screen" required="false">
+    <rosparam command="load"
+              file="$(find follower)/config/follower_params.yaml"/>
+    <param name="tracker_error_topic" value="$(arg tracker_error_topic)"/>
+    <param name="mavros_namespace" value="$(arg mavros_namespace)"/>
+    <param name="vehicle_type" value="$(arg vehicle_type)"/>
+
+    <!-- XD owns the final PX4 transport. Never bypass it in this mode. -->
+    <param name="control_output_backend" value="command_only"/>
+    <param name="enable_mavros_output" value="false"/>
+    <param name="enable_mrs_velocity_reference" value="false"/>
+  </node>
+
+  <include file="$(find follower)/launch/follower_xd_controller_adapter.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="command_topic" value="/follower_node/follower_command"/>
+  </include>
+</launch>

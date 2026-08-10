@@ -1,0 +1,49 @@
+# Conservative PX4 plane SITL tuning for fw_attitude_rate.  Airspeed and trim
+# are aligned with xd_uav_controller/config/fixedwing.yaml.
+follower_profile: fw_attitude_rate
+allow_attitude_rate_profiles: false
+allow_fixed_wing_profile: true
+
+fw_min_airspeed: 11.0
+fw_cruise_airspeed: 15.0
+fw_max_airspeed: 24.0
+fw_airspeed_timeout_sec: 0.5
+fw_cruise_thrust: 0.25
+fw_min_thrust: 0.15
+fw_max_thrust: 0.90
+fw_thrust_slew_rate: 0.15
+
+fw_max_roll_rate_deg_s: 18.0
+fw_max_pitch_rate_deg_s: 10.0
+max_yaw_rate_deg_s: 12.0
+fw_max_bank_angle_deg: 28.0
+fw_max_load_factor: 1.5
+pid_fw_bank: {kp: 0.8, ki: 0.002, kd: 0.02}
+
+fw_l1_distance: 70.0
+fw_l1_damping: 0.80
+fw_l1_adaptive: true
+fw_l1_min_distance: 50.0
+fw_l1_max_distance: 100.0
+fw_l1_lateral_scale: 15.0
+
+fw_tecs_enabled: true
+fw_tecs_time_constant: 6.0
+fw_tecs_pitch_damping: 0.10
+fw_tecs_throttle_damping: 0.035
+fw_tecs_spe_weight: 0.8
+fw_tecs_altitude_scale: 15.0
+fw_tecs_max_integral: 30.0
+
+fw_stall_protection_enabled: true
+fw_stall_margin_buffer: 2.5
+fw_stall_recovery_pitch_rate_deg_s: -5.0
+fw_stall_recovery_thrust: 0.90
+fw_orbit_on_target_loss: true
+fw_orbit_radius: 80.0
+fw_orbit_direction: 1.0
+
+min_altitude: 5.0
+max_altitude: 250.0
+altitude_timeout_sec: 0.5
+altitude_fail_safe: true

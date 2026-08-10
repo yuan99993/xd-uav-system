@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+startup_delay="${1:-15}"
+uav_name="${2:-uav1}"
+vehicle_type="${3:-multirotor}"
+mavros_namespace="${4:-/${uav_name}/mavros}"
+system_launch="${5:-tracker_follower_xd_system.launch}"
+follower_profile="${6:-}"
+start_tracker="${7:-true}"
+
+sleep "${startup_delay}"
+launch_args=(
+  "UAV_NAME:=${uav_name}"
+  "vehicle_type:=${vehicle_type}"
+  "mavros_namespace:=${mavros_namespace}"
+  "start_tracker:=${start_tracker}"
+)
+if [[ -n "${follower_profile}" ]]; then
+  launch_args+=("follower_profile:=${follower_profile}")
+fi
+exec roslaunch follower "${system_launch}" "${launch_args[@]}"
