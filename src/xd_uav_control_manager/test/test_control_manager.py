@@ -50,6 +50,8 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         self._airspeed = -1.5
         self._body_speed = 2.0
         self._publish_estimator = True
+        self._publish_mavros_state = True
+        self._publish_extended_state = True
         self._landed_state = ExtendedState.LANDED_STATE_ON_GROUND
         self._arming_requests = []
         self._force_disarm_requests = []
@@ -204,14 +206,16 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         mavros_state.connected = True
         mavros_state.armed = self._armed
         mavros_state.mode = self._mode
-        self._publishers["mavros_state"].publish(mavros_state)
+        if self._publish_mavros_state:
+            self._publishers["mavros_state"].publish(mavros_state)
 
         extended_state = ExtendedState()
         extended_state.header.stamp = now
         extended_state.landed_state = self._landed_state
-        self._publishers["mavros_extended_state"].publish(
-            extended_state
-        )
+        if self._publish_extended_state:
+            self._publishers["mavros_extended_state"].publish(
+                extended_state
+            )
 
         airspeed = VFR_HUD()
         airspeed.header.stamp = now
@@ -263,6 +267,40 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         self.assertAlmostEqual(state.airspeed, 0.0)
         self.assertAlmostEqual(state.velocity_odom.x, 0.0, delta=0.05)
         self.assertAlmostEqual(state.velocity_odom.y, 2.0, delta=0.05)
+
+        if self._vehicle_type == "fixedwing":
+            # 缓存的“未解锁/在地面”不能在MAVROS状态超时后继续授权负空速钳制。
+            self._publish_mavros_state = False
+            self._publish_extended_state = False
+            stale_state = self._wait_for(
+                lambda: (
+                    message
+                    if not (
+                        message := rospy.wait_for_message(
+                            "control_manager/state",
+                            ControlState,
+                            timeout=0.2,
+                        )
+                    ).airspeed_valid
+                    else None
+                )
+            )
+            self.assertFalse(stale_state.airspeed_valid)
+            self._publish_mavros_state = True
+            self._publish_extended_state = True
+            self._wait_for(
+                lambda: (
+                    message
+                    if (
+                        message := rospy.wait_for_message(
+                            "control_manager/state",
+                            ControlState,
+                            timeout=0.2,
+                        )
+                    ).airspeed_valid
+                    else None
+                )
+            )
 
         self._airspeed = -3.5
         invalid_airspeed_state = self._wait_for(

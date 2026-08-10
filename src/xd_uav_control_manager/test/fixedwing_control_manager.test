@@ -20,6 +20,8 @@
       <param name="safety/inputs/odometry_timeout" value="0.5"/>
       <param name="safety/inputs/imu_timeout" value="0.5"/>
       <param name="safety/inputs/acceleration_timeout" value="0.5"/>
+      <param name="safety/inputs/mavros_state_timeout" value="0.1"/>
+      <param name="safety/inputs/extended_state_timeout" value="0.1"/>
       <param name="safety/inputs/airspeed_negative_tolerance" value="3.0"/>
       <param name="safety/controller_command/timeout" value="0.5"/>
       <param name="safety/inputs/estimator_status_timeout" value="0.1"/>

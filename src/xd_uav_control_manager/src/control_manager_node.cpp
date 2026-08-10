@@ -428,8 +428,8 @@ class ControlManagerNode {
             ? static_cast<double>(airspeed_.airspeed)
             : std::numeric_limits<double>::quiet_NaN();
     const bool airspeed_ground_clamp_allowed =
-        (have_mavros_state_ && !mavros_state_.armed) ||
-        (have_mavros_extended_state_ &&
+        (mavrosStateFresh(now) && !mavros_state_.armed) ||
+        (mavrosExtendedStateFresh(now) &&
          mavros_extended_state_.landed_state ==
              mavros_msgs::ExtendedState::
                  LANDED_STATE_ON_GROUND);

@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <Eigen/Dense>
+
 #include <geometry_msgs/TransformStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
@@ -51,6 +53,47 @@ bool normalize(tf2::Quaternion* quaternion) {
     return false;
   }
   quaternion->normalize();
+  return true;
+}
+
+Eigen::Matrix3d rotationMatrix(const tf2::Quaternion& quaternion) {
+  const tf2::Matrix3x3 basis(quaternion);
+  Eigen::Matrix3d rotation;
+  for (int row = 0; row < 3; ++row) {
+    for (int column = 0; column < 3; ++column) {
+      rotation(row, column) = basis[row][column];
+    }
+  }
+  return rotation;
+}
+
+Eigen::Matrix3d skewMatrix(const Eigen::Vector3d& vector) {
+  Eigen::Matrix3d skew;
+  skew << 0.0, -vector.z(), vector.y(), vector.z(), 0.0, -vector.x(),
+      -vector.y(), vector.x(), 0.0;
+  return skew;
+}
+
+bool eulerYawRateFromBodyRates(const double roll, const double pitch,
+                               const Eigen::Vector3d& body_rate,
+                               double* yaw_rate,
+                               Eigen::RowVector3d* jacobian = nullptr) {
+  const double cosine_pitch = std::cos(pitch);
+  if (!std::isfinite(roll) || !std::isfinite(pitch) ||
+      !body_rate.allFinite() || std::abs(cosine_pitch) < 1e-3) {
+    return false;
+  }
+  const Eigen::RowVector3d rate_jacobian(
+      0.0, std::sin(roll) / cosine_pitch,
+      std::cos(roll) / cosine_pitch);
+  const double value = rate_jacobian.dot(body_rate);
+  if (!std::isfinite(value)) {
+    return false;
+  }
+  *yaw_rate = value;
+  if (jacobian != nullptr) {
+    *jacobian = rate_jacobian;
+  }
   return true;
 }
 
@@ -123,12 +166,11 @@ class OdometryAdapter {
 
     input_topic_ = readString(config, "input_topic", std::string(), true);
     output_namespace_ = "state_estimator_inputs/" + adapter_name_;
-    body_frame_ = scopedFrame(
-        readString(config, "body_frame", "base_link"), uav_name_);
-    parent_frame_override_ = scopedFrame(
-        readString(config, "parent_frame_override", std::string()), uav_name_);
-    child_frame_override_ = scopedFrame(
-        readString(config, "child_frame_override", std::string()), uav_name_);
+    origin_frame_ = scopedFrame(adapter_name_ + "_origin", uav_name_);
+    body_frame_ = scopedFrame("base_link", uav_name_);
+    reference_frame_ = scopedFrame(
+        readString(config, "reference_frame", std::string(), true),
+        uav_name_);
     tf_timeout_ = readNumber(config, "tf_timeout", 0.03);
     max_input_delay_ = readNumber(config, "max_input_delay", 0.50);
 
@@ -148,9 +190,10 @@ class OdometryAdapter {
           readNumber(covariance, "yaw_rate", 0.10);
     }
 
-    if (input_topic_.empty() || body_frame_.empty()) {
+    if (input_topic_.empty() || reference_frame_.empty() ||
+        body_frame_.empty()) {
       throw std::runtime_error("适配器'" + adapter_name_ +
-                               "'的输入话题和机体坐标系不能为空");
+                               "'的输入话题和参考坐标系不能为空");
     }
     if (tf_timeout_ < 0.0 || max_input_delay_ <= 0.0) {
       throw std::runtime_error("适配器'" + adapter_name_ +
@@ -179,9 +222,9 @@ class OdometryAdapter {
         nh_.subscribe(input_topic_, 30, &OdometryAdapter::odometryCallback,
                       this);
 
-    ROS_INFO("[odometry_adapter_manager] 已加载适配器'%s': %s -> %s/*",
+    ROS_INFO("[odometry_adapter_manager] 已加载适配器'%s': %s，%s -> %s",
              adapter_name_.c_str(), nh_.resolveName(input_topic_).c_str(),
-             nh_.resolveName(output_namespace_).c_str());
+             reference_frame_.c_str(), body_frame_.c_str());
   }
 
  private:
@@ -197,20 +240,10 @@ class OdometryAdapter {
       return;
     }
 
-    const std::string parent_frame =
-        parent_frame_override_.empty()
-            ? trimSlashes(message->header.frame_id)
-            : parent_frame_override_;
-    const std::string input_child =
-        child_frame_override_.empty()
-            ? trimSlashes(message->child_frame_id)
-            : child_frame_override_;
-    if (parent_frame.empty() || input_child.empty()) {
-      ROS_WARN_STREAM_THROTTLE(
-          2.0, "[odometry_adapter_manager/" << adapter_name_
-                                             << "] 输入坐标系名称为空");
-      return;
-    }
+    // 输入Odometry只提供数值。来源原点由适配器名称固定生成，输入参考点由
+    // reference_frame配置指定，不依赖上游消息的frame_id写法。
+    const std::string& parent_frame = origin_frame_;
+    const std::string& input_child = reference_frame_;
 
     tf2::Quaternion parent_child_rotation;
     tf2::fromMsg(message->pose.pose.orientation, parent_child_rotation);
@@ -237,13 +270,16 @@ class OdometryAdapter {
       try {
         const geometry_msgs::TransformStamped transform =
             tf_buffer_->lookupTransform(
-                input_child, body_frame_, stamp, ros::Duration(tf_timeout_));
-        tf2::fromMsg(transform.transform, child_body);
+                body_frame_, input_child, stamp,
+                ros::Duration(tf_timeout_));
+        tf2::Transform body_child;
+        tf2::fromMsg(transform.transform, body_child);
+        child_body = body_child.inverse();
       } catch (const tf2::TransformException& exception) {
         ROS_WARN_STREAM_THROTTLE(
             2.0, "[odometry_adapter_manager/"
                      << adapter_name_
-                     << "] 无法把输入参考点转换到base_link: "
+                     << "] 无法获取base_link到输入参考点的TF: "
                      << exception.what());
         return;
       }
@@ -264,30 +300,110 @@ class OdometryAdapter {
     double yaw = 0.0;
     tf2::Matrix3x3(parent_body.getRotation()).getRPY(roll, pitch, yaw);
 
+    // nav_msgs/Odometry规定pose协方差在父坐标系表达、twist协方差在
+    // child_frame_id表达。参考点从input_child移动到base_link后，杆臂会把
+    // 角度/角速度不确定度耦合到位置和线速度，必须用同一个Jacobian传播。
+    using Matrix6d = Eigen::Matrix<double, 6, 6>;
+    Matrix6d pose_covariance = Matrix6d::Zero();
+    Matrix6d twist_covariance = Matrix6d::Zero();
+    for (int row = 0; row < 6; ++row) {
+      for (int column = 0; column < 6; ++column) {
+        const double pose_value =
+            message->pose.covariance[row * 6 + column];
+        const double twist_value =
+            message->twist.covariance[row * 6 + column];
+        pose_covariance(row, column) =
+            std::isfinite(pose_value) ? pose_value : 0.0;
+        twist_covariance(row, column) =
+            std::isfinite(twist_value) ? twist_value : 0.0;
+      }
+    }
+    pose_covariance =
+        0.5 * (pose_covariance + pose_covariance.transpose());
+    twist_covariance =
+        0.5 * (twist_covariance + twist_covariance.transpose());
+    for (int axis = 0; axis < 3; ++axis) {
+      pose_covariance(axis, axis) = validVariance(
+          pose_covariance(axis, axis), fallback_position_variance_);
+      pose_covariance(axis + 3, axis + 3) = validVariance(
+          pose_covariance(axis + 3, axis + 3),
+          fallback_heading_variance_);
+      twist_covariance(axis, axis) = validVariance(
+          twist_covariance(axis, axis), fallback_velocity_variance_);
+      twist_covariance(axis + 3, axis + 3) = validVariance(
+          twist_covariance(axis + 3, axis + 3),
+          fallback_yaw_rate_variance_);
+    }
+
+    const Eigen::Matrix3d parent_child_rotation_matrix =
+        rotationMatrix(parent_child_rotation);
+    const Eigen::Matrix3d body_child_rotation_matrix =
+        rotationMatrix(child_body.getRotation().inverse());
+    const Eigen::Vector3d child_body_offset(
+        child_body.getOrigin().x(), child_body.getOrigin().y(),
+        child_body.getOrigin().z());
+    const Eigen::Vector3d parent_body_offset =
+        parent_child_rotation_matrix * child_body_offset;
+
+    Eigen::Matrix<double, 3, 6> position_jacobian =
+        Eigen::Matrix<double, 3, 6>::Zero();
+    position_jacobian.block<3, 3>(0, 0).setIdentity();
+    position_jacobian.block<3, 3>(0, 3) =
+        -skewMatrix(parent_body_offset);
+    const Eigen::Matrix3d position_covariance =
+        position_jacobian * pose_covariance *
+        position_jacobian.transpose();
+
+    Eigen::Matrix<double, 3, 6> velocity_jacobian =
+        Eigen::Matrix<double, 3, 6>::Zero();
+    velocity_jacobian.block<3, 3>(0, 0) =
+        parent_child_rotation_matrix;
+    velocity_jacobian.block<3, 3>(0, 3) =
+        -parent_child_rotation_matrix * skewMatrix(child_body_offset);
+    const Eigen::Matrix3d velocity_covariance =
+        velocity_jacobian * twist_covariance *
+        velocity_jacobian.transpose();
+
+    const Eigen::Matrix3d angular_body_covariance =
+        body_child_rotation_matrix *
+        twist_covariance.block<3, 3>(3, 3) *
+        body_child_rotation_matrix.transpose();
+    const Eigen::Vector3d angular_body_vector(
+        angular_body.x(), angular_body.y(), angular_body.z());
+    Eigen::RowVector3d yaw_rate_jacobian;
+    double euler_yaw_rate = 0.0;
+    const bool yaw_rate_valid = eulerYawRateFromBodyRates(
+        roll, pitch, angular_body_vector, &euler_yaw_rate,
+        &yaw_rate_jacobian);
+    const double transformed_yaw_rate_variance =
+        yaw_rate_valid
+            ? validVariance(
+                  (yaw_rate_jacobian * angular_body_covariance *
+                   yaw_rate_jacobian.transpose())(0, 0),
+                  fallback_yaw_rate_variance_)
+            : fallback_yaw_rate_variance_;
+
     const double position_x_variance =
-        validVariance(message->pose.covariance[0],
+        validVariance(position_covariance(0, 0),
                       fallback_position_variance_);
     const double position_y_variance =
-        validVariance(message->pose.covariance[7],
+        validVariance(position_covariance(1, 1),
                       fallback_position_variance_);
     const double position_z_variance =
-        validVariance(message->pose.covariance[14],
+        validVariance(position_covariance(2, 2),
                       fallback_position_variance_);
     const double heading_variance =
-        validVariance(message->pose.covariance[35],
+        validVariance(pose_covariance(5, 5),
                       fallback_heading_variance_);
     const double velocity_x_variance =
-        validVariance(message->twist.covariance[0],
+        validVariance(velocity_covariance(0, 0),
                       fallback_velocity_variance_);
     const double velocity_y_variance =
-        validVariance(message->twist.covariance[7],
+        validVariance(velocity_covariance(1, 1),
                       fallback_velocity_variance_);
     const double velocity_z_variance =
-        validVariance(message->twist.covariance[14],
+        validVariance(velocity_covariance(2, 2),
                       fallback_velocity_variance_);
-    const double yaw_rate_variance =
-        validVariance(message->twist.covariance[35],
-                      fallback_yaw_rate_variance_);
 
     xd_uav_state_estimators::PositionXY position_xy;
     position_xy.header.stamp = stamp;
@@ -296,8 +412,8 @@ class OdometryAdapter {
     position_xy.x = parent_body.getOrigin().x();
     position_xy.y = parent_body.getOrigin().y();
     position_xy.covariance[0] = position_x_variance;
-    position_xy.covariance[1] = message->pose.covariance[1];
-    position_xy.covariance[2] = message->pose.covariance[6];
+    position_xy.covariance[1] = position_covariance(0, 1);
+    position_xy.covariance[2] = position_covariance(1, 0);
     position_xy.covariance[3] = position_y_variance;
     position_xy.valid = true;
     position_xy_publisher_.publish(position_xy);
@@ -316,8 +432,8 @@ class OdometryAdapter {
     velocity_xy.x = velocity_parent.x();
     velocity_xy.y = velocity_parent.y();
     velocity_xy.covariance[0] = velocity_x_variance;
-    velocity_xy.covariance[1] = message->twist.covariance[1];
-    velocity_xy.covariance[2] = message->twist.covariance[6];
+    velocity_xy.covariance[1] = velocity_covariance(0, 1);
+    velocity_xy.covariance[2] = velocity_covariance(1, 0);
     velocity_xy.covariance[3] = velocity_y_variance;
     velocity_xy.valid = true;
     velocity_xy_publisher_.publish(velocity_xy);
@@ -340,11 +456,11 @@ class OdometryAdapter {
 
     xd_uav_state_estimators::YawRate yaw_rate;
     yaw_rate.header.stamp = stamp;
-    yaw_rate.header.frame_id = body_frame_;
+    yaw_rate.header.frame_id = parent_frame;
     yaw_rate.child_frame_id = body_frame_;
-    yaw_rate.yaw_rate = angular_body.z();
-    yaw_rate.variance = yaw_rate_variance;
-    yaw_rate.valid = true;
+    yaw_rate.yaw_rate = euler_yaw_rate;
+    yaw_rate.variance = transformed_yaw_rate_variance;
+    yaw_rate.valid = yaw_rate_valid;
     yaw_rate_publisher_.publish(yaw_rate);
   }
 
@@ -362,9 +478,9 @@ class OdometryAdapter {
   std::string uav_name_;
   std::string input_topic_;
   std::string output_namespace_;
+  std::string origin_frame_;
   std::string body_frame_;
-  std::string parent_frame_override_;
-  std::string child_frame_override_;
+  std::string reference_frame_;
   double tf_timeout_{0.03};
   double max_input_delay_{0.50};
   double fallback_position_variance_{0.05};

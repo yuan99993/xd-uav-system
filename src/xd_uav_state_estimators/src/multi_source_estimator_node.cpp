@@ -50,6 +50,25 @@ double wrapAngle(const double value) {
   return std::atan2(std::sin(value), std::cos(value));
 }
 
+bool eulerYawRateFromBodyRates(const double roll, const double pitch,
+                               const Eigen::Vector3d& body_rate,
+                               double* yaw_rate) {
+  const double cosine_pitch = std::cos(pitch);
+  if (!std::isfinite(roll) || !std::isfinite(pitch) ||
+      !body_rate.allFinite() || std::abs(cosine_pitch) < 1e-3) {
+    return false;
+  }
+  const double value =
+      (std::sin(roll) * body_rate.y() +
+       std::cos(roll) * body_rate.z()) /
+      cosine_pitch;
+  if (!std::isfinite(value)) {
+    return false;
+  }
+  *yaw_rate = value;
+  return true;
+}
+
 std::string trimSlashes(std::string value) {
   while (!value.empty() && value.front() == '/') {
     value.erase(value.begin());
@@ -137,11 +156,25 @@ class AxisKalman {
 
   void initialize(const double position, const double velocity,
                   const double acceleration) {
+    initialize(position, velocity, acceleration,
+               parameters_.initial_position_variance,
+               parameters_.initial_velocity_variance,
+               parameters_.initial_acceleration_variance);
+  }
+
+  void initialize(const double position, const double velocity,
+                  const double acceleration,
+                  const double position_variance,
+                  const double velocity_variance,
+                  const double acceleration_variance) {
     state_ << position, velocity, acceleration;
     covariance_.setZero();
-    covariance_(0, 0) = parameters_.initial_position_variance;
-    covariance_(1, 1) = parameters_.initial_velocity_variance;
-    covariance_(2, 2) = parameters_.initial_acceleration_variance;
+    covariance_(0, 0) =
+        std::max(1e-9, position_variance);
+    covariance_(1, 1) =
+        std::max(1e-9, velocity_variance);
+    covariance_(2, 2) =
+        std::max(1e-9, acceleration_variance);
     initialized_ = true;
   }
 
@@ -223,10 +256,16 @@ class YawKalman {
   }
 
   void initialize(const double yaw, const double rate) {
+    initialize(yaw, rate, 0.25, 0.25);
+  }
+
+  void initialize(const double yaw, const double rate,
+                  const double yaw_variance,
+                  const double rate_variance) {
     state_ << wrapAngle(yaw), rate;
     covariance_.setZero();
-    covariance_(0, 0) = 0.25;
-    covariance_(1, 1) = 0.25;
+    covariance_(0, 0) = std::max(1e-9, yaw_variance);
+    covariance_(1, 1) = std::max(1e-9, rate_variance);
     initialized_ = true;
   }
 
@@ -373,6 +412,10 @@ bool isPoseCorrection(const CorrectionKind kind) {
 struct CorrectionConfig {
   std::string name;
   std::string topic;
+  // 由state_estimator_inputs/<provider>/...的话题结构自动识别。
+  // provider只决定坐标标准化使用哪套来源原点对齐，不限制该修正最终
+  // 参与哪个逻辑来源的滤波。
+  std::string provider;
   CorrectionKind kind{CorrectionKind::kPositionXY};
   double timeout{0.25};
   bool required{true};
@@ -388,6 +431,7 @@ struct CorrectionRuntime {
   std::uint64_t received{0};
   std::uint64_t accepted{0};
   std::uint64_t rejected{0};
+  std::uint64_t valid_session{0};
   int consecutive_rejections{0};
   int recovery_samples{0};
   bool recovering{false};
@@ -434,6 +478,7 @@ struct Estimate {
   double yaw{0.0};
   double yaw_rate{0.0};
   double yaw_variance{0.25};
+  double yaw_rate_variance{0.25};
   double roll{0.0};
   double pitch{0.0};
 };
@@ -462,7 +507,11 @@ struct SourceRuntime {
   ros::Publisher valid_publisher;
   ros::Publisher alignment_publisher;
   std::vector<FramePublisher> frame_publishers;
+  // raw保存本定位提供者在自身原点下的原始状态，只用于建立/发布
+  // provider-origin -> odom对齐；fused_raw保存已经标准化到odom的
+  // 本来源输入，用于初始化该来源自己的完整滤波状态。
   RawState raw;
+  RawState fused_raw;
   std::string raw_frame;
   ros::Time filter_stamp;
   ros::Time latest_raw_stamp;
@@ -470,6 +519,8 @@ struct SourceRuntime {
   double alignment_yaw{0.0};
   bool alignment_initialized{false};
   bool filters_initialized{false};
+  bool required_corrections_were_connected{false};
+  std::uint64_t session{1};
 };
 
 struct MainRuntime {
@@ -704,11 +755,17 @@ class MultiSourceEstimatorNode {
       source->alignment_publisher =
           private_nh_.advertise<geometry_msgs::TransformStamped>(
               "sources/" + name + "/alignment", 2, true);
-      loadCorrections(source_pointer, prefix);
-      createSourceFramePublishers(source_pointer);
       publishBoolean(source->valid_publisher, false);
       source_by_name_[name] = source_pointer;
       sources_.push_back(std::move(source));
+    }
+
+    // 先建立完整的来源表，再解析修正。这样任意来源都可以直接引用
+    // 另一个已声明提供者的话题，不受YAML书写顺序影响。
+    for (auto& source : sources_) {
+      const std::string prefix = "sources/" + source->config.name + "/";
+      loadCorrections(source.get(), prefix);
+      createSourceFramePublishers(source.get());
     }
   }
 
@@ -761,6 +818,19 @@ class MultiSourceEstimatorNode {
         throw std::runtime_error(
             "来源'" + source->config.name + "'存在无效correction参数");
       }
+      std::string provider_path = trimSlashes(config.topic);
+      const std::string input_prefix = "state_estimator_inputs/";
+      const std::size_t input_prefix_position =
+          provider_path.find(input_prefix);
+      if (input_prefix_position != std::string::npos) {
+        provider_path.erase(
+            0, input_prefix_position + input_prefix.size());
+      }
+      const std::size_t separator = provider_path.find('/');
+      const std::string candidate = provider_path.substr(0, separator);
+      if (source_by_name_.count(candidate) != 0) {
+        config.provider = candidate;
+      }
       const int ordinal = ++kind_counts[kind_text];
       if (config.name.empty()) {
         config.name =
@@ -771,9 +841,10 @@ class MultiSourceEstimatorNode {
       correction->config = config;
       subscribeCorrection(source, correction.get());
       ROS_INFO(
-          "[xd_uav_state_estimators] %s/%s <- %s，required=%s",
+          "[xd_uav_state_estimators] %s/%s <- %s，provider=%s，required=%s",
           source->config.name.c_str(), config.name.c_str(),
           nh_.resolveName(config.topic).c_str(),
+          config.provider.empty() ? "standardized" : config.provider.c_str(),
           config.required ? "true" : "false");
       source->corrections.push_back(std::move(correction));
     }
@@ -972,48 +1043,67 @@ class MultiSourceEstimatorNode {
       registerRejection(source, correction, reason);
       return;
     }
-    if (isPoseCorrection(sample.kind)) {
-      if (source->raw_frame.empty()) {
-        source->raw_frame = sample.frame_id;
-      } else if (sample.frame_id != source->raw_frame &&
-                 sample.frame_id != odom_frame_) {
-        registerRejection(source, correction,
-                          "修正坐标系与来源原点不一致");
-        return;
+    const bool own_provider =
+        correction->config.provider == source->config.name;
+    if (own_provider) {
+      if (isPoseCorrection(sample.kind)) {
+        if (source->raw_frame.empty()) {
+          source->raw_frame = sample.frame_id;
+        } else if (sample.frame_id != source->raw_frame) {
+          registerRejection(source, correction,
+                            "同一提供者的位姿坐标系发生变化");
+          return;
+        }
+      }
+      if (!source->filters_initialized) {
+        updateRawState(&source->raw, sample);
+        source->latest_raw_stamp =
+            std::max(source->latest_raw_stamp, sample.stamp);
       }
     }
-    if ((sample.kind == CorrectionKind::kVelocityXY ||
-         sample.kind == CorrectionKind::kVelocityZ) &&
-        !source->raw_frame.empty() &&
-        sample.frame_id != source->raw_frame &&
-        sample.frame_id != odom_frame_ &&
-        sample.frame_id != body_frame_) {
-      registerRejection(source, correction,
-                        "速度修正坐标系既不是来源原点、odom，也不是机体");
+
+    const bool alignment_was_initialized = source->alignment_initialized;
+    initializeAlignmentIfReady(source, sample.stamp);
+    if (!source->alignment_initialized) {
       return;
     }
 
-    const bool alignment_was_initialized =
-        source->alignment_initialized;
-    if (!source->alignment_initialized ||
-        !source->filters_initialized) {
-      updateRawState(source, sample);
+    if (!alignment_was_initialized) {
+      initializeFusedRawFromNative(source);
+      publishAlignment(*source, sample.stamp);
     }
-    initializeAlignmentIfReady(source, sample.stamp);
-    if (!source->alignment_initialized) {
-      registerAccepted(source, correction);
+
+    CorrectionSample aligned;
+    if (!standardizeSample(*source, *correction, sample, &aligned,
+                           &reason)) {
+      ROS_WARN_THROTTLE(
+          1.0, "[xd_uav_state_estimators] 修正%s/%s等待标准化: %s",
+          source->config.name.c_str(), correction->config.name.c_str(),
+          reason.c_str());
       return;
     }
-    if (!alignment_was_initialized || !source->filters_initialized) {
-      initializeFiltersFromRaw(source, sample.stamp);
+    if (!source->filters_initialized) {
+      updateRawState(&source->fused_raw, aligned);
+      correction->valid_session = source->session;
       registerAccepted(source, correction);
+      if (!fusedRawReady(*source)) {
+        return;
+      }
+      initializeFiltersFromFusedRaw(source, sample.stamp);
+      if (source->config.name == active_source_) {
+        // 活动来源的新会话已经直接对齐到当前main，因此旧会话的handover
+        // 不能继续叠加。
+        main_handover_translation_.setZero();
+        main_handover_yaw_ = 0.0;
+        main_handover_start_time_ = ros::Time();
+        main_handover_rapid_recovery_ = false;
+      }
       publishAlignment(*source, sample.stamp);
       updateSelection(ros::Time::now());
       return;
     }
 
     predictSourceTo(source, sample.stamp);
-    CorrectionSample aligned = alignSample(*source, sample);
     if (!innovationAccepted(source->axis, source->yaw_filter,
                             aligned, &reason)) {
       registerRejection(source, correction, reason);
@@ -1021,43 +1111,44 @@ class MultiSourceEstimatorNode {
       return;
     }
     correctSource(source, aligned);
-    updateRawState(source, sample);
+    if (own_provider) {
+      updateRawState(&source->raw, sample);
+      source->latest_raw_stamp =
+          std::max(source->latest_raw_stamp, sample.stamp);
+    }
+    updateRawState(&source->fused_raw, aligned);
+    correction->valid_session = source->session;
     registerAccepted(source, correction);
     publishAlignment(*source, sample.stamp);
-    if (source->config.name == active_source_) {
-      correctMainFromActiveSource(aligned);
-    }
     updateSelection(ros::Time::now());
   }
 
-  void updateRawState(SourceRuntime* source,
+  void updateRawState(RawState* state,
                       const CorrectionSample& sample) {
-    source->latest_raw_stamp =
-        std::max(source->latest_raw_stamp, sample.stamp);
     switch (sample.kind) {
       case CorrectionKind::kPositionXY:
-        source->raw.position_xy = sample.vector;
-        source->raw.have_position_xy = true;
+        state->position_xy = sample.vector;
+        state->have_position_xy = true;
         break;
       case CorrectionKind::kPositionZ:
-        source->raw.position_z = sample.scalar;
-        source->raw.have_position_z = true;
+        state->position_z = sample.scalar;
+        state->have_position_z = true;
         break;
       case CorrectionKind::kVelocityXY:
-        source->raw.velocity_xy = sample.vector;
-        source->raw.have_velocity_xy = true;
+        state->velocity_xy = sample.vector;
+        state->have_velocity_xy = true;
         break;
       case CorrectionKind::kVelocityZ:
-        source->raw.velocity_z = sample.scalar;
-        source->raw.have_velocity_z = true;
+        state->velocity_z = sample.scalar;
+        state->have_velocity_z = true;
         break;
       case CorrectionKind::kHeading:
-        source->raw.heading = wrapAngle(sample.scalar);
-        source->raw.have_heading = true;
+        state->heading = wrapAngle(sample.scalar);
+        state->have_heading = true;
         break;
       case CorrectionKind::kYawRate:
-        source->raw.yaw_rate = sample.scalar;
-        source->raw.have_yaw_rate = true;
+        state->yaw_rate = sample.scalar;
+        state->have_yaw_rate = true;
         break;
     }
   }
@@ -1071,19 +1162,33 @@ class MultiSourceEstimatorNode {
         });
   }
 
+  bool hasNativeCorrectionKind(const SourceRuntime& source,
+                               const CorrectionKind kind) const {
+    return std::any_of(
+        source.corrections.begin(), source.corrections.end(),
+        [&source, kind](const std::unique_ptr<CorrectionRuntime>& correction) {
+          return correction->config.kind == kind &&
+                 correction->config.provider == source.config.name;
+        });
+  }
+
   bool rawReadyForAlignment(const SourceRuntime& source) const {
     const bool position_xy_ready =
-        !hasCorrectionKind(source, CorrectionKind::kPositionXY) ||
+        !hasNativeCorrectionKind(source, CorrectionKind::kPositionXY) ||
         source.raw.have_position_xy;
     const bool position_z_ready =
-        !hasCorrectionKind(source, CorrectionKind::kPositionZ) ||
+        !hasNativeCorrectionKind(source, CorrectionKind::kPositionZ) ||
         source.raw.have_position_z;
     const bool heading_ready =
-        !hasCorrectionKind(source, CorrectionKind::kHeading) ||
+        !hasNativeCorrectionKind(source, CorrectionKind::kHeading) ||
         source.raw.have_heading;
+    const bool has_native_pose =
+        hasNativeCorrectionKind(source, CorrectionKind::kPositionXY) ||
+        hasNativeCorrectionKind(source, CorrectionKind::kPositionZ) ||
+        hasNativeCorrectionKind(source, CorrectionKind::kHeading);
     return position_xy_ready && position_z_ready && heading_ready &&
            (!source.raw_frame.empty() ||
-            !hasCorrectionKind(source, CorrectionKind::kPositionXY));
+            !has_native_pose);
   }
 
   void initializeAlignmentIfReady(SourceRuntime* source,
@@ -1093,6 +1198,7 @@ class MultiSourceEstimatorNode {
       return;
     }
     if (source->config.alignment_mode == "identity" ||
+        source->raw_frame == odom_frame_ ||
         active_source_.empty()) {
       source->alignment_yaw = 0.0;
       source->alignment_translation.setZero();
@@ -1130,35 +1236,131 @@ class MultiSourceEstimatorNode {
     source->alignment_initialized = true;
   }
 
-  void initializeFiltersFromRaw(SourceRuntime* source,
-                                const ros::Time& stamp) {
-    const Eigen::Rotation2Dd rotation(source->alignment_yaw);
-    Eigen::Vector2d position = Eigen::Vector2d::Zero();
-    if (source->raw.have_position_xy) {
-      position =
-          rotation * source->raw.position_xy +
-          source->alignment_translation.head<2>();
+  void initializeFiltersFromFusedRaw(SourceRuntime* source,
+                                     const ros::Time& stamp) {
+    const RawState& state = source->fused_raw;
+    Estimate main_seed;
+    const bool have_main_seed = currentMainEstimate(stamp, &main_seed);
+    const Eigen::Vector2d position =
+        state.have_position_xy ? state.position_xy : Eigen::Vector2d::Zero();
+    Eigen::Vector2d velocity = Eigen::Vector2d::Zero();
+    if (state.have_velocity_xy) {
+      velocity = state.velocity_xy;
+    } else if (have_main_seed) {
+      velocity = main_seed.velocity.head<2>();
     }
-    const Eigen::Vector2d velocity =
-        source->raw.have_velocity_xy
-            ? rotation * source->raw.velocity_xy
-            : Eigen::Vector2d::Zero();
-    source->axis[0].initialize(position.x(), velocity.x(), 0.0);
-    source->axis[1].initialize(position.y(), velocity.y(), 0.0);
+    const Eigen::Vector3d acceleration =
+        have_main_seed ? main_seed.acceleration : Eigen::Vector3d::Zero();
+    source->axis[0].initialize(position.x(), velocity.x(), acceleration.x());
+    source->axis[1].initialize(position.y(), velocity.y(), acceleration.y());
     source->axis[2].initialize(
-        source->raw.have_position_z
-            ? source->raw.position_z +
-                  source->alignment_translation.z()
-            : 0.0,
-        source->raw.have_velocity_z ? source->raw.velocity_z : 0.0,
-        0.0);
+        state.have_position_z ? state.position_z : 0.0,
+        state.have_velocity_z
+            ? state.velocity_z
+            : (have_main_seed ? main_seed.velocity.z() : 0.0),
+        acceleration.z());
     source->yaw_filter.initialize(
-        source->raw.have_heading
-            ? wrapAngle(source->raw.heading + source->alignment_yaw)
-            : 0.0,
-        source->raw.have_yaw_rate ? source->raw.yaw_rate : 0.0);
+        state.have_heading ? state.heading : 0.0,
+        state.have_yaw_rate
+            ? state.yaw_rate
+            : (have_main_seed ? main_seed.yaw_rate : 0.0));
     source->filter_stamp = stamp;
     source->filters_initialized = true;
+  }
+
+  void initializeFusedRawFromNative(SourceRuntime* source) {
+    const Eigen::Rotation2Dd rotation(source->alignment_yaw);
+    RawState& output = source->fused_raw;
+    const RawState& input = source->raw;
+    if (input.have_position_xy) {
+      output.position_xy = rotation * input.position_xy +
+                           source->alignment_translation.head<2>();
+      output.have_position_xy = true;
+    }
+    if (input.have_position_z) {
+      output.position_z = input.position_z + source->alignment_translation.z();
+      output.have_position_z = true;
+    }
+    if (input.have_velocity_xy) {
+      output.velocity_xy = rotation * input.velocity_xy;
+      output.have_velocity_xy = true;
+    }
+    if (input.have_velocity_z) {
+      output.velocity_z = input.velocity_z;
+      output.have_velocity_z = true;
+    }
+    if (input.have_heading) {
+      output.heading = wrapAngle(input.heading + source->alignment_yaw);
+      output.have_heading = true;
+    }
+    if (input.have_yaw_rate) {
+      output.yaw_rate = input.yaw_rate;
+      output.have_yaw_rate = true;
+    }
+  }
+
+  bool fusedRawReady(const SourceRuntime& source) const {
+    return std::all_of(
+        source.corrections.begin(), source.corrections.end(),
+        [&source](const std::unique_ptr<CorrectionRuntime>& correction) {
+          return !correction->config.required ||
+                 correction->valid_session == source.session;
+        });
+  }
+
+  bool standardizeSample(const SourceRuntime& consumer,
+                         const CorrectionRuntime& correction,
+                         const CorrectionSample& sample,
+                         CorrectionSample* standardized,
+                         std::string* reason) const {
+    if (sample.frame_id == odom_frame_ ||
+        sample.kind == CorrectionKind::kYawRate) {
+      *standardized = sample;
+      standardized->frame_id = odom_frame_;
+      return true;
+    }
+    if (sample.frame_id == body_frame_) {
+      if (sample.kind == CorrectionKind::kVelocityZ) {
+        *standardized = sample;
+        standardized->frame_id = odom_frame_;
+        return true;
+      }
+      if (sample.kind != CorrectionKind::kVelocityXY) {
+        *reason = "只有速度允许在base_link中表达";
+        return false;
+      }
+      *standardized = sample;
+      const double yaw = consumer.filters_initialized
+                             ? consumer.yaw_filter.yaw()
+                             : (consumer.fused_raw.have_heading
+                                    ? consumer.fused_raw.heading
+                                    : 0.0);
+      standardized->vector = Eigen::Rotation2Dd(yaw) * sample.vector;
+      standardized->frame_id = odom_frame_;
+      return true;
+    }
+    if (correction.config.provider.empty()) {
+      *reason = "非标准odom输入的话题前缀未对应任何定位提供者";
+      return false;
+    }
+    const auto provider_iterator =
+        source_by_name_.find(correction.config.provider);
+    if (provider_iterator == source_by_name_.end()) {
+      *reason = "定位提供者不存在";
+      return false;
+    }
+    const SourceRuntime& provider = *provider_iterator->second;
+    if (!provider.alignment_initialized || provider.raw_frame.empty()) {
+      *reason = "提供者" + correction.config.provider + "尚未完成原点对齐";
+      return false;
+    }
+    if (sample.frame_id != provider.raw_frame) {
+      *reason = "消息坐标系与提供者" + correction.config.provider +
+                "的来源原点不一致";
+      return false;
+    }
+    *standardized = alignSample(provider, sample);
+    return true;
   }
 
   CorrectionSample alignSample(const SourceRuntime& source,
@@ -1345,9 +1547,13 @@ class MultiSourceEstimatorNode {
     for (int index = 0; index < 3; ++index) {
       main_state_->axis[index].initialize(
           estimate.position(index), estimate.velocity(index),
-          estimate.acceleration(index));
+          estimate.acceleration(index), estimate.position_variance[index],
+          estimate.velocity_variance[index],
+          estimate.acceleration_variance[index]);
     }
-    main_state_->yaw_filter.initialize(estimate.yaw, estimate.yaw_rate);
+    main_state_->yaw_filter.initialize(
+        estimate.yaw, estimate.yaw_rate, estimate.yaw_variance,
+        estimate.yaw_rate_variance);
     main_state_->filter_stamp = estimate.stamp;
     main_state_->initialized = true;
   }
@@ -1365,64 +1571,86 @@ class MultiSourceEstimatorNode {
       axis.predict(dt);
     }
     main_state_->yaw_filter.predict(dt);
-    if (imuAccelerationFresh()) {
-      for (int axis = 0; axis < 3; ++axis) {
-        main_state_->axis[axis].correct(
-            2, latest_acceleration_odom_(axis),
-            imu_acceleration_variance_);
-      }
-    }
-    if (imuRateFresh()) {
-      main_state_->yaw_filter.correctRate(
-          latest_yaw_rate_, imu_yaw_rate_variance_);
-    }
     main_state_->filter_stamp = stamp;
   }
 
-  void correctMainFromActiveSource(const CorrectionSample& sample) {
-    if (!main_state_->initialized) {
+  void fuseImuIntoMain(const ros::Time& stamp) {
+    if (!main_state_->initialized ||
+        (!last_main_imu_fusion_stamp_.isZero() &&
+         stamp <= last_main_imu_fusion_stamp_)) {
       return;
     }
-    predictMainTo(sample.stamp);
-    std::string reason;
-    if (!innovationAccepted(main_state_->axis, main_state_->yaw_filter,
-                            sample, &reason)) {
+    if (stamp < main_state_->filter_stamp) {
       ROS_WARN_THROTTLE(
           1.0,
-          "[xd_uav_state_estimators] 当前主源修正未进入main滤波器: %s",
-          reason.c_str());
+          "[xd_uav_state_estimators] 跳过早于main滤波时刻的IMU样本");
       return;
     }
-    switch (sample.kind) {
-      case CorrectionKind::kPositionXY:
-        main_state_->axis[0].correct(
-            0, sample.vector.x(), sample.variance_a);
-        main_state_->axis[1].correct(
-            0, sample.vector.y(), sample.variance_b);
-        break;
-      case CorrectionKind::kPositionZ:
-        main_state_->axis[2].correct(
-            0, sample.scalar, sample.variance_a);
-        break;
-      case CorrectionKind::kVelocityXY:
-        main_state_->axis[0].correct(
-            1, sample.vector.x(), sample.variance_a);
-        main_state_->axis[1].correct(
-            1, sample.vector.y(), sample.variance_b);
-        break;
-      case CorrectionKind::kVelocityZ:
-        main_state_->axis[2].correct(
-            1, sample.scalar, sample.variance_a);
-        break;
-      case CorrectionKind::kHeading:
-        main_state_->yaw_filter.correctYaw(
-            sample.scalar, sample.variance_a);
-        break;
-      case CorrectionKind::kYawRate:
-        main_state_->yaw_filter.correctRate(
-            sample.scalar, sample.variance_a);
-        break;
+    predictMainTo(stamp);
+    for (int axis = 0; axis < 3; ++axis) {
+      main_state_->axis[axis].correct(
+          2, latest_acceleration_odom_(axis),
+          imu_acceleration_variance_);
     }
+    if (have_imu_rate_) {
+      main_state_->yaw_filter.correctRate(
+          latest_yaw_rate_, imu_yaw_rate_variance_);
+    }
+    last_main_imu_fusion_stamp_ = stamp;
+  }
+
+  double mainHandoverScale(const ros::Time& stamp) const {
+    if (main_handover_start_time_.isZero()) {
+      return 0.0;
+    }
+    // 正常切源时，handover表示“新来源连续坐标”到当前控制odom的固定
+    // 坐标偏移。它必须在该来源保持活动期间一直存在；若逐渐衰减，main会在
+    // 切换后数秒内重新靠向新来源的原始偏差，表现为飞机持续掉高或横向漂移。
+    if (!main_handover_rapid_recovery_) {
+      return 1.0;
+    }
+    const double elapsed =
+        std::max(0.0, (stamp - main_handover_start_time_).toSec());
+    // 只有持久分歧触发的安全回退才释放旧坐标偏移，使健康来源在短时间内
+    // 恢复真实状态。该路径由rapid_recovery显式标识。
+    return std::exp(-elapsed / 0.5);
+  }
+
+  Estimate applyMainHandover(const Estimate& source) const {
+    Estimate handed_over = source;
+    const double scale = mainHandoverScale(source.stamp);
+    const double handover_yaw = scale * main_handover_yaw_;
+    const Eigen::Vector3d handover_translation =
+        scale * main_handover_translation_;
+    const Eigen::Rotation2Dd rotation(handover_yaw);
+    handed_over.position.head<2>() =
+        rotation * source.position.head<2>() +
+        handover_translation.head<2>();
+    handed_over.position.z() += handover_translation.z();
+    handed_over.velocity.head<2>() =
+        rotation * source.velocity.head<2>();
+    handed_over.acceleration.head<2>() =
+        rotation * source.acceleration.head<2>();
+    handed_over.yaw = wrapAngle(source.yaw + handover_yaw);
+
+    const double cosine = std::cos(handover_yaw);
+    const double sine = std::sin(handover_yaw);
+    const auto rotate_variance =
+        [cosine, sine](const std::array<double, 3>& input) {
+          std::array<double, 3> output = input;
+          output[0] = cosine * cosine * input[0] +
+                      sine * sine * input[1];
+          output[1] = sine * sine * input[0] +
+                      cosine * cosine * input[1];
+          return output;
+        };
+    handed_over.position_variance =
+        rotate_variance(source.position_variance);
+    handed_over.velocity_variance =
+        rotate_variance(source.velocity_variance);
+    handed_over.acceleration_variance =
+        rotate_variance(source.acceleration_variance);
+    return handed_over;
   }
 
   void registerAccepted(SourceRuntime* source,
@@ -1499,6 +1727,89 @@ class MultiSourceEstimatorNode {
     return have_required;
   }
 
+  std::string sourceHealthReason(const SourceRuntime& source,
+                                 const ros::Time& now) const {
+    if (!source.alignment_initialized) {
+      return "来源原点尚未对齐";
+    }
+    if (!source.filters_initialized) {
+      return "单源滤波器尚未初始化";
+    }
+    for (const auto& correction : source.corrections) {
+      if (!correction->config.required ||
+          correctionHealthy(*correction, now)) {
+        continue;
+      }
+      if (correction->last_accepted.isZero()) {
+        return correction->config.name + "尚无有效数据";
+      }
+      if (now < correction->quarantine_until) {
+        return correction->config.name + "处于隔离期";
+      }
+      if (correction->recovering) {
+        return correction->config.name + "处于恢复观察期";
+      }
+      return correction->config.name + "已超时";
+    }
+    return "没有必需修正";
+  }
+
+  bool requiredNativeCorrectionsConnected(const SourceRuntime& source,
+                                          const ros::Time& now) const {
+    bool have_required = false;
+    for (const auto& correction : source.corrections) {
+      if (!correction->config.required ||
+          correction->config.provider != source.config.name) {
+        continue;
+      }
+      have_required = true;
+      if (correction->last_received.isZero() ||
+          (now - correction->last_received).toSec() >
+              correction->config.timeout) {
+        return false;
+      }
+    }
+    return have_required;
+  }
+
+  void prepareSourceForReconnect(SourceRuntime* source) {
+    source->alignment_initialized = false;
+    source->filters_initialized = false;
+    source->raw = RawState();
+    source->fused_raw = RawState();
+    source->raw_frame.clear();
+    source->filter_stamp = ros::Time();
+    source->latest_raw_stamp = ros::Time();
+    source->alignment_translation.setZero();
+    source->alignment_yaw = 0.0;
+    source->session++;
+    if (source->session == 0) {
+      source->session = 1;
+      for (auto& correction : source->corrections) {
+        correction->valid_session = 0;
+      }
+    }
+    // last_accepted必须保留给main的dead-reckoning计时使用。上一次会话的
+    // 原始数值已经由RawState清除；只有重连后重新收到全部必需位姿修正，
+    // rawReadyForAlignment()才会允许建立新原点。
+  }
+
+  void updateSourceConnectionStates(const ros::Time& now) {
+    for (auto& source : sources_) {
+      const bool connected =
+          requiredNativeCorrectionsConnected(*source, now);
+      if (source->required_corrections_were_connected && !connected &&
+          source->config.alignment_mode == "align_on_activation") {
+        prepareSourceForReconnect(source.get());
+        ROS_INFO(
+            "[xd_uav_state_estimators] 来源%s的必需修正已中断，"
+            "下次完整接入时将重新对齐来源原点",
+            source->config.name.c_str());
+      }
+      source->required_corrections_were_connected = connected;
+    }
+  }
+
   double sourceLocalizationAge(const SourceRuntime& source,
                                const ros::Time& now) const {
     double age = 0.0;
@@ -1537,6 +1848,117 @@ class MultiSourceEstimatorNode {
     return desired;
   }
 
+  SourceRuntime* healthierHigherPrioritySource(
+      const SourceRuntime& active, const ros::Time& now) const {
+    SourceRuntime* reference = nullptr;
+    for (const auto& source : sources_) {
+      if (source.get() == &active ||
+          source->config.priority >= active.config.priority ||
+          !sourceHealthy(*source, now)) {
+        continue;
+      }
+      if (reference == nullptr ||
+          source->config.priority < reference->config.priority) {
+        reference = source.get();
+      }
+    }
+    return reference;
+  }
+
+  bool sourcesDisagree(const SourceRuntime& active,
+                       const SourceRuntime& reference,
+                       const ros::Time& now,
+                       std::string* reason) const {
+    Estimate active_estimate;
+    Estimate reference_estimate;
+    if (!estimateSourceAt(active, now, &active_estimate) ||
+        !estimateSourceAt(reference, now, &reference_estimate)) {
+      return false;
+    }
+
+    if (active.fused_raw.have_position_z &&
+        reference.fused_raw.have_position_z) {
+      const double difference = std::abs(
+          active_estimate.position.z() - reference_estimate.position.z());
+      // 跨来源安全检查关注控制实际会看到的绝对状态差，不能让某一来源
+      // 瞬时增大的协方差反复抬高阈值、重置持续性计时。
+      const double limit = 0.05 * position_z_limit_;
+      if (difference > limit) {
+        *reason = "z差=" + std::to_string(difference) +
+                  "m，阈值=" + std::to_string(limit) + "m";
+        return true;
+      }
+      const double velocity_difference = std::abs(
+          active_estimate.velocity.z() - reference_estimate.velocity.z());
+      const double velocity_limit = 0.05 * velocity_z_limit_;
+      if (velocity_difference > velocity_limit) {
+        *reason = "竖直速度差=" + std::to_string(velocity_difference) +
+                  "m/s，阈值=" + std::to_string(velocity_limit) +
+                  "m/s";
+        return true;
+      }
+    }
+
+    if (active.fused_raw.have_position_xy &&
+        reference.fused_raw.have_position_xy) {
+      const Eigen::Vector2d difference =
+          active_estimate.position.head<2>() -
+          reference_estimate.position.head<2>();
+      const double limit = 0.05 * position_xy_limit_;
+      if (difference.norm() > limit) {
+        *reason = "水平差=" + std::to_string(difference.norm()) +
+                  "m，阈值=" + std::to_string(limit) + "m";
+        return true;
+      }
+      const Eigen::Vector2d velocity_difference =
+          active_estimate.velocity.head<2>() -
+          reference_estimate.velocity.head<2>();
+      const double velocity_limit = 0.05 * velocity_xy_limit_;
+      if (velocity_difference.norm() > velocity_limit) {
+        *reason = "水平速度差=" +
+                  std::to_string(velocity_difference.norm()) +
+                  "m/s，阈值=" + std::to_string(velocity_limit) +
+                  "m/s";
+        return true;
+      }
+    }
+
+    if (active.fused_raw.have_heading &&
+        reference.fused_raw.have_heading) {
+      const double difference = std::abs(wrapAngle(
+          active_estimate.yaw - reference_estimate.yaw));
+      const double limit = 0.05 * heading_limit_;
+      if (difference > limit) {
+        *reason = "航向差=" + std::to_string(difference) +
+                  "rad，阈值=" + std::to_string(limit) + "rad";
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void reportSourceDisagreement(const SourceRuntime& active,
+                                const ros::Time& now) const {
+    SourceRuntime* reference =
+        healthierHigherPrioritySource(active, now);
+    if (reference == nullptr) {
+      return;
+    }
+
+    std::string reason;
+    if (!sourcesDisagree(active, *reference, now, &reason)) {
+      return;
+    }
+    // 来源间差异只用于诊断。不同定位系统可能具有不同的长期误差，不能仅凭
+    // 与高优先级来源不一致就覆盖用户的手动选择。
+    ROS_WARN_THROTTLE(
+        1.0,
+        "[xd_uav_state_estimators] 活动来源%s与健康高优先级来源%s"
+        "存在分歧(%s)，保留当前选源，仅作诊断",
+        active.config.name.c_str(), reference->config.name.c_str(),
+        reason.c_str());
+  }
+
   void updateSelection(const ros::Time& now) {
     SourceRuntime* desired = chooseDesiredSource(now);
     SourceRuntime* active =
@@ -1546,10 +1968,16 @@ class MultiSourceEstimatorNode {
     if (desired == nullptr) {
       return;
     }
-    if (active == nullptr || !sourceHealthy(*active, now)) {
+    if (active == nullptr) {
       activateSource(desired, now);
       return;
     }
+    if (!sourceHealthy(*active, now)) {
+      // 只有当前来源本身失效时才故障接管，并快速恢复到健康来源的真实状态。
+      activateSource(desired, now, true);
+      return;
+    }
+    reportSourceDisagreement(*active, now);
     if (desired == active) {
       return;
     }
@@ -1569,35 +1997,57 @@ class MultiSourceEstimatorNode {
     activateSource(desired, now);
   }
 
-  void activateSource(SourceRuntime* source, const ros::Time& now) {
+  void activateSource(SourceRuntime* source, const ros::Time& now,
+                      const bool rapid_recovery = false) {
     if (source == nullptr ||
         source->config.name == active_source_) {
       return;
     }
-    Estimate target;
-    const bool have_target = currentMainEstimate(now, &target);
-    if (have_target && rawReadyForAlignment(*source) &&
-        source->config.alignment_mode == "align_on_activation") {
-      calculateAlignmentToTarget(source, target);
-      initializeFiltersFromRaw(source, now);
-      publishAlignment(*source, now);
+    // 来源原点属于一次定位会话，只能在首次完整接入或断线重连时建立。
+    // 切换main来源不能再次移动来源原点，否则同一个source frame会因为
+    // 选源动作而改变物理含义，并带动整条TF分支跳变。
+    Estimate source_estimate;
+    if (!estimateSourceAt(*source, now, &source_estimate)) {
+      ROS_WARN(
+          "[xd_uav_state_estimators] 来源%s尚不能初始化main状态",
+          source->config.name.c_str());
+      return;
     }
-    if (!main_state_->initialized) {
-      Estimate initial;
-      if (!estimateSourceAt(*source, now, &initial)) {
+    if (main_state_->initialized) {
+      Estimate target;
+      if (!currentMainEstimate(now, &target)) {
         ROS_WARN(
-            "[xd_uav_state_estimators] 来源%s尚不能初始化main状态",
-            source->config.name.c_str());
+            "[xd_uav_state_estimators] 无法取得切源前main状态");
         return;
       }
-      initializeMainFromEstimate(initial);
+      // main接管的是来源滤波器的完整估计，因此handover也必须用同一个
+      // 完整估计建立，不能再按原始position/heading逐字段锚定。
+      const Estimate& source_anchor = source_estimate;
+      main_handover_yaw_ =
+          wrapAngle(target.yaw - source_anchor.yaw);
+      const Eigen::Rotation2Dd rotation(main_handover_yaw_);
+      main_handover_translation_.head<2>() =
+          target.position.head<2>() -
+          rotation * source_anchor.position.head<2>();
+      main_handover_translation_.z() =
+          target.position.z() - source_anchor.position.z();
+    } else {
+      main_handover_translation_.setZero();
+      main_handover_yaw_ = 0.0;
+      initializeMainFromEstimate(source_estimate);
     }
     active_source_ = source->config.name;
     active_since_ = now;
     last_switch_time_ = now;
+    main_handover_start_time_ = now;
+    main_handover_rapid_recovery_ = rapid_recovery;
     switch_count_++;
-    ROS_INFO("[xd_uav_state_estimators] main定位源切换为%s",
-             active_source_.c_str());
+    ROS_INFO(
+        "[xd_uav_state_estimators] main定位源切换为%s，"
+        "handover=[%.3f, %.3f, %.3f, yaw %.3f]",
+        active_source_.c_str(), main_handover_translation_.x(),
+        main_handover_translation_.y(), main_handover_translation_.z(),
+        main_handover_yaw_);
   }
 
   bool estimateSourceAt(const SourceRuntime& source,
@@ -1629,6 +2079,7 @@ class MultiSourceEstimatorNode {
     estimate->yaw = yaw.yaw();
     estimate->yaw_rate = yaw.rate();
     estimate->yaw_variance = yaw.variance(0);
+    estimate->yaw_rate_variance = yaw.variance(1);
     estimate->roll = latest_roll_;
     estimate->pitch = latest_pitch_;
     return true;
@@ -1659,6 +2110,7 @@ class MultiSourceEstimatorNode {
     estimate->yaw = yaw.yaw();
     estimate->yaw_rate = yaw.rate();
     estimate->yaw_variance = yaw.variance(0);
+    estimate->yaw_rate_variance = yaw.variance(1);
     estimate->roll = latest_roll_;
     estimate->pitch = latest_pitch_;
     return true;
@@ -1693,11 +2145,39 @@ class MultiSourceEstimatorNode {
     message.twist.twist.linear.x = velocity.x();
     message.twist.twist.linear.y = velocity.y();
     message.twist.twist.linear.z = velocity.z();
-    message.twist.twist.angular.z = estimate.yaw_rate;
-    message.twist.covariance[0] = estimate.velocity_variance[0];
-    message.twist.covariance[7] = estimate.velocity_variance[1];
-    message.twist.covariance[14] = estimate.velocity_variance[2];
-    message.twist.covariance[35] = 0.1;
+    if (have_body_rate_sample_) {
+      // Odometry.twist必须在child_frame_id表达；滤波器中的yaw_rate是欧拉
+      // yaw导数，不能再冒充机体系Z轴角速度。
+      message.twist.twist.angular.x = latest_body_rate_.x();
+      message.twist.twist.angular.y = latest_body_rate_.y();
+      message.twist.twist.angular.z = latest_body_rate_.z();
+    }
+
+    Eigen::Matrix3d parent_velocity_covariance = Eigen::Matrix3d::Zero();
+    for (int axis = 0; axis < 3; ++axis) {
+      parent_velocity_covariance(axis, axis) =
+          estimate.velocity_variance[axis];
+    }
+    const tf2::Matrix3x3 body_parent_basis(orientation.inverse());
+    Eigen::Matrix3d body_parent_rotation;
+    for (int row = 0; row < 3; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        body_parent_rotation(row, column) =
+            body_parent_basis[row][column];
+      }
+    }
+    const Eigen::Matrix3d body_velocity_covariance =
+        body_parent_rotation * parent_velocity_covariance *
+        body_parent_rotation.transpose();
+    for (int row = 0; row < 3; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        message.twist.covariance[row * 6 + column] =
+            body_velocity_covariance(row, column);
+      }
+    }
+    message.twist.covariance[21] = imu_yaw_rate_variance_;
+    message.twist.covariance[28] = imu_yaw_rate_variance_;
+    message.twist.covariance[35] = imu_yaw_rate_variance_;
     return message;
   }
 
@@ -1872,10 +2352,30 @@ class MultiSourceEstimatorNode {
     last_imu_sample_stamp_ = sample_stamp;
     have_body_rate_sample_ = true;
 
-    latest_yaw_rate_ = angular_velocity.z;
+    double euler_yaw_rate = 0.0;
+    const bool yaw_rate_valid = eulerYawRateFromBodyRates(
+        latest_roll_, latest_pitch_, body_rate, &euler_yaw_rate);
+    if (yaw_rate_valid) {
+      latest_yaw_rate_ = euler_yaw_rate;
+    } else {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[xd_uav_state_estimators] IMU姿态接近欧拉yaw奇异点，"
+          "本次不融合航向角速度");
+    }
     last_imu_receive_ = ros::Time::now();
     have_acceleration_ = true;
-    have_imu_rate_ = true;
+    have_imu_rate_ = yaw_rate_valid;
+    // 活动来源健康时，main由该来源的完整状态原子同步。此时再次把MAVROS
+    // IMU融合进main既会重复计算，也会因为传输延迟让IMU时间戳落在main
+    // 当前时刻之前。只有定位来源失效、main进入短时惯性外推时才直接融合。
+    const bool active_localization_healthy =
+        !active_source_.empty() &&
+        sourceHealthy(*source_by_name_.at(active_source_),
+                      ros::Time::now());
+    if (!active_localization_healthy) {
+      fuseImuIntoMain(sample_stamp);
+    }
   }
 
   bool imuAccelerationFresh() const {
@@ -2002,6 +2502,7 @@ class MultiSourceEstimatorNode {
 
   void outputTimerCallback(const ros::TimerEvent&) {
     const ros::Time now = ros::Time::now();
+    updateSourceConnectionStates(now);
     updateSelection(now);
     for (auto& source : sources_) {
       const bool valid = sourceHealthy(*source, now);
@@ -2018,6 +2519,15 @@ class MultiSourceEstimatorNode {
     const bool localization_valid =
         !active_source_.empty() &&
         sourceHealthy(*source_by_name_.at(active_source_), now);
+    if (localization_valid) {
+      Estimate source_estimate;
+      if (estimateSourceAt(*source_by_name_.at(active_source_), now,
+                           &source_estimate)) {
+        // main不再二次融合活动来源的各条修正。这里整包接管该来源已经
+        // 完成滤波的状态，handover只负责保持控制坐标连续。
+        initializeMainFromEstimate(applyMainHandover(source_estimate));
+      }
+    }
     bool state_valid = false;
     Estimate main;
     if (currentMainEstimate(now, &main)) {
@@ -2140,6 +2650,9 @@ class MultiSourceEstimatorNode {
               std::to_string(source->alignment_translation.z()));
       addDiagnostic(&source_status, "alignment_yaw",
                     std::to_string(source->alignment_yaw));
+      addDiagnostic(
+          &source_status, "alignment_initialized",
+          source->alignment_initialized ? "true" : "false");
       array.status.push_back(source_status);
 
       for (const auto& correction : source->corrections) {
@@ -2209,7 +2722,16 @@ class MultiSourceEstimatorNode {
       source->alignment_initialized = false;
       source->filters_initialized = false;
       source->raw = RawState();
+      source->fused_raw = RawState();
       source->raw_frame.clear();
+      source->required_corrections_were_connected = false;
+      source->session++;
+      if (source->session == 0) {
+        source->session = 1;
+        for (auto& correction : source->corrections) {
+          correction->valid_session = 0;
+        }
+      }
       for (auto& correction : source->corrections) {
         correction->last_received = ros::Time();
         correction->last_accepted = ros::Time();
@@ -2220,8 +2742,13 @@ class MultiSourceEstimatorNode {
       }
     }
     active_source_.clear();
+    main_handover_translation_.setZero();
+    main_handover_yaw_ = 0.0;
+    main_handover_start_time_ = ros::Time();
+    main_handover_rapid_recovery_ = false;
     main_state_->initialized = false;
     main_state_->filter_stamp = ros::Time();
+    last_main_imu_fusion_stamp_ = ros::Time();
     response.success = true;
     response.message = "全部来源滤波器已重置";
     return true;
@@ -2247,7 +2774,10 @@ class MultiSourceEstimatorNode {
       } else if (!sourceHealthy(*iterator->second,
                                 ros::Time::now())) {
         response.success = false;
-        response.message = "定位源当前不健康: " + requested;
+        response.message = "定位源当前不健康: " + requested + "（" +
+                           sourceHealthReason(*iterator->second,
+                                              ros::Time::now()) +
+                           "）";
       } else {
         automatic_selection_ = false;
         requested_source_ = requested;
@@ -2294,11 +2824,15 @@ class MultiSourceEstimatorNode {
   ros::Time last_switch_time_;
   ros::Time last_imu_receive_;
   ros::Time last_imu_sample_stamp_;
+  ros::Time last_main_imu_fusion_stamp_;
+  ros::Time main_handover_start_time_;
   Eigen::Vector3d latest_acceleration_odom_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d main_handover_translation_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d latest_body_rate_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d latest_angular_acceleration_body_{
       Eigen::Vector3d::Zero()};
   double latest_yaw_rate_{0.0};
+  double main_handover_yaw_{0.0};
   double latest_roll_{0.0};
   double latest_pitch_{0.0};
   double output_rate_{100.0};
@@ -2334,6 +2868,7 @@ class MultiSourceEstimatorNode {
   bool remove_gravity_{true};
   bool use_nis_{true};
   bool switch_back_to_higher_priority_{true};
+  bool main_handover_rapid_recovery_{false};
   bool automatic_selection_{true};
   bool have_acceleration_{false};
   bool have_imu_rate_{false};

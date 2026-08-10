@@ -7,10 +7,10 @@
 本包包含两个相互独立的模块：
 
 - `odometry_adapter_manager_node`：按照配置把多个`nav_msgs/Odometry`输入转换成六种独立修正消息。
-- `multi_source_estimator_node`：融合修正量、维护来源健康状态、切换主源并输出连续状态。
+- `multi_source_estimator_node`：分别估计各来源的完整状态、维护来源健康状态、切换主源并输出连续状态。
 
-适配器本身不决定某个修正量属于哪个定位源。管理节点从`sources.yaml`一次加载全部
-适配器，估计器再在同一个文件中自由组合它们的输出。
+适配器本身只负责标准化输入。管理节点从`sources.yaml`一次加载全部适配器，每个
+定位源用自己列出的修正和公共IMU维护一套完整滤波状态；`main`不跨来源拼接状态分量。
 
 六类标准修正话题为：
 
@@ -41,15 +41,11 @@
 odometry_adapters:
   mavros:
     input_topic: mavros/local_position/odom
-    body_frame: base_link
-    parent_frame_override: mavros_origin
-    child_frame_override: ""
+    reference_frame: base_link
 
   fastlio:
     input_topic: fastlio/Odometry
-    body_frame: base_link
-    parent_frame_override: fastlio_origin
-    child_frame_override: lidar_imu_link
+    reference_frame: lidar_imu_link
 
 localization_sources: [mavros, fastlio]
 
@@ -76,26 +72,40 @@ sources:
 
 - `odometry_adapters`中的每一项都会创建一个内部适配器。
 - 适配器名称自动决定`state_estimator_inputs/<适配器名称>/*`输出路径。
-- `body_frame`、`parent_frame_override`和`child_frame_override`中的简单名称会自动补上`uavX/`。
+- 适配器只读取输入Odometry的时间戳和数值，不依赖消息中的frame名称。
+- 适配器名称自动生成`uavX/<名称>_origin`，`reference_frame`简单名称自动补上`uavX/`。
+- `reference_frame`表示输入数值描述的机上参考点；适配器通过静态TF将其换算到`uavX/base_link`。
 - `localization_sources`中的来源一定加载，不再使用每个来源的`enabled`。
 - `priority`数值越小，自动选源优先级越高。
 - 相对修正话题自动补成`state_estimator_inputs/<配置值>`。
+- 话题中的第一段名称自动作为数据提供者，用来把该输入标准化到`odom`；通常每个
+  来源只列出同名适配器的话题。Fast-LIO使用其自身ESKF发布的Odometry速度；确实
+  没有速度测量的其他来源仍可由位置更新和公共IMU估计速度。
 - 字符串写法继承`correction_defaults`；映射写法可覆盖单项参数。
 - 同一种修正类型可以配置多次，并分别来自不同适配器。
 - `required: true`的修正量失效会使整个来源失效；可选修正失效只停止使用自身。
+- `align_on_activation`来源首次收齐必需修正时会立即对齐，即使它尚未成为主源。
+- 任一必需修正超过自身`timeout`没有消息后，该来源会结束当前定位会话；重新
+  收齐必需修正时自动以当时的main状态建立新来源原点，不需要手动切源。
+- 来源原点在同一次定位会话内保持固定；切换main来源只改变测量选择，不会再次
+  移动`<来源>_origin`。
+- 切源时估计器另外计算一个只在main内部使用的handover偏移，使切换瞬间的main
+  位置和航向连续；该偏移不发布为TF，也不改变任何来源坐标系。
 
 每个修正输入都有独立的超时、创新拒绝、连续异常隔离和稳定恢复状态。估计器不会暗中
 使用未在`corrections`中列出的测量。
 
 ## 估计与切换
 
-每个来源拥有独立的三轴位置、速度、加速度和航向滤波状态。main另外拥有一套持续存在
-的滤波状态；切换来源只改变后续进入main的修正输入，不会用新来源重新初始化main。
-IMU用于高频预测；定位修正先经过数值、坐标系、时间戳、协方差、绝对创新和NIS检查。
+每个来源拥有独立的三轴位置、速度、加速度和航向滤波状态。IMU用于各来源的高频预测；
+定位修正先经过数值、坐标系、时间戳、协方差、绝对创新和NIS检查。`main`不再对活动
+来源的position、velocity等字段做第二次融合，而是整包接管活动来源已经完成滤波的
+状态和协方差。
 
-切换来源时，估计器计算来源原点相对标准`odom`的平移和航向对齐量。main原有的位置、
-速度、加速度、航向和偏航角速度全部保留，再由新来源的后续测量逐步修正。因此即使新
-来源没有配置速度修正，切换瞬间也不会把main速度清零。对齐量同时以普通消息发布，
+切换来源时，估计器根据切换前main状态与新来源完整状态计算仅供main使用的连续性偏移。
+位置和航向在切换瞬间保持连续，后续运动完全跟随新来源。Fast-LIO的位置和速度均来自
+它自己的ESKF；没有速度修正的其他来源在首次接入时继承当时main的速度、加速度和偏航
+角速度作为滤波初值，再由自身位置与公共IMU继续估计。来源原点对齐量仍以普通消息发布，
 交给单机TF管理器显示来源原点。
 
 主TF由估计器独占发布：
