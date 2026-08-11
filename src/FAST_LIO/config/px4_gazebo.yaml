@@ -1,0 +1,41 @@
+common:
+    # 话题相对名称由launch解析到/uavX/fastlio命名空间。
+    lid_topic: "points"
+    imu_topic: "imu"
+    # 本文件单独加载时使用uav1；正常多机启动时由launch参数覆盖。
+    map_frame: "uav1/fastlio_origin"
+    body_frame: "uav1/fastlio_estimator_lidar"
+    time_sync_en: false
+    time_offset_lidar_to_imu: 0.0
+
+preprocess:
+    lidar_type: 4
+    scan_line: 16
+    scan_rate: 10
+    timestamp_unit: 2
+    blind: 0.5
+
+mapping:
+    acc_cov: 0.1
+    gyr_cov: 0.1
+    b_acc_cov: 0.0001
+    b_gyr_cov: 0.0001
+    fov_degree: 180
+    det_range: 50.0
+    extrinsic_est_en: false
+    extrinsic_T: [0.0, 0.0, 0.0]
+    extrinsic_R: [1.0, 0.0, 0.0,
+                  0.0, 1.0, 0.0,
+                  0.0, 0.0, 1.0]
+
+publish:
+    # Fast-LIO只发布数据，标准TF由估计器和TF管理器统一发布。
+    tf_en: false
+    path_en: true
+    scan_publish_en: true
+    dense_publish_en: true
+    scan_bodyframe_pub_en: true
+
+pcd_save:
+    pcd_save_en: false
+    interval: -1
