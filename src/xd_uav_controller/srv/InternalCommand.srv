@@ -1,0 +1,11 @@
+uint8 RESET=0
+uint8 TAKEOFF=1
+uint8 LAND=2
+uint8 LAND_HOME=3
+uint8 CANCEL_LANDING=4
+
+uint8 command
+float64 altitude
+---
+bool success
+string message

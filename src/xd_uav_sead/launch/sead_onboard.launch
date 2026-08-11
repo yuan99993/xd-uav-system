@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="config" default="$(find xd_uav_sead)/config/sead_defaults.yaml"/>
+  <arg name="respawn" default="false"/>
+  <arg name="use_simulation" default="true"/>
+  <arg name="sead_runtime_mode" default="simple_strike"/>
+  <arg name="sead_control_mode" default="swiftwing_vector"/>
+  <arg name="simple_strike_control_mode" default="swiftwing_vector"/>
+
+  <!-- 通用启动: 从 XBee/ROS 话题等待命令 -->
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_sead"
+          type="sead_onboard_node.py"
+          name="sead_onboard"
+          output="screen"
+          respawn="$(arg respawn)"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <rosparam command="load" file="$(find xd_uav_sead)/config/sead_planner.yaml"/>
+      <rosparam command="load" file="$(find xd_uav_sead)/config/gps_origin.yaml"/>
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="use_simulation" value="$(arg use_simulation)"/>
+      <param name="sead_runtime_mode" value="$(arg sead_runtime_mode)"/>
+      <param name="sead_control_mode" value="$(arg sead_control_mode)"/>
+      <param name="simple_strike_control_mode"
+             value="$(arg simple_strike_control_mode)"/>
+    </node>
+  </group>
+</launch>

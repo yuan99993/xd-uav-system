@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>xd_uav_sead</name>
+  <version>1.0.0</version>
+  <description>XD-UAV SEAD (Suppression of Enemy Air Defenses) mission control —
+  基于分布式GA任务分配与Dubins路径跟随的多无人机协同打击。</description>
+
+  <maintainer email="kzy@example.com">kzy</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>tf</depend>
+
+  <exec_depend>python3-matplotlib</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>xd_uav_controller</exec_depend>
+
+  <test_depend>python3-nose</test_depend>
+
+  <export/>
+</package>

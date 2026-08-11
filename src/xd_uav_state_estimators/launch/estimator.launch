@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="algorithm_config" default="$(find xd_uav_state_estimators)/config/estimator.yaml"/>
+  <arg name="sources_config" default="$(find xd_uav_state_estimators)/config/sources.yaml"/>
+  <arg name="odom_frame" default="$(arg uav_name)/odom"/>
+  <arg name="body_frame" default="$(arg uav_name)/base_link"/>
+  <arg name="imu_topic" default="mavros/imu/data"/>
+  <arg name="respawn" default="false"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_state_estimators"
+          type="multi_source_estimator_node"
+          name="state_estimator"
+          output="screen"
+          respawn="$(arg respawn)"
+          clear_params="true">
+      <!-- 保证rosconsole/log4cxx按UTF-8输出中文。 -->
+      <env name="LANG" value="C.UTF-8"/>
+      <env name="LC_ALL" value="C.UTF-8"/>
+      <rosparam command="load" file="$(arg algorithm_config)"/>
+      <rosparam command="load" file="$(arg sources_config)"/>
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="odom_frame" value="$(arg odom_frame)"/>
+      <param name="body_frame" value="$(arg body_frame)"/>
+      <remap from="imu" to="$(arg imu_topic)"/>
+    </node>
+  </group>
+</launch>

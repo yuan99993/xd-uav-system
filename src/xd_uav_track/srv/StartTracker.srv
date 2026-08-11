@@ -1,0 +1,6 @@
+# Start or stop tracker/follower command generation.
+bool start
+---
+bool success
+bool active
+string message

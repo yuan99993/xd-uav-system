@@ -1,0 +1,39 @@
+<launch>
+  <group ns="fixedwing_manager_test">
+    <node pkg="xd_uav_control_manager"
+          type="control_manager_node"
+          name="control_manager"
+          output="screen"
+          clear_params="true">
+      <param name="vehicle_type" value="fixedwing"/>
+      <param name="offboard/stream/setpoint_rate" value="50.0"/>
+      <param name="offboard/stream/prestream_duration" value="0.1"/>
+      <param name="offboard/mode_request/retry_interval" value="0.05"/>
+      <param name="offboard/mode_request/timeout" value="3.0"/>
+      <param name="safety/activation/stable_duration" value="0.1"/>
+      <param name="safety/controller_command/invalid_grace_duration"
+             value="0.3"/>
+      <param name="safety/touchdown/confirm_duration" value="0.1"/>
+      <param name="safety/touchdown/zero_thrust_duration" value="0.05"/>
+      <param name="safety/touchdown/force_disarm/enabled" value="true"/>
+      <param name="safety/touchdown/force_disarm/timeout" value="0.2"/>
+      <param name="safety/inputs/odometry_timeout" value="0.5"/>
+      <param name="safety/inputs/imu_timeout" value="0.5"/>
+      <param name="safety/inputs/future_stamp_tolerance" value="0.05"/>
+      <param name="safety/inputs/acceleration_timeout" value="0.5"/>
+      <param name="safety/inputs/mavros_state_timeout" value="0.1"/>
+      <param name="safety/inputs/extended_state_timeout" value="0.1"/>
+      <param name="safety/inputs/airspeed_negative_tolerance" value="3.0"/>
+      <param name="safety/controller_command/timeout" value="0.5"/>
+      <param name="safety/inputs/estimator_status_timeout" value="0.1"/>
+      <param name="safety/touchdown/fixedwing_max_groundspeed"
+             value="1.0"/>
+    </node>
+    <test test-name="fixedwing_control_manager_interface"
+          pkg="xd_uav_control_manager"
+          type="test_control_manager.py"
+          time-limit="18">
+      <param name="vehicle_type" value="fixedwing"/>
+    </test>
+  </group>
+</launch>

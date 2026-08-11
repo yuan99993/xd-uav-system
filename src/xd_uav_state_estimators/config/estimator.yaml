@@ -1,0 +1,53 @@
+# 估计器内部算法参数。定位源、修正量和话题只在sources.yaml中配置。
+output_rate: 100.0
+diagnostics_rate: 2.0
+max_localization_delay: 0.15
+max_dead_reckoning_time: 1.0
+imu_timeout: 1.0
+require_imu: true #true：IMU 掉线会停止有效主输出；false：定位健康时仍能输出，定位失效时则依赖最后状态做纯模型预测
+frame_lookup_timeout: 0.03
+
+# 主估计结果除标准odom坐标系外，还可重发布到以下坐标系。
+# 对应话题为state_estimator/main/frames/<坐标系>/odom。
+main_republish_in_frames: [local_origin]
+
+filter:
+  initial_position_variance: 1.0
+  initial_velocity_variance: 1.0
+  initial_acceleration_variance: 10.0
+  position_process_noise: 0.05
+  velocity_process_noise: 0.50
+  acceleration_process_noise: 2.0
+  yaw_process_noise: 0.02
+  yaw_rate_process_noise: 0.20
+  imu_acceleration_variance: 0.50
+  imu_yaw_rate_variance: 0.05
+  # IMU三轴角速度差分后的低通时间常数，以及发布协方差。发布角加速度的滤波器参数
+  angular_acceleration_time_constant: 0.05
+  angular_acceleration_variance: 1.0
+  angular_acceleration_limit: 100.0
+  remove_gravity: true
+  gravity: 9.80665
+  acceleration_limit: 30.0
+
+# 先经过绝对门限，再按配置使用NIS统计门限。
+innovation_gate:
+  position_xy: 5.0
+  position_z: 3.0
+  velocity_xy: 5.0
+  velocity_z: 3.0
+  heading: 1.57
+  yaw_rate: 3.0
+  use_nis: true
+  position_xy_nis: 9.21
+  position_z_nis: 6.63
+  velocity_xy_nis: 9.21
+  velocity_z_nis: 6.63
+  heading_nis: 6.63
+  yaw_rate_nis: 6.63
+
+source_switching:
+  # 数值越小优先级越高；高优先级源恢复后是否自动切回。
+  switch_back_to_higher_priority: true
+  minimum_active_time: 1.0
+  cooldown: 0.5

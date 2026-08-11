@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="config" default="$(find xd_uav_single_tf_manager)/config/single_tf.yaml"/>
+  <arg name="gps_config" default="$(find xd_uav_single_tf_manager)/config/gps_alignment.yaml"/>
+  <arg name="gps_alignment_enabled" default="true"/>
+  <arg name="local_origin_frame" default="$(arg uav_name)/local_origin"/>
+  <arg name="odom_frame" default="$(arg uav_name)/odom"/>
+  <arg name="body_frame" default="$(arg uav_name)/base_link"/>
+
+  <group ns="$(arg uav_name)">
+    <!--
+      GPS适配器在固定翼和旋翼中使用同一组MAVROS话题，
+      输出经过有效性检查的local_origin -> base_link。
+    -->
+    <node if="$(arg gps_alignment_enabled)"
+          pkg="xd_uav_single_tf_manager"
+          type="gps_global_alignment_node"
+          name="gps_global_alignment"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg gps_config)"/>
+      <param name="local_origin_frame" value="$(arg local_origin_frame)"/>
+      <param name="body_frame" value="$(arg body_frame)"/>
+    </node>
+
+    <node pkg="xd_uav_single_tf_manager"
+          type="single_tf_manager_node"
+          name="single_tf_manager"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <!-- launch参数会覆盖通用YAML中的坐标系名称，以便复用于不同uavX。 -->
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="local_alignment/parent_frame" value="$(arg local_origin_frame)"/>
+      <param name="local_alignment/child_frame" value="$(arg odom_frame)"/>
+      <param name="local_alignment/body_frame" value="$(arg body_frame)"/>
+    </node>
+  </group>
+</launch>

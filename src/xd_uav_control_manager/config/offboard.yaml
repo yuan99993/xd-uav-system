@@ -1,0 +1,14 @@
+offboard:
+  # 向PX4连续发送AttitudeTarget；预发送完成后才请求OFFBOARD。
+  stream:
+    setpoint_rate: 100.0
+    prestream_duration: 1.5
+
+  # PX4模式与解锁服务的请求节奏。
+  mode_request:
+    retry_interval: 1.0
+    timeout: 10.0
+
+  # 用户主动取消OFFBOARD后交还给PX4的模式。
+  exit:
+    cancel_mode: POSCTL

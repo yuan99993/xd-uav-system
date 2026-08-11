@@ -1,0 +1,40 @@
+# 四旋翼与固定翼共用的状态输入、参考输入和home配置。
+# controller.launch先加载本文件，再加载机型配置；机型配置可按需覆盖公共默认值。
+
+state_input:
+  # control_manager/State消息停止更新后，控制器停止输出有效控制量。
+  timeout: 0.20
+
+reference_input:
+  # 流式PositionTarget停止更新后，控制器切换到安全保持参考。
+  timeout: 0.50
+
+  # 控制器保留参考原始frame，在计算控制量前转换到ControlState.header.frame_id。
+  # 无斜杠名称只匹配与控制odom相同命名空间下的frame；
+  # 以/开头的名称按全局frame精确匹配。
+  allowed_frames: [local_origin, /world, odom]
+
+  transform:
+    timeout: 0.03
+    max_age: 0.50
+    failure_grace_duration: 0.50
+    max_inertial_frame_tilt: 0.10
+
+  global_alignment:
+    required: true
+    frames: [local_origin, /world, odom]
+    timeout: 1.0
+
+  simple_goal:
+    # RViz的2D Nav Goal通常把z写成0，默认保持控制器当前的期望高度。
+    use_message_z: false
+
+home:
+  # takeoff: 起飞时优先在frame中记录当前位置；对齐不可用时退化为odom。
+  # fixed_local: 始终使用下面配置的固定点，起飞、降落和复位都不会覆盖它。
+  mode: fixed_local
+  frame: local_origin
+  #fixed_position: [-180.0, 0.0, 0.0] #固定翼要有补偿值，不然落不准
+  fixed_position: [0.0, 0.0, 0.0]
+  fixed_yaw: 0.0
+  use_home_yaw: true

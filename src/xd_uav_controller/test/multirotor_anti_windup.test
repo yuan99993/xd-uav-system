@@ -1,0 +1,27 @@
+<launch>
+  <group ns="multirotor_anti_windup_test">
+    <node pkg="xd_uav_controller"
+          type="controller_node"
+          name="controller"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load"
+                file="$(find xd_uav_controller)/config/common_config.yaml"/>
+      <rosparam command="load"
+                file="$(find xd_uav_controller)/config/multirotor.yaml"/>
+      <param name="vehicle_type" value="multirotor"/>
+      <rosparam param="multirotor/position_control/disturbance_rejection/position_integral_gain">
+        [0.0, 0.0, 1.0]
+      </rosparam>
+      <rosparam param="multirotor/position_control/disturbance_rejection/position_integral_acceleration_limit">
+        [0.0, 0.0, 0.5]
+      </rosparam>
+      <param name="multirotor/limits/maximum_jerk_z" value="100.0"/>
+      <param name="multirotor/position_control/disturbance_rejection/anti_windup_gain" value="2.0"/>
+    </node>
+    <test test-name="multirotor_anti_windup"
+          pkg="xd_uav_controller"
+          type="test_multirotor_anti_windup.py"
+          time-limit="12"/>
+  </group>
+</launch>

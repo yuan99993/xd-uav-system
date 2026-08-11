@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config" default="$(find xd_uav_world_tf_manager)/config/world.yaml"/>
+
+  <!-- 本节点有意保持全局运行，不得放入任何uavX命名空间。 -->
+  <node pkg="xd_uav_world_tf_manager"
+        type="world_tf_manager_node"
+        name="world_tf_manager"
+        output="screen"
+        clear_params="true">
+    <rosparam command="load" file="$(arg config)"/>
+  </node>
+</launch>

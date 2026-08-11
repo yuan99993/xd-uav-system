@@ -1,0 +1,14 @@
+# Select a persistent track by ID, or initialize from a normalized ROI.
+# Existing start_track/stop_track commands remain supported for compatibility.
+
+int32 target_id
+bool start_tracking
+bool use_normalized_roi
+float32[4] normalized_roi          # [x, y, width, height]
+string image_source
+time capture_timestamp
+---
+bool success
+string message
+int32 selected_target_id
+

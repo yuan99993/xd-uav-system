@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<launch>
+  <include file="$(find xd_uav_world_tf_manager)/launch/world_tf.launch"/>
+  <include file="$(find xd_uav_state_estimators)/launch/uav_localization_stack.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+  </include>
+
+  <test test-name="three_package_integration"
+        pkg="xd_uav_state_estimators"
+        type="test_three_package_integration.py"
+        time-limit="25"/>
+</launch>

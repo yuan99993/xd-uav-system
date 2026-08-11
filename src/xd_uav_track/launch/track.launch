@@ -1,0 +1,51 @@
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="body_frame" default="$(arg uav_name)/base_link"/>
+  <arg name="config" default="$(find xd_uav_track)/config/track.yaml"/>
+  <arg name="follower_profile" default="mc_velocity_chase"/>
+  <arg name="detections_topic"
+       default="/$(arg uav_name)/track/detections"/>
+  <arg name="body_velocity_topic"
+       default="/$(arg uav_name)/track/velocity_body"/>
+  <arg name="follower_command_topic"
+       default="/$(arg uav_name)/track/command"/>
+  <arg name="gimbal_state_topic"
+       default="/$(arg uav_name)/track/gimbal_state"/>
+  <arg name="status_topic"
+       default="/$(arg uav_name)/track/status"/>
+  <arg name="tracks_topic"
+       default="/$(arg uav_name)/track/tracks"/>
+  <arg name="state_topic"
+       default="/$(arg uav_name)/state_estimator/main/odom"/>
+  <arg name="reference_topic"
+       default="/$(arg uav_name)/control/reference/setpoint"/>
+  <arg name="publish_control_reference" default="true"/>
+  <arg name="tracker_enabled_at_startup" default="false"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_track"
+          type="xd_uav_track_node"
+          name="track"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="vehicle/uav_name" value="$(arg uav_name)"/>
+      <param name="vehicle/body_frame" value="$(arg body_frame)"/>
+      <param name="follower/profile" value="$(arg follower_profile)"/>
+      <param name="interfaces/input/detections" value="$(arg detections_topic)"/>
+      <param name="interfaces/output/body_velocity" value="$(arg body_velocity_topic)"/>
+      <param name="interfaces/output/follower_command"
+             value="$(arg follower_command_topic)"/>
+      <param name="interfaces/input/gimbal_state" value="$(arg gimbal_state_topic)"/>
+      <param name="interfaces/output/status" value="$(arg status_topic)"/>
+      <param name="interfaces/output/tracks" value="$(arg tracks_topic)"/>
+      <param name="interfaces/input/vehicle_state" value="$(arg state_topic)"/>
+      <param name="interfaces/output/control_reference" value="$(arg reference_topic)"/>
+      <param name="runtime/publish_control_reference"
+             value="$(arg publish_control_reference)"/>
+      <param name="tracker/enabled_at_startup"
+             value="$(arg tracker_enabled_at_startup)"/>
+    </node>
+  </group>
+</launch>

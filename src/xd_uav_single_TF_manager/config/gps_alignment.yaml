@@ -1,0 +1,35 @@
+# GPS全局位姿适配器参数，加载到/uavX/gps_global_alignment私有空间。
+
+# MAVROS固定翼和旋翼使用相同的话题名称；话题均相对于/uavX。
+origin_topic: mavros/global_position/gp_origin
+position_topic: mavros/global_position/global
+imu_topic: mavros/imu/data
+estimator_status_topic: mavros/estimator_status
+
+# 标准输出表示local_origin -> base_link，并附带位置与姿态协方差。
+output_topic: global_alignment/gps/body_odometry
+valid_topic: global_alignment/gps/valid
+diagnostics_topic: global_alignment/gps/diagnostics
+
+publish_rate: 20.0
+input_timeout: 1.0
+max_imu_time_difference: 0.10
+
+# 仿真默认不强制等待ESTIMATOR_STATUS；真机建议确认该话题稳定发布后改为true。
+require_estimator_status: false
+
+# 不接受未知GPS协方差。阈值单位为m²，可按普通GPS或RTK精度继续收紧。
+allow_unknown_covariance: false
+max_horizontal_variance: 25.0
+max_vertical_variance: 100.0
+
+# IMU没有提供姿态协方差时使用的保守回退值，单位为rad²。
+default_orientation_variance: 1.0
+
+# 运动学跳变检查同时兼容固定翼和旋翼；允许距离=最大速度×dt+固定余量。
+max_horizontal_speed: 120.0
+max_vertical_speed: 30.0
+jump_margin: 3.0
+
+# gp_origin变化超过该距离时清除历史跳变基准并重新建立ENU转换。
+max_origin_change: 1.0
