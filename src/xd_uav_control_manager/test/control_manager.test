@@ -19,6 +19,7 @@
       <param name="safety/touchdown/force_disarm/timeout" value="0.2"/>
       <param name="safety/inputs/odometry_timeout" value="0.5"/>
       <param name="safety/inputs/imu_timeout" value="0.5"/>
+      <param name="safety/inputs/future_stamp_tolerance" value="0.05"/>
       <param name="safety/inputs/acceleration_timeout" value="0.5"/>
       <param name="safety/inputs/airspeed_negative_tolerance" value="3.0"/>
       <param name="safety/controller_command/timeout" value="0.5"/>

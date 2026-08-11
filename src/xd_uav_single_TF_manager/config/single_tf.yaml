@@ -53,6 +53,18 @@ static_transforms:
     child_frame: lidar_imu_link
     translation: [0.0, 0.0, 0.0]
     rotation_rpy: [0.0, 0.0, 0.0]
+  - name: base_to_camera
+    enabled: true
+    parent_frame: base_link
+    child_frame: camera_link
+    translation: [0.18, 0.0, 0.0]
+    rotation_rpy: [0.0, 0.0, 0.0]
+  - name: camera_to_camera_optical
+    enabled: true
+    parent_frame: camera_link
+    child_frame: camera_optical_frame
+    translation: [0.0, 0.0, 0.0]
+    rotation_rpy: [-1.57079632679, 0.0, -1.57079632679]
 
 # 各来源自己的估计结果与原点对齐量只用于观察和坐标变换，
 # 不会占用标准base_link，也不会改变主控制输出。

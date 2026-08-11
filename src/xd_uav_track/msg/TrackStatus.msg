@@ -1,6 +1,5 @@
 std_msgs/Header header
 bool tracker_active
-bool multi_target_enabled
 bool target_visible
 bool target_predicted
 bool command_valid

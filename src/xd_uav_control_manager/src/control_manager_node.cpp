@@ -37,15 +37,31 @@
 namespace {
 
 double messageAge(const ros::Time& now, const ros::Time& stamp,
-                  const ros::Time& receive_time) {
-  const ros::Time effective_stamp =
-      stamp.isZero() ? receive_time : stamp;
-  if (effective_stamp.isZero()) {
+                  const ros::Time& receive_time,
+                  const double future_stamp_tolerance) {
+  if (receive_time.isZero()) {
     return std::numeric_limits<double>::infinity();
   }
-  const double age = (now - effective_stamp).toSec();
-  return age >= 0.0 ? age
-                    : std::numeric_limits<double>::infinity();
+
+  // Transport freshness and source timestamp validity are separate concerns.
+  // A high-rate MAVROS stream can have a header stamp a few milliseconds in
+  // front of ROS time because FCU timesync and Gazebo /clock are sampled on
+  // different cycles. Treat that bounded lead as zero age, while still using
+  // receive_age to detect a stream which has actually stopped.
+  const double receive_age = (now - receive_time).toSec();
+  if (!std::isfinite(receive_age) || receive_age < 0.0) {
+    return std::numeric_limits<double>::infinity();
+  }
+  if (stamp.isZero()) {
+    return receive_age;
+  }
+
+  const double stamp_age = (now - stamp).toSec();
+  if (!std::isfinite(stamp_age) ||
+      stamp_age < -future_stamp_tolerance) {
+    return std::numeric_limits<double>::infinity();
+  }
+  return std::max(receive_age, std::max(0.0, stamp_age));
 }
 
 bool finiteVector(const geometry_msgs::Vector3& value) {
@@ -235,6 +251,8 @@ class ControlManagerNode {
                       mavros_state_timeout_, 1.0);
     private_nh_.param("safety/inputs/extended_state_timeout",
                       extended_state_timeout_, 1.0);
+    private_nh_.param("safety/inputs/future_stamp_tolerance",
+                      future_stamp_tolerance_, 0.05);
     loadParameterWithLegacy(
         private_nh_,
         "safety/inputs/airspeed_negative_tolerance",
@@ -308,6 +326,7 @@ class ControlManagerNode {
         !positive(estimator_status_timeout_) ||
         !positive(mavros_state_timeout_) ||
         !positive(extended_state_timeout_) ||
+        !nonnegative(future_stamp_tolerance_) ||
         !nonnegative(airspeed_negative_tolerance_) ||
         !nonnegative(minimum_groundspeed_for_course_) ||
         !positive(command_timeout_) ||
@@ -330,7 +349,8 @@ class ControlManagerNode {
   bool mavrosStateFresh(const ros::Time& now) const {
     return have_mavros_state_ &&
            messageAge(now, mavros_state_.header.stamp,
-                      mavros_state_receive_) <=
+                      mavros_state_receive_,
+                      future_stamp_tolerance_) <=
                mavros_state_timeout_;
   }
 
@@ -338,7 +358,8 @@ class ControlManagerNode {
     return have_mavros_extended_state_ &&
            messageAge(
                now, mavros_extended_state_.header.stamp,
-               mavros_extended_state_receive_) <=
+               mavros_extended_state_receive_,
+               future_stamp_tolerance_) <=
                extended_state_timeout_;
   }
 
@@ -408,20 +429,24 @@ class ControlManagerNode {
     state.odometry_age =
         have_odometry_
             ? messageAge(now, odometry_.header.stamp,
-                         odometry_receive_)
+                         odometry_receive_,
+                         future_stamp_tolerance_)
             : std::numeric_limits<double>::infinity();
     state.imu_age =
-        have_imu_ ? messageAge(now, imu_.header.stamp, imu_receive_)
+        have_imu_ ? messageAge(now, imu_.header.stamp, imu_receive_,
+                               future_stamp_tolerance_)
                   : std::numeric_limits<double>::infinity();
     state.acceleration_age =
         have_acceleration_
             ? messageAge(now, acceleration_.header.stamp,
-                         acceleration_receive_)
+                         acceleration_receive_,
+                         future_stamp_tolerance_)
             : std::numeric_limits<double>::infinity();
     state.airspeed_age =
         have_airspeed_
             ? messageAge(now, airspeed_.header.stamp,
-                         airspeed_receive_)
+                         airspeed_receive_,
+                         future_stamp_tolerance_)
             : std::numeric_limits<double>::infinity();
     const double measured_airspeed =
         have_airspeed_
@@ -538,7 +563,8 @@ class ControlManagerNode {
     const double estimator_status_age =
         have_estimator_status_
             ? messageAge(now, estimator_status_.header.stamp,
-                         estimator_status_receive_)
+                         estimator_status_receive_,
+                         future_stamp_tolerance_)
             : std::numeric_limits<double>::infinity();
     bool valid =
         have_estimator_status_ &&
@@ -579,7 +605,8 @@ class ControlManagerNode {
       return false;
     }
     const double age =
-        messageAge(now, command_.header.stamp, command_receive_);
+        messageAge(now, command_.header.stamp, command_receive_,
+                   future_stamp_tolerance_);
     if (age > command_timeout_) {
       *reason = "控制器输出超时";
       return false;
@@ -1159,7 +1186,8 @@ class ControlManagerNode {
       return "未收到估计器状态";
     }
     if (messageAge(now, estimator_status_.header.stamp,
-                   estimator_status_receive_) >
+                   estimator_status_receive_,
+                   future_stamp_tolerance_) >
         estimator_status_timeout_) {
       return "估计器状态超时";
     }
@@ -1527,6 +1555,7 @@ class ControlManagerNode {
   double estimator_status_timeout_{0.30};
   double mavros_state_timeout_{1.0};
   double extended_state_timeout_{1.0};
+  double future_stamp_tolerance_{0.05};
   double stable_duration_{1.5};
   double invalid_grace_duration_{0.5};
   double landed_confirm_duration_{0.5};

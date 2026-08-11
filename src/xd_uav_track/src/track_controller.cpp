@@ -7,7 +7,7 @@ namespace xd_uav_track {
 
 namespace {
 
-bool finiteMeasurement(const BoundingBoxMeasurement& value) {
+bool finiteMeasurement(const TargetMeasurement& value) {
   return std::isfinite(value.receive_time) && std::isfinite(value.x_min) &&
          std::isfinite(value.y_min) && std::isfinite(value.x_max) &&
          std::isfinite(value.y_max) && std::isfinite(value.confidence) &&
@@ -289,7 +289,7 @@ void TrackController::setGimbalState(const GimbalStateData& state) {
 }
 
 bool TrackController::updateMeasurement(
-    const BoundingBoxMeasurement& incoming, std::string* rejection_reason) {
+    const TargetMeasurement& incoming, std::string* rejection_reason) {
   auto reject = [&](const std::string& reason) {
     if (rejection_reason != nullptr) *rejection_reason = reason;
     return false;
@@ -926,7 +926,7 @@ void TrackController::reset() {
   filter_initialized_ = false;
   loss_active_ = false;
   loss_controllers_reset_ = false;
-  measurement_ = BoundingBoxMeasurement();
+  measurement_ = TargetMeasurement();
   filtered_center_x_ = 0.0;
   filtered_center_y_ = 0.0;
   filtered_velocity_x_ = 0.0;

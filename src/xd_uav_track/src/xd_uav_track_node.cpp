@@ -8,9 +8,7 @@
 #include <mavros_msgs/PositionTarget.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
-#include <sensor_msgs/CameraInfo.h>
 #include <std_srvs/SetBool.h>
-#include <xd_uav_track/BoundingBox.h>
 #include <xd_uav_track/DetectionArray.h>
 #include <xd_uav_track/FollowerCommand.h>
 #include <xd_uav_track/GimbalState.h>
@@ -330,41 +328,38 @@ class XdUavTrackNode {
     requested_profile_ = config.profile;
 
     xd_uav_track::MultiTrackConfig multi_config;
-    private_nh_.param("tracker/multi_target/enabled", multi_target_enabled_, false);
-    private_nh_.param("tracker/multi_target/auto_select", auto_select_track_, true);
-    private_nh_.param("tracker/image_geometry/use_camera_info_fallback",
-                      use_camera_info_fallback_, true);
-    private_nh_.param("tracker/multi_target/image_source",
+    private_nh_.param("tracker/selection/auto_select", auto_select_track_, true);
+    private_nh_.param("tracker/image_source",
                       accepted_image_source_, std::string());
-    private_nh_.param("tracker/multi_target/lifecycle/confirmation_hits",
+    private_nh_.param("tracker/lifecycle/confirmation_hits",
                       multi_config.confirmation_hits, multi_config.confirmation_hits);
-    private_nh_.param("tracker/multi_target/lifecycle/occlusion_frames",
+    private_nh_.param("tracker/lifecycle/occlusion_frames",
                       multi_config.occlusion_frames, multi_config.occlusion_frames);
-    private_nh_.param("tracker/multi_target/lifecycle/removal_frames",
+    private_nh_.param("tracker/lifecycle/removal_frames",
                       multi_config.removal_frames, multi_config.removal_frames);
-    private_nh_.param("tracker/multi_target/limits/maximum_tracks",
+    private_nh_.param("tracker/limits/maximum_tracks",
                       multi_config.maximum_tracks, multi_config.maximum_tracks);
-    private_nh_.param("tracker/multi_target/limits/maximum_embedding_dimension",
+    private_nh_.param("tracker/limits/maximum_embedding_dimension",
                       multi_config.maximum_embedding_dimension,
                       multi_config.maximum_embedding_dimension);
-    private_nh_.param("tracker/multi_target/confidence/new_track",
+    private_nh_.param("tracker/confidence/new_track",
                       multi_config.minimum_new_track_confidence,
                       multi_config.minimum_new_track_confidence);
-    private_nh_.param("tracker/multi_target/confidence/update",
+    private_nh_.param("tracker/confidence/update",
                       multi_config.minimum_update_confidence,
                       multi_config.minimum_update_confidence);
-    private_nh_.param("tracker/multi_target/association/iou_threshold",
+    private_nh_.param("tracker/association/iou_threshold",
                       multi_config.association_iou_threshold,
                       multi_config.association_iou_threshold);
-    private_nh_.param("tracker/multi_target/association/center_distance",
+    private_nh_.param("tracker/association/center_distance",
                       multi_config.association_center_distance,
                       multi_config.association_center_distance);
-    private_nh_.param("tracker/multi_target/association/appearance_cosine",
+    private_nh_.param("tracker/association/appearance_cosine",
                       multi_config.appearance_minimum_cosine,
                       multi_config.appearance_minimum_cosine);
-    private_nh_.param("tracker/multi_target/kalman/process_noise",
+    private_nh_.param("tracker/kalman/process_noise",
                       multi_config.process_noise, multi_config.process_noise);
-    private_nh_.param("tracker/multi_target/kalman/measurement_noise",
+    private_nh_.param("tracker/kalman/measurement_noise",
                       multi_config.measurement_noise, multi_config.measurement_noise);
     multi_tracker_.reset(new xd_uav_track::MultiTrackManager(multi_config));
 
@@ -386,10 +381,7 @@ class XdUavTrackNode {
     private_nh_.param("vehicle/body_frame", body_frame_, uav_name + "/base_link");
     std::string state_topic = "/" + uav_name +
         "/state_estimator/main/odom";
-    std::string bounding_box_topic = "/" + uav_name +
-        "/track/bounding_box";
     std::string detections_topic = "/" + uav_name + "/track/detections";
-    std::string camera_info_topic = "/" + uav_name + "/camera/camera_info";
     std::string tracks_topic = "/" + uav_name + "/track/tracks";
     std::string body_velocity_topic = "/" + uav_name +
         "/track/velocity_body";
@@ -400,12 +392,8 @@ class XdUavTrackNode {
     std::string status_topic = "/" + uav_name + "/track/status";
     std::string reference_topic = "/" + uav_name +
         "/control/reference/setpoint";
-    private_nh_.param("interfaces/input/bounding_box", bounding_box_topic,
-                      bounding_box_topic);
     private_nh_.param("interfaces/input/detections", detections_topic,
                       detections_topic);
-    private_nh_.param("interfaces/input/camera_info", camera_info_topic,
-                      camera_info_topic);
     private_nh_.param("interfaces/output/tracks", tracks_topic, tracks_topic);
     private_nh_.param("interfaces/output/body_velocity", body_velocity_topic,
                       body_velocity_topic);
@@ -418,14 +406,8 @@ class XdUavTrackNode {
     private_nh_.param("interfaces/output/control_reference", reference_topic,
                       reference_topic);
 
-    box_subscriber_ = nh_.subscribe(
-        bounding_box_topic, 1, &XdUavTrackNode::boxCallback, this,
-        ros::TransportHints().tcpNoDelay());
     detections_subscriber_ = nh_.subscribe(
         detections_topic, 1, &XdUavTrackNode::detectionsCallback, this,
-        ros::TransportHints().tcpNoDelay());
-    camera_info_subscriber_ = nh_.subscribe(
-        camera_info_topic, 1, &XdUavTrackNode::cameraInfoCallback, this,
         ros::TransportHints().tcpNoDelay());
     state_subscriber_ = nh_.subscribe(
         state_topic, 1, &XdUavTrackNode::stateCallback, this,
@@ -466,44 +448,13 @@ class XdUavTrackNode {
   }
 
  private:
-  void boxCallback(const xd_uav_track::BoundingBox::ConstPtr& message) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (multi_target_enabled_) return;
-    if (!tracker_active_) return;
-    if (!message->valid) {
-      controller_->clearMeasurement("upstream marked target box invalid");
-      return;
-    }
-    xd_uav_track::BoundingBoxMeasurement measurement;
-    measurement.receive_time = ros::WallTime::now().toSec();
-    measurement.image_width = message->image_width > 0 ? message->image_width
-        : (use_camera_info_fallback_ ? camera_width_ : 0);
-    measurement.image_height = message->image_height > 0 ? message->image_height
-        : (use_camera_info_fallback_ ? camera_height_ : 0);
-    measurement.x_min = message->x_min;
-    measurement.y_min = message->y_min;
-    measurement.x_max = message->x_max;
-    measurement.y_max = message->y_max;
-    measurement.confidence = message->confidence;
-    measurement.track_id = message->track_id;
-    std::string reason;
-    if (!controller_->updateMeasurement(measurement, &reason)) {
-      controller_->clearMeasurement(reason);
-      ROS_WARN_THROTTLE(2.0, "[xd_uav_track] rejected target box: %s",
-                        reason.c_str());
-    }
-  }
-
   void detectionsCallback(
       const xd_uav_track::DetectionArray::ConstPtr& message) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!multi_target_enabled_) return;
     if (!accepted_image_source_.empty() &&
         message->image_source != accepted_image_source_) return;
-    const unsigned int image_width = message->image_width > 0
-        ? message->image_width : (use_camera_info_fallback_ ? camera_width_ : 0);
-    const unsigned int image_height = message->image_height > 0
-        ? message->image_height : (use_camera_info_fallback_ ? camera_height_ : 0);
+    const unsigned int image_width = message->image_width;
+    const unsigned int image_height = message->image_height;
     if (image_width == 0 || image_height == 0) {
       ROS_WARN_THROTTLE(2.0, "[xd_uav_track] DetectionArray image size is zero");
       return;
@@ -551,7 +502,7 @@ class XdUavTrackNode {
       return;
     }
 
-    xd_uav_track::BoundingBoxMeasurement measurement;
+    xd_uav_track::TargetMeasurement measurement;
     measurement.receive_time = ros::WallTime::now().toSec();
     measurement.image_width = image_width;
     measurement.image_height = image_height;
@@ -585,13 +536,6 @@ class XdUavTrackNode {
       ROS_WARN_THROTTLE(2.0, "[xd_uav_track] rejected selected track: %s",
                         reason.c_str());
     }
-  }
-
-  void cameraInfoCallback(const sensor_msgs::CameraInfo::ConstPtr& message) {
-    if (message->width == 0 || message->height == 0) return;
-    std::lock_guard<std::mutex> lock(mutex_);
-    camera_width_ = message->width;
-    camera_height_ = message->height;
   }
 
   void stateCallback(const nav_msgs::Odometry::ConstPtr& message) {
@@ -716,12 +660,6 @@ class XdUavTrackNode {
   bool selectTrack(xd_uav_track::SelectTrack::Request& request,
                    xd_uav_track::SelectTrack::Response& response) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!multi_target_enabled_) {
-      response.success = false;
-      response.message = "multi-target tracking is disabled in track.yaml";
-      response.selected_target_id = -1;
-      return true;
-    }
     int target_id = request.target_id;
     if (request.use_normalized_roi) {
       const double rx1 = request.normalized_roi[0];
@@ -943,7 +881,6 @@ class XdUavTrackNode {
     xd_uav_track::TrackStatus status;
     status.header.stamp = stamp;
     status.tracker_active = tracker_active_;
-    status.multi_target_enabled = multi_target_enabled_;
     status.target_visible = command.target_visible;
     status.target_predicted = command.target_predicted;
     status.command_valid = command.valid;
@@ -988,9 +925,7 @@ class XdUavTrackNode {
 
   ros::NodeHandle nh_;
   ros::NodeHandle private_nh_;
-  ros::Subscriber box_subscriber_;
   ros::Subscriber detections_subscriber_;
-  ros::Subscriber camera_info_subscriber_;
   ros::Subscriber state_subscriber_;
   ros::Subscriber gimbal_state_subscriber_;
   ros::Publisher body_velocity_publisher_;
@@ -1011,9 +946,7 @@ class XdUavTrackNode {
   bool have_state_{false};
   bool have_gimbal_state_{false};
   bool reference_owned_{false};
-  bool multi_target_enabled_{false};
   bool auto_select_track_{true};
-  bool use_camera_info_fallback_{true};
   bool gimbal_fallback_enabled_{true};
   bool gimbal_fallback_active_{false};
   bool emergency_stop_active_{false};
@@ -1025,8 +958,6 @@ class XdUavTrackNode {
   double profile_switch_min_interval_sec_{0.50};
   double profile_blend_duration_sec_{0.50};
   double state_yaw_{0.0};
-  unsigned int camera_width_{0};
-  unsigned int camera_height_{0};
   ros::WallTime state_receive_time_;
   ros::WallTime gimbal_state_receive_time_;
   ros::WallTime last_profile_change_;

@@ -19,6 +19,7 @@
       <param name="safety/touchdown/force_disarm/timeout" value="0.2"/>
       <param name="safety/inputs/odometry_timeout" value="0.5"/>
       <param name="safety/inputs/imu_timeout" value="0.5"/>
+      <param name="safety/inputs/future_stamp_tolerance" value="0.05"/>
       <param name="safety/inputs/acceleration_timeout" value="0.5"/>
       <param name="safety/inputs/mavros_state_timeout" value="0.1"/>
       <param name="safety/inputs/extended_state_timeout" value="0.1"/>

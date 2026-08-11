@@ -4,12 +4,8 @@
   <arg name="body_frame" default="$(arg uav_name)/base_link"/>
   <arg name="config" default="$(find xd_uav_track)/config/track.yaml"/>
   <arg name="follower_profile" default="mc_velocity_chase"/>
-  <arg name="bounding_box_topic"
-       default="/$(arg uav_name)/track/bounding_box"/>
   <arg name="detections_topic"
        default="/$(arg uav_name)/track/detections"/>
-  <arg name="camera_info_topic"
-       default="/$(arg uav_name)/camera/camera_info"/>
   <arg name="body_velocity_topic"
        default="/$(arg uav_name)/track/velocity_body"/>
   <arg name="follower_command_topic"
@@ -37,9 +33,7 @@
       <param name="vehicle/uav_name" value="$(arg uav_name)"/>
       <param name="vehicle/body_frame" value="$(arg body_frame)"/>
       <param name="follower/profile" value="$(arg follower_profile)"/>
-      <param name="interfaces/input/bounding_box" value="$(arg bounding_box_topic)"/>
       <param name="interfaces/input/detections" value="$(arg detections_topic)"/>
-      <param name="interfaces/input/camera_info" value="$(arg camera_info_topic)"/>
       <param name="interfaces/output/body_velocity" value="$(arg body_velocity_topic)"/>
       <param name="interfaces/output/follower_command"
              value="$(arg follower_command_topic)"/>

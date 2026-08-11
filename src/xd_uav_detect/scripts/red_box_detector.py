@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Detect the largest red region in a ROS image and publish its bounding box."""
+"""Detect the largest red region and publish the canonical 2D detection array."""
 
 import cv2
 import numpy as np
@@ -7,7 +7,7 @@ import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
 
-from xd_uav_track.msg import BoundingBox
+from xd_uav_track.msg import DetectionArray, DetectionCandidate
 
 
 class RedBoxDetector:
@@ -19,8 +19,8 @@ class RedBoxDetector:
         self._image_topic = rospy.get_param(
             "~image_topic", "/uav1/camera/image_raw"
         )
-        self._bounding_box_topic = rospy.get_param(
-            "~bounding_box_topic", "/uav1/track/bounding_box"
+        self._detections_topic = rospy.get_param(
+            "~detections_topic", "/uav1/detect/input/detections_2d"
         )
         self._debug_image_topic = rospy.get_param(
             "~debug_image_topic", "/uav1/track/red_detector/debug_image"
@@ -49,7 +49,10 @@ class RedBoxDetector:
         self._minimum_height_px = max(
             1, int(rospy.get_param("~minimum_height_px", 8))
         )
-        self._track_id = int(rospy.get_param("~track_id", 1))
+        self._class_id = int(rospy.get_param("~class_id", 0))
+        self._maximum_targets = max(
+            0, int(rospy.get_param("~maximum_targets", 0))
+        )
         self._confidence = min(
             1.0, max(0.0, float(rospy.get_param("~confidence", 1.0)))
         )
@@ -64,8 +67,8 @@ class RedBoxDetector:
             0, int(rospy.get_param("~morphology_iterations", 1))
         )
 
-        self._box_publisher = rospy.Publisher(
-            self._bounding_box_topic, BoundingBox, queue_size=1
+        self._detections_publisher = rospy.Publisher(
+            self._detections_topic, DetectionArray, queue_size=1
         )
         self._debug_publisher = None
         if self._publish_debug_image:
@@ -73,7 +76,7 @@ class RedBoxDetector:
                 self._debug_image_topic, Image, queue_size=1
             )
 
-        self._had_target = False
+        self._previous_target_count = 0
         self._image_subscriber = rospy.Subscriber(
             self._image_topic,
             Image,
@@ -85,9 +88,9 @@ class RedBoxDetector:
 
         rospy.on_shutdown(self._on_shutdown)
         rospy.loginfo(
-            "[red_box_detector] image=%s, bounding_box=%s, debug=%s",
+            "[red_box_detector] image=%s, detections=%s, debug=%s",
             self._image_topic,
-            self._bounding_box_topic,
+            self._detections_topic,
             self._debug_image_topic if self._publish_debug_image else "disabled",
         )
 
@@ -131,56 +134,70 @@ class RedBoxDetector:
             )
         return mask
 
-    def _largest_valid_box(self, mask):
+    def _valid_boxes(self, mask):
         contour_result = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         contours = contour_result[-2]
-        if not contours:
-            return None
+        valid = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < self._minimum_area_px:
+                continue
+            x, y, width, height = cv2.boundingRect(contour)
+            if (
+                width < self._minimum_width_px
+                or height < self._minimum_height_px
+            ):
+                continue
+            valid.append((area, x, y, width, height))
 
-        contour = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(contour) < self._minimum_area_px:
-            return None
+        # Large, clear regions are published first. An optional limit protects
+        # the downstream tracker from receiving excessive red-noise blobs.
+        valid.sort(key=lambda item: item[0], reverse=True)
+        if self._maximum_targets > 0:
+            valid = valid[: self._maximum_targets]
+        return [item[1:] for item in valid]
 
-        x, y, width, height = cv2.boundingRect(contour)
-        if width < self._minimum_width_px or height < self._minimum_height_px:
-            return None
-        return x, y, width, height
-
-    def _publish_box(self, image_message, width, height, detected_box):
-        message = BoundingBox()
+    def _publish_boxes(self, image_message, width, height, detected_boxes):
+        message = DetectionArray()
         message.header = image_message.header
         message.image_width = width
         message.image_height = height
-        message.track_id = self._track_id
-        message.confidence = self._confidence
-
-        if detected_box is None:
-            message.valid = False
-        else:
+        message.image_source = "front_rgb"
+        message.sensor_id = image_message.header.frame_id
+        message.detector_name = "red_box_detector"
+        message.model_version = "hsv_v2_multi"
+        candidates = []
+        for detected_box in detected_boxes:
             x, y, box_width, box_height = detected_box
-            message.x_min = float(x)
-            message.y_min = float(y)
-            message.x_max = float(x + box_width)
-            message.y_max = float(y + box_height)
-            message.valid = True
+            candidate = DetectionCandidate()
+            # This node performs detection, not temporal tracking. Let
+            # xd_uav_track associate these candidates and assign stable IDs.
+            candidate.track_id = -1
+            candidate.class_id = self._class_id
+            candidate.track_id_is_stable = False
+            candidate.bbox = [x, y, x + box_width, y + box_height]
+            candidate.has_bbox = True
+            candidate.confidence = self._confidence
+            candidates.append(candidate)
+        message.candidates = candidates
 
-        self._box_publisher.publish(message)
+        self._detections_publisher.publish(message)
 
-    def _publish_debug(self, image_message, bgr_image, detected_box):
+    def _publish_debug(self, image_message, bgr_image, detected_boxes):
         if self._debug_publisher is None and not self._show_window:
             return
 
         debug_image = bgr_image.copy()
-        if detected_box is not None:
+        for index, detected_box in enumerate(detected_boxes, start=1):
             x, y, width, height = detected_box
             cv2.rectangle(
                 debug_image, (x, y), (x + width, y + height), (0, 255, 0), 2
             )
             cv2.putText(
                 debug_image,
-                "red target",
+                "red target {}".format(index),
                 (x, max(20, y - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -222,26 +239,21 @@ class RedBoxDetector:
 
         image_height, image_width = bgr_image.shape[:2]
         mask = self._make_red_mask(bgr_image)
-        detected_box = self._largest_valid_box(mask)
-        self._publish_box(
-            image_message, image_width, image_height, detected_box
+        detected_boxes = self._valid_boxes(mask)
+        self._publish_boxes(
+            image_message, image_width, image_height, detected_boxes
         )
-        self._publish_debug(image_message, bgr_image, detected_box)
+        self._publish_debug(image_message, bgr_image, detected_boxes)
 
-        has_target = detected_box is not None
-        if has_target != self._had_target:
-            if has_target:
-                x, y, width, height = detected_box
+        target_count = len(detected_boxes)
+        if target_count != self._previous_target_count:
+            if target_count > 0:
                 rospy.loginfo(
-                    "[red_box_detector] target acquired: x=%d y=%d w=%d h=%d",
-                    x,
-                    y,
-                    width,
-                    height,
+                    "[red_box_detector] visible red targets: %d", target_count
                 )
             else:
-                rospy.loginfo("[red_box_detector] target lost")
-            self._had_target = has_target
+                rospy.loginfo("[red_box_detector] all targets lost")
+            self._previous_target_count = target_count
 
     def _on_shutdown(self):
         if self._show_window:

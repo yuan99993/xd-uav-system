@@ -156,7 +156,7 @@ struct GimbalStateData {
   bool valid{false};
 };
 
-struct BoundingBoxMeasurement {
+struct TargetMeasurement {
   double receive_time{0.0};
   unsigned int image_width{0};
   unsigned int image_height{0};
@@ -220,7 +220,7 @@ class TrackController {
  public:
   explicit TrackController(const TrackControllerConfig& config);
 
-  bool updateMeasurement(const BoundingBoxMeasurement& measurement,
+  bool updateMeasurement(const TargetMeasurement& measurement,
                          std::string* rejection_reason = nullptr);
   TrackVelocity compute(double now);
   void setVehicleState(const VehicleState& state);
@@ -271,7 +271,7 @@ class TrackController {
   bool filter_initialized_{false};
   bool loss_active_{false};
   bool loss_controllers_reset_{false};
-  BoundingBoxMeasurement measurement_;
+  TargetMeasurement measurement_;
   double filtered_center_x_{0.0};
   double filtered_center_y_{0.0};
   double filtered_velocity_x_{0.0};

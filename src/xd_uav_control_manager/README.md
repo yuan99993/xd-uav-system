@@ -147,6 +147,9 @@ rates来自IMU；固定翼空速来自`mavros/vfr_hud`。
 - `config/safety.yaml`按职责分为四组：`safety/inputs/*`检查传感器、估计器和PX4状态，
   `safety/controller_command/*`监督控制器输出，`safety/activation/*`控制进入OFFBOARD前
   的稳定等待，`safety/touchdown/*`负责触地确认、零推力等待和上锁回退。
+- 输入超时同时检查消息回调接收间隔和消息时间戳延迟。MAVROS FCU时间同步与Gazebo
+  `/clock`之间的微小相位差由`safety/inputs/future_stamp_tolerance`吸收；超过该范围的
+  未来时间戳仍按时钟异常处理，不能通过增大普通输入超时绕过。
 - 真机使用前必须重新验证触地容差，并可通过
   `safety/touchdown/force_disarm/enabled: false`关闭强制上锁。固定翼还通过
   `safety/touchdown/fixedwing_max_groundspeed`限制可确认触地和解锁的最大地速。

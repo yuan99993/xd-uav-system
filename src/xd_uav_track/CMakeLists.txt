@@ -2,14 +2,11 @@ cmake_minimum_required(VERSION 3.5)
 project(xd_uav_track)
 
 find_package(catkin REQUIRED COMPONENTS
-  cv_bridge
   geometry_msgs
   mavros_msgs
   message_generation
   nav_msgs
   roscpp
-  rospy
-  sensor_msgs
   std_msgs
   std_srvs
 )
@@ -17,7 +14,6 @@ find_package(Eigen3 REQUIRED)
 
 add_message_files(
   FILES
-  BoundingBox.msg
   DetectionArray.msg
   DetectionCandidate.msg
   FollowerCommand.msg
@@ -44,14 +40,11 @@ catkin_package(
   INCLUDE_DIRS include
   LIBRARIES xd_uav_track_core
   CATKIN_DEPENDS
-    cv_bridge
     geometry_msgs
     mavros_msgs
     message_runtime
     nav_msgs
     roscpp
-    rospy
-    sensor_msgs
     std_msgs
     std_srvs
 )
@@ -90,11 +83,6 @@ install(TARGETS xd_uav_track_core xd_uav_track_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-
-catkin_install_python(PROGRAMS
-  scripts/red_box_detector.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 install(DIRECTORY include/${PROJECT_NAME}/

@@ -4,7 +4,7 @@
 Follower 能力合并到一个 ROS 包中：
 
 ```text
-单框 / 多候选检测 -> 关联、Kalman、目标选择 -> Follower 制导 -> 机体系速度向量
+DetectionArray（0/1/多个候选）-> 关联、Kalman、目标选择 -> Follower -> 速度向量
 云台当前姿态（GM 模式）-> 校准/滤波/视轴解算 --/              -> XD 控制器 ENU 速度参考
 ```
 
@@ -18,12 +18,11 @@ Follower 能力合并到一个 ROS 包中：
 ## 输入和坐标
 
 ```text
-/uavX/track/bounding_box    xd_uav_track/BoundingBox（简单单框输入）
-/uavX/track/detections      xd_uav_track/DetectionArray（完整多目标输入）
+/uavX/track/detections      xd_uav_track/DetectionArray（唯一感知输入）
 /uavX/track/gimbal_state    xd_uav_track/GimbalState（仅 GM 模式需要）
 ```
 
-输入是一条已经选定目标的像素框，图像原点在左上角。Tracker 将框中心归一化到 PixEagle
+每条消息可以包含零个、一个或多个候选框，图像原点在左上角。Tracker 将框中心归一化到 PixEagle
 约定的 `[-1, 1]` 坐标：`x` 向右为正，`y` 向下为正，图像中心为 `(0, 0)`。它负责：
 
 - 框尺寸、有限值和置信度校验；
@@ -31,11 +30,12 @@ Follower 能力合并到一个 ROS 包中：
 - 目标中心、尺寸和中心速度的时间滤波；
 - `track_id` 切换检测、输入超时和跟踪状态维护。
 
-`tracker/multi_target/enabled: false` 时使用上述单框流程，适合当前红色目标脚本。
-设为 `true` 后，节点改用 `DetectionArray`：每个目标具有独立的恒速度 Kalman 状态，支持
+节点内部始终使用同一套轨迹管理：零个候选时执行遮挡预测，一个候选时直接建立或更新
+轨迹，多个候选时进行关联和选择。每个目标具有独立的恒速度 Kalman 状态，支持
 稳定 detector ID、IoU/中心距离关联、appearance embedding 余弦重识别、
 tentative/confirmed/occluded/lost 生命周期、短时遮挡预测和手动/自动选目标。
-Tracker 不内置 YOLO 或颜色检测器；检测候选仍由上游产生。
+Tracker 不再订阅图像或 CameraInfo；检测框、图像尺寸和可选三维位置统一由
+`xd_uav_detect` 或其他上游感知节点提供。
 
 多目标输出及选目标：
 
@@ -155,7 +155,7 @@ roslaunch xd_uav_track track.launch publish_control_reference:=false
 ```bash
 roslaunch xd_uav_track track.launch \
   body_frame:=base_link \
-  bounding_box_topic:=/vision/selected_box \
+  detections_topic:=/perception/detections \
   gimbal_state_topic:=/gimbal/attitude \
   body_velocity_topic:=/guidance/body_velocity \
   follower_command_topic:=/guidance/follower_command \
@@ -164,24 +164,27 @@ roslaunch xd_uav_track track.launch \
   reference_topic:=/uav1/control/reference/setpoint
 ```
 
-示例框输入：
+示例单候选输入：
 
 ```bash
-rostopic pub -r 20 /uav1/track/bounding_box xd_uav_track/BoundingBox \
-"{image_width: 640, image_height: 480, x_min: 400, y_min: 180, x_max: 500, y_max: 300, confidence: 0.9, track_id: 1, valid: true}"
+rostopic pub -r 20 /uav1/track/detections xd_uav_track/DetectionArray \
+"{header: {frame_id: 'camera_optical_frame'}, image_width: 640, image_height: 480,
+candidates: [{track_id: 1, class_id: 0, track_id_is_stable: true,
+bbox: [400, 180, 500, 300], has_bbox: true, confidence: 0.9}],
+image_source: 'front_rgb', detector_name: 'example'}"
 ```
 
 仿真红色目标检测节点可直接运行，不需要单独的 launch：
 
 ```bash
-python3 src/xd_uav_track/scripts/red_box_detector.py
+python3 src/xd_uav_detect/scripts/red_box_detector.py
 ```
 
-默认订阅 `/uav1/camera/image_raw`，向 `/uav1/track/bounding_box` 发布最大红色区域，
-并在 `/uav1/track/red_detector/debug_image` 发布带框调试图像。参数可在命令行覆盖，例如：
+脚本向 `/uav1/detect/input/detections_2d` 发布单候选；`xd_uav_detect` 负责雷达融合和转发
+到 `/uav1/track/detections`。参数可在命令行覆盖，例如：
 
 ```bash
-python3 src/xd_uav_track/scripts/red_box_detector.py \
+python3 src/xd_uav_detect/scripts/red_box_detector.py \
   _minimum_area_px:=800 _saturation_min:=120 _publish_debug_image:=false
 ```
 

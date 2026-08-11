@@ -7,12 +7,12 @@
 
 namespace {
 
-xd_uav_track::BoundingBoxMeasurement box(
+xd_uav_track::TargetMeasurement box(
     const double x_min, const double y_min,
     const double x_max, const double y_max,
     const double confidence = 1.0, const double time = 10.0,
     const int track_id = 7) {
-  xd_uav_track::BoundingBoxMeasurement value;
+  xd_uav_track::TargetMeasurement value;
   value.receive_time = time;
   value.image_width = 640;
   value.image_height = 480;
