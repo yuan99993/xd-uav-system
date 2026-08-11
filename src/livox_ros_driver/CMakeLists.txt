@@ -84,7 +84,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # FAST-LIO only needs CustomMsg when using a non-Livox simulated sensor.  Keep
 # message generation available without forcing the hardware SDK to be present.
-option(BUILD_LIVOX_DRIVER "Build the Livox hardware driver executable" ON)
+option(BUILD_LIVOX_DRIVER "Build the Livox hardware driver executable" OFF)
 
 if(BUILD_LIVOX_DRIVER)
 
