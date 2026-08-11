@@ -5,6 +5,7 @@ build/
 devel/
 install/
 logs/
+.catkin_tools/
 .catkin_workspace
 src/CMakeLists.txt
 cmake-build-*/
@@ -14,8 +15,11 @@ cmake_install.cmake
 compile_commands.json
 CTestTestfile.cmake
 Makefile
-*.cmake
 !CMakeLists.txt
+
+# livox_ros_driver may download this SDK into its source tree when the
+# hardware driver is enabled. It is a build dependency, not repository source.
+src/livox_ros_driver/Livox-SDK/
 
 # ============================================================
 # C / C++ build outputs
