@@ -74,16 +74,18 @@ cy。当前投影模型适用于与 CameraInfo 的 `P`/`K` 对应的去畸变图
 ## 启动
 
 ```bash
-UAV_NAME=uav1 roslaunch xd_uav_detect detect.launch \
-  point_cloud_topic:=/实际点云话题
+roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1
 ```
 
 同时启动感知和跟踪：
 
 ```bash
-UAV_NAME=uav1 roslaunch xd_uav_detect detect_track.launch \
-  point_cloud_topic:=/实际点云话题
+roslaunch xd_uav_detect detect_track.launch UAV_NAME:=uav1
 ```
+
+所有话题保留在 `config/detect.yaml` 的 `interfaces` 中，使用不带 `/uav1` 的相对名称；
+如需更换点云或相机话题，直接修改该配置段。launch 只负责 `UAV_NAME` 命名空间和
+`body_frame`，不会再次覆盖话题配置。
 
 状态查看：
 

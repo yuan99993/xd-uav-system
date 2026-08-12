@@ -1,39 +1,16 @@
 <launch>
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
-  <arg name="uav_name" default="$(arg UAV_NAME)"/>
   <arg name="config" default="$(find xd_uav_detect)/config/detect.yaml"/>
-  <arg name="detections_2d_topic"
-       default="/$(arg uav_name)/detect/input/detections_2d"/>
-  <arg name="detections_3d_topic"
-       default="/$(arg uav_name)/track/detections"/>
-  <arg name="debug_image_topic"
-       default="/$(arg uav_name)/detect/debug/image"/>
-  <arg name="image_topic" default="/$(arg uav_name)/camera/image_raw"/>
-  <arg name="camera_info_topic"
-       default="/$(arg uav_name)/camera/camera_info"/>
-  <arg name="point_cloud_topic" default="/$(arg uav_name)/fastlio/points"/>
-  <arg name="body_frame" default="$(arg uav_name)/base_link"/>
+  <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
 
-  <group ns="$(arg uav_name)">
+  <group ns="$(arg UAV_NAME)">
     <node pkg="xd_uav_detect"
           type="xd_uav_detect_node"
           name="detect"
           output="screen"
           clear_params="true">
       <rosparam command="load" file="$(arg config)"/>
-      <param name="vehicle/uav_name" value="$(arg uav_name)"/>
       <param name="frames/body" value="$(arg body_frame)"/>
-      <param name="interfaces/input/detections_2d"
-             value="$(arg detections_2d_topic)"/>
-      <param name="interfaces/input/image" value="$(arg image_topic)"/>
-      <param name="interfaces/input/camera_info"
-             value="$(arg camera_info_topic)"/>
-      <param name="interfaces/input/point_cloud"
-             value="$(arg point_cloud_topic)"/>
-      <param name="interfaces/output/detections_3d"
-             value="$(arg detections_3d_topic)"/>
-      <param name="interfaces/output/debug_image"
-             value="$(arg debug_image_topic)"/>
     </node>
   </group>
 </launch>

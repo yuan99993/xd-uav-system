@@ -142,27 +142,31 @@ rosservice call /uav1/track/emergency_stop "data: false"
 
 状态可通过 `/uav1/track/status` 的 `tracker_active`、`tracking_state` 和
 `invalid_reason` 字段确认。确需保持旧的启动即跟随行为时，可以显式设置
-`tracker_enabled_at_startup:=true`。
+`config/track.yaml` 中的 `tracker/enabled_at_startup: true`。
 
 只需要机体系速度、不直接连接现有控制器时：
 
-```bash
-roslaunch xd_uav_track track.launch publish_control_reference:=false
+```yaml
+runtime:
+  publish_control_reference: false
 ```
 
-所有输入输出话题都可以直接从 launch 指定，例如：
+所有输入输出话题保留在 `config/track.yaml` 的 `interfaces` 中。例如只需把对应值改成：
 
-```bash
-roslaunch xd_uav_track track.launch \
-  body_frame:=base_link \
-  detections_topic:=/perception/detections \
-  gimbal_state_topic:=/gimbal/attitude \
-  body_velocity_topic:=/guidance/body_velocity \
-  follower_command_topic:=/guidance/follower_command \
-  status_topic:=/guidance/status \
-  state_topic:=/uav1/state_estimator/main/odom \
-  reference_topic:=/uav1/control/reference/setpoint
+```yaml
+interfaces:
+  input:
+    detections: "perception/detections"
+    gimbal_state: "gimbal/attitude"
+    vehicle_state: "state_estimator/main/odom"
+  output:
+    body_velocity: "guidance/body_velocity"
+    follower_command: "guidance/follower_command"
+    status: "guidance/status"
+    control_reference: "control/reference/setpoint"
 ```
+
+相对话题会自动进入 `/UAV_NAME/...`；只有确实需要跨命名空间连接时才填写绝对话题。
 
 示例单候选输入：
 
@@ -180,7 +184,7 @@ image_source: 'front_rgb', detector_name: 'example'}"
 python3 src/xd_uav_detect/scripts/red_box_detector.py
 ```
 
-脚本向 `/uav1/detect/input/detections_2d` 发布单候选；`xd_uav_detect` 负责雷达融合和转发
+脚本向 `/uav1/detect/input/detections_2d` 发布一个或多个候选；`xd_uav_detect` 负责雷达融合和转发
 到 `/uav1/track/detections`。参数可在命令行覆盖，例如：
 
 ```bash
@@ -197,14 +201,14 @@ rostopic pub -r 20 /uav1/track/gimbal_state xd_uav_track/GimbalState \
 
 固定翼速度模式示例：
 
-```bash
-UAV_NAME=uav1 roslaunch xd_uav_track track.launch \
-  follower_profile:=fw_velocity_vector
+```yaml
+follower:
+  profile: "fw_velocity_vector"
 ```
 
 也可以在节点运行时通过 `/uav1/track/set_profile` 切换。
 
-所有可调项集中在 `config/track.yaml`，并按阅读顺序分为 `vehicle`、`runtime`、
-`interfaces`、`tracker`、`follower` 和 `safety`。固定翼目标空速只在
+所有可调项集中在 `config/track.yaml`，并按阅读顺序分为 `runtime`、`interfaces`、
+`tracker`、`follower` 和 `safety`。固定翼目标空速只在
 `follower/fw_velocity_vector/airspeed` 配置；实际空速测量、
 空速上下限和油门控制属于 `xd_uav_controller`，本包不再重复订阅或配置。

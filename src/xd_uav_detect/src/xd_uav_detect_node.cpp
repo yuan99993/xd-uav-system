@@ -129,7 +129,7 @@ class XdUavDetectNode {
     private_nh_.param("fusion/cloud_buffer_size", cloud_buffer_size_, 10);
     private_nh_.param("fusion/point_stride", point_stride_, 1);
     private_nh_.param("fusion/tf_timeout_sec", tf_timeout_sec_, 0.03);
-    private_nh_.param("frames/body", body_frame_, std::string("uav1/base_link"));
+    private_nh_.param("frames/body", body_frame_, std::string("base_link"));
     private_nh_.param("visualization/enabled", visualization_enabled_, true);
     private_nh_.param("visualization/point_stride",
                       visualization_point_stride_, 1);
@@ -184,16 +184,16 @@ class XdUavDetectNode {
       calibrated_ = false;
     }
 
-    std::string uav_name{"uav1"};
-    private_nh_.param("vehicle/uav_name", uav_name, uav_name);
-    std::string detections_input =
-        "/" + uav_name + "/detect/input/detections_2d";
-    std::string detections_output = "/" + uav_name + "/track/detections";
-    std::string image_topic = "/" + uav_name + "/camera/image_raw";
-    std::string camera_info_topic = "/" + uav_name + "/camera/camera_info";
-    std::string cloud_topic = "/" + uav_name + "/fastlio/points";
-    std::string status_topic = "/" + uav_name + "/detect/status";
-    std::string debug_image_topic = "/" + uav_name + "/detect/debug/image";
+    // Launch owns UAV namespace and interface wiring. Relative defaults keep
+    // rosrun usable inside an explicitly supplied ROS namespace without
+    // embedding a vehicle name in this node.
+    std::string detections_input{"detect/input/detections_2d"};
+    std::string detections_output{"track/detections"};
+    std::string image_topic{"camera/image_raw"};
+    std::string camera_info_topic{"camera/camera_info"};
+    std::string cloud_topic{"fastlio/points"};
+    std::string status_topic{"detect/status"};
+    std::string debug_image_topic{"detect/debug/image"};
     private_nh_.param("interfaces/input/detections_2d", detections_input,
                       detections_input);
     private_nh_.param("interfaces/input/image", image_topic, image_topic);
@@ -738,7 +738,7 @@ class XdUavDetectNode {
   bool calibrated_{false};
   bool calibration_parameters_valid_{false};
   bool have_intrinsics_{false};
-  std::string body_frame_{"uav1/base_link"};
+  std::string body_frame_{"base_link"};
 };
 
 int main(int argc, char** argv) {
