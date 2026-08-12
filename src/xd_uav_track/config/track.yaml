@@ -1,32 +1,31 @@
 # xd_uav_track 主配置
 # 单位约定：时间 s，角度 rad，距离 m，速度 m/s；图像量标注 normalized 时为 [-1, 1]。
 
-# 1. 车辆与运行方式 -----------------------------------------------------------
-vehicle:
-  uav_name: "uav1"
-  body_frame: "uav1/base_link"
+# 本文件只保存跟踪、跟随和安全算法参数。
+# UAV_NAME 和 body frame 由 launch 注入；话题使用相对名称，自动位于 UAV_NAME 下。
 
+# 1. 运行方式 -----------------------------------------------------------------
 runtime:
   publish_rate_hz: 30.0
   state_timeout_sec: 0.30
   # true：直接接 xd_uav_controller；false：只观察 track 下的诊断输出。
   publish_control_reference: true
 
-# 2. ROS 接口（所有话题均可改成绝对或相对名称） ------------------------------
+# 2. ROS接口（相对名称会自动解析到 /UAV_NAME/...） ---------------------------
 interfaces:
   input:
     # 唯一感知输入：一个候选和多个候选使用同一种消息。
-    detections: "/uav1/track/detections"
-    vehicle_state: "/uav1/state_estimator/main/odom"
-    gimbal_state: "/uav1/track/gimbal_state"
+    detections: "track/detections"
+    vehicle_state: "state_estimator/main/odom"
+    gimbal_state: "track/gimbal_state"
   output:
     # 真正送给现有控制器的速度参考。
-    control_reference: "/uav1/control/reference/setpoint"
+    control_reference: "control/reference/setpoint"
     # 以下为可观测/调试输出，不是额外的飞控输入。
-    body_velocity: "/uav1/track/velocity_body"
-    follower_command: "/uav1/track/command"
-    tracks: "/uav1/track/tracks"
-    status: "/uav1/track/status"
+    body_velocity: "track/velocity_body"
+    follower_command: "track/command"
+    tracks: "track/tracks"
+    status: "track/status"
 
 # 3. Tracker：检测框 -> 稳定目标状态 -----------------------------------------
 tracker:
@@ -79,7 +78,7 @@ follower:
   pid:
     lateral:       {kp: 1.0, ki: 0.02, kd: 0.02, integral_limit: 0.3}
     vertical:      {kp: 0.6, ki: 0.02, kd: 0.02, integral_limit: 0.3}
-    yaw:           {kp: 0.9, ki: 0.01, kd: 0.03, integral_limit: 0.2}
+    yaw:           {kp: 0.9, ki: 0.01, kd: 0.01, integral_limit: 0.2}
     ground_forward: {kp: 2.0, ki: 0.01, kd: 0.1, integral_limit: 0.3}
 
   limits:
@@ -92,7 +91,7 @@ follower:
   smoothing:
     velocity:
       enabled: true
-      ema_alpha: 0.20
+      ema_alpha: 0.15
     yaw:
       enabled: true
       deadzone: 0.01

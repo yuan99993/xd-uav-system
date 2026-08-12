@@ -3174,10 +3174,13 @@ class ControllerNode {
       reference.velocity.z = -descent_velocity;
     }
 
-    const Eigen::Vector2d horizontal_error(
-        state_.position_odom.x - landing_origin_.x(),
-        state_.position_odom.y - landing_origin_.y());
     if (!landing_touchdown_) {
+      // For land_home, kDescent can only be entered after the vehicle has
+      // reached home within landing_position_tolerance_.  Do not require the
+      // horizontal error to remain small at touchdown: ground contact can
+      // prevent the vehicle from correcting a small descent drift, which
+      // would otherwise keep hover thrust applied indefinitely and prevent
+      // PX4 from reporting LANDED_STATE_ON_GROUND.
       landing_touchdown_ =
           landing_phase_ == LandingPhase::kDescent &&
           landing_setpoint_.z() <=
@@ -3187,9 +3190,7 @@ class ControllerNode {
               landing_ground_z_ +
                   landing_touchdown_height_tolerance_ &&
           std::abs(state_.velocity_odom.z) <=
-              landing_touchdown_velocity_tolerance_ &&
-          horizontal_error.norm() <=
-              2.0 * landing_position_tolerance_;
+              landing_touchdown_velocity_tolerance_;
     }
 
     reference.position.x = landing_setpoint_.x();

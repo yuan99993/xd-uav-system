@@ -376,22 +376,17 @@ class XdUavTrackNode {
                       gimbal_fallback_enabled_, true);
     private_nh_.param("safety/emergency_stop_at_startup",
                       emergency_stop_active_, false);
-    std::string uav_name{"uav1"};
-    private_nh_.param("vehicle/uav_name", uav_name, uav_name);
-    private_nh_.param("vehicle/body_frame", body_frame_, uav_name + "/base_link");
-    std::string state_topic = "/" + uav_name +
-        "/state_estimator/main/odom";
-    std::string detections_topic = "/" + uav_name + "/track/detections";
-    std::string tracks_topic = "/" + uav_name + "/track/tracks";
-    std::string body_velocity_topic = "/" + uav_name +
-        "/track/velocity_body";
-    std::string follower_command_topic = "/" + uav_name +
-        "/track/command";
-    std::string gimbal_state_topic = "/" + uav_name +
-        "/track/gimbal_state";
-    std::string status_topic = "/" + uav_name + "/track/status";
-    std::string reference_topic = "/" + uav_name +
-        "/control/reference/setpoint";
+    private_nh_.param("frames/body", body_frame_, std::string("base_link"));
+    // Launch owns UAV namespace and interface wiring. These relative defaults
+    // are only a namespace-neutral fallback for direct rosrun use.
+    std::string state_topic{"state_estimator/main/odom"};
+    std::string detections_topic{"track/detections"};
+    std::string tracks_topic{"track/tracks"};
+    std::string body_velocity_topic{"track/velocity_body"};
+    std::string follower_command_topic{"track/command"};
+    std::string gimbal_state_topic{"track/gimbal_state"};
+    std::string status_topic{"track/status"};
+    std::string reference_topic{"control/reference/setpoint"};
     private_nh_.param("interfaces/input/detections", detections_topic,
                       detections_topic);
     private_nh_.param("interfaces/output/tracks", tracks_topic, tracks_topic);
@@ -968,7 +963,7 @@ class XdUavTrackNode {
   xd_uav_track::TrackVelocity blend_source_;
   xd_uav_track::TrackStateArray latest_tracks_;
   std::string state_frame_;
-  std::string body_frame_{"uav1/fcu"};
+  std::string body_frame_{"base_link"};
   std::string lateral_guidance_name_{"coordinated_turn"};
   std::string accepted_image_source_;
 };
