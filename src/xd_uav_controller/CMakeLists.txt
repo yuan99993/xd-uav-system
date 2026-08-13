@@ -74,6 +74,7 @@ catkin_install_python(PROGRAMS
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   add_rostest(test/controller.test)
+  add_rostest(test/odom_landing.test)
   add_rostest(test/multirotor_anti_windup.test)
   add_rostest(test/fixedwing_controller.test)
 endif()

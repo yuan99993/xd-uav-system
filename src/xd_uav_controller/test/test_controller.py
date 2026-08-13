@@ -34,6 +34,9 @@ class ControllerInterfaceTest(unittest.TestCase):
         self._position_x = 0.0
         self._position_y = 0.0
         self._position_z = 0.0
+        self._velocity_x = 0.0
+        self._velocity_y = 0.0
+        self._velocity_z = 0.0
         self._acceleration_x = 0.0
         self._acceleration_y = 0.0
         self._acceleration_z = 0.0
@@ -77,6 +80,9 @@ class ControllerInterfaceTest(unittest.TestCase):
         state.position_odom.x = self._position_x
         state.position_odom.y = self._position_y
         state.position_odom.z = self._position_z
+        state.velocity_odom.x = self._velocity_x
+        state.velocity_odom.y = self._velocity_y
+        state.velocity_odom.z = self._velocity_z
         state.acceleration_odom.x = self._acceleration_x
         state.acceleration_odom.y = self._acceleration_y
         state.acceleration_odom.z = self._acceleration_z
@@ -753,8 +759,12 @@ class ControllerInterfaceTest(unittest.TestCase):
 
         # The odometry altitude deliberately remains two metres above the
         # takeoff ground.  Touchdown must come from the downward rangefinder,
-        # which represents landing on an elevated platform.
+        # which represents landing on an elevated platform.  odom.vz is also
+        # deliberately impossible: distance_sensor mode must use the filtered
+        # AGL rate and must not inherit vertical velocity from the selected
+        # localization source.
         self._position_z = 2.0
+        self._velocity_z = 5.0
         self._distance = 0.2
         touchdown_command = self._wait_for_command(
             lambda value: (
@@ -764,6 +774,7 @@ class ControllerInterfaceTest(unittest.TestCase):
             )
         )
         self.assertTrue(touchdown_command.landing_touchdown)
+        self._velocity_z = 0.0
 
         response = internal_command(
             InternalCommandRequest.RESET, 0.0

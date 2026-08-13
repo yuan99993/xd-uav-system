@@ -175,6 +175,21 @@ std::array<double, 2> loadVector2WithLegacy(
   return {{values[0], values[1]}};
 }
 
+struct MultirotorVerticalLandingConfig {
+  double descent_velocity{0.35};
+  double final_descent_velocity{0.15};
+  double slow_height{0.7};
+  double touchdown_offset{0.15};
+  double touchdown_height_tolerance{0.10};
+  double touchdown_velocity_tolerance{0.20};
+};
+
+struct DistanceSensorLandingConfig
+    : public MultirotorVerticalLandingConfig {
+  double timeout{0.5};
+  double velocity_filter_time_constant{0.30};
+};
+
 class FiniteHorizonAxisMpc {
  public:
   void configure(const int horizon, const double dt,
@@ -690,29 +705,91 @@ class ControllerNode {
                       fixedwing_climb_pitch_, 0.21);
     private_nh_.param("takeoff/altitude_tolerance",
                       fixedwing_altitude_tolerance_, 3.0);
-    private_nh_.param("landing/descent_velocity",
-                      landing_descent_velocity_, 0.35);
     private_nh_.param("landing/height_source",
                       landing_height_source_,
                       std::string("odom"));
-    private_nh_.param("landing/distance_sensor_timeout",
-                      landing_distance_sensor_timeout_, 0.5);
-    private_nh_.param("landing/final_descent_velocity",
-                      landing_final_descent_velocity_, 0.15);
-    private_nh_.param("landing/slow_height",
-                      landing_slow_height_, 0.7);
-    private_nh_.param("landing/return_velocity",
-                      landing_return_velocity_, 1.0);
+    loadParameterWithLegacy(
+        private_nh_, "landing/return_max_velocity",
+        "landing/return_velocity", &landing_return_max_velocity_, 1.0);
     private_nh_.param("landing/position_tolerance",
                       landing_position_tolerance_, 0.20);
     private_nh_.param("landing/velocity_tolerance",
                       landing_velocity_tolerance_, 0.20);
-    private_nh_.param("landing/touchdown_offset",
-                      landing_touchdown_offset_, 0.15);
-    private_nh_.param("landing/touchdown_height_tolerance",
-                      landing_touchdown_height_tolerance_, 0.10);
-    private_nh_.param("landing/touchdown_velocity_tolerance",
-                      landing_touchdown_velocity_tolerance_, 0.20);
+    if (vehicle_type_ == "multirotor") {
+      loadParameterWithLegacy(
+          private_nh_, "landing/distance_sensor_cfg/timeout",
+          "landing/distance_sensor_timeout",
+          &distance_sensor_landing_config_.timeout, 0.5);
+      loadParameterWithLegacy(
+          private_nh_,
+          "landing/distance_sensor_cfg/velocity_filter_time_constant",
+          "landing/distance_sensor_velocity_filter_time_constant",
+          &distance_sensor_landing_config_
+               .velocity_filter_time_constant,
+          0.30);
+      loadParameterWithLegacy(
+          private_nh_, "landing/distance_sensor_cfg/descent_velocity",
+          "landing/descent_velocity",
+          &distance_sensor_landing_config_.descent_velocity, 0.35);
+      loadParameterWithLegacy(
+          private_nh_,
+          "landing/distance_sensor_cfg/final_descent_velocity",
+          "landing/final_descent_velocity",
+          &distance_sensor_landing_config_.final_descent_velocity,
+          0.15);
+      loadParameterWithLegacy(
+          private_nh_, "landing/distance_sensor_cfg/slow_height",
+          "landing/slow_height",
+          &distance_sensor_landing_config_.slow_height, 0.7);
+      loadParameterWithLegacy(
+          private_nh_, "landing/distance_sensor_cfg/touchdown_offset",
+          "landing/touchdown_offset",
+          &distance_sensor_landing_config_.touchdown_offset, 0.15);
+      loadParameterWithLegacy(
+          private_nh_,
+          "landing/distance_sensor_cfg/touchdown_height_tolerance",
+          "landing/touchdown_height_tolerance",
+          &distance_sensor_landing_config_
+               .touchdown_height_tolerance,
+          0.10);
+      loadParameterWithLegacy(
+          private_nh_,
+          "landing/distance_sensor_cfg/touchdown_velocity_tolerance",
+          "landing/touchdown_velocity_tolerance",
+          &distance_sensor_landing_config_
+               .touchdown_velocity_tolerance,
+          0.20);
+
+      loadParameterWithLegacy(
+          private_nh_, "landing/odom_cfg/descent_velocity",
+          "landing/descent_velocity",
+          &odom_landing_config_.descent_velocity, 0.35);
+      loadParameterWithLegacy(
+          private_nh_, "landing/odom_cfg/final_descent_velocity",
+          "landing/final_descent_velocity",
+          &odom_landing_config_.final_descent_velocity, 0.15);
+      loadParameterWithLegacy(
+          private_nh_, "landing/odom_cfg/slow_height",
+          "landing/slow_height",
+          &odom_landing_config_.slow_height, 0.7);
+      loadParameterWithLegacy(
+          private_nh_, "landing/odom_cfg/touchdown_offset",
+          "landing/touchdown_offset",
+          &odom_landing_config_.touchdown_offset, 0.15);
+      loadParameterWithLegacy(
+          private_nh_,
+          "landing/odom_cfg/touchdown_height_tolerance",
+          "landing/touchdown_height_tolerance",
+          &odom_landing_config_.touchdown_height_tolerance, 0.10);
+      loadParameterWithLegacy(
+          private_nh_,
+          "landing/odom_cfg/touchdown_velocity_tolerance",
+          "landing/touchdown_velocity_tolerance",
+          &odom_landing_config_.touchdown_velocity_tolerance, 0.20);
+    } else {
+      private_nh_.param("landing/touchdown_offset",
+                        landing_touchdown_offset_, 0.15);
+    }
     private_nh_.param("landing/approach_distance",
                       fixedwing_landing_approach_distance_, 400.0);
     private_nh_.param("landing/approach_height",
@@ -783,11 +860,6 @@ class ControllerNode {
       throw std::runtime_error(
           "固定翼landing/height_source目前只支持odom");
     }
-    if (!std::isfinite(landing_distance_sensor_timeout_) ||
-        landing_distance_sensor_timeout_ <= 0.0) {
-      throw std::runtime_error(
-          "landing/distance_sensor_timeout必须为正数");
-    }
     const auto frames_valid = [](const std::vector<std::string>& frames) {
       return !frames.empty() &&
              std::all_of(
@@ -823,6 +895,21 @@ class ControllerNode {
       throw std::runtime_error("公共home配置包含空frame或非法数值");
     }
     if (vehicle_type_ == "multirotor") {
+      const auto vertical_landing_config_valid = [](
+          const MultirotorVerticalLandingConfig& config) {
+        return std::isfinite(config.descent_velocity) &&
+               config.descent_velocity > 0.0 &&
+               std::isfinite(config.final_descent_velocity) &&
+               config.final_descent_velocity > 0.0 &&
+               std::isfinite(config.slow_height) &&
+               config.slow_height > 0.0 &&
+               std::isfinite(config.touchdown_offset) &&
+               config.touchdown_offset >= 0.0 &&
+               std::isfinite(config.touchdown_height_tolerance) &&
+               config.touchdown_height_tolerance >= 0.0 &&
+               std::isfinite(config.touchdown_velocity_tolerance) &&
+               config.touchdown_velocity_tolerance >= 0.0;
+      };
       const auto valid_nonnegative_vector = [](
           const std::array<double, 3>& values) {
         return std::all_of(
@@ -831,7 +918,23 @@ class ControllerNode {
               return std::isfinite(value) && value >= 0.0;
             });
       };
-      if (!std::isfinite(control_rate_) || control_rate_ <= 0.0 ||
+      if (!vertical_landing_config_valid(odom_landing_config_) ||
+          !vertical_landing_config_valid(
+              distance_sensor_landing_config_) ||
+          !std::isfinite(distance_sensor_landing_config_.timeout) ||
+          distance_sensor_landing_config_.timeout <= 0.0 ||
+          !std::isfinite(
+              distance_sensor_landing_config_
+                  .velocity_filter_time_constant) ||
+          distance_sensor_landing_config_
+                  .velocity_filter_time_constant <= 0.0 ||
+          !std::isfinite(landing_return_max_velocity_) ||
+          landing_return_max_velocity_ <= 0.0 ||
+          !std::isfinite(landing_position_tolerance_) ||
+          landing_position_tolerance_ < 0.0 ||
+          !std::isfinite(landing_velocity_tolerance_) ||
+          landing_velocity_tolerance_ < 0.0 ||
+          !std::isfinite(control_rate_) || control_rate_ <= 0.0 ||
           !std::isfinite(hover_throttle_) || hover_throttle_ <= 0.0 ||
           hover_throttle_ > 1.0 ||
           !std::isfinite(minimum_throttle_) ||
@@ -1435,13 +1538,66 @@ class ControllerNode {
   void distanceSensorCallback(
       const sensor_msgs::Range::ConstPtr& message) {
     distance_sensor_ = *message;
-    last_distance_sensor_receive_ = ros::Time::now();
+    const double range = static_cast<double>(message->range);
+    const double minimum = static_cast<double>(message->min_range);
+    const double maximum = static_cast<double>(message->max_range);
+    if (!std::isfinite(range) || !std::isfinite(minimum) ||
+        !std::isfinite(maximum) || minimum < 0.0 ||
+        maximum <= minimum || range < minimum - 1e-3 ||
+        range > maximum + 1e-3) {
+      return;
+    }
+
+    // Range is the slant distance along the body-fixed downward beam.  Use
+    // its vertical component as AGL so a small landing attitude does not look
+    // like an artificial climb.  If attitude is not available yet, retaining
+    // the raw range is safer than manufacturing a correction.
+    double height = range;
+    Eigen::Matrix3d rotation;
+    if (have_state_ && quaternionToMatrix(
+                           state_.orientation_odom_body, &rotation)) {
+      height *= std::abs(rotation(2, 2));
+    }
+    if (!std::isfinite(height)) {
+      return;
+    }
+
+    const ros::Time now = ros::Time::now();
+    if (!have_distance_sensor_ ||
+        last_distance_sensor_sample_time_.isZero()) {
+      filtered_distance_sensor_velocity_ = 0.0;
+      distance_sensor_velocity_valid_ = false;
+    } else {
+      const double dt =
+          (now - last_distance_sensor_sample_time_).toSec();
+      if (std::isfinite(dt) && dt > 1e-4 &&
+          dt <= distance_sensor_landing_config_.timeout) {
+        const double raw_velocity =
+            (height - distance_sensor_height_) / dt;
+        const double alpha = clamp(
+            dt / (distance_sensor_landing_config_
+                      .velocity_filter_time_constant + dt),
+            0.0, 1.0);
+        filtered_distance_sensor_velocity_ +=
+            alpha * (raw_velocity -
+                     filtered_distance_sensor_velocity_);
+        distance_sensor_velocity_valid_ =
+            std::isfinite(filtered_distance_sensor_velocity_);
+      } else {
+        filtered_distance_sensor_velocity_ = 0.0;
+        distance_sensor_velocity_valid_ = false;
+      }
+    }
+    distance_sensor_height_ = height;
+    last_distance_sensor_sample_time_ = now;
+    last_distance_sensor_receive_ = now;
     have_distance_sensor_ = true;
   }
 
   bool distanceSensorHeight(
       const ros::Time& now, double* height,
-      std::string* reason = nullptr) const {
+      std::string* reason = nullptr,
+      double* vertical_velocity = nullptr) const {
     const auto reject = [reason](const std::string& value) {
       if (reason != nullptr) {
         *reason = value;
@@ -1454,22 +1610,19 @@ class ControllerNode {
     const double age =
         (now - last_distance_sensor_receive_).toSec();
     if (!std::isfinite(age) || age < 0.0 ||
-        age > landing_distance_sensor_timeout_) {
+        age > distance_sensor_landing_config_.timeout) {
       return reject("下视距离传感器数据超时");
     }
-    const double range =
-        static_cast<double>(distance_sensor_.range);
-    const double minimum =
-        static_cast<double>(distance_sensor_.min_range);
-    const double maximum =
-        static_cast<double>(distance_sensor_.max_range);
-    if (!std::isfinite(range) || !std::isfinite(minimum) ||
-        !std::isfinite(maximum) || minimum < 0.0 ||
-        maximum <= minimum || range < minimum - 1e-3 ||
-        range > maximum + 1e-3) {
-      return reject("下视距离传感器量程或测量值无效");
+    if (!std::isfinite(distance_sensor_height_)) {
+      return reject("下视距离传感器高度无效");
     }
-    *height = range;
+    if (vertical_velocity != nullptr) {
+      if (!distance_sensor_velocity_valid_) {
+        return reject("下视距离变化率尚未建立");
+      }
+      *vertical_velocity = filtered_distance_sensor_velocity_;
+    }
+    *height = distance_sensor_height_;
     return true;
   }
 
@@ -2427,12 +2580,13 @@ class ControllerNode {
               : "原地降落已经在执行";
       return true;
     }
+    double initial_distance_sensor_height = 0.0;
     if (vehicle_type_ == "multirotor" &&
         landing_height_source_ == "distance_sensor") {
-      double height = 0.0;
       std::string reason;
       if (!distanceSensorHeight(
-              ros::Time::now(), &height, &reason)) {
+              ros::Time::now(), &initial_distance_sensor_height,
+              &reason)) {
         response.success = false;
         response.message =
             "下视高度不可用，拒绝自动降落: " + reason;
@@ -2471,9 +2625,19 @@ class ControllerNode {
       landing_ground_z_ = takeoff_origin_.z();
     }
     landing_setpoint_ = current_position;
-    landing_target_z_ =
-        landing_ground_z_ -
-        std::abs(landing_touchdown_offset_);
+    if (vehicle_type_ == "multirotor") {
+      landing_target_z_ =
+          landing_ground_z_ -
+          std::abs(odom_landing_config_.touchdown_offset);
+      landing_agl_setpoint_ = initial_distance_sensor_height;
+      landing_agl_setpoint_initialized_ =
+          landing_height_source_ == "distance_sensor";
+      landing_return_velocity_command_.setZero();
+    } else {
+      landing_target_z_ =
+          landing_ground_z_ -
+          std::abs(landing_touchdown_offset_);
+    }
     landing_course_ = state_.course;
     if (!std::isfinite(landing_course_)) {
       Eigen::Matrix3d rotation;
@@ -2588,6 +2752,8 @@ class ControllerNode {
     landing_touchdown_ = false;
     landing_return_home_ = false;
     landing_phase_ = LandingPhase::kNone;
+    landing_agl_setpoint_initialized_ = false;
+    landing_return_velocity_command_.setZero();
     fixedwing_landing_phase_ =
         FixedwingLandingPhase::kNone;
     fixedwing_landing_guidance_course_ = 0.0;
@@ -2633,6 +2799,8 @@ class ControllerNode {
     landing_touchdown_ = false;
     landing_return_home_ = false;
     landing_phase_ = LandingPhase::kNone;
+    landing_agl_setpoint_initialized_ = false;
+    landing_return_velocity_command_.setZero();
     fixedwing_landing_phase_ =
         FixedwingLandingPhase::kNone;
     fixedwing_landing_guidance_course_ = 0.0;
@@ -3174,9 +3342,15 @@ class ControllerNode {
             latest_home.z() - landing_ground_z_;
         landing_origin_ = latest_home;
         landing_ground_z_ = latest_home.z();
-        landing_target_z_ =
-            landing_ground_z_ -
-            std::abs(landing_touchdown_offset_);
+        if (vehicle_type_ == "multirotor") {
+          landing_target_z_ =
+              landing_ground_z_ -
+              std::abs(odom_landing_config_.touchdown_offset);
+        } else {
+          landing_target_z_ =
+              landing_ground_z_ -
+              std::abs(landing_touchdown_offset_);
+        }
         landing_setpoint_.z() += ground_shift;
         if (use_home_yaw_) {
           landing_course_ = latest_home_yaw;
@@ -3198,66 +3372,147 @@ class ControllerNode {
     reference.use_acceleration = {{true, true, true}};
     reference.use_yaw = true;
     if (landing_phase_ == LandingPhase::kApproach) {
+      // Horizontal return is velocity-controlled.  A moving position target
+      // ahead of the aircraft used to dominate the lower-weight velocity
+      // objective in the MPC and kept pulling toward home while the velocity
+      // profile was already asking to brake.
+      reference.use_position[0] = false;
+      reference.use_position[1] = false;
       const Eigen::Vector2d target_xy =
           landing_origin_.head<2>();
-      const Eigen::Vector2d setpoint_xy =
-          landing_setpoint_.head<2>();
-      const Eigen::Vector2d remaining =
-          target_xy - setpoint_xy;
-      const double return_velocity =
-          std::abs(landing_return_velocity_);
-      const double maximum_step =
-          return_velocity * dt;
-      if (remaining.norm() > maximum_step &&
-          maximum_step > 0.0) {
-        const Eigen::Vector2d direction =
-            remaining.normalized();
-        landing_setpoint_.head<2>() +=
-            direction * maximum_step;
-        reference.velocity.x =
-            direction.x() * return_velocity;
-        reference.velocity.y =
-            direction.y() * return_velocity;
-      } else {
-        landing_setpoint_.head<2>() = target_xy;
-      }
-
       const Eigen::Vector2d current_xy(
           state_.position_odom.x, state_.position_odom.y);
       const Eigen::Vector2d current_velocity_xy(
           state_.velocity_odom.x, state_.velocity_odom.y);
+      const Eigen::Vector2d actual_remaining =
+          target_xy - current_xy;
+      const double actual_distance = actual_remaining.norm();
+
+      // return_max_velocity is a ceiling, not a constant command.  Use only a
+      // conservative fraction of the hard acceleration limit for trajectory
+      // braking and include control/attitude response distance.  Solving
+      //   d = v * response_time + v^2 / (2 * braking_acceleration)
+      // for v starts braking well before home instead of assuming the hard
+      // acceleration limit is available instantaneously.
+      Eigen::Vector2d desired_return_velocity =
+          Eigen::Vector2d::Zero();
+      if (actual_distance > landing_position_tolerance_) {
+        const double braking_distance = std::max(
+            0.0, actual_distance - landing_position_tolerance_);
+        const double braking_acceleration = std::max(
+            0.20, 0.25 * max_acceleration_xy_);
+        constexpr double kControlResponseTime = 0.35;
+        const double response_velocity =
+            braking_acceleration * kControlResponseTime;
+        const double stopping_speed =
+            -response_velocity + std::sqrt(
+                response_velocity * response_velocity +
+                2.0 * braking_acceleration * braking_distance);
+        const double speed = std::min(
+            std::abs(landing_return_max_velocity_), stopping_speed);
+        desired_return_velocity =
+            speed * actual_remaining / actual_distance;
+      }
+
+      const bool reducing_speed =
+          desired_return_velocity.norm() + 1e-6 <
+              landing_return_velocity_command_.norm() ||
+          desired_return_velocity.dot(
+              landing_return_velocity_command_) < 0.0;
+      if (reducing_speed) {
+        // Do not slew-limit braking twice.  The multirotor controller below
+        // already enforces acceleration and jerk limits on the realizable
+        // command; delaying the velocity reference here caused overshoot.
+        landing_return_velocity_command_ =
+            desired_return_velocity;
+      } else {
+        Eigen::Vector2d velocity_delta =
+            desired_return_velocity -
+            landing_return_velocity_command_;
+        const double maximum_velocity_delta =
+            max_acceleration_xy_ * dt;
+        if (velocity_delta.norm() > maximum_velocity_delta &&
+            maximum_velocity_delta > 0.0) {
+          velocity_delta *=
+              maximum_velocity_delta / velocity_delta.norm();
+        }
+        landing_return_velocity_command_ += velocity_delta;
+      }
+      reference.velocity.x =
+          landing_return_velocity_command_.x();
+      reference.velocity.y =
+          landing_return_velocity_command_.y();
+
+      // Feed the measured velocity tracking error forward as acceleration.
+      // The inner controller remains the single owner of acceleration/jerk
+      // limits, while this term makes braking depend on the aircraft's real
+      // closing speed rather than assuming it followed the previous target.
+      constexpr double kVelocityResponseTime = 0.35;
+      Eigen::Vector2d return_acceleration =
+          (landing_return_velocity_command_ - current_velocity_xy) /
+          kVelocityResponseTime;
+      if (return_acceleration.norm() > max_acceleration_xy_) {
+        return_acceleration *=
+            max_acceleration_xy_ / return_acceleration.norm();
+      }
+      reference.acceleration.x = return_acceleration.x();
+      reference.acceleration.y = return_acceleration.y();
+      landing_setpoint_.head<2>() = current_xy;
+
       if ((target_xy - current_xy).norm() <=
               landing_position_tolerance_ &&
           current_velocity_xy.norm() <=
               landing_velocity_tolerance_) {
         landing_phase_ = LandingPhase::kDescent;
         landing_setpoint_.head<2>() = target_xy;
+        landing_return_velocity_command_.setZero();
+        if (landing_height_source_ == "distance_sensor") {
+          double height = 0.0;
+          if (distanceSensorHeight(now, &height)) {
+            landing_agl_setpoint_ = height;
+            landing_agl_setpoint_initialized_ = true;
+          } else {
+            landing_agl_setpoint_initialized_ = false;
+          }
+        }
       }
     }
 
     if (landing_phase_ == LandingPhase::kDescent) {
       landing_setpoint_.head<2>() =
           landing_origin_.head<2>();
-      double height =
-          std::max(0.0, state_.position_odom.z -
-                            landing_ground_z_);
-      bool vertical_height_valid = true;
       if (landing_height_source_ == "distance_sensor") {
+        const DistanceSensorLandingConfig& config =
+            distance_sensor_landing_config_;
+        double height = 0.0;
         std::string reason;
-        vertical_height_valid = distanceSensorHeight(
-            now, &height, &reason);
-        if (vertical_height_valid) {
-          // Convert the relative range into the current odom frame only for
-          // the vertical landing target.  XY continues to use landing_origin.
-          const double measured_surface_z =
-              state_.position_odom.z - height;
-          landing_target_z_ =
-              measured_surface_z -
-              std::abs(landing_touchdown_offset_);
+        if (distanceSensorHeight(now, &height, &reason)) {
+          if (!landing_agl_setpoint_initialized_) {
+            landing_agl_setpoint_ = height;
+            landing_agl_setpoint_initialized_ = true;
+          }
+          const double descent_velocity =
+              height <= config.slow_height
+                  ? std::abs(config.final_descent_velocity)
+                  : std::abs(config.descent_velocity);
+          const double touchdown_height =
+              std::abs(config.touchdown_offset);
+          landing_agl_setpoint_ = std::max(
+              touchdown_height,
+              landing_agl_setpoint_ - descent_velocity * dt);
+
+          // Form the vertical position error directly in AGL, then translate
+          // only that error into the current odom frame.  An odom-Z offset or
+          // slow drift therefore cannot change the requested clearance.
+          landing_setpoint_.z() =
+              state_.position_odom.z +
+              (landing_agl_setpoint_ - height);
+          reference.velocity.z =
+              landing_agl_setpoint_ > touchdown_height + 1e-3
+                  ? -descent_velocity
+                  : 0.0;
         } else {
-          // Never silently continue toward the home/odom ground when the
-          // selected AGL source disappears. Hold the current vertical state
-          // until fresh, valid range data returns.
+          landing_agl_setpoint_initialized_ = false;
           landing_setpoint_.z() = state_.position_odom.z;
           reference.velocity.z = 0.0;
           ROS_ERROR_THROTTLE(
@@ -3265,12 +3520,16 @@ class ControllerNode {
               "[xd_uav_controller] 降落暂停Z下降: %s",
               reason.c_str());
         }
-      }
-      if (vertical_height_valid) {
+      } else {
+        const MultirotorVerticalLandingConfig& config =
+            odom_landing_config_;
+        const double height =
+            std::max(0.0, state_.position_odom.z -
+                              landing_ground_z_);
         const double descent_velocity =
-            height <= landing_slow_height_
-                ? std::abs(landing_final_descent_velocity_)
-                : std::abs(landing_descent_velocity_);
+            height <= config.slow_height
+                ? std::abs(config.final_descent_velocity)
+                : std::abs(config.descent_velocity);
         landing_setpoint_.z() = std::max(
             landing_target_z_,
             landing_setpoint_.z() - descent_velocity * dt);
@@ -3287,24 +3546,30 @@ class ControllerNode {
       // PX4 from reporting LANDED_STATE_ON_GROUND.
       if (landing_height_source_ == "distance_sensor") {
         double height = 0.0;
+        double vertical_velocity = 0.0;
+        const DistanceSensorLandingConfig& config =
+            distance_sensor_landing_config_;
         landing_touchdown_ =
             landing_phase_ == LandingPhase::kDescent &&
-            distanceSensorHeight(now, &height) &&
-            height <= std::abs(landing_touchdown_offset_) +
-                          landing_touchdown_height_tolerance_ &&
-            std::abs(state_.velocity_odom.z) <=
-                landing_touchdown_velocity_tolerance_;
+            distanceSensorHeight(
+                now, &height, nullptr, &vertical_velocity) &&
+            height <= std::abs(config.touchdown_offset) +
+                          config.touchdown_height_tolerance &&
+            std::abs(vertical_velocity) <=
+                config.touchdown_velocity_tolerance;
       } else {
+        const MultirotorVerticalLandingConfig& config =
+            odom_landing_config_;
         landing_touchdown_ =
             landing_phase_ == LandingPhase::kDescent &&
             landing_setpoint_.z() <=
                 landing_ground_z_ +
-                    landing_touchdown_height_tolerance_ &&
+                    config.touchdown_height_tolerance &&
             state_.position_odom.z <=
                 landing_ground_z_ +
-                    landing_touchdown_height_tolerance_ &&
+                    config.touchdown_height_tolerance &&
             std::abs(state_.velocity_odom.z) <=
-                landing_touchdown_velocity_tolerance_;
+                config.touchdown_velocity_tolerance;
       }
     }
 
@@ -3517,7 +3782,8 @@ class ControllerNode {
       }
       const bool velocity_integrator_enabled =
           reference.use_velocity[axis] &&
-          !reference.use_position[axis];
+          !reference.use_position[axis] &&
+          !landing_active_;
       if (velocity_integrator_enabled) {
         desired_acceleration(axis) +=
             velocity_integral_acceleration_state_(axis);
@@ -4414,12 +4680,14 @@ class ControllerNode {
       reference_trajectory_;
   ros::Time last_state_receive_;
   ros::Time last_distance_sensor_receive_;
+  ros::Time last_distance_sensor_sample_time_;
   ros::Time last_reference_receive_;
   ros::Time reference_trajectory_start_;
   ros::Time last_local_alignment_valid_receive_;
   ros::Time active_reference_transform_failure_since_;
   bool have_state_{false};
   bool have_distance_sensor_{false};
+  bool distance_sensor_velocity_valid_{false};
   bool have_reference_{false};
   bool have_reference_error_{false};
   bool have_normalized_reference_{false};
@@ -4450,6 +4718,12 @@ class ControllerNode {
       Eigen::Vector3d::Zero()};
   double landing_ground_z_{0.0};
   double landing_target_z_{0.0};
+  double landing_agl_setpoint_{0.0};
+  bool landing_agl_setpoint_initialized_{false};
+  double distance_sensor_height_{0.0};
+  double filtered_distance_sensor_velocity_{0.0};
+  Eigen::Vector2d landing_return_velocity_command_{
+      Eigen::Vector2d::Zero()};
   double landing_course_{0.0};
   ros::Time last_landing_update_;
   Eigen::Vector3d acceleration_command_state_{
@@ -4593,17 +4867,14 @@ class ControllerNode {
   LandingPhase landing_phase_{LandingPhase::kNone};
   FixedwingLandingPhase fixedwing_landing_phase_{
       FixedwingLandingPhase::kNone};
-  double landing_descent_velocity_{0.35};
   std::string landing_height_source_{"odom"};
-  double landing_distance_sensor_timeout_{0.5};
-  double landing_final_descent_velocity_{0.15};
-  double landing_slow_height_{0.7};
-  double landing_return_velocity_{1.0};
+  MultirotorVerticalLandingConfig odom_landing_config_;
+  DistanceSensorLandingConfig distance_sensor_landing_config_;
+  double landing_return_max_velocity_{1.0};
   double landing_position_tolerance_{0.20};
   double landing_velocity_tolerance_{0.20};
+  // Fixed-wing still uses its independent flat landing configuration.
   double landing_touchdown_offset_{0.15};
-  double landing_touchdown_height_tolerance_{0.10};
-  double landing_touchdown_velocity_tolerance_{0.20};
   double fixedwing_landing_approach_distance_{400.0};
   double fixedwing_landing_approach_height_{30.0};
   double fixedwing_landing_approach_airspeed_{15.0};
