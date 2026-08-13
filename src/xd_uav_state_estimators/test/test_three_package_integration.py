@@ -55,6 +55,15 @@ class ThreePackageIntegration(unittest.TestCase):
                 latch=True,
             ),
         }
+        self._main_positions = []
+        self._main_subscriber = rospy.Subscriber(
+            "/uav1/state_estimator/main/odom",
+            Odometry,
+            lambda message: self._main_positions.append(
+                message.pose.pose.position.x
+            ),
+            queue_size=100,
+        )
         self._thread = threading.Thread(target=self._publish_loop)
         self._thread.daemon = True
         self._thread.start()
@@ -62,10 +71,13 @@ class ThreePackageIntegration(unittest.TestCase):
         reset = rospy.ServiceProxy("/uav1/state_estimator/reset", Trigger)
         response = reset()
         self.assertTrue(response.success, response.message)
+        self._main_positions = []
+        self._reset_time = rospy.Time.now()
 
     def tearDown(self):
         self._running = False
         self._thread.join(timeout=1.0)
+        self._main_subscriber.unregister()
 
     def _odometry(self, parent, child, x, position_z, velocity_x=0.0):
         message = Odometry()
@@ -320,8 +332,7 @@ class ThreePackageIntegration(unittest.TestCase):
 
         # 同一定位会话内让来源自身产生一小段位移，再执行切源。来源原点只能由
         # 会话接入决定，不能为了让main无跳变而在切源时被重新定义。
-        # 用连续运动而不是单周期0.6m阶跃推进来源位置；后者应当被NIS安全门
-        # 识别为异常值，不能为了切源测试而放宽真实飞行使用的创新门限。
+        # 连续运动推进来源位置，用于验证切源连续性本身。
         for step in range(1, 31):
             self._fastlio_position_z = 0.02 * step
             rospy.sleep(0.035)
@@ -431,8 +442,8 @@ class ThreePackageIntegration(unittest.TestCase):
             )
         )
 
-        # 任意align_on_activation来源中断超过其required超时后，都应被视为
-        # 一个已经结束的定位会话。重新接入必须用全新的一组必需修正重新对齐。
+        # 只有中断超过session_reset_timeout才认为定位节点可能重启并结束
+        # 当前会话。普通correction超时不能重定义来源原点。
         self._publish_fastlio = False
         self._wait_for(
             lambda: not rospy.wait_for_message(
@@ -441,7 +452,7 @@ class ThreePackageIntegration(unittest.TestCase):
                 timeout=0.2,
             ).data
         )
-        rospy.sleep(0.15)
+        rospy.sleep(2.1)
 
         # 用不同的局部初值模拟同类定位节点重启后建立了新的内部原点。
         # sensor z=0.5 -> base_link z=0.4，故新对齐量应为5.0-0.4=4.6。
@@ -473,6 +484,139 @@ class ThreePackageIntegration(unittest.TestCase):
             "/uav1/state_estimator/status", EstimatorStatus, timeout=1.0
         )
         self.assertEqual(status.active_source, "mavros")
+
+    def test_short_dropouts_preserve_origin_and_reseed_all_sources(self):
+        # 两种来源都经过同一套SourceRuntime逻辑。短时断流超过健康timeout，
+        # 但未达到session_reset_timeout时，应保留固定原点，并在收齐完整
+        # 观测后从测量重置运动状态，不能沿用断流预测继续漂移。
+        self._publish_fastlio = True
+        self._wait_for(
+            lambda: rospy.wait_for_message(
+                "/uav1/state_estimator/sources/fastlio/valid",
+                Bool,
+                timeout=0.2,
+            ).data
+        )
+
+        for source_name, publish_attribute in (
+            ("mavros", "_publish_mavros"),
+            ("fastlio", "_publish_fastlio"),
+        ):
+            alignment_topic = (
+                "/uav1/state_estimator/sources/{}/alignment".format(source_name)
+            )
+            valid_topic = "/uav1/state_estimator/sources/{}/valid".format(
+                source_name
+            )
+            alignment_before = self._wait_for(
+                lambda topic=alignment_topic: (
+                    message
+                    if (message := rospy.wait_for_message(
+                        topic, TransformStamped, timeout=0.2
+                    )).header.stamp
+                    >= self._reset_time
+                    else None
+                )
+            )
+            setattr(self, publish_attribute, False)
+            self._wait_for(
+                lambda topic=valid_topic: not rospy.wait_for_message(
+                    topic, Bool, timeout=0.2
+                ).data
+            )
+            rospy.sleep(0.35)
+            resume_time = rospy.Time.now()
+            setattr(self, publish_attribute, True)
+            self._wait_for(
+                lambda topic=valid_topic: rospy.wait_for_message(
+                    topic, Bool, timeout=0.2
+                ).data
+            )
+            alignment_after = self._wait_for(
+                lambda topic=alignment_topic: (
+                    message
+                    if (message := rospy.wait_for_message(
+                        topic, TransformStamped, timeout=0.2
+                    )).header.stamp
+                    >= resume_time
+                    else None
+                )
+            )
+            self.assertAlmostEqual(
+                alignment_after.transform.translation.x,
+                alignment_before.transform.translation.x,
+                delta=1e-9,
+            )
+            self.assertAlmostEqual(
+                alignment_after.transform.translation.y,
+                alignment_before.transform.translation.y,
+                delta=1e-9,
+            )
+            self.assertAlmostEqual(
+                alignment_after.transform.translation.z,
+                alignment_before.transform.translation.z,
+                delta=1e-9,
+            )
+
+    def test_model_mismatch_does_not_reject_valid_sources(self):
+        # 给公共IMU注入与定位运动不一致的加速度，模拟触地/碰撞时恒加速度
+        # 模型短时失配。MAVROS与Fast-LIO的连续有限观测都必须继续有效，
+        # 不能仅因NIS增大进入级联隔离。
+        self._publish_fastlio = True
+        self._imu_acceleration_x = 8.0
+        rospy.sleep(0.8)
+        for source_name in ("mavros", "fastlio"):
+            self._wait_for(
+                lambda name=source_name: rospy.wait_for_message(
+                    "/uav1/state_estimator/sources/{}/valid".format(name),
+                    Bool,
+                    timeout=0.2,
+                ).data
+            )
+            source_odom = rospy.wait_for_message(
+                "/uav1/state_estimator/sources/{}/odom".format(source_name),
+                Odometry,
+                timeout=1.0,
+            )
+            self.assertLess(abs(source_odom.twist.twist.linear.x - 2.0), 1.0)
+
+    def test_main_freezes_after_dead_reckoning_limit(self):
+        # 所有定位源都失效后，main只允许在配置窗口内惯性外推。超过窗口的
+        # 隐藏状态必须冻结，否则来源重新接入时会对齐到一个后台跑飞的位置。
+        self._wait_for(lambda: len(self._main_positions) > 5)
+        self._imu_acceleration_x = 20.0
+        self._publish_mavros = False
+        rospy.sleep(1.25)
+        count_after_limit = len(self._main_positions)
+        self.assertGreater(count_after_limit, 0)
+        last_visible_position = self._main_positions[-1]
+        rospy.sleep(1.1)
+        self.assertLessEqual(
+            len(self._main_positions) - count_after_limit,
+            2,
+            "main在dead-reckoning窗口结束后仍持续发布",
+        )
+
+        self._publish_mavros = True
+        recovered = self._wait_for(
+            lambda: (
+                message
+                if abs(
+                    (message := rospy.wait_for_message(
+                        "/uav1/state_estimator/main/odom",
+                        Odometry,
+                        timeout=0.2,
+                    )).pose.pose.position.x
+                    - last_visible_position
+                )
+                < 1.0
+                else None
+            )
+        )
+        self.assertLess(
+            abs(recovered.pose.pose.position.x - last_visible_position),
+            1.0,
+        )
 
     def test_imu_drives_dead_reckoning(self):
         before = self._wait_for(

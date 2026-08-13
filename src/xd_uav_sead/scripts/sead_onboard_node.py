@@ -1,29 +1,12 @@
 #!/usr/bin/env python3
 
-# === Hardware XBee import (original path, kept for real-hardware deployment) ===
-try:
-    from digi.xbee.devices import XBee64BitAddress, DigiMeshDevice, RemoteDigiMeshDevice
-    from digi.xbee.exception import TimeoutException
-    XBEE_HW_AVAILABLE = True
-except ImportError:
-    XBee64BitAddress = None
-    DigiMeshDevice = None
-    RemoteDigiMeshDevice = None
-    class TimeoutException(Exception):
-        """Fallback type used only when the Digi XBee SDK is unavailable."""
-
-    XBEE_HW_AVAILABLE = False
-
-# === ROS simulation bridge (new path, for PX4 SITL / Gazebo without XBee) ===
-from xd_uav_sead.comms.rosbridge import SeadRosBridge
-from xd_uav_sead.drone.drone import Drone, PositionTarget
+from xd_uav_sead.comms.transport import create_transport
+from xd_uav_sead.drone.drone import Drone
 from xd_uav_sead.comms.communication_info import (
-    Armed,
     FrameType,
     Message_ID,
     Mode,
     WaypointMissionMethod,
-    XBee_Devices,
     packet_processing,
     pathFollowingMethod,
 )
@@ -43,90 +26,12 @@ from xd_uav_sead.formation.formation_control import (
 from xd_uav_sead.strike.simple_strike import SimpleStrikeManager
 
 import os
-import fcntl
 import time as time_module
-import subprocess
-import signal
 import json
 
-launch_process = None   # 全局 launch 句柄
-simple_strike_control_mode = os.environ.get(
-    "SIMPLE_STRIKE_CONTROL_MODE",
-    "swiftwing_vector",
-).lower()
-sead_control_mode = os.environ.get(
-    "SEAD_CONTROL_MODE",
-    "swiftwing_vector",
-).lower()
-sead_runtime_mode_env = os.environ.get(
-    "SEAD_RUNTIME_MODE",
-    "simple_strike",
-).lower()
+sead_runtime_mode_env = "simple_strike"
 ga_time_interval = 0.5
 ga_population_size = 100
-
-if sead_control_mode in ["swiftwing", "speed"]:
-    sead_control_mode = "swiftwing_vector"
-elif sead_control_mode in ["position", "waypoint"]:
-    sead_control_mode = "position_waypoint"
-elif sead_control_mode not in [
-    "swiftwing_vector",
-    "position_waypoint",
-    "swiftwing",
-    "speed",
-    "position",
-    "waypoint",
-]:
-    rospy.logwarn(
-        f"[SEAD] Unsupported SEAD_CONTROL_MODE={sead_control_mode}, fallback to swiftwing_vector"
-    )
-    sead_control_mode = "swiftwing_vector"
-
-def start_roslaunch(uav_id, launch_pkg=None, launch_file=None):
-    global launch_process
-    if launch_process is not None and launch_process.poll() is None:
-        print("[LAUNCH] Already running")
-        return
-
-    pkg = launch_pkg or rospy.get_param("~formation_launch_pkg", "")
-    lfile = launch_file or rospy.get_param(
-        "~formation_launch_file", ""
-    )
-    if not pkg or not lfile:
-        rospy.logwarn(
-            "[LAUNCH] external formation launch requested but "
-            "~formation_launch_pkg/~formation_launch_file is not configured"
-        )
-        return
-    try:
-        print(f"[LAUNCH] Starting formation launch for UAV {uav_id}...")
-        launch_process = subprocess.Popen(
-            ["roslaunch", pkg, lfile, f"uav_id:={uav_id}"],
-            preexec_fn=os.setsid,
-        )
-        print(f"[LAUNCH] Started with PID {launch_process.pid}")
-    except Exception as e:
-        print(f"[LAUNCH] Failed to start: {e}")
-
-
-def stop_roslaunch():
-    global launch_process
-    if launch_process is None:
-        return
-
-    if launch_process.poll() is None:
-        print("[LAUNCH] Stopping launch and all child nodes...")
-        try:
-            os.killpg(os.getpgid(launch_process.pid), signal.SIGTERM)
-            launch_process.wait(timeout=5)
-            print("[LAUNCH] Stopped cleanly")
-        except Exception as e:
-            print(f"[LAUNCH] Force killing: {e}")
-            os.killpg(os.getpgid(launch_process.pid), signal.SIGKILL)
-    else:
-        print("[LAUNCH] Launch already stopped")
-
-    launch_process = None
 
 
 def activate_sead_mission(
@@ -141,11 +46,11 @@ def activate_sead_mission(
     u2u_address,
     airspace,
     uav_id,
+    peer_ids,
     log_jsonl=None,
 ):
     global Mission
 
-    stop_roslaunch()  # 停止编队 launch，SEAD 阶段只保留 SEAD 控制
     height = np.round(UAV.local_pose[2])
     waypoint_radius = sead_info[-1]
     target_count = len(sead_info[0]) if sead_info and len(sead_info) > 0 else 0
@@ -186,10 +91,7 @@ def activate_sead_mission(
     )
 
     if use_simple_strike:
-        runtime_message = (
-            f"[SEAD] runtime=simple_strike, "
-            f"SIMPLE_STRIKE_CONTROL_MODE={simple_strike_control_mode}"
-        )
+        runtime_message = "[SEAD] runtime=simple_strike, control=xd_uav"
         xbee.send_data_async(
             gcs_address,
             data.pack_info_packet(runtime_message),
@@ -203,62 +105,36 @@ def activate_sead_mission(
             sead_info[4],
             log_jsonl=log_jsonl,
             airspace=airspace,
-            control_mode=simple_strike_control_mode,
         )
-        if getattr(simple_manager, "simple_strike_control_mode", "") == "swiftwing_vector":
-            UAV.simple_strike_control_backend = "swiftwing_vector"
-            offboard_source = "swiftwing_vector"
-            backend_message = "SimpleStrike control backend -> SwiftWing vector"
-        else:
-            UAV.simple_strike_control_backend = "position_waypoint"
-            offboard_source = "position"
-            backend_message = "SimpleStrike control backend -> Position waypoint"
-        if hasattr(UAV, "set_offboard_control_source"):
-            UAV.set_offboard_control_source(offboard_source)
-        else:
-            UAV.offboard_control_source = offboard_source
-        UAV.keepoffboard = None
-        UAV.defaultoffboard = None
         xbee.send_data_async(
-            gcs_address,
-            data.pack_info_packet(backend_message),
+            gcs_address, data.pack_info_packet("SimpleStrike control backend -> xd_uav")
         )
         if log_jsonl is not None:
             try:
                 log_jsonl(
                     "simple_strike_control_mode",
-                    simple_strike_control_mode=simple_manager.simple_strike_control_mode,
+                    simple_strike_control_mode="xd_uav",
                     full_path_control_backend=simple_manager.full_path_control_backend,
                 )
             except Exception:
                 pass
-        remote_map = {}
+        remote_map = dict(getattr(xbee, "peer_address_map", {}))
         try:
-            remote_device_defs = [
-                xb for xb in XBee_Devices if int(xb.name.replace("UAV", "")) != uav_id
-            ]
-            for xb, remote in zip(remote_device_defs, u2u_address):
-                uid = int(xb.name.replace("UAV", ""))
-                remote_map[uid] = remote
+            if not remote_map:
+                remote_ids = [int(uid) for uid in peer_ids if int(uid) != int(uav_id)]
+                for uid, remote in zip(remote_ids, u2u_address):
+                    remote_map[uid] = remote
             simple_manager.set_remote_map(remote_map)
         except Exception as ex:
             rospy.logwarn(f"[SEAD] simple strike remote map setup failed: {ex}")
         if not UAV.mode == Mode.GUIDED.name:
             try:
                 UAV.set_mode("OFFBOARD")
-                if hasattr(UAV, "set_offboard_control_source"):
-                    UAV.set_offboard_control_source(offboard_source)
-                else:
-                    UAV.offboard_control_source = offboard_source
-                UAV.keepoffboard = None
-                UAV.defaultoffboard = None
             except Exception as ex:
                 rospy.logwarn(f"[SEAD] OFFBOARD switch failed: {ex}")
         return None, None, height, waypoint_radius, simple_manager, "simple_strike"
 
-    runtime_message = (
-        f"[SEAD] runtime=dpga_sead, SEAD_CONTROL_MODE={sead_control_mode}"
-    )
+    runtime_message = "[SEAD] runtime=dpga_sead, control=xd_uav"
     xbee.send_data_async(
         gcs_address,
         data.pack_info_packet(runtime_message),
@@ -291,7 +167,6 @@ def activate_sead_mission(
         main2taskAllocation,
         airspace=airspace,
         uav_id=uav_id,
-        control_mode=sead_control_mode,
     )
     if not UAV.mode == Mode.GUIDED.name:
         try:
@@ -344,91 +219,6 @@ def activate_sead_mission(
         rospy.logerr(f"[SEAD] Failed to start GA process: {ex}")
 
     return mainProcess, taskAllocationProcess, height, waypoint_radius, None, "original"
-
-
-# 在这样的/dev/ttyUSB*,/dev/ttyACM*设备中，自动查找符合id号的XBee设备
-def find_xbee_by_id(target_id, baud=57600, scan_interval=2.0):
-    """Scan serial ports and return (DigiMeshDevice, node_id, lock_file).
-
-    Keeps the returned lock_file open to reserve the device for the caller.
-    """
-    if not XBEE_HW_AVAILABLE:
-        raise RuntimeError("digi.xbee SDK not installed — cannot scan for XBee hardware. Use ~use_simulation:=true")
-    import glob
-    print(f"[XBee] Waiting for device with ID={target_id} ...")
-
-    while True:
-        ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
-
-        if not ports:
-            print("[XBee] No serial devices found, retrying...")
-            time_module.sleep(scan_interval)
-            continue
-
-        print(f"[XBee] Scanning ports: {ports}")
-
-        for port in ports:
-            lock_path = f"/tmp/xbee_lock_{os.path.basename(port)}"
-
-            try:
-                lock_file = open(lock_path, "w")
-                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except Exception:
-                continue
-
-            dev = None
-            try:
-                dev = DigiMeshDevice(port, baud)
-                try:
-                    dev.open(force_settings=True)
-                except Exception as e:
-                    try:
-                        fcntl.flock(lock_file, fcntl.LOCK_UN)
-                        lock_file.close()
-                    except Exception:
-                        pass
-                    if dev is not None:
-                        try:
-                            dev.close()
-                        except Exception:
-                            pass
-                    print(f"[XBee] Failed to open {port}: {e}")
-                    continue
-
-                try:
-                    node_id_raw = dev.get_node_id()
-                    node_id = int(node_id_raw) if str(node_id_raw).isdigit() else None
-                except Exception:
-                    node_id = None
-
-                print(f"[XBee] {port} -> ID {node_id}")
-
-                if node_id == target_id:
-                    print(f"[XBee] Matched UAV ID {target_id} on {port}")
-                    return dev, node_id, lock_file
-
-                try:
-                    dev.close()
-                except Exception:
-                    pass
-
-            except Exception:
-                try:
-                    if dev is not None:
-                        dev.close()
-                except Exception:
-                    pass
-
-            try:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
-                lock_file.close()
-            except Exception:
-                pass
-
-            time_module.sleep(0.2)
-
-        print(f"[XBee] One scan round complete. Retry in {scan_interval}s...\n")
-        time_module.sleep(scan_interval)
 
 
 class Timer(object):
@@ -501,7 +291,7 @@ t = time  # 时间别名，Timer 类依赖
 if __name__ == "__main__":
     # ==================== Initialization ====================
     # --- ROS connection ---
-    rospy.init_node("drone", anonymous=True)
+    rospy.init_node("sead_onboard", anonymous=False)
 
     # 从 param server 读配置（必须在 init_node 之后）
     uav_name = rospy.get_param("~uav_name", "uav0")
@@ -511,68 +301,31 @@ if __name__ == "__main__":
     default_uav_id = uav_index if uav_index > 0 else 1
     target_uav_id = int(rospy.get_param("~uav_id", default_uav_id))
 
-    # 用 rospy params 覆盖模块级 os.environ 默认值（launch 文件的 param 设置从此生效）
-    simple_strike_control_mode = rospy.get_param(
-        "~simple_strike_control_mode",
-        os.environ.get("SIMPLE_STRIKE_CONTROL_MODE", "swiftwing_vector"),
-    ).lower()
-    sead_control_mode = rospy.get_param(
-        "~sead_control_mode",
-        os.environ.get("SEAD_CONTROL_MODE", "swiftwing_vector"),
-    ).lower()
-    sead_runtime_mode_env = rospy.get_param(
-        "~sead_runtime_mode",
-        os.environ.get("SEAD_RUNTIME_MODE", "simple_strike"),
+    sead_runtime_mode_env = str(
+        rospy.get_param("~sead_runtime_mode", "simple_strike")
     ).lower()
     ga_time_interval = float(rospy.get_param("~ga/time_interval", 0.5))
     ga_population_size = int(rospy.get_param("~ga/population_size", 100))
 
-    # re-validate after override
-    if sead_control_mode in ["swiftwing", "speed"]:
-        sead_control_mode = "swiftwing_vector"
-    elif sead_control_mode in ["position", "waypoint"]:
-        sead_control_mode = "position_waypoint"
-    elif sead_control_mode not in [
-        "swiftwing_vector",
-        "position_waypoint",
-    ]:
-        rospy.logwarn(
-            f"[SEAD] Unsupported SEAD_CONTROL_MODE={sead_control_mode}, fallback to swiftwing_vector"
-        )
-        sead_control_mode = "swiftwing_vector"
-
-    # --- Communication init (XBee hardware or ROS simulation bridge) ---
-    use_sim = rospy.get_param("~use_simulation", not XBEE_HW_AVAILABLE)
-
-    if use_sim or not XBEE_HW_AVAILABLE:
-        rospy.loginfo(f"[INIT] Using ROS simulation bridge (XBee hardware {'unavailable' if not XBEE_HW_AVAILABLE else 'disabled by param'})")
-        comms = SeadRosBridge(uav_name, target_uav_id)
-        xbee, uav_id, xbee_lock = comms, target_uav_id, None
-        u2u_address = list(comms.u2u_address)
-        gcs_address = comms.gcs_address
-    else:
-        rospy.loginfo("[INIT] Using real XBee hardware")
-        # Preserve the original device discovery, node-ID match and file lock.
-        xbee, uav_id, xbee_lock = find_xbee_by_id(
-            target_uav_id,
-            baud=int(rospy.get_param("~xbee_baud", 57600)),
-        )
-        u2u_address = [
-            RemoteDigiMeshDevice(xbee, XBee64BitAddress.from_hex_string(xb.value))
-            for xb in XBee_Devices
-            if xb.name != f"UAV{uav_id}"
-        ]
-        gcs_address = RemoteDigiMeshDevice(
-            xbee, XBee64BitAddress.from_hex_string("0013A2004105EB61")
-        )
+    communication_mode = str(
+        rospy.get_param("~communication/mode", "ros")
+    ).lower()
+    peer_ids = [
+        int(value)
+        for value in rospy.get_param("~communication/peer_ids", [1, 2, 3])
+    ]
+    xbee = create_transport(communication_mode, uav_name, target_uav_id)
+    uav_id = target_uav_id
+    u2u_address = list(xbee.u2u_address)
+    gcs_address = xbee.gcs_address
     mode_banner_lines = [
         "",
         "==================== CURRENT ONBOARD MODES ====================",
         f"UAV_NAME={uav_name}",
         f"UAV_ID={target_uav_id}",
-        f"export SIMPLE_STRIKE_CONTROL_MODE={simple_strike_control_mode}",
-        f"export SEAD_RUNTIME_MODE={sead_runtime_mode_env}",
-        f"export SEAD_CONTROL_MODE={sead_control_mode}",
+        f"COMMUNICATION_MODE={communication_mode}",
+        f"SEAD_RUNTIME_MODE={sead_runtime_mode_env}",
+        "CONTROL_BACKEND=xd_uav_control_manager+xd_uav_controller",
         "FORMATION_TRAIL_FOLLOW_MODE=leader_history_distance_back",
         "FORMATION_EXECUTION_MODE=position_waypoint_guide_to_waypoint",
         "FORMATION_TRANSITION=UNCHANGED_EXISTING_TRAIL_TO_VEE_LOGIC",
@@ -585,9 +338,9 @@ if __name__ == "__main__":
 
     rospy.logwarn(
         "[MODE] "
-        f"SIMPLE_STRIKE_CONTROL_MODE={simple_strike_control_mode}, "
+        f"COMMUNICATION_MODE={communication_mode}, "
         f"SEAD_RUNTIME_MODE={sead_runtime_mode_env}, "
-        f"SEAD_CONTROL_MODE={sead_control_mode}, "
+        "CONTROL_BACKEND=xd_uav, "
         "FORMATION_TRAIL_FOLLOW_MODE=leader_history_distance_back, "
         "FORMATION_EXECUTION_MODE=position_waypoint_guide_to_waypoint, "
         "FORMATION_TRANSITION=UNCHANGED"
@@ -602,9 +355,9 @@ if __name__ == "__main__":
     xbee.send_data_async(
         gcs_address,
         data.pack_info_packet(
-            f"[MODE] simple_strike={simple_strike_control_mode}, "
+            f"[MODE] communication={communication_mode}, "
             f"sead_runtime={sead_runtime_mode_env}, "
-            f"sead_control={sead_control_mode}, "
+            "control=xd_uav, "
             "formation_trail_follow=leader_history_distance_back, "
             "formation_exec=position_waypoint_guide_to_waypoint, "
             "formation_transition=unchanged"
@@ -616,10 +369,10 @@ if __name__ == "__main__":
 
     # --- Time calibration ---
     new_timer = Timer()
-    if use_sim or not XBEE_HW_AVAILABLE:
-        new_timer.bias = 0.0
-    else:
+    if communication_mode == "xbee":
         new_timer.time_synchronize_process(gcs_address, xbee, uav_id)
+    else:
+        new_timer.bias = 0.0
 
     # --- Mission ---
     Mission = Message_ID.Default
@@ -654,7 +407,6 @@ if __name__ == "__main__":
         ),
         static_hold=bool(rospy.get_param("~formation/static_hold", False)),
     )
-    minimum_hold_altitude = float(rospy.get_param("~minimum_hold_altitude", 80.0))
     formation = FormationController(uav_id, config=formation_config)
     previous_formation_u2u = 0
     previous_formation_debug_time = 0.0
@@ -665,7 +417,9 @@ if __name__ == "__main__":
     pending_formation_point = None
     pending_formation_mode_request_time = 0.0
 
-    logs_dir = os.path.join(os.getcwd(), "logs")
+    logs_dir = os.path.expanduser(
+        str(rospy.get_param("~logging/directory", "~/.ros/xd_uav_sead"))
+    )
     os.makedirs(logs_dir, exist_ok=True)
     log_path = os.path.join(
         logs_dir,
@@ -783,23 +537,15 @@ if __name__ == "__main__":
                 elif messageType == Message_ID.info:
                     xbee.send_data_async(gcs_address, data.pack_info_packet(info))
 
-                elif messageType == Message_ID.Arm:  # 解包为Armed则设置Armed状态
-                    if info == Armed.armed:
-                        if not UAV.armed:
-                            UAV.set_arm()
-                        else:
-                            xbee.send_data_async(
-                                gcs_address,
-                                data.pack_info_packet(f"has already armed!"),
-                            )
-                    elif info == Armed.disarmed:
-                        if UAV.armed:
-                            UAV.set_disarm()
-                        else:
-                            xbee.send_data_async(
-                                gcs_address,
-                                data.pack_info_packet(f"has already disarmed!"),
-                            )
+                elif messageType == Message_ID.Arm:
+                    # The xd manager owns arming. Keep the wire command for GCS
+                    # compatibility, but never bypass its safety state machine.
+                    xbee.send_data_async(
+                        gcs_address,
+                        data.pack_info_packet(
+                            "Arm command rejected: arming is managed by xd_uav_control_manager"
+                        ),
+                    )
 
                 elif (
                     messageType == Message_ID.Time_Synchromize
@@ -808,8 +554,6 @@ if __name__ == "__main__":
 
                 elif messageType == Message_ID.Takeoff:  # 解包为Takeoff则进行Takeoff
                     success = UAV.takeoff(info)
-                    # UAV.set_arm()
-                    # success = UAV.takeoff(info)
                     if success:
                         xbee.send_data_async(
                             gcs_address,
@@ -828,17 +572,14 @@ if __name__ == "__main__":
                     xbee.send_data_async(
                         gcs_address, data.pack_info_packet(f"U2G frquency: {info}Hz")
                     )
-                    # Preserve the original external-launch hook, but keep it
-                    # opt-in so a frequency command cannot recursively spawn
-                    # another onboard node.
-                    if rospy.get_param("~start_external_formation_launch", False):
-                        start_roslaunch(uav_index)
                 elif (
                     messageType == Message_ID.Origin_Correction
-                ):  # 解包为原点修正则进行原点修正？？？好像没有这个功能？
-                    UAV.origin_correction(info)
+                ):
                     xbee.send_data_async(
-                        gcs_address, data.pack_info_packet(f"origin changed => {info}")
+                        gcs_address,
+                        data.pack_info_packet(
+                            "Origin correction ignored: SEAD uses the xd_uav odom frame"
+                        ),
                     )
 
                 elif (
@@ -1325,6 +1066,7 @@ if __name__ == "__main__":
                                 u2u_address,
                                 airspace,
                                 uav_id,
+                                peer_ids,
                                 log_jsonl=log_jsonl,
                             )
                         )
@@ -1374,6 +1116,7 @@ if __name__ == "__main__":
                             u2u_address,
                             airspace,
                             uav_id,
+                            peer_ids,
                             log_jsonl=log_jsonl,
                         )
                     )
@@ -1417,9 +1160,6 @@ if __name__ == "__main__":
                     xbee.send_data_async(
                         gcs_address, data.pack_info_packet(f"mission stop and hold")
                     )
-        except TimeoutException:
-            # XBee receive timeout is normal flow control in hardware mode.
-            pass
         except Exception as e:
             import traceback
             rospy.logerr_throttle(5.0, f"Main Loop Exception: {e}")
@@ -1429,7 +1169,7 @@ if __name__ == "__main__":
         if pending_formation_point is not None and UAV.armed:
             if UAV.mode == Mode.GUIDED.name:
                 rally_point = list(pending_formation_point["point"])
-                team_hint = [int(dev.name.replace("UAV", "")) for dev in XBee_Devices]
+                team_hint = list(peer_ids)
                 formation.config.shape = FormationShape.TRAIL
                 formation_shape_switched = False
                 completed = False
@@ -1492,75 +1232,6 @@ if __name__ == "__main__":
                 pass
 
         " Mission program "
-        if UAV.mode in ["GUIDED", "OFFBOARD"] and UAV.armed:  # OFFBOARD才执行后续的任务模式
-            # 1. 如果有之前的任务目标，就在最后一个目标点盘旋
-            currtnt_t = time()
-            if (
-                not getattr(UAV, "uses_external_control_manager", False)
-                and currtnt_t - UAV.last_setpoint_time > 0.2
-            ):
-                if getattr(UAV, "offboard_control_source", "") == "swiftwing_vector":
-                    if (
-                        hasattr(UAV, "replay_last_swiftwing_vector_setpoint")
-                        and UAV.replay_last_swiftwing_vector_setpoint()
-                    ):
-                        rospy.logwarn_throttle(
-                            2.0,
-                            "[OFFBOARD WATCHDOG] swiftwing_vector mode active, "
-                            "replay vector setpoint",
-                        )
-                    else:
-                        rospy.logwarn_throttle(
-                            2.0,
-                            "[OFFBOARD WATCHDOG] swiftwing_vector mode active but "
-                            "no last vector setpoint; skip LOCAL_NED hold",
-                        )
-                elif UAV.keepoffboard is not None:
-                    # 对于固定翼，持续发同一个点 = 盘旋
-                    handshake_goal = PositionTarget()
-                    handshake_goal.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-                    handshake_goal.type_mask = (
-                        0b0000111111111000  # 忽略速度加速度，只控位置
-                    )
-
-                    handshake_goal.position.x = UAV.keepoffboard[0]
-                    handshake_goal.position.y = UAV.keepoffboard[1]
-                    handshake_goal.position.z = UAV.keepoffboard[2]
-                    # 持续发送当前位置，让它原地盘旋
-                    UAV.setpoint_pub.publish(handshake_goal)
-                    UAV.last_setpoint_time = time()
-                    rospy.loginfo("keepoffboard keepOFFBOARD not None")
-
-                # 2. 如果刚起飞还没任务 (failsafe_hold_pos 为空)
-                elif UAV.defaultoffboard is not None:
-                    # 获取当前位置，并在当前位置盘旋
-                    # 注意：z轴最好保持当前高度或安全高度
-
-                    handshake_goal = PositionTarget()
-                    handshake_goal.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-                    handshake_goal.type_mask = (
-                        0b0000111111111000  # 忽略速度加速度，只控位置
-                    )
-
-                    handshake_goal.position.x = UAV.defaultoffboard[0]
-                    handshake_goal.position.y = UAV.defaultoffboard[1]
-                    handshake_goal.position.z = UAV.defaultoffboard[2]
-                    # 持续发送当前位置，让它原地盘旋
-                    UAV.setpoint_pub.publish(handshake_goal)
-                    UAV.last_setpoint_time = time()
-                    # rospy.loginfo("keepoffboard")
-                else:
-                    # 最后的保命：原地盘旋
-                    UAV.guide_to_waypoint(
-                        [
-                            UAV.local_pose[0],
-                            UAV.local_pose[1],
-                            max(UAV.local_pose[2], minimum_hold_altitude),
-                        ]
-                    )
-                    rospy.loginfo_throttle(2, "Watchdog: Emergency Hold at Current Pos")
-
-        # if UAV.mode == "GUIDED":  # OFFBOARD才做后续的任务模式
         if Mission == Message_ID.Waypoints:  # 航点任务
             if new_timer.check_period(0.1, previous_cmd_time):
                 previous_cmd_time = t()
@@ -1699,7 +1370,7 @@ if __name__ == "__main__":
         elif Mission == Message_ID.Formation_Point:
             if new_timer.check_period(0.1, previous_cmd_time):
                 previous_cmd_time = t()
-                team_hint = [int(dev.name.replace("UAV", "")) for dev in XBee_Devices]
+                team_hint = list(peer_ids)
                 rally_cmd = formation.step_rally(
                     UAV.local_pose,
                     UAV.yaw,
@@ -1910,9 +1581,8 @@ if __name__ == "__main__":
             if mainProcess is not None:
                 mainProcess.mission_flag = False
         main_loop_rate.sleep()
-    # 退出时，确保停止 roslaunch
-    stop_roslaunch()
     xbee.send_data_async(gcs_address, data.pack_info_packet(f"rospy is shutdown!!"))
+    xbee.close()
     try:
         log_file.close()
     except Exception:

@@ -27,8 +27,8 @@
         <node pkg="fast_lio" type="fastlio_mapping" name="fastlio_px4" output="screen"/>
     </group>
 
-    <group if="$(arg rviz)">
+    <!-- <group if="$(arg rviz)">
         <node pkg="rviz" type="rviz" name="fastlio_rviz"
               args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz"/>
-    </group>
+    </group> -->
 </launch>

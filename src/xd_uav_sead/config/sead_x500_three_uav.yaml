@@ -1,16 +1,12 @@
-# Low-risk SEAD profile for the three-uav MRS Gazebo x500 verification only.
-# PX4, MAVROS and each xd control stack are launched separately.
+# Optional SEAD-only overrides for a compact three-UAV simulation.
+sead_runtime_mode: simple_strike
 
-control_backend: "xd_control_manager"
-sead_control_mode: "position_waypoint"
-simple_strike_control_mode: "position_waypoint"
-sead_runtime_mode: "simple_strike"
-minimum_hold_altitude: 1.0
+communication:
+  mode: ros
+  peer_ids: [1, 2, 3]
 
-xbee_baud: 57600
-start_external_formation_launch: false
-formation_launch_pkg: ""
-formation_launch_file: ""
+control:
+  vehicle_type: multirotor
 
 formation:
   spacing: 4.0

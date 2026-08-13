@@ -1,7 +1,7 @@
 # 估计器内部算法参数。定位源、修正量和话题只在sources.yaml中配置。
 output_rate: 100.0
 diagnostics_rate: 2.0
-max_localization_delay: 0.15
+max_localization_delay: 0.30
 max_dead_reckoning_time: 1.0
 imu_timeout: 1.0
 require_imu: true #true：IMU 掉线会停止有效主输出；false：定位健康时仍能输出，定位失效时则依赖最后状态做纯模型预测
@@ -39,6 +39,10 @@ innovation_gate:
   heading: 1.57
   yaw_rate: 3.0
   use_nis: true
+  # 默认只把NIS作为模型一致性诊断，不以它拒绝定位观测。多旋翼触地、碰撞
+  # 或急刹时，恒加速度模型与真实运动短时不符是正常现象；真正的测量跳变
+  # 仍由上面的绝对创新门限拦截。仅在协方差模型经过严格标定后才建议设true。
+  hard_reject_nis: false
   position_xy_nis: 9.21
   position_z_nis: 6.63
   velocity_xy_nis: 9.21

@@ -20,6 +20,8 @@
       <rosparam command="load" file="$(arg config)"/>
       <param name="vehicle_type" value="$(arg vehicle_type)"/>
       <remap from="state" to="control_manager/state"/>
+      <remap from="distance_sensor"
+             to="mavros/distance_sensor/hrlv_ez4_pub"/>
       <remap from="reference_position_target"
              to="control/reference/setpoint"/>
       <remap from="reference_trajectory"

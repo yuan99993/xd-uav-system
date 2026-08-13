@@ -28,7 +28,6 @@ class SimpleStrikeManager(object):
         uav_config,
         log_jsonl=None,
         airspace=None,
-        control_mode="swiftwing_vector",
     ):
         self.uav_id = int(uav_id)
         self.targets = self.canonical_targets(targets)
@@ -91,21 +90,9 @@ class SimpleStrikeManager(object):
         self.final_target_point = None
         self.phase_heartbeat_log_time = 0.0
 
-        control_mode = str(control_mode or "swiftwing_vector").lower()
-        if control_mode in ["swiftwing", "swiftwing_vector", "speed", "speed_swiftwing"]:
-            self.simple_strike_control_mode = "swiftwing_vector"
-        elif control_mode in ["position", "position_waypoint", "waypoint"]:
-            self.simple_strike_control_mode = "position_waypoint"
-        else:
-            self.simple_strike_control_mode = "swiftwing_vector"
-
-        self.full_path_control_backend = self.simple_strike_control_mode
-        if self.simple_strike_control_mode == "swiftwing_vector":
-            self.phase = "FULL_PATH_SWIFTWING_VECTOR_SYNC"
-            self.simple_strike_execution_mode = "full_path_swiftwing_vector_sync"
-        else:
-            self.phase = "FULL_PATH_POSITION_WAYPOINT_SYNC"
-            self.simple_strike_execution_mode = "full_path_position_waypoint_sync"
+        self.full_path_control_backend = "xd_velocity_reference"
+        self.phase = "FULL_PATH_XD_VELOCITY_SYNC"
+        self.simple_strike_execution_mode = "full_path_xd_velocity_sync"
         self.full_path_speed_sync_enabled = True
         self.full_path_expected_groundspeed = max(20.0, 1.05 * float(self.cruise_speed))
         self.full_path_speed_min = max(14.0, 0.75 * float(self.cruise_speed))
@@ -117,8 +104,7 @@ class SimpleStrikeManager(object):
         )
         if self.full_path_speed_max < self.full_path_speed_min:
             self.full_path_speed_max = self.full_path_speed_min
-        self.swiftwing_realistic_speed_max = 24.0
-        self.swiftwing_command_speed_max = 26.5
+        self.reference_speed_max = 26.5
         self.terminal_slowdown_distance = 240.0
         self.terminal_speed_max = 24.0
         self.terminal_speed_min = max(10.5, self.full_path_speed_min)
@@ -143,10 +129,8 @@ class SimpleStrikeManager(object):
         self.early_arrival_orbit_radius = max(180.0, 2.8 * float(self.rmin))
         self.min_time_left_for_speed_sync = 8.0
         self.deadline_expired_speed = max(21.0, 1.10 * float(self.cruise_speed))
-        self.effective_sync_speed_max = (
-            min(float(self.full_path_speed_max), float(self.swiftwing_command_speed_max))
-            if self.simple_strike_control_mode == "swiftwing_vector"
-            else float(self.full_path_speed_max)
+        self.effective_sync_speed_max = min(
+            float(self.full_path_speed_max), float(self.reference_speed_max)
         )
         self.full_path_sync_margin = 2.0
         self.full_path_tracking_time_scale = 1.00
@@ -237,7 +221,7 @@ class SimpleStrikeManager(object):
         rospy.logwarn(
             f"[SEAD] UAV{self.uav_id} simple_strike_execution_mode="
             f"{self.simple_strike_execution_mode}, "
-            f"simple_strike_control_mode={self.simple_strike_control_mode}, "
+            "simple_strike_control_mode=xd_velocity_reference, "
             f"full_path_expected_groundspeed={self.full_path_expected_groundspeed:.1f}, "
             f"full_path_speed_min={self.full_path_speed_min:.1f}, "
             f"full_path_speed_max={self.full_path_speed_max:.1f}, "
@@ -249,7 +233,7 @@ class SimpleStrikeManager(object):
             "simple_strike_mode_selected",
             target_count=len(self.targets),
             simple_strike_execution_mode=self.simple_strike_execution_mode,
-            simple_strike_control_mode=self.simple_strike_control_mode,
+            simple_strike_control_mode="xd_velocity_reference",
             use_true_path_eta=self.use_true_path_eta,
             full_path_control_backend=self.full_path_control_backend,
             full_path_speed_sync_enabled=self.full_path_speed_sync_enabled,
@@ -258,8 +242,7 @@ class SimpleStrikeManager(object):
             full_path_speed_max=self.full_path_speed_max,
             full_path_speed_hard_max=self.full_path_speed_hard_max,
             effective_sync_speed_max=self.effective_sync_speed_max,
-            swiftwing_realistic_speed_max=self.swiftwing_realistic_speed_max,
-            swiftwing_command_speed_max=self.swiftwing_command_speed_max,
+            reference_speed_max=self.reference_speed_max,
             terminal_slowdown_distance=self.terminal_slowdown_distance,
             terminal_speed_max=self.terminal_speed_max,
             terminal_speed_min=self.terminal_speed_min,
@@ -322,13 +305,13 @@ class SimpleStrikeManager(object):
         )
         self._log_jsonl(
             "simple_strike_sync_speed_config",
-            control_mode=self.simple_strike_control_mode,
+            control_mode="xd_velocity_reference",
             effective_sync_speed_max=self.effective_sync_speed_max,
             speed_max=self.full_path_speed_max,
             speed_hard_max=self.full_path_speed_hard_max,
             note=(
-                "ETA/common_hit_time uses effective_sync_speed_max; "
-                "SwiftWing command output is capped by swiftwing_command_speed_max"
+                "ETA/common_hit_time and xd velocity references use "
+                "effective_sync_speed_max"
             ),
         )
         self._log_jsonl(
@@ -1356,7 +1339,7 @@ class SimpleStrikeManager(object):
             phase=self.phase,
             uav_id=self.uav_id,
             candidate_common_hit_time=candidate_common_hit_time,
-            simple_strike_control_mode=self.simple_strike_control_mode,
+            simple_strike_control_mode="xd_velocity_reference",
         )
         rospy.logwarn(
             f"[SEAD] UAV{self.uav_id} froze common_hit_time="
@@ -1376,7 +1359,7 @@ class SimpleStrikeManager(object):
             candidate_common_hit_time=candidate_common_hit_time,
             freeze_reason=self._simple_strike_common_hit_time_freeze_reason,
             update_reason=reason,
-            simple_strike_control_mode=self.simple_strike_control_mode,
+            simple_strike_control_mode="xd_velocity_reference",
         )
 
     def _log_common_hit_time_freeze_blocked(
@@ -1397,7 +1380,7 @@ class SimpleStrikeManager(object):
             predicted_arrival_error=predicted_arrival_error,
             dist_to_target=dist_to_target,
             common_hit_time=self.full_path_common_hit_time,
-            simple_strike_control_mode=self.simple_strike_control_mode,
+            simple_strike_control_mode="xd_velocity_reference",
         )
 
     def _set_simple_strike_common_hit_time(self, candidate_time, reason):
@@ -1457,37 +1440,13 @@ class SimpleStrikeManager(object):
             predicted_arrival_error = None
             if guidance is not None:
                 predicted_arrival_error = guidance.get("predicted_arrival_error")
-            if self.simple_strike_control_mode == "swiftwing_vector":
-                self._log_common_hit_time_freeze_blocked(
-                    "swiftwing_dynamic_push_until_reached",
-                    time_left=time_left,
-                    predicted_arrival_error=predicted_arrival_error,
-                    dist_to_target=distance_to_target,
-                )
-                return False
-            near_target_freeze_allowed = (
-                time_left > 8.0
-                and predicted_arrival_error is not None
-                and abs(float(predicted_arrival_error)) < 5.0
+            self._log_common_hit_time_freeze_blocked(
+                "xd_velocity_dynamic_push_until_reached",
+                time_left=time_left,
+                predicted_arrival_error=predicted_arrival_error,
+                dist_to_target=distance_to_target,
             )
-            if not near_target_freeze_allowed:
-                if time_left <= 8.0:
-                    freeze_block_reason = "time_left_too_small"
-                elif predicted_arrival_error is None:
-                    freeze_block_reason = "missing_predicted_arrival_error"
-                else:
-                    freeze_block_reason = "arrival_error_too_large"
-                self._log_common_hit_time_freeze_blocked(
-                    freeze_block_reason,
-                    time_left=time_left,
-                    predicted_arrival_error=predicted_arrival_error,
-                    dist_to_target=distance_to_target,
-                )
-                return False
-            return self._freeze_simple_strike_common_hit_time(
-                "near_target",
-                distance_to_target=distance_to_target,
-            )
+            return False
 
         path = self.path_following.path or []
         if (
@@ -1495,25 +1454,18 @@ class SimpleStrikeManager(object):
             and len(path) >= 2
             and int(self.full_path_path_index) >= max(0, len(path) - 2)
         ):
-            if self.simple_strike_control_mode == "swiftwing_vector":
-                self._log_common_hit_time_freeze_blocked(
-                    "swiftwing_dynamic_push_until_reached",
-                    time_left=float(self.full_path_common_hit_time) - now_ref,
-                    predicted_arrival_error=(
-                        guidance.get("predicted_arrival_error")
-                        if guidance is not None
-                        else None
-                    ),
-                    dist_to_target=distance_to_target,
-                )
-                return False
-            return self._freeze_simple_strike_common_hit_time(
-                "target_approach",
-                distance_to_target=distance_to_target,
+            self._log_common_hit_time_freeze_blocked(
+                "xd_velocity_dynamic_push_until_reached",
+                time_left=float(self.full_path_common_hit_time) - now_ref,
+                predicted_arrival_error=(
+                    guidance.get("predicted_arrival_error")
+                    if guidance is not None
+                    else None
+                ),
+                dist_to_target=distance_to_target,
             )
-
-        if self.simple_strike_control_mode == "swiftwing_vector":
             return False
+
         return False
 
     def _target_for_uav(self, uav_id):
@@ -1989,7 +1941,7 @@ class SimpleStrikeManager(object):
             common_hit_time=self.full_path_common_hit_time,
             message_semantics="common_hit_time",
             full_path_control_backend=self.full_path_control_backend,
-            simple_strike_control_mode=self.simple_strike_control_mode,
+            simple_strike_control_mode="xd_velocity_reference",
             target_id=self._target_id_for_uav(self.uav_id),
         )
         return True
@@ -2671,7 +2623,7 @@ class SimpleStrikeManager(object):
         )
         eta_speed = min(
             eta_speed,
-            float(self.swiftwing_command_speed_max),
+            float(self.reference_speed_max),
         )
         eta_speed = max(eta_speed, 1.0)
 
@@ -2872,48 +2824,13 @@ class SimpleStrikeManager(object):
         )
         return True
 
-    def _set_full_path_swiftwing_vector_control_source(self, uav_ros, reason):
+    def _set_full_path_control_source(self, uav_ros, reason):
         try:
-            if hasattr(uav_ros, "set_offboard_control_source"):
-                uav_ros.set_offboard_control_source("swiftwing_vector")
-            else:
-                uav_ros.offboard_control_source = "swiftwing_vector"
-            uav_ros.keepoffboard = None
-            uav_ros.defaultoffboard = None
+            uav_ros.set_offboard_control_source("xd_velocity_reference")
         except Exception as ex:
             rospy.logwarn_throttle(
                 2.0,
-                f"[SEAD] UAV{self.uav_id} swiftwing_vector control source set failed: {ex}"
-            )
-            return
-
-        if not self.full_path_control_source_reported:
-            self.full_path_control_source_reported = True
-            self._log_jsonl(
-                "simple_strike_full_path_control_source_set",
-                offboard_control_source=getattr(
-                    uav_ros,
-                    "offboard_control_source",
-                    None,
-                ),
-                keepoffboard=getattr(uav_ros, "keepoffboard", None),
-                defaultoffboard=getattr(uav_ros, "defaultoffboard", None),
-                full_path_control_backend="swiftwing_vector",
-                reason=reason,
-            )
-
-    def _set_full_path_position_waypoint_control_source(self, uav_ros, reason):
-        try:
-            if hasattr(uav_ros, "set_offboard_control_source"):
-                uav_ros.set_offboard_control_source("position")
-            else:
-                uav_ros.offboard_control_source = "position"
-            uav_ros.keepoffboard = None
-            uav_ros.defaultoffboard = None
-        except Exception as ex:
-            rospy.logwarn_throttle(
-                2.0,
-                f"[SEAD] UAV{self.uav_id} position control source set failed: {ex}"
+                f"[SEAD] UAV{self.uav_id} xd control source set failed: {ex}"
             )
             return
 
@@ -2922,116 +2839,47 @@ class SimpleStrikeManager(object):
             self._log_jsonl(
                 "simple_strike_full_path_control_source_set",
                 offboard_control_source=getattr(uav_ros, "offboard_control_source", None),
-                keepoffboard=getattr(uav_ros, "keepoffboard", None),
-                defaultoffboard=getattr(uav_ros, "defaultoffboard", None),
-                full_path_control_backend="position_waypoint",
+                full_path_control_backend=self.full_path_control_backend,
                 reason=reason,
             )
 
     def _send_full_path_keepalive(self, uav_ros, reason, height=None):
-        if self.simple_strike_control_mode == "swiftwing_vector":
-            self._set_full_path_swiftwing_vector_control_source(uav_ros, reason)
-        else:
-            self._set_full_path_position_waypoint_control_source(uav_ros, reason)
-
-        wait_reasons = {
-            "waiting_common_hit_time",
-            "waiting_full_path_plan",
-            "waiting_assignment",
-        }
+        self._set_full_path_control_source(uav_ros, reason)
         has_final_target_point = (
             self.final_target_point is not None and len(self.final_target_point) >= 2
         )
         dist_to_final_target = None
         keepalive_to_target_heading = False
-        replayed = False
-        if (
-            self.simple_strike_control_mode == "swiftwing_vector"
-            and str(reason) not in wait_reasons
-            and hasattr(
-                uav_ros,
-                "replay_last_swiftwing_vector_setpoint",
-            )
-        ):
-            try:
-                replayed = bool(uav_ros.replay_last_swiftwing_vector_setpoint())
-            except Exception as ex:
-                rospy.logwarn_throttle(
-                    2.0,
-                    f"[SEAD] UAV{self.uav_id} SwiftWing vector replay failed: {ex}"
-                )
-                replayed = False
-
-        if replayed:
-            try:
-                vx, vy, vz, speed, heading, vz_cmd = getattr(
-                    uav_ros,
-                    "last_swiftwing_vector_cmd",
-                    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-                )
-                v_keepalive = float(speed)
-                heading_keepalive = float(heading)
-                vz_keepalive = float(vz_cmd)
-            except Exception:
-                v_keepalive = 0.0
-                heading_keepalive = float(getattr(uav_ros, "yaw", 0.0))
-                vz_keepalive = 0.0
+        if has_final_target_point:
+            dx = float(self.final_target_point[0]) - float(uav_ros.local_pose[0])
+            dy = float(self.final_target_point[1]) - float(uav_ros.local_pose[1])
+            dist_to_final_target = float(math.hypot(dx, dy))
+            heading_keepalive = math.atan2(dy, dx)
+            keepalive_to_target_heading = True
         else:
-            v_keepalive = max(9.5, 0.50 * float(self.cruise_speed))
-            if str(reason) in wait_reasons and has_final_target_point:
-                dx = float(self.final_target_point[0]) - float(uav_ros.local_pose[0])
-                dy = float(self.final_target_point[1]) - float(uav_ros.local_pose[1])
-                dist_to_final_target = float(math.hypot(dx, dy))
-                heading_keepalive = math.atan2(dy, dx)
-                keepalive_to_target_heading = True
-            else:
-                heading_keepalive = float(getattr(uav_ros, "yaw", 0.0))
-                if has_final_target_point:
-                    dx = float(self.final_target_point[0]) - float(uav_ros.local_pose[0])
-                    dy = float(self.final_target_point[1]) - float(uav_ros.local_pose[1])
-                    dist_to_final_target = float(math.hypot(dx, dy))
-            vz_keepalive = 0.0
-            if self.simple_strike_control_mode == "swiftwing_vector" and hasattr(
-                uav_ros,
-                "swiftwing_vector_control",
-            ):
-                uav_ros.swiftwing_vector_control(
-                    v_keepalive,
-                    heading_keepalive,
-                    vz_keepalive,
-                )
-            elif self.simple_strike_control_mode == "position_waypoint":
-                current_alt = float(uav_ros.local_pose[2])
-                lookahead = max(80.0, 4.0 * float(self.cruise_speed))
-                waypoint = [
-                    float(uav_ros.local_pose[0]) + lookahead * math.cos(heading_keepalive),
-                    float(uav_ros.local_pose[1]) + lookahead * math.sin(heading_keepalive),
-                    float(height) if height is not None else current_alt,
-                ]
-                uav_ros.guide_to_waypoint(waypoint, heading_keepalive)
+            heading_keepalive = float(getattr(uav_ros, "yaw", 0.0))
+        current_alt = float(uav_ros.local_pose[2])
+        lookahead = max(20.0, 2.0 * float(self.cruise_speed))
+        waypoint = [
+            float(uav_ros.local_pose[0]) + lookahead * math.cos(heading_keepalive),
+            float(uav_ros.local_pose[1]) + lookahead * math.sin(heading_keepalive),
+            float(height) if height is not None else current_alt,
+        ]
+        uav_ros.guide_to_waypoint(waypoint, heading_keepalive)
 
         now_wall = time.time()
-        event_type = (
-            "simple_strike_full_path_waiting_common_hit_time_swiftwing_keepalive"
-            if self.simple_strike_control_mode == "swiftwing_vector"
-            else "simple_strike_full_path_waiting_common_hit_time_position_keepalive"
-        )
+        event_type = "simple_strike_full_path_xd_keepalive"
         rospy.logwarn_throttle(
             1.0,
             f"[SEAD] UAV{self.uav_id} waiting common_hit_time with "
-            f"{self.simple_strike_control_mode} "
-            f"keepalive: v={v_keepalive:.1f}, heading={heading_keepalive:.2f}, "
-            f"replayed={replayed}, reason={reason}, "
+            f"xd position keepalive: heading={heading_keepalive:.2f}, reason={reason}, "
             f"to_target_heading={keepalive_to_target_heading}"
         )
         if now_wall - self.full_path_wait_keepalive_log_time >= 1.0:
             self.full_path_wait_keepalive_log_time = now_wall
             self._log_jsonl(
                 event_type,
-                v_keepalive=v_keepalive,
                 heading_keepalive=heading_keepalive,
-                vz_keepalive=vz_keepalive,
-                replayed_last_swiftwing_vector_cmd=replayed,
                 keepalive_reason=reason,
                 has_final_target_point=has_final_target_point,
                 keepalive_to_target_heading=keepalive_to_target_heading,
@@ -3041,7 +2889,7 @@ class SimpleStrikeManager(object):
                     "offboard_control_source",
                     None,
                 ),
-                simple_strike_control_mode=self.simple_strike_control_mode,
+                simple_strike_control_mode="xd_position_keepalive",
                 full_path_control_backend=self.full_path_control_backend,
                 reason=reason,
             )
@@ -3082,7 +2930,7 @@ class SimpleStrikeManager(object):
             deadline_expired_or_too_close = True
             if sync_remaining_path_length > 150.0:
                 v_time = min(
-                    float(self.swiftwing_command_speed_max),
+                    float(self.reference_speed_max),
                     float(self.terminal_speed_max),
                 )
             elif sync_remaining_path_length > 60.0:
@@ -3127,32 +2975,26 @@ class SimpleStrikeManager(object):
         terminal_relative_speed_role = "disabled"
         v_feedback = float(v_time)
 
-        if self.simple_strike_control_mode == "swiftwing_vector":
-            speed_upper = min(
-                float(self.full_path_speed_max),
-                float(self.swiftwing_command_speed_max),
-            )
-        else:
-            speed_upper = float(self.full_path_speed_max)
+        speed_upper = min(
+            float(self.full_path_speed_max),
+            float(self.reference_speed_max),
+        )
 
         terminal_speed_limited = False
         if (
-            self.simple_strike_control_mode == "swiftwing_vector"
-            and dist_to_target < float(self.terminal_slowdown_distance)
+            dist_to_target < float(self.terminal_slowdown_distance)
         ):
             speed_upper = min(speed_upper, float(self.terminal_speed_max))
             terminal_speed_limited = True
         if (
-            self.simple_strike_control_mode == "swiftwing_vector"
-            and dist_to_target < float(self.terminal_final_hard_speed_cap_distance)
+            dist_to_target < float(self.terminal_final_hard_speed_cap_distance)
         ):
             speed_upper = min(speed_upper, float(self.terminal_final_hard_speed_cap))
             terminal_speed_limited = True
 
         speed_lower = float(self.full_path_speed_min)
         if (
-            self.simple_strike_control_mode == "swiftwing_vector"
-            and v_feedback < float(self.full_path_speed_min)
+            v_feedback < float(self.full_path_speed_min)
             and not deadline_expired_or_too_close
         ):
             speed_lower = min(speed_lower, float(self.short_path_speed_min))
@@ -3170,11 +3012,7 @@ class SimpleStrikeManager(object):
             float(speed_upper),
         )
         self.full_path_speed_cmd_prev = v_cmd
-        cmd_speed_sent_to_swiftwing = (
-            min(float(v_cmd), float(self.swiftwing_command_speed_max))
-            if self.simple_strike_control_mode == "swiftwing_vector"
-            else float(v_cmd)
-        )
+        cmd_speed_sent = min(float(v_cmd), float(self.reference_speed_max))
 
         terminal_direct_guidance_active = False
         terminal_direct_guidance_safe = False
@@ -3229,8 +3067,7 @@ class SimpleStrikeManager(object):
             desire_point = np.array([final_x, final_y])
 
         if (
-            self.simple_strike_control_mode == "swiftwing_vector"
-            and dist_to_target < float(self.terminal_direct_guidance_distance)
+            dist_to_target < float(self.terminal_direct_guidance_distance)
             and self.final_target_point is not None
         ):
             current_pose = [
@@ -3305,7 +3142,7 @@ class SimpleStrikeManager(object):
             "v_limited": v_limited,
             "v_cmd": v_cmd,
             "raw_v_cmd": raw_v_cmd,
-            "cmd_speed_sent_to_swiftwing": cmd_speed_sent_to_swiftwing,
+            "cmd_speed_sent": cmd_speed_sent,
             "speed_saturated_low": speed_saturated_low,
             "speed_saturated_high": speed_saturated_high,
             "desire_point": desire_point,
@@ -3326,64 +3163,32 @@ class SimpleStrikeManager(object):
         }
 
     def _send_full_path_control(self, uav_ros, guidance, height):
-        if self.simple_strike_control_mode == "swiftwing_vector":
-            self._set_full_path_swiftwing_vector_control_source(
-                uav_ros,
-                reason="active_full_path_swiftwing_vector_sync",
-            )
-            if not hasattr(uav_ros, "swiftwing_vector_control"):
-                rospy.logerr_throttle(
-                    1.0,
-                    f"[SEAD] UAV{self.uav_id} missing swiftwing_vector_control(); "
-                    "cannot run simple strike"
-                )
-                self._log_jsonl(
-                    "simple_strike_swiftwing_vector_missing_interface",
-                    target_id=self._target_id_for_uav(self.uav_id),
-                    full_path_control_backend="swiftwing_vector",
-                )
-                return None
-            cmd_speed = float(guidance["v_cmd"])
-            if self.simple_strike_control_mode == "swiftwing_vector":
-                cmd_speed = min(cmd_speed, float(self.swiftwing_command_speed_max))
-            ok = uav_ros.swiftwing_vector_control(
-                cmd_speed,
-                guidance["heading_cmd"],
-                guidance["v_z_cmd"],
-            )
-            if not ok:
-                rospy.logwarn_throttle(
-                    1.0,
-                    f"[SEAD] UAV{self.uav_id} SwiftWing vector publish failed"
-                )
-                return None
-            return {
-                "control_interface": "swiftwing_vector_control",
-                "control_topic": f"/{getattr(uav_ros, 'uav_name', 'uav')}/control_signal/vector",
-                "coordinate_frame": "ENU_VECTOR",
-                "raw_v_cmd": guidance["v_cmd"],
-                "cmd_speed_sent_to_swiftwing": cmd_speed,
-                "swiftwing_command_speed_max": self.swiftwing_command_speed_max,
-            }
-
-        self._set_full_path_position_waypoint_control_source(
+        self._set_full_path_control_source(
             uav_ros,
-            reason="active_full_path_position_waypoint_sync",
+            reason="active_full_path_xd_velocity_sync",
         )
-        desire_point = guidance["desire_point"]
-        waypoint = [
-            float(desire_point[0]),
-            float(desire_point[1]),
-            float(height),
-        ]
-        uav_ros.guide_to_waypoint(waypoint, guidance["heading_cmd"])
+        cmd_speed = min(float(guidance["v_cmd"]), float(self.reference_speed_max))
+        ok = uav_ros.guide_velocity(
+            cmd_speed,
+            guidance["heading_cmd"],
+            guidance["v_z_cmd"],
+        )
+        if not ok:
+            rospy.logwarn_throttle(
+                1.0,
+                f"[SEAD] UAV{self.uav_id} xd velocity reference publish failed",
+            )
+            return None
         return {
-            "control_interface": "guide_to_waypoint",
-            "control_topic": f"/{getattr(uav_ros, 'uav_name', 'uav')}/mavros/setpoint_raw/local",
-            "coordinate_frame": "ENU_POSITION_TARGET",
+            "control_interface": "guide_velocity",
+            "control_topic": f"/{getattr(uav_ros, 'uav_name', 'uav')}/control/reference/setpoint",
+            "coordinate_frame": "ENU_VELOCITY_REFERENCE",
+            "raw_v_cmd": guidance["v_cmd"],
+            "cmd_speed_sent": cmd_speed,
+            "reference_speed_max": self.reference_speed_max,
         }
 
-    def _guide_full_path_swiftwing_vector_sync(
+    def _guide_full_path_xd_velocity_sync(
         self,
         uav_ros,
         height,
@@ -3416,15 +3221,11 @@ class SimpleStrikeManager(object):
 
         desire_point = guidance["desire_point"]
         desire_point_json = [float(desire_point[0]), float(desire_point[1])]
-        event_type = (
-            "simple_strike_full_path_swiftwing_vector_active"
-            if self.simple_strike_control_mode == "swiftwing_vector"
-            else "simple_strike_full_path_position_waypoint_active"
-        )
+        event_type = "simple_strike_full_path_xd_velocity_active"
         now_wall = time.time()
         rospy.logwarn_throttle(
             1.0,
-            f"[SEAD] UAV{self.uav_id} full_path {self.simple_strike_control_mode} active: "
+            f"[SEAD] UAV{self.uav_id} full_path xd_velocity_reference active: "
             f"rem={self.remaining_path_length:.1f}, "
             f"time_left={guidance['time_left']:.1f}, "
             f"v_des={guidance['v_des']:.1f}, v_cmd={guidance['v_cmd']:.1f}, "
@@ -3481,9 +3282,9 @@ class SimpleStrikeManager(object):
                 v_limited=guidance["v_limited"],
                 v_cmd=guidance["v_cmd"],
                 raw_v_cmd=guidance["raw_v_cmd"],
-                cmd_speed_sent_to_swiftwing=control_meta.get(
-                    "cmd_speed_sent_to_swiftwing",
-                    guidance["cmd_speed_sent_to_swiftwing"],
+                cmd_speed_sent=control_meta.get(
+                    "cmd_speed_sent",
+                    guidance["cmd_speed_sent"],
                 ),
                 required_speed_cmd=guidance["v_cmd"],
                 speed_min=self.full_path_speed_min,
@@ -3503,7 +3304,7 @@ class SimpleStrikeManager(object):
                 terminal_direct_guidance_block_reason=guidance[
                     "terminal_direct_guidance_block_reason"
                 ],
-                simple_strike_control_mode=self.simple_strike_control_mode,
+                simple_strike_control_mode="xd_velocity_reference",
                 full_path_control_backend=self.full_path_control_backend,
             )
 
@@ -3511,7 +3312,7 @@ class SimpleStrikeManager(object):
             self.full_path_speed_log_time = now_wall
             self._log_jsonl(
                 event_type,
-                simple_strike_control_mode=self.simple_strike_control_mode,
+                simple_strike_control_mode="xd_velocity_reference",
                 full_path_control_backend=self.full_path_control_backend,
                 target_id=self._target_id_for_uav(self.uav_id),
                 final_target_point=self.final_target_point,
@@ -3546,9 +3347,9 @@ class SimpleStrikeManager(object):
                 v_limited=guidance["v_limited"],
                 v_cmd=guidance["v_cmd"],
                 raw_v_cmd=guidance["raw_v_cmd"],
-                cmd_speed_sent_to_swiftwing=control_meta.get(
-                    "cmd_speed_sent_to_swiftwing",
-                    guidance["cmd_speed_sent_to_swiftwing"],
+                cmd_speed_sent=control_meta.get(
+                    "cmd_speed_sent",
+                    guidance["cmd_speed_sent"],
                 ),
                 required_speed_cmd=guidance["v_cmd"],
                 speed_min=self.full_path_speed_min,
@@ -3583,9 +3384,7 @@ class SimpleStrikeManager(object):
                 control_topic=control_meta["control_topic"],
                 coordinate_frame=control_meta["coordinate_frame"],
                 raw_control_v_cmd=control_meta.get("raw_v_cmd"),
-                swiftwing_command_speed_max=control_meta.get(
-                    "swiftwing_command_speed_max"
-                ),
+                reference_speed_max=control_meta.get("reference_speed_max"),
                 offboard_control_source=getattr(uav_ros, "offboard_control_source", None),
                 no_release_point=True,
                 no_hold_release=True,
@@ -3624,7 +3423,7 @@ class SimpleStrikeManager(object):
                     final_target_point=self.final_target_point,
                     common_hit_time=self.full_path_common_hit_time,
                     message_semantics="common_hit_time",
-                    simple_strike_control_mode=self.simple_strike_control_mode,
+                    simple_strike_control_mode="xd_velocity_reference",
                     control_interface=control_meta["control_interface"],
                     reason=(
                         "passed_target_line"
@@ -3648,7 +3447,7 @@ class SimpleStrikeManager(object):
             return True
         return False
 
-    def _run_full_path_swiftwing_vector_sync(
+    def _run_full_path_xd_velocity_sync(
         self,
         xbee,
         comm_info,
@@ -3660,16 +3459,10 @@ class SimpleStrikeManager(object):
         uav_states,
         now_abs,
     ):
-        if self.simple_strike_control_mode == "swiftwing_vector":
-            self._set_full_path_swiftwing_vector_control_source(
-                uav_ros,
-                reason="enter_full_path_swiftwing_vector_sync",
-            )
-        else:
-            self._set_full_path_position_waypoint_control_source(
-                uav_ros,
-                reason="enter_full_path_position_waypoint_sync",
-            )
+        self._set_full_path_control_source(
+            uav_ros,
+            reason="enter_full_path_xd_velocity_sync",
+        )
         if self.assigned_target is None:
             self.assigned_target = self.assignment_map.get(self.uav_id)
         if self.assigned_target is None:
@@ -3741,18 +3534,11 @@ class SimpleStrikeManager(object):
         self._maybe_freeze_common_hit_time(uav_ros=uav_ros, now_abs=now_abs)
         self._leader_maybe_update_common_hit_time(xbee, comm_info, now_abs=now_abs)
 
-        if self.simple_strike_control_mode == "swiftwing_vector":
-            self.phase = "FULL_PATH_SWIFTWING_VECTOR_SYNC"
-            started_event = "simple_strike_full_path_swiftwing_vector_started"
-            started_interface = "swiftwing_vector_control"
-            started_topic = f"/{getattr(uav_ros, 'uav_name', 'uav')}/control_signal/vector"
-            started_frame = "ENU_VECTOR"
-        else:
-            self.phase = "FULL_PATH_POSITION_WAYPOINT_SYNC"
-            started_event = "simple_strike_full_path_position_waypoint_started"
-            started_interface = "guide_to_waypoint"
-            started_topic = f"/{getattr(uav_ros, 'uav_name', 'uav')}/mavros/setpoint_raw/local"
-            started_frame = "ENU_POSITION_TARGET"
+        self.phase = "FULL_PATH_XD_VELOCITY_SYNC"
+        started_event = "simple_strike_full_path_xd_velocity_started"
+        started_interface = "guide_velocity"
+        started_topic = f"/{getattr(uav_ros, 'uav_name', 'uav')}/control/reference/setpoint"
+        started_frame = "ENU_VELOCITY_REFERENCE"
         if not self.full_path_started_reported:
             self.full_path_started_reported = True
             self.team_path_status.setdefault(int(self.uav_id), {})[
@@ -3764,7 +3550,7 @@ class SimpleStrikeManager(object):
             )
             self._log_jsonl(
                 started_event,
-                simple_strike_control_mode=self.simple_strike_control_mode,
+                simple_strike_control_mode="xd_velocity_reference",
                 target_id=self._target_id_for_uav(self.uav_id),
                 final_target_point=self.final_target_point,
                 common_hit_time=self.full_path_common_hit_time,
@@ -3781,7 +3567,7 @@ class SimpleStrikeManager(object):
         if not new_timer.check_period(0.02, self.previous_control_time):
             return
         self.previous_control_time = time.time()
-        reached = self._guide_full_path_swiftwing_vector_sync(
+        reached = self._guide_full_path_xd_velocity_sync(
             uav_ros,
             height,
             waypoint_radius,
@@ -3809,7 +3595,7 @@ class SimpleStrikeManager(object):
             final_target_point=self.final_target_point,
             target_id=self._target_id_for_uav(self.uav_id),
             full_path_control_backend=self.full_path_control_backend,
-            simple_strike_control_mode=self.simple_strike_control_mode,
+            simple_strike_control_mode="xd_velocity_reference",
         )
 
     def run(self, xbee, comm_info, uav_ros, new_timer, gcs, height, waypoint_radius):
@@ -3829,7 +3615,7 @@ class SimpleStrikeManager(object):
                 )
             return
 
-        self._run_full_path_swiftwing_vector_sync(
+        self._run_full_path_xd_velocity_sync(
             xbee,
             comm_info,
             uav_ros,

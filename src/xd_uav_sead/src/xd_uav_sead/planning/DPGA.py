@@ -1,18 +1,13 @@
-import random
 import numpy as np
-import threading
-import queue
 import rospy
-from matplotlib import pyplot as plt
-import multiprocessing as mp
 import dubins
+import xd_uav_sead.planning.pathFollowing as pf
 from xd_uav_sead.planning.GA_SEAD_process import *
 from xd_uav_sead.planning.GA_SEAD_process import _is_dubins_blocked, _find_best_bypass
 from xd_uav_sead.comms.communication_info import *
 import time
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
-import tf.transformations as tf_trans
 
 def task_allocation_process(
     targets_sites, time_interval, pop_size, ga2control_queue, control2ga_queue
@@ -40,49 +35,6 @@ def task_allocation_process(
             update = False
 
 
-class UAV_Simulator(object):
-    def __init__(
-        self, uav_id, type, frame_type, velocity, Rmin, initial_position, base
-    ):
-        "Configuration of UAV"
-        self.id = uav_id
-        self.type = type
-        self.v = velocity
-        self.Rmin = Rmin
-        self.omega_max = self.v / self.Rmin
-        self.initial_position = initial_position
-        self.base = base
-        self.sencing_range = 50
-        self.frame_type = frame_type
-        " Altitude and position of UAV "
-        self.local_pose = [initial_position[0], initial_position[1], 10]
-        self.yaw = initial_position[2]
-        self.local_velo = [0, 0, 0]
-        self.yaw_rate = 0
-        " Information for GCS "
-        self.mode = Mode.GUIDED.name
-        self.armed = False
-        self.battery_perc = 100
-        self.last_setpoint_time = time.time()
-
-    def step(self, v_cmd, yaw_cmd, dt):
-        """
-        P controller for yaw rate and speed
-                [ x(k+1)     ]   [ x(k) + v(k)cos(theta(k))dt ]
-        state:  [ y(k+1)     ] = [ y(k) + v(k)sin(theta(k))dt ]
-                [ theta(k+1) ]   [ theta(k) + utheta x dt     ]
-                [ v(k+1)     ]   [ v(k) + us x dt             ]
-        """
-        self.local_pose[0] += self.local_velo[0] * np.cos(self.yaw) * dt
-        self.local_pose[1] += self.local_velo[0] * np.sin(self.yaw) * dt
-        self.yaw = pf.PlusMinusPi(self.yaw + self.yaw_rate * dt)
-        self.local_velo[0] += 2 * (v_cmd - self.local_velo[0]) * dt
-        self.yaw_rate = self.yaw_rate + 5 * (yaw_cmd - self.yaw_rate) * dt
-
-    def set_mode(self, mode):
-        self.mode = mode
-
-
 class main_process(object):
     def __init__(
         self,
@@ -94,29 +46,12 @@ class main_process(object):
         control2ga_queue,
         airspace=None,
         uav_id=None,
-        control_mode="swiftwing_vector",
     ):
         "SEAD mission"
         # 璁剧疆鏃犱汉鏈篒D鍜屽搴旂殑鍚嶇О銆乼opic
         self.uav_id = uav_id if uav_id is not None else 0
         self.uav_name = f"uav{self.uav_id}"
         self.viz_topic_name = f"/uav{self.uav_id}/sead/planned_path"
-        control_mode = str(control_mode or "swiftwing_vector").lower()
-        if control_mode in ["position", "position_waypoint", "waypoint"]:
-            self.control_mode = "position_waypoint"
-        elif control_mode in [
-            "swiftwing",
-            "swiftwing_vector",
-            "speed",
-            "speed_swiftwing",
-        ]:
-            self.control_mode = "swiftwing_vector"
-        else:
-            rospy.logwarn(
-                f"[SEAD] Unsupported control_mode={control_mode}, fallback to swiftwing_vector"
-            )
-            self.control_mode = "swiftwing_vector"
-        
         self.targets_set = targets_sites
         self.base = base_config
         " Communication port "
@@ -141,8 +76,8 @@ class main_process(object):
         self.AT, self.NT = [], []
         self.back_to_base = False
         " Path following "
-        # Historical method name kept for protocol compatibility.
-        # Runtime control uses swiftwing_vector or position_waypoint.
+        # Historical path-following method name is kept; runtime output is an
+        # xd_uav_controller velocity reference.
         self.path_following = pf.CraigReynolds_Path_Following(
             pathFollowingMethod.dubinsPath_following_velocityBody_PID,
             5,
@@ -618,23 +553,6 @@ class main_process(object):
             uav_ros.set_mode("LOITER")
             return
 
-        mode = getattr(self, "control_mode", "swiftwing_vector")
-
-        if mode == "position_waypoint":
-            wp = self.path_following.get_fixed_wing_waypoint(
-                uav_ros.local_pose[0],
-                uav_ros.local_pose[1],
-                min_dist=10.0,
-                update=self.path_update_flag,
-            )
-            self.path_update_flag = False
-
-            if wp:
-                uav_ros.guide_to_waypoint(wp)
-            else:
-                uav_ros.set_mode("LOITER")
-            return
-
         try:
             desirePoint, self.intial_windowIndex, _, _ = (
                 self.path_following.get_desirePoint_withWindow(
@@ -648,7 +566,7 @@ class main_process(object):
         except Exception as ex:
             rospy.logwarn_throttle(
                 1.0,
-                f"[SEAD] SwiftWing path following failed to get desirePoint: {ex}",
+                f"[SEAD] fixed-wing path following failed to get desirePoint: {ex}",
             )
             return
 
@@ -660,17 +578,11 @@ class main_process(object):
         v_cmd = float(getattr(uav_ros, "v", 20.0))
         vz_cmd = 0.3 * (float(height) - float(uav_ros.local_pose[2]))
 
-        if hasattr(uav_ros, "swiftwing_vector_control"):
-            ok = uav_ros.swiftwing_vector_control(v_cmd, heading_cmd, vz_cmd)
-            if not ok:
-                rospy.logwarn_throttle(
-                    1.0,
-                    "[SEAD] swiftwing_vector_control returned False",
-                )
-        else:
+        ok = uav_ros.guide_velocity(v_cmd, heading_cmd, vz_cmd)
+        if not ok:
             rospy.logwarn_throttle(
                 1.0,
-                "[SEAD] uav_ros has no swiftwing_vector_control(), cannot run swiftwing_vector mode",
+                "[SEAD] xd velocity reference publish failed",
             )
 
     def run_fixedWing(

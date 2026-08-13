@@ -17,13 +17,12 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
-  <depend>tf</depend>
+  <depend>xd_uav_controller</depend>
 
   <exec_depend>python3-matplotlib</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
-  <exec_depend>xd_uav_controller</exec_depend>
-
+  <exec_depend>xd_uav_control_manager</exec_depend>
   <test_depend>python3-nose</test_depend>
 
   <export/>

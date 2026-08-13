@@ -43,10 +43,10 @@ multirotor:
     maximum_body_rate: [3.0, 3.0, 2.0]
     maximum_velocity_xy: 15.0
     maximum_velocity_z: 5.0
-    maximum_acceleration_xy: 2.5
-    maximum_acceleration_z: 2.0
-    maximum_jerk_xy: 3.0
-    maximum_jerk_z: 3.0
+    maximum_acceleration_xy: 5
+    maximum_acceleration_z: 4
+    maximum_jerk_xy: 6
+    maximum_jerk_z: 5
 
 # 起飞与降落保持为两种机型一致的顶层业务阶段；具体参数由当前机型文件定义。
 takeoff:
@@ -57,14 +57,34 @@ takeoff:
   velocity_tolerance: 0.15
 
 landing:
-  descent_velocity: 0.35
-  final_descent_velocity: 0.15
-  slow_height: 0.7
-  return_velocity: 1.0
-  # land_home进入下降阶段前的水平位置、速度门槛；进入下降后，触地确认
-  # 不再受水平漂移影响，避免机体已经接地却持续输出悬停推力。
-  position_tolerance: 0.10
+  # odom使用相对起飞/Home地面的Z，适用于没有下视测距的仿真；它不能识别
+  # 高于起飞点的平台。distance_sensor仅把纵向降落切换为下视AGL，XY仍使用
+  # 当前定位源；需要飞机模型和MAVROS distance_sensor插件提供Range话题。
+  height_source: distance_sensor
+
+  # land_home水平返航的速度上限。控制器会根据剩余距离和多旋翼最大加速度
+  # 自动提前减速，不会把该速度保持到目标点。
+  return_max_velocity: 1.0
+  position_tolerance: 0.15
   velocity_tolerance: 0.10
-  touchdown_offset: 0.15
-  touchdown_height_tolerance: 0.10
-  touchdown_velocity_tolerance: 0.20
+
+  distance_sensor_cfg:
+    timeout: 0.5
+    descent_velocity: 0.35
+    final_descent_velocity: 0.15
+    slow_height: 0.7
+    # 触地时下视传感器到平台的预期距离；应按安装高度和最小量程设置。
+    touchdown_offset: 0.15
+    touchdown_height_tolerance: 0.10
+    # 使用滤波后的AGL变化率，不依赖当前定位源的odom.vz。
+    touchdown_velocity_tolerance: 0.20
+    velocity_filter_time_constant: 0.30
+
+  # 没有下视测距时保留原有的相对Home/起飞点高度降落逻辑。
+  odom_cfg:
+    descent_velocity: 0.35
+    final_descent_velocity: 0.15
+    slow_height: 0.7
+    touchdown_offset: 0.10
+    touchdown_height_tolerance: 0.05
+    touchdown_velocity_tolerance: 0.20

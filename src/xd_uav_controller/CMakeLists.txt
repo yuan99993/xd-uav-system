@@ -9,6 +9,7 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   nav_msgs
   roscpp
+  sensor_msgs
   std_msgs
   std_srvs
   tf2
@@ -43,6 +44,7 @@ catkin_package(
     message_runtime
     nav_msgs
     roscpp
+    sensor_msgs
     std_msgs
     std_srvs
     tf2
@@ -72,6 +74,7 @@ catkin_install_python(PROGRAMS
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   add_rostest(test/controller.test)
+  add_rostest(test/odom_landing.test)
   add_rostest(test/multirotor_anti_windup.test)
   add_rostest(test/fixedwing_controller.test)
 endif()

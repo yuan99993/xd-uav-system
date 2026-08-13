@@ -9,7 +9,7 @@ import time
 import struct
 
 import rospy
-from std_msgs.msg import String
+from std_msgs.msg import String, UInt8MultiArray
 
 U2U_BUS_TOPIC = "/sead/u2u"
 
@@ -88,6 +88,12 @@ class SeadRosBridge:
         self._sub_cmd = rospy.Subscriber(
             f"{self.ns}/command", String, self._on_command, queue_size=20
         )
+        self._sub_cmd_raw = rospy.Subscriber(
+            f"{self.ns}/command_raw",
+            UInt8MultiArray,
+            self._on_raw_command,
+            queue_size=20,
+        )
 
         # 订阅 U2U 广播（多机 GA 协同）
         self._sub_u2u = rospy.Subscriber(
@@ -97,6 +103,15 @@ class SeadRosBridge:
         # 发布遥测 → GCS
         self._pub_telemetry = rospy.Publisher(
             f"{self.ns}/telemetry", String, queue_size=20
+        )
+        self._pub_telemetry_raw = rospy.Publisher(
+            f"{self.ns}/telemetry_raw", UInt8MultiArray, queue_size=20
+        )
+        self.publish_json_telemetry = bool(
+            rospy.get_param(
+                "~communication/ros/publish_json_telemetry",
+                True,
+            )
         )
 
         # 所有 UAV 共用一条总线；消息 envelope 中携带 src/dst/broadcast。
@@ -110,10 +125,11 @@ class SeadRosBridge:
 
         # 从配置加载
         try:
-            peers = rospy.get_param("~sead_peer_ids", [1, 2, 3])
+            peers = rospy.get_param("~communication/peer_ids", [1, 2, 3])
         except Exception:
             peers = [1, 2, 3]
         self.u2u_address = [pid for pid in peers if pid != self.uav_id]
+        self.peer_address_map = {int(pid): int(pid) for pid in self.u2u_address}
 
         rospy.loginfo(
             f"[SeadRosBridge] uav={uav_name} id={uav_id} peers={self.u2u_address}"
@@ -129,6 +145,12 @@ class SeadRosBridge:
                 self._rx_queue.put(data)
         except Exception as exc:
             rospy.logwarn_throttle(2.0, f"[bridge] parse cmd failed: {exc}")
+
+    def _on_raw_command(self, msg: UInt8MultiArray):
+        """Queue one unchanged PacketProtocol payload received through ROS."""
+        payload = bytes(msg.data)
+        if payload:
+            self._rx_queue.put(payload)
 
     def _on_u2u(self, msg: String):
         """其他 UAV 的消息。"""
@@ -391,12 +413,16 @@ class SeadRosBridge:
     def send_data_async(self, address, raw_data: bytes):
         """仿真 xbee.send_data_async。address 现在是 int(uav_id) 或 GCS_ID。
 
-        将二进制 raw_data 转为 JSON 发布到遥测话题。
+        GCS 遥测保留原始字节，并可同时发布 JSON 调试镜像。
         """
         try:
             msg_text = self._bytes_to_json(raw_data, address)
             if self._is_gcs_address(address):
-                self._pub_telemetry.publish(String(data=msg_text))
+                self._pub_telemetry_raw.publish(
+                    UInt8MultiArray(data=list(bytes(raw_data)))
+                )
+                if self.publish_json_telemetry:
+                    self._pub_telemetry.publish(String(data=msg_text))
             else:
                 self._pub_u2u.publish(String(data=msg_text))
         except Exception as exc:
@@ -454,3 +480,7 @@ class SeadRosBridge:
         """
         # 给 Timer 对象打补丁: bias=0 → 用 wall clock
         pass  # 调用方自己检查 self.bias 是否已设置
+
+    def close(self):
+        """ROS publishers/subscribers are owned by rospy; no explicit teardown."""
+        return None
