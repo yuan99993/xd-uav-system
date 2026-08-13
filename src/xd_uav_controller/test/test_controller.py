@@ -13,6 +13,7 @@ from geometry_msgs.msg import (
 )
 from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Path
+from sensor_msgs.msg import Range
 from std_msgs.msg import Bool
 import tf2_ros
 from trajectory_msgs.msg import (
@@ -39,9 +40,13 @@ class ControllerInterfaceTest(unittest.TestCase):
         self._acceleration_fresh = True
         self._local_to_odom_x = 10.0
         self._local_alignment_valid = True
+        self._distance = 1.0
         self._tf_broadcaster = tf2_ros.TransformBroadcaster()
         self._state_publisher = rospy.Publisher(
             "state", ControlState, queue_size=10
+        )
+        self._distance_sensor_publisher = rospy.Publisher(
+            "distance_sensor", Range, queue_size=10
         )
         self._reference_position_target_publisher = rospy.Publisher(
             "reference_position_target",
@@ -288,10 +293,22 @@ class ControllerInterfaceTest(unittest.TestCase):
         transform.transform.rotation.w = 1.0
         self._tf_broadcaster.sendTransform(transform)
 
+    def _publish_distance_sensor(self):
+        message = Range()
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = "uav1/lidarlite_laser"
+        message.radiation_type = Range.INFRARED
+        message.field_of_view = 0.01
+        message.min_range = 0.2
+        message.max_range = 15.0
+        message.range = self._distance
+        self._distance_sensor_publisher.publish(message)
+
     def _wait_for_command(self, predicate, timeout=5.0):
         deadline = time.time() + timeout
         while time.time() < deadline and not rospy.is_shutdown():
             self._state_publisher.publish(self._state())
+            self._publish_distance_sensor()
             self._publish_reference_frames()
             try:
                 command = rospy.wait_for_message(
@@ -734,7 +751,11 @@ class ControllerInterfaceTest(unittest.TestCase):
             lambda value: value.valid and value.landing_active
         )
 
-        self._position_z = 0.0
+        # The odometry altitude deliberately remains two metres above the
+        # takeoff ground.  Touchdown must come from the downward rangefinder,
+        # which represents landing on an elevated platform.
+        self._position_z = 2.0
+        self._distance = 0.2
         touchdown_command = self._wait_for_command(
             lambda value: (
                 value.valid

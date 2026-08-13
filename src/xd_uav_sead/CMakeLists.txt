@@ -9,7 +9,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
   std_srvs
-  tf
+  xd_uav_controller
 )
 
 catkin_python_setup()
@@ -23,15 +23,13 @@ catkin_package(
     sensor_msgs
     std_msgs
     std_srvs
-    tf
+    xd_uav_controller
 )
 
 # Python 可执行脚本
 catkin_install_python(PROGRAMS
   scripts/sead_onboard_node.py
   scripts/mock_gcs.py
-  scripts/sead_validation_visualizer.py
-  tools/xbee_send_formation_test.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -46,4 +44,5 @@ install(FILES README.md
 if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_core_functions.py)
   catkin_add_nosetests(test/test_rosbridge_protocol.py)
+  catkin_add_nosetests(test/test_udp_transport.py)
 endif()

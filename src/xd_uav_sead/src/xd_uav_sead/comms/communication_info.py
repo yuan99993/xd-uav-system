@@ -856,13 +856,6 @@ class pathFollowingMethod(Enum):
     dubinsPath_following_velocityBody_PID = 4
 
 
-class XBee_Devices(Enum):
-    # XBee Pro S3B (900mHz)
-    UAV1 = "0013A2004126C97C"
-    UAV2 = "0013A2004154C5D3"
-    UAV3 = "0013A2004105EB5A"
-
-
 def generate_dubinsPath(points, radius, interval):
     dubins_path = [points[0]]
     for i in range(len(points)-1):

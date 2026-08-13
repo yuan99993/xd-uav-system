@@ -302,7 +302,6 @@ class DpgaFunctionTest(unittest.TestCase):
                 ga2control_queue=queue.Queue(),
                 control2ga_queue=queue.Queue(),
                 uav_id=1,
-                control_mode="position_waypoint",
             )
         team = {
             2: {
@@ -350,6 +349,38 @@ class DpgaFunctionTest(unittest.TestCase):
 
 
 class SimpleStrikeFunctionTest(unittest.TestCase):
+    def test_full_path_control_uses_xd_velocity_reference(self):
+        manager = SimpleStrikeManager(
+            [[100.0, 0.0], [200.0, 0.0], [300.0, 0.0]],
+            [],
+            [0.0, 0.0, 0.0],
+            1,
+            [2, 20.0, 30.0],
+        )
+        uav = mock.Mock()
+        uav.uav_name = "uav1"
+        uav.offboard_control_source = "xd_velocity_reference"
+        uav.guide_velocity.return_value = True
+
+        result = manager._send_full_path_control(
+            uav,
+            {"v_cmd": 100.0, "heading_cmd": 0.5, "v_z_cmd": -0.2},
+            height=80.0,
+        )
+
+        uav.set_offboard_control_source.assert_called_once_with(
+            "xd_velocity_reference"
+        )
+        uav.guide_velocity.assert_called_once_with(
+            manager.reference_speed_max,
+            0.5,
+            -0.2,
+        )
+        self.assertEqual(result["control_interface"], "guide_velocity")
+        self.assertEqual(
+            result["control_topic"], "/uav1/control/reference/setpoint"
+        )
+
     def test_targets_and_assignment_are_deterministic_and_one_to_one(self):
         targets = SimpleStrikeManager.canonical_targets(
             [[100.0, 0.0], [0.0, 0.0], [100.0, 0.0], [200.0, 0.0]]
@@ -374,7 +405,6 @@ class SimpleStrikeFunctionTest(unittest.TestCase):
         managers = {
             uid: SimpleStrikeManager(
                 targets, [], [0.0, 0.0, 0.0], uid, [2, 20.0, 30.0],
-                control_mode="position_waypoint",
             )
             for uid in [1, 2, 3]
         }

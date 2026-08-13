@@ -9,6 +9,7 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   nav_msgs
   roscpp
+  sensor_msgs
   std_msgs
   std_srvs
   tf2
@@ -43,6 +44,7 @@ catkin_package(
     message_runtime
     nav_msgs
     roscpp
+    sensor_msgs
     std_msgs
     std_srvs
     tf2

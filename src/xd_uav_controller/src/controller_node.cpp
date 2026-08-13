@@ -13,6 +13,7 @@
 #include <mavros_msgs/PositionTarget.h>
 #include <nav_msgs/Path.h>
 #include <ros/ros.h>
+#include <sensor_msgs/Range.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/Bool.h>
 #include <tf2/LinearMath/Matrix3x3.h>
@@ -277,6 +278,9 @@ class ControllerNode {
     loadParameters();
     state_subscriber_ = nh_.subscribe(
         "state", 20, &ControllerNode::stateCallback, this);
+    distance_sensor_subscriber_ = nh_.subscribe(
+        "distance_sensor", 20,
+        &ControllerNode::distanceSensorCallback, this);
     reference_position_target_subscriber_ = nh_.subscribe(
         "reference_position_target", 20,
         &ControllerNode::referencePositionTargetCallback, this);
@@ -688,6 +692,11 @@ class ControllerNode {
                       fixedwing_altitude_tolerance_, 3.0);
     private_nh_.param("landing/descent_velocity",
                       landing_descent_velocity_, 0.35);
+    private_nh_.param("landing/height_source",
+                      landing_height_source_,
+                      std::string("odom"));
+    private_nh_.param("landing/distance_sensor_timeout",
+                      landing_distance_sensor_timeout_, 0.5);
     private_nh_.param("landing/final_descent_velocity",
                       landing_final_descent_velocity_, 0.15);
     private_nh_.param("landing/slow_height",
@@ -763,6 +772,21 @@ class ControllerNode {
         home_mode_ != "fixed_local") {
       throw std::runtime_error(
           "home/mode必须是takeoff或fixed_local");
+    }
+    if (landing_height_source_ != "odom" &&
+        landing_height_source_ != "distance_sensor") {
+      throw std::runtime_error(
+          "landing/height_source必须是odom或distance_sensor");
+    }
+    if (vehicle_type_ == "fixedwing" &&
+        landing_height_source_ != "odom") {
+      throw std::runtime_error(
+          "固定翼landing/height_source目前只支持odom");
+    }
+    if (!std::isfinite(landing_distance_sensor_timeout_) ||
+        landing_distance_sensor_timeout_ <= 0.0) {
+      throw std::runtime_error(
+          "landing/distance_sensor_timeout必须为正数");
     }
     const auto frames_valid = [](const std::vector<std::string>& frames) {
       return !frames.empty() &&
@@ -1406,6 +1430,47 @@ class ControllerNode {
         !idle_reference_active_ && state_.state_valid) {
       captureIdleReference();
     }
+  }
+
+  void distanceSensorCallback(
+      const sensor_msgs::Range::ConstPtr& message) {
+    distance_sensor_ = *message;
+    last_distance_sensor_receive_ = ros::Time::now();
+    have_distance_sensor_ = true;
+  }
+
+  bool distanceSensorHeight(
+      const ros::Time& now, double* height,
+      std::string* reason = nullptr) const {
+    const auto reject = [reason](const std::string& value) {
+      if (reason != nullptr) {
+        *reason = value;
+      }
+      return false;
+    };
+    if (!have_distance_sensor_) {
+      return reject("尚未收到下视距离传感器数据");
+    }
+    const double age =
+        (now - last_distance_sensor_receive_).toSec();
+    if (!std::isfinite(age) || age < 0.0 ||
+        age > landing_distance_sensor_timeout_) {
+      return reject("下视距离传感器数据超时");
+    }
+    const double range =
+        static_cast<double>(distance_sensor_.range);
+    const double minimum =
+        static_cast<double>(distance_sensor_.min_range);
+    const double maximum =
+        static_cast<double>(distance_sensor_.max_range);
+    if (!std::isfinite(range) || !std::isfinite(minimum) ||
+        !std::isfinite(maximum) || minimum < 0.0 ||
+        maximum <= minimum || range < minimum - 1e-3 ||
+        range > maximum + 1e-3) {
+      return reject("下视距离传感器量程或测量值无效");
+    }
+    *height = range;
+    return true;
   }
 
   bool externalReferenceAllowed() const {
@@ -2362,6 +2427,18 @@ class ControllerNode {
               : "原地降落已经在执行";
       return true;
     }
+    if (vehicle_type_ == "multirotor" &&
+        landing_height_source_ == "distance_sensor") {
+      double height = 0.0;
+      std::string reason;
+      if (!distanceSensorHeight(
+              ros::Time::now(), &height, &reason)) {
+        response.success = false;
+        response.message =
+            "下视高度不可用，拒绝自动降落: " + reason;
+        return true;
+      }
+    }
 
     const Eigen::Vector3d current_position(
         state_.position_odom.x, state_.position_odom.y,
@@ -3161,17 +3238,44 @@ class ControllerNode {
     if (landing_phase_ == LandingPhase::kDescent) {
       landing_setpoint_.head<2>() =
           landing_origin_.head<2>();
-      const double height =
+      double height =
           std::max(0.0, state_.position_odom.z -
                             landing_ground_z_);
-      const double descent_velocity =
-          height <= landing_slow_height_
-              ? std::abs(landing_final_descent_velocity_)
-              : std::abs(landing_descent_velocity_);
-      landing_setpoint_.z() = std::max(
-          landing_target_z_,
-          landing_setpoint_.z() - descent_velocity * dt);
-      reference.velocity.z = -descent_velocity;
+      bool vertical_height_valid = true;
+      if (landing_height_source_ == "distance_sensor") {
+        std::string reason;
+        vertical_height_valid = distanceSensorHeight(
+            now, &height, &reason);
+        if (vertical_height_valid) {
+          // Convert the relative range into the current odom frame only for
+          // the vertical landing target.  XY continues to use landing_origin.
+          const double measured_surface_z =
+              state_.position_odom.z - height;
+          landing_target_z_ =
+              measured_surface_z -
+              std::abs(landing_touchdown_offset_);
+        } else {
+          // Never silently continue toward the home/odom ground when the
+          // selected AGL source disappears. Hold the current vertical state
+          // until fresh, valid range data returns.
+          landing_setpoint_.z() = state_.position_odom.z;
+          reference.velocity.z = 0.0;
+          ROS_ERROR_THROTTLE(
+              1.0,
+              "[xd_uav_controller] 降落暂停Z下降: %s",
+              reason.c_str());
+        }
+      }
+      if (vertical_height_valid) {
+        const double descent_velocity =
+            height <= landing_slow_height_
+                ? std::abs(landing_final_descent_velocity_)
+                : std::abs(landing_descent_velocity_);
+        landing_setpoint_.z() = std::max(
+            landing_target_z_,
+            landing_setpoint_.z() - descent_velocity * dt);
+        reference.velocity.z = -descent_velocity;
+      }
     }
 
     if (!landing_touchdown_) {
@@ -3181,16 +3285,27 @@ class ControllerNode {
       // prevent the vehicle from correcting a small descent drift, which
       // would otherwise keep hover thrust applied indefinitely and prevent
       // PX4 from reporting LANDED_STATE_ON_GROUND.
-      landing_touchdown_ =
-          landing_phase_ == LandingPhase::kDescent &&
-          landing_setpoint_.z() <=
-              landing_ground_z_ +
-                  landing_touchdown_height_tolerance_ &&
-          state_.position_odom.z <=
-              landing_ground_z_ +
-                  landing_touchdown_height_tolerance_ &&
-          std::abs(state_.velocity_odom.z) <=
-              landing_touchdown_velocity_tolerance_;
+      if (landing_height_source_ == "distance_sensor") {
+        double height = 0.0;
+        landing_touchdown_ =
+            landing_phase_ == LandingPhase::kDescent &&
+            distanceSensorHeight(now, &height) &&
+            height <= std::abs(landing_touchdown_offset_) +
+                          landing_touchdown_height_tolerance_ &&
+            std::abs(state_.velocity_odom.z) <=
+                landing_touchdown_velocity_tolerance_;
+      } else {
+        landing_touchdown_ =
+            landing_phase_ == LandingPhase::kDescent &&
+            landing_setpoint_.z() <=
+                landing_ground_z_ +
+                    landing_touchdown_height_tolerance_ &&
+            state_.position_odom.z <=
+                landing_ground_z_ +
+                    landing_touchdown_height_tolerance_ &&
+            std::abs(state_.velocity_odom.z) <=
+                landing_touchdown_velocity_tolerance_;
+      }
     }
 
     reference.position.x = landing_setpoint_.x();
@@ -4280,6 +4395,7 @@ class ControllerNode {
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
   ros::Subscriber state_subscriber_;
+  ros::Subscriber distance_sensor_subscriber_;
   ros::Subscriber reference_position_target_subscriber_;
   ros::Subscriber reference_trajectory_subscriber_;
   ros::Subscriber simple_goal_subscriber_;
@@ -4291,16 +4407,19 @@ class ControllerNode {
   ros::Timer timer_;
 
   xd_uav_controller::ControlState state_;
+  sensor_msgs::Range distance_sensor_;
   Reference reference_;
   Reference reference_source_;
   trajectory_msgs::MultiDOFJointTrajectory
       reference_trajectory_;
   ros::Time last_state_receive_;
+  ros::Time last_distance_sensor_receive_;
   ros::Time last_reference_receive_;
   ros::Time reference_trajectory_start_;
   ros::Time last_local_alignment_valid_receive_;
   ros::Time active_reference_transform_failure_since_;
   bool have_state_{false};
+  bool have_distance_sensor_{false};
   bool have_reference_{false};
   bool have_reference_error_{false};
   bool have_normalized_reference_{false};
@@ -4475,6 +4594,8 @@ class ControllerNode {
   FixedwingLandingPhase fixedwing_landing_phase_{
       FixedwingLandingPhase::kNone};
   double landing_descent_velocity_{0.35};
+  std::string landing_height_source_{"odom"};
+  double landing_distance_sensor_timeout_{0.5};
   double landing_final_descent_velocity_{0.15};
   double landing_slow_height_{0.7};
   double landing_return_velocity_{1.0};

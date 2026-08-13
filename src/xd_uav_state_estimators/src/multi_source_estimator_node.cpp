@@ -449,6 +449,9 @@ struct SourceConfig {
   double quarantine_duration{1.0};
   int recovery_min_samples{20};
   double recovery_stable_time{0.5};
+  // correction timeout只决定来源当前是否健康；只有连续断流达到这个更长
+  // 的时间，才认为定位提供者重启并重新建立来源原点。
+  double session_reset_timeout{2.0};
   std::vector<std::string> republish_frames;
 };
 
@@ -520,6 +523,8 @@ struct SourceRuntime {
   bool alignment_initialized{false};
   bool filters_initialized{false};
   bool required_corrections_were_connected{false};
+  bool required_corrections_were_fresh{false};
+  bool filter_reseed_pending{false};
   std::uint64_t session{1};
 };
 
@@ -664,6 +669,8 @@ class MultiSourceEstimatorNode {
     private_nh_.param("innovation_gate/heading", heading_limit_, 1.57);
     private_nh_.param("innovation_gate/yaw_rate", yaw_rate_limit_, 3.0);
     private_nh_.param("innovation_gate/use_nis", use_nis_, true);
+    private_nh_.param("innovation_gate/hard_reject_nis",
+                      hard_reject_nis_, false);
     private_nh_.param("innovation_gate/position_xy_nis",
                       position_xy_nis_limit_, 9.21);
     private_nh_.param("innovation_gate/position_z_nis",
@@ -739,6 +746,12 @@ class MultiSourceEstimatorNode {
                         config.recovery_min_samples, 20);
       private_nh_.param(prefix + "reliability/recovery_stable_time",
                         config.recovery_stable_time, 0.5);
+      private_nh_.param(prefix + "reliability/session_reset_timeout",
+                        config.session_reset_timeout, 2.0);
+      if (config.session_reset_timeout <= 0.0) {
+        throw std::runtime_error(
+            "来源'" + name + "'的session_reset_timeout必须大于0");
+      }
       private_nh_.getParam(prefix + "republish_in_frames",
                            config.republish_frames);
 
@@ -1103,6 +1116,30 @@ class MultiSourceEstimatorNode {
       return;
     }
 
+    // 普通调度卡顿只会让来源短时失效，不代表定位提供者建立了新原点。
+    // 恢复后收齐同一会话的一整组修正，直接从测量重置运动状态；这里不再
+    // 使用已经经历过断流外推的旧状态做创新门控，也不修改来源对齐量。
+    if (source->filter_reseed_pending) {
+      if (own_provider) {
+        updateRawState(&source->raw, sample);
+        source->latest_raw_stamp =
+            std::max(source->latest_raw_stamp, sample.stamp);
+      }
+      updateRawState(&source->fused_raw, aligned);
+      correction->valid_session = source->session;
+      registerAccepted(source, correction);
+      if (fusedRawReady(*source)) {
+        initializeFiltersFromFusedRaw(source, sample.stamp);
+        source->filter_reseed_pending = false;
+        source->required_corrections_were_fresh = true;
+        ROS_INFO(
+            "[xd_uav_state_estimators] 来源%s短时断流后已用完整观测重置运动状态",
+            source->config.name.c_str());
+      }
+      updateSelection(ros::Time::now());
+      return;
+    }
+
     predictSourceTo(source, sample.stamp);
     if (!innovationAccepted(source->axis, source->yaw_filter,
                             aligned, &reason)) {
@@ -1444,7 +1481,8 @@ class MultiSourceEstimatorNode {
             axis[0].nis(0, sample.vector.x(), sample.variance_a) +
             axis[1].nis(0, sample.vector.y(), sample.variance_b);
         if (std::hypot(dx, dy) > position_xy_limit_ ||
-            (use_nis_ && nis > position_xy_nis_limit_)) {
+            (hard_reject_nis_ && use_nis_ &&
+             nis > position_xy_nis_limit_)) {
           *reason = "水平位置新息超限";
           return false;
         }
@@ -1453,7 +1491,7 @@ class MultiSourceEstimatorNode {
       case CorrectionKind::kPositionZ:
         if (std::abs(axis[2].innovation(0, sample.scalar)) >
                 position_z_limit_ ||
-            (use_nis_ &&
+            (hard_reject_nis_ && use_nis_ &&
              axis[2].nis(0, sample.scalar, sample.variance_a) >
                  position_z_nis_limit_)) {
           *reason = "高度新息超限";
@@ -1469,7 +1507,8 @@ class MultiSourceEstimatorNode {
             axis[0].nis(1, sample.vector.x(), sample.variance_a) +
             axis[1].nis(1, sample.vector.y(), sample.variance_b);
         if (std::hypot(dx, dy) > velocity_xy_limit_ ||
-            (use_nis_ && nis > velocity_xy_nis_limit_)) {
+            (hard_reject_nis_ && use_nis_ &&
+             nis > velocity_xy_nis_limit_)) {
           *reason = "水平速度新息超限";
           return false;
         }
@@ -1478,7 +1517,7 @@ class MultiSourceEstimatorNode {
       case CorrectionKind::kVelocityZ:
         if (std::abs(axis[2].innovation(1, sample.scalar)) >
                 velocity_z_limit_ ||
-            (use_nis_ &&
+            (hard_reject_nis_ && use_nis_ &&
              axis[2].nis(1, sample.scalar, sample.variance_a) >
                  velocity_z_nis_limit_)) {
           *reason = "垂直速度新息超限";
@@ -1488,7 +1527,7 @@ class MultiSourceEstimatorNode {
       case CorrectionKind::kHeading:
         if (std::abs(yaw_filter.yawInnovation(sample.scalar)) >
                 heading_limit_ ||
-            (use_nis_ &&
+            (hard_reject_nis_ && use_nis_ &&
              yaw_filter.yawNis(sample.scalar, sample.variance_a) >
                  heading_nis_limit_)) {
           *reason = "航向新息超限";
@@ -1498,7 +1537,7 @@ class MultiSourceEstimatorNode {
       case CorrectionKind::kYawRate:
         if (std::abs(yaw_filter.rateInnovation(sample.scalar)) >
                 yaw_rate_limit_ ||
-            (use_nis_ &&
+            (hard_reject_nis_ && use_nis_ &&
              yaw_filter.rateNis(sample.scalar, sample.variance_a) >
                  yaw_rate_nis_limit_)) {
           *reason = "偏航角速度新息超限";
@@ -1584,6 +1623,14 @@ class MultiSourceEstimatorNode {
       ROS_WARN_THROTTLE(
           1.0,
           "[xd_uav_state_estimators] 跳过早于main滤波时刻的IMU样本");
+      return;
+    }
+    if (active_source_.empty() ||
+        sourceLocalizationAge(*source_by_name_.at(active_source_),
+                              ros::Time::now()) >
+            max_dead_reckoning_time_) {
+      // main无效后必须冻结，不能在后台无限积分IMU。否则定位恢复时会拿
+      // 已经跑飞的隐藏状态建立对齐，进而污染所有来源。
       return;
     }
     predictMainTo(stamp);
@@ -1711,7 +1758,8 @@ class MultiSourceEstimatorNode {
   bool sourceHealthy(const SourceRuntime& source,
                      const ros::Time& now) const {
     if (!source.filters_initialized ||
-        !source.alignment_initialized) {
+        !source.alignment_initialized ||
+        source.filter_reseed_pending) {
       return false;
     }
     bool have_required = false;
@@ -1735,6 +1783,9 @@ class MultiSourceEstimatorNode {
     if (!source.filters_initialized) {
       return "单源滤波器尚未初始化";
     }
+    if (source.filter_reseed_pending) {
+      return "短时断流后等待完整观测重置运动状态";
+    }
     for (const auto& correction : source.corrections) {
       if (!correction->config.required ||
           correctionHealthy(*correction, now)) {
@@ -1754,8 +1805,9 @@ class MultiSourceEstimatorNode {
     return "没有必需修正";
   }
 
-  bool requiredNativeCorrectionsConnected(const SourceRuntime& source,
-                                          const ros::Time& now) const {
+  bool requiredNativeCorrectionsConnected(
+      const SourceRuntime& source, const ros::Time& now,
+      const double timeout_override = -1.0) const {
     bool have_required = false;
     for (const auto& correction : source.corrections) {
       if (!correction->config.required ||
@@ -1763,9 +1815,11 @@ class MultiSourceEstimatorNode {
         continue;
       }
       have_required = true;
+      const double timeout = timeout_override > 0.0
+                                 ? timeout_override
+                                 : correction->config.timeout;
       if (correction->last_received.isZero() ||
-          (now - correction->last_received).toSec() >
-              correction->config.timeout) {
+          (now - correction->last_received).toSec() > timeout) {
         return false;
       }
     }
@@ -1782,6 +1836,8 @@ class MultiSourceEstimatorNode {
     source->latest_raw_stamp = ros::Time();
     source->alignment_translation.setZero();
     source->alignment_yaw = 0.0;
+    source->filter_reseed_pending = false;
+    source->required_corrections_were_fresh = false;
     source->session++;
     if (source->session == 0) {
       source->session = 1;
@@ -1796,8 +1852,25 @@ class MultiSourceEstimatorNode {
 
   void updateSourceConnectionStates(const ros::Time& now) {
     for (auto& source : sources_) {
-      const bool connected =
-          requiredNativeCorrectionsConnected(*source, now);
+      const bool fresh = requiredNativeCorrectionsConnected(*source, now);
+      if (source->required_corrections_were_fresh && !fresh &&
+          source->filters_initialized && !source->filter_reseed_pending) {
+        // 健康超时不等于来源重启。保留固定原点，只让恢复后的完整测量重新
+        // 初始化速度/加速度等运动状态，避免旧预测反过来拒绝真实观测。
+        source->filter_reseed_pending = true;
+        source->fused_raw = RawState();
+        source->session++;
+        if (source->session == 0) {
+          source->session = 1;
+          for (auto& correction : source->corrections) {
+            correction->valid_session = 0;
+          }
+        }
+      }
+      source->required_corrections_were_fresh = fresh;
+
+      const bool connected = requiredNativeCorrectionsConnected(
+          *source, now, source->config.session_reset_timeout);
       if (source->required_corrections_were_connected && !connected &&
           source->config.alignment_mode == "align_on_activation") {
         prepareSourceForReconnect(source.get());
@@ -2092,8 +2165,15 @@ class MultiSourceEstimatorNode {
     }
     std::array<AxisKalman, 3> axis = main_state_->axis;
     YawKalman yaw = main_state_->yaw_filter;
-    const double dt =
+    double dt =
         std::max(0.0, (stamp - main_state_->filter_stamp).toSec());
+    const double localization_age = sourceLocalizationAge(
+        *source_by_name_.at(active_source_), stamp);
+    if (localization_age > max_dead_reckoning_time_) {
+      // main超过允许的惯性外推窗口后对外无效，同时内部状态冻结在最后的
+      // 有界估计，供来源真正重启时建立连续但不会跑飞的对齐。
+      dt = 0.0;
+    }
     for (AxisKalman& filter : axis) {
       filter.predict(dt);
     }
@@ -2508,7 +2588,9 @@ class MultiSourceEstimatorNode {
       const bool valid = sourceHealthy(*source, now);
       publishBoolean(source->valid_publisher, valid);
       Estimate estimate;
-      if (estimateSourceAt(*source, now, &estimate)) {
+      if ((valid || sourceLocalizationAge(*source, now) <=
+                        max_dead_reckoning_time_) &&
+          estimateSourceAt(*source, now, &estimate)) {
         const nav_msgs::Odometry odometry =
             sourceEstimateToOdometry(*source, estimate);
         source->odometry_publisher.publish(odometry);
@@ -2653,6 +2735,14 @@ class MultiSourceEstimatorNode {
       addDiagnostic(
           &source_status, "alignment_initialized",
           source->alignment_initialized ? "true" : "false");
+      addDiagnostic(
+          &source_status, "filter_reseed_pending",
+          source->filter_reseed_pending ? "true" : "false");
+      addDiagnostic(&source_status, "session",
+                    std::to_string(source->session));
+      addDiagnostic(
+          &source_status, "session_reset_timeout",
+          std::to_string(source->config.session_reset_timeout));
       array.status.push_back(source_status);
 
       for (const auto& correction : source->corrections) {
@@ -2725,6 +2815,8 @@ class MultiSourceEstimatorNode {
       source->fused_raw = RawState();
       source->raw_frame.clear();
       source->required_corrections_were_connected = false;
+      source->required_corrections_were_fresh = false;
+      source->filter_reseed_pending = false;
       source->session++;
       if (source->session == 0) {
         source->session = 1;
@@ -2867,6 +2959,7 @@ class MultiSourceEstimatorNode {
   bool require_imu_{false};
   bool remove_gravity_{true};
   bool use_nis_{true};
+  bool hard_reject_nis_{false};
   bool switch_back_to_higher_priority_{true};
   bool main_handover_rapid_recovery_{false};
   bool automatic_selection_{true};

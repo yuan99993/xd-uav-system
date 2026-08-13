@@ -14,8 +14,10 @@
            follows later local_origin -> odom alignment updates. -->
       <param name="home/mode" value="takeoff"/>
       <param name="landing/descent_velocity" value="2.0"/>
+      <param name="landing/height_source"
+             value="distance_sensor"/>
       <param name="landing/final_descent_velocity" value="2.0"/>
-      <param name="landing/touchdown_offset" value="0.05"/>
+      <param name="landing/touchdown_offset" value="0.15"/>
     </node>
     <test test-name="controller_interface"
           pkg="xd_uav_controller"

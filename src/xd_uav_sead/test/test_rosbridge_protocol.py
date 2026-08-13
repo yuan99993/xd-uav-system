@@ -2,6 +2,7 @@
 
 import base64
 import json
+import queue
 import unittest
 
 from xd_uav_sead.comms.communication_info import Message_ID, packet_processing
@@ -21,7 +22,10 @@ def _bridge(uav_id=1):
     bridge.uav_id = uav_id
     bridge.gcs_address = 0
     bridge._pub_telemetry = _Publisher()
+    bridge._pub_telemetry_raw = _Publisher()
     bridge._pub_u2u = _Publisher()
+    bridge.publish_json_telemetry = True
+    bridge._rx_queue = queue.Queue()
     return bridge
 
 
@@ -122,7 +126,13 @@ class RosBridgeProtocolTest(unittest.TestCase):
         self.bridge.send_data_async(0, b"gcs")
         self.bridge.send_data_async(2, b"peer")
         self.assertEqual(len(self.bridge._pub_telemetry.messages), 1)
+        self.assertEqual(self.bridge._pub_telemetry_raw.messages, [[103, 99, 115]])
         self.assertEqual(len(self.bridge._pub_u2u.messages), 1)
+
+    def test_raw_ros_command_is_not_reencoded(self):
+        message = type("RawMessage", (), {"data": [18, 1, 0, 255]})()
+        self.bridge._on_raw_command(message)
+        self.assertEqual(self.bridge.read_data().data, b"\x12\x01\x00\xff")
 
     def test_simple_strike_assignment_and_ack_round_trip(self):
         assignment = {

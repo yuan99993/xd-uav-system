@@ -285,8 +285,11 @@ rosservice call /uav1/control_manager/takeoff "altitude: 2.0"
 四旋翼原地降落会保持调用服务时的XY和yaw，并通过连续移动的高度参考限速下降；进入
 近地高度后使用更低的最终下降速度。返航降落会先以限速水平参考返回home，
 满足位置和速度容差后再执行相同的垂直下降。控制器不会把高度目标一步跳到地面。
-下降末段的参考会略低于本次降落目标的地面高度，避免飞机接地后重新回到悬停推力；
-位置、高度和垂直速度满足容差时，`ControlCommand.landing_touchdown`会通知管理器
+`landing/height_source`可设为`odom`或`distance_sensor`：前者保持相对Home地面的
+原有行为，后者仅在纵向使用下视`Range`估计当前表面高度、切换末段下降速度并判断
+触地，返航和保持的XY逻辑不变。测距模式下数据丢失会冻结Z参考，不会退回Home高度
+继续盲降。下降末段的参考会略低于本次降落目标的表面高度，避免飞机接地后重新回到
+悬停推力；高度和垂直速度满足容差时，`ControlCommand.landing_touchdown`会通知管理器
 执行停桨。
 
 降落触地判定前，控制管理器可通过内部`CANCEL_LANDING`命令撤销降落。撤销时不会

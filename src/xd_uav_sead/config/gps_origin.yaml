@@ -1,8 +1,0 @@
-# ENU ↔ LLA origins. Keys intentionally match Drone's private parameters.
-gps_origin_0_lat: 47.397742
-gps_origin_0_lon: 8.545594
-gps_origin_0_alt: 1418.0
-
-gps_origin_1_lat: 22.9105162191694
-gps_origin_1_lon: 120.312446057796
-gps_origin_1_alt: 1418.0

@@ -37,4 +37,10 @@ windows:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch
+  - fastlio:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav1
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav2
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav3
   

@@ -57,13 +57,16 @@ takeoff:
   velocity_tolerance: 0.15
 
 landing:
+  # odom: 使用相对起飞/Home地面的Z；distance_sensor: 使用下视AGL。distance_sensor模式需要在PX4启动的飞机中配置下视高度传感器，并启动mavros的distance_sensor插件。如果用odom模式飞机在高于起飞点的地方无法正常降落
+  height_source: distance_sensor
+  distance_sensor_timeout: 0.5
   descent_velocity: 0.35
   final_descent_velocity: 0.15
   slow_height: 0.7
   return_velocity: 1.0
   # land_home进入下降阶段前的水平位置、速度门槛；进入下降后，触地确认
   # 不再受水平漂移影响，避免机体已经接地却持续输出悬停推力。
-  position_tolerance: 0.10
+  position_tolerance: 0.15
   velocity_tolerance: 0.10
   touchdown_offset: 0.15
   touchdown_height_tolerance: 0.10
