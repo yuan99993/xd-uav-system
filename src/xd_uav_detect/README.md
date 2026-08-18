@@ -115,15 +115,16 @@ rqt_image_view /uav1/detect/debug/image
 
 ## 红色目标仿真检测
 
-红色识别脚本现在属于感知包，直接发布统一二维候选：
+红色识别属于仿真测试脚本，直接发布统一二维候选。脚本已与感知功能包解耦并支持多机：
 
 ```bash
-python3 /home/kzy/xd-uavsystem-test/src/xd_uav_detect/scripts/red_box_detector.py
+python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2
 ```
 
 脚本会把同一帧中所有满足面积和尺寸阈值的独立红色区域分别发布为候选框；
 `maximum_targets:=0` 表示不限制数量。脚本只负责检测，稳定目标 ID 由
 `xd_uav_track` 的多目标关联模块分配。
 
-默认输出 `/uav1/detect/input/detections_2d`。即使尚未填写雷达标定参数，融合节点仍会把
-二维检测透传到 `/uav1/track/detections`，供 `xd_uav_track` 使用。
+脚本会为每架指定飞机分别输出 `/<uav>/detect/input/detections_2d` 和
+`/<uav>/track/red_detector/debug_image`。即使尚未填写雷达标定参数，各机融合节点仍会把
+二维检测透传到 `/<uav>/track/detections`，供 `xd_uav_track` 使用。

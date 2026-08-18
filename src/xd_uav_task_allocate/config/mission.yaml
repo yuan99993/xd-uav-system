@@ -1,0 +1,88 @@
+# Mission-wide parameters. Aircraft membership is intentionally kept in the
+# separate scouts.yaml and workers.yaml files.
+runtime:
+  update_rate_hz: 5.0
+
+mission:
+  # xd_uav_world_tf_manager owns this frame. The configured main republished
+  # Odometry for every aircraft must already use this header.frame_id.
+  shared_frame: world
+
+# ControlState is retained only as an availability/health gate. Its position and
+# orientation fields are deliberately not read by this package.
+vehicle_health:
+  timeout_sec: 0.50
+  require_state_valid: true
+  require_localization_valid: true
+  require_odometry_fresh: true
+
+interfaces:
+  input:
+    search_areas: /task_allocate/search_areas
+  output:
+    global_targets: /task_allocate/global_targets
+    rescue_tasks: /task_allocate/rescue_tasks
+    mission_state: /task_allocate/mission_state
+  services:
+    # Call only after the configured scout aircraft have taken off and their
+    # world Odometry plus ControlState health are valid.
+    start: /task_allocate/start
+
+execution:
+  # true is the safe default: every configured scout must be healthy when the
+  # operator starts the mission. Set false to use minimum_ready_scouts instead.
+  require_all_scouts_ready: true
+  minimum_ready_scouts: 1
+  # Keep accepting final camera detections briefly after the last search waypoint.
+  completion_grace_sec: 2.0
+
+geolocation:
+  # World Odometry is buffered so detections use the aircraft world pose nearest
+  # to the image capture timestamp.
+  world_odometry_timeout_sec: 0.50
+  pose_history_sec: 5.0
+  maximum_pose_time_difference_sec: 0.15
+  tf_lookup_timeout_sec: 0.05
+
+search_area:
+  # SearchAreaArray.header.frame_id is mandatory. Regions in frames other than
+  # world are transformed into world before coverage generation. Coverage uses
+  # one constant world Z, so a strongly tilted source frame is rejected.
+  maximum_transformed_altitude_variation_m: 0.20
+
+target_registry:
+  # Red-target testing starts with one event site per 4 m XY cluster.
+  association_radius_m: 4.0
+  confirmation_hits: 5
+  confirmation_window_sec: 2.0
+  confirmation_minimum_span_sec: 0.25
+  # Two different scouts can confirm immediately without waiting for five hits.
+  confirmation_distinct_uavs: 2
+  # Applies only to unconfirmed candidates. Confirmed/task-linked targets stay
+  # available for spatial deduplication while they wait for a worker.
+  stale_timeout_sec: 15.0
+
+allocation:
+  worker_state_timeout_sec: 1.0
+  planner_failure_retry_sec: 5.0
+  worker_approach:
+    # The execution goal stops before the detected object and captures the
+    # worker's current world altitude when the assignment is made.
+    horizontal_standoff_m: 2.0
+  # Larger value is dispatched first. class_id 0 is the red-marker test target.
+  class_priorities:
+    "0": 10
+
+planner:
+  # Temporary clear-area validation backend. Change back to ego_swarm after the
+  # EGO adapter is ready; there is never an automatic fallback between them.
+  backend: direct_controller_test
+  direct_controller_test:
+    # Mandatory acknowledgement: this backend sends raw mission points to the
+    # controller and performs no point-cloud planning or obstacle avoidance.
+    acknowledge_no_obstacle_avoidance: true
+    goal_tolerance_m: 1.0
+    arrival_dwell_sec: 0.5
+    # Face the current waypoint in world ENU while flying each route segment.
+    face_goal: true
+    yaw_minimum_distance_m: 0.1

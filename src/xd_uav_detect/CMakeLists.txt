@@ -53,11 +53,6 @@ target_link_libraries(xd_uav_detect_node
   ${OpenCV_LIBRARIES}
 )
 
-catkin_install_python(PROGRAMS
-  scripts/red_box_detector.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-
 install(TARGETS xd_uav_detect_core xd_uav_detect_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

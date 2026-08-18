@@ -181,14 +181,14 @@ image_source: 'front_rgb', detector_name: 'example'}"
 仿真红色目标检测节点可直接运行，不需要单独的 launch：
 
 ```bash
-python3 src/xd_uav_detect/scripts/red_box_detector.py
+python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2
 ```
 
-脚本向 `/uav1/detect/input/detections_2d` 发布一个或多个候选；`xd_uav_detect` 负责雷达融合和转发
-到 `/uav1/track/detections`。参数可在命令行覆盖，例如：
+脚本分别向 `/<uav>/detect/input/detections_2d` 发布一个或多个候选；各机的
+`xd_uav_detect` 负责雷达融合和转发到 `/<uav>/track/detections`。参数可在命令行覆盖，例如：
 
 ```bash
-python3 src/xd_uav_detect/scripts/red_box_detector.py \
+python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2 \
   _minimum_area_px:=800 _saturation_min:=120 _publish_debug_image:=false
 ```
 

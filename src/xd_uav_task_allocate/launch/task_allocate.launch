@@ -1,0 +1,23 @@
+<launch>
+  <arg name="mission_config"
+       default="$(find xd_uav_task_allocate)/config/mission.yaml"/>
+  <arg name="scout_config"
+       default="$(find xd_uav_task_allocate)/config/scouts.yaml"/>
+  <arg name="worker_config"
+       default="$(find xd_uav_task_allocate)/config/workers.yaml"/>
+  <arg name="respawn" default="false"/>
+
+  <!-- This launch starts only mission allocation. Detection, estimators,
+       managers and controllers remain owned by their own packages. The active
+       execution backend is selected explicitly in mission.yaml. -->
+  <node pkg="xd_uav_task_allocate"
+        type="task_allocate_node.py"
+        name="task_allocate_coordinator"
+        output="screen"
+        respawn="$(arg respawn)"
+        clear_params="true">
+    <rosparam command="load" file="$(arg mission_config)"/>
+    <rosparam command="load" file="$(arg scout_config)"/>
+    <rosparam command="load" file="$(arg worker_config)"/>
+  </node>
+</launch>

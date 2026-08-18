@@ -1,0 +1,27 @@
+# Reconnaissance-aircraft configuration only.
+scouts:
+  uav1:
+    localization:
+      # Selected main estimator state, already expressed in world.
+      world_odometry_topic: /uav1/state_estimator/main/frames/world/odom
+    health:
+      # Used only for state_valid/localization_valid/odometry_fresh.
+      control_state_topic: /uav1/control_manager/state
+    topics:
+      detections: /uav1/track/detections
+      planner_goal: /uav1/planning/goal
+      controller_setpoint: /uav1/control/reference/setpoint
+      mission_path: /uav1/planning/mission_path
+      planner_status: /uav1/planning/status
+
+  uav2:
+    localization:
+      world_odometry_topic: /uav2/state_estimator/main/frames/world/odom
+    health:
+      control_state_topic: /uav2/control_manager/state
+    topics:
+      detections: /uav2/track/detections
+      planner_goal: /uav2/planning/goal
+      controller_setpoint: /uav2/control/reference/setpoint
+      mission_path: /uav2/planning/mission_path
+      planner_status: /uav2/planning/status

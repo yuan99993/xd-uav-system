@@ -18,7 +18,7 @@ windows:
   - px4_sitl:
       layout: tiled
       panes:
-        - waitForRos; roslaunch px4 mavros_posix_sitl_3_ns.launch
+        - waitForRos; roslaunch px4 mavros_posix_sitl_4_ns.launch
 
   - estimator:
       layout: tiled
@@ -26,6 +26,7 @@ windows:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav3
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav4
 
   - contoller:
       layout: tiled
@@ -33,14 +34,39 @@ windows:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav1
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav2
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav3
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav4
   - world_tf_manager:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch
-  - fastlio:
+  - task_allocator:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav1
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav2
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav3
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_allocate task_allocate.launch
+  - detect:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav2
+  - rviz:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; rosrun rviz rviz -d rviz_cfg/xd_uav.rviz
+  - takeoff:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'waitForTime; rosservice call /uav4/control_manager/takeoff "altitude: 4.0"; rosservice call /uav3/control_manager/takeoff "altitude: 4.0";rosservice call /uav2/control_manager/takeoff "altitude: 4.0"; rosservice call /uav1/control_manager/takeoff "altitude: 4.0"'
+  - land_home:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'waitForTime; rosservice call /uav4/control_manager/land_home; rosservice call /uav3/control_manager/land_home; rosservice call /uav2/control_manager/land_home; rosservice call /uav1/control_manager/land_home'
+
+  # - fastlio:
+  #     layout: tiled
+  #     panes:
+  #       - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav1
+  #       - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav2
+  #       - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav3
   

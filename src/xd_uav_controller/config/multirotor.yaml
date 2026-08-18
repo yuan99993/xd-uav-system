@@ -41,7 +41,7 @@ multirotor:
     maximum_throttle: 0.90
     maximum_tilt: 0.61
     maximum_body_rate: [3.0, 3.0, 2.0]
-    maximum_velocity_xy: 15.0
+    maximum_velocity_xy: 5.0
     maximum_velocity_z: 5.0
     maximum_acceleration_xy: 5
     maximum_acceleration_z: 4

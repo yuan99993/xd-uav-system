@@ -4,16 +4,19 @@ world:
 
   # 世界ENU切平面的WGS84基准点。
   datum:
-    latitude: 47.397800
-    longitude: 8.545594
-    altitude: 47.325902413
+    # latitude: 47.397800
+    # longitude: 8.545594
+    # altitude: 47.325902413
+    latitude: 47.3977421
+    longitude: 8.5455934
+    altitude: 535.3249164945362
 
   # 地理ENU平面在world坐标系中的位置和航向。
   position: [0.0, 0.0, 0.0]
   enu_to_world_yaw: 0.0
 
 # 在此增删飞机名称，控制哪些飞机接入world。
-vehicles: [uav1, uav2, uav3]
+vehicles: [uav1, uav2, uav3, uav4]
 
 vehicle_configs:
   uav1:
@@ -35,6 +38,13 @@ vehicle_configs:
     mode: gps_origin
     origin_topic: /uav3/mavros/global_position/gp_origin #这个话题提供的local_origin的经纬度位置
     local_origin_frame: uav3/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav4:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav4/mavros/global_position/gp_origin #这个话题提供的local_origin的经纬度位置
+    local_origin_frame: uav4/local_origin
     position_offset: [0.0, 0.0, 0.0]
     yaw_offset: 0.0
 
