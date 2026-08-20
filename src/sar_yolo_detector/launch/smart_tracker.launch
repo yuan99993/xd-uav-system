@@ -1,0 +1,47 @@
+<launch>
+  <arg name="config" default="$(find sar_yolo_detector)/config/smart_tracker.yaml" />
+  <arg name="input_image_topic" default="camera/image_raw" />
+  <arg name="tracked_detections_topic" default="sar_yolo_detector/smart/tracked_detections" />
+  <arg name="state_topic" default="sar_yolo_detector/smart/state" />
+  <arg name="annotated_image_topic" default="sar_yolo_detector/smart/annotated" />
+  <arg name="model_path" default="" />
+  <arg name="model_sha256" default="" />
+  <arg name="use_gpu" default="true" />
+  <arg name="publish_annotated_image" default="true" />
+  <!-- Leave empty to auto-discover .venv-sar-gpu in this catkin workspace. -->
+  <arg name="python_executable" default="" />
+  <arg name="mission_id" default="mission_unset" />
+  <arg name="uav_id" default="uav_unset" />
+  <arg name="session_uuid" default="$(anon smart_tracker_session)" />
+  <arg name="sensor_id" default="camera_primary" />
+  <arg name="profile" default="generic" />
+  <arg name="model_version" default="configured_model" />
+  <arg name="calibration_version" default="unversioned" />
+  <arg name="coordinate_contract" default="CAMERA_RAY" />
+
+  <node pkg="sar_yolo_detector" type="sar_yolo_smart_tracker"
+        name="sar_yolo_smart_tracker" output="screen" required="true">
+    <env name="SAR_YOLO_SMART_PYTHON" value="$(arg python_executable)" />
+    <rosparam command="load" file="$(arg config)" />
+    <param name="input_image_topic" value="$(arg input_image_topic)" />
+    <param name="tracked_detections_topic" value="$(arg tracked_detections_topic)" />
+    <param name="state_topic" value="$(arg state_topic)" />
+    <param name="annotated_image_topic" value="$(arg annotated_image_topic)" />
+    <param name="publish_annotated_image" value="$(arg publish_annotated_image)" />
+    <param name="mission_id" value="$(arg mission_id)" />
+    <param name="uav_id" value="$(arg uav_id)" />
+    <param name="session_uuid" value="$(arg session_uuid)" />
+    <param name="sensor_id" value="$(arg sensor_id)" />
+    <param name="profile" value="$(arg profile)" />
+    <param name="model_version" value="$(arg model_version)" />
+    <param name="calibration_version" value="$(arg calibration_version)" />
+    <param name="coordinate_contract" value="$(arg coordinate_contract)" />
+    <param name="SmartTracker/SMART_TRACKER_USE_GPU" value="$(arg use_gpu)" />
+    <param if="$(eval arg('model_path') != '')"
+           name="SmartTracker/SMART_TRACKER_GPU_MODEL_PATH" value="$(arg model_path)" />
+    <param if="$(eval arg('model_path') != '')"
+           name="SmartTracker/SMART_TRACKER_CPU_MODEL_PATH" value="$(arg model_path)" />
+    <param if="$(eval arg('model_sha256') != '')"
+           name="SmartTracker/SMART_TRACKER_MODEL_SHA256" value="$(arg model_sha256)" />
+  </node>
+</launch>

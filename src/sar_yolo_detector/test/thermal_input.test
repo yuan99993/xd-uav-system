@@ -1,0 +1,18 @@
+<launch>
+  <node pkg="sar_yolo_detector" type="sar_yolo_detector_node"
+        name="sar_thermal_input_test" output="screen" required="true">
+    <rosparam command="load" file="$(find sar_yolo_detector)/config/detector.yaml" />
+    <param name="inference_backend" value="test" />
+    <param name="input_image_topic" value="/sar_thermal_test/image" />
+    <param name="detections_topic" value="/sar_thermal_test/detections" />
+    <param name="thermal_info_topic" value="/sar_thermal_test/info" />
+    <param name="input_mode" value="thermal_auto" />
+    <param name="thermal_bad_pixel_correction" value="true" />
+    <param name="maximum_capture_age_sec" value="2.0" />
+    <param name="mission_id" value="test_mission" />
+    <param name="uav_id" value="uav_thermal" />
+    <rosparam param="test_detections">[[320.0, 320.0, 20.0, 30.0, 0.9, 0]]</rosparam>
+  </node>
+  <test test-name="thermal_input" pkg="sar_yolo_detector"
+        type="test_thermal_input.py" time-limit="30" />
+</launch>

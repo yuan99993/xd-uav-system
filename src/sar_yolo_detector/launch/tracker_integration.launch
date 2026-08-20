@@ -1,0 +1,55 @@
+<launch>
+  <!-- Optional integration for this workspace. The detector itself has no
+       build- or run-time dependency on tracker or pod packages. -->
+  <arg name="model_path" default="" />
+  <arg name="config" default="$(find sar_yolo_detector)/config/detector.yaml" />
+  <arg name="image_topic" default="camera/image_raw" />
+  <arg name="camera_info_topic" default="camera/camera_info" />
+  <arg name="frame_width" default="640" />
+  <arg name="frame_height" default="480" />
+  <arg name="image_source" default="eo" />
+  <arg name="use_camera_info" default="true" />
+  <arg name="use_dynamic_camera_tf" default="true" />
+  <arg name="id_loss_tolerance_frames" default="5" />
+  <arg name="oosm_history_duration_sec" default="0.5" />
+  <arg name="oosm_max_snapshots" default="40" />
+  <arg name="inference_backend" default="opencv_dnn" />
+  <arg name="opencv_target" default="opencv_cpu" />
+  <arg name="engine_path" default="" />
+  <arg name="network_config_path" default="" />
+  <arg name="roi_recheck_enabled" default="false" />
+  <arg name="roi_recheck_interval_sec" default="0.4" />
+  <arg name="roi_recheck_max_rate_hz" default="2.0" />
+  <arg name="maximum_capture_age_sec" default="0.5" />
+
+  <include file="$(find sar_yolo_detector)/launch/detector.launch">
+    <arg name="config" value="$(arg config)" />
+    <arg name="model_path" value="$(arg model_path)" />
+    <arg name="input_image_topic" value="$(arg image_topic)" />
+    <arg name="detections_topic" value="sar_yolo_detector/detections" />
+    <arg name="inference_backend" value="$(arg inference_backend)" />
+    <arg name="opencv_target" value="$(arg opencv_target)" />
+    <arg name="engine_path" value="$(arg engine_path)" />
+    <arg name="network_config_path" value="$(arg network_config_path)" />
+    <arg name="roi_recheck_enabled" value="$(arg roi_recheck_enabled)" />
+    <arg name="roi_recheck_interval_sec" value="$(arg roi_recheck_interval_sec)" />
+    <arg name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
+  </include>
+
+  <include file="$(find tracker)/launch/tracker.launch">
+    <arg name="frame_width" value="$(arg frame_width)" />
+    <arg name="frame_height" value="$(arg frame_height)" />
+    <arg name="image_source" value="$(arg image_source)" />
+    <arg name="use_camera_info" value="$(arg use_camera_info)" />
+    <arg name="use_dynamic_camera_tf" value="$(arg use_dynamic_camera_tf)" />
+    <arg name="id_loss_tolerance_frames" value="$(arg id_loss_tolerance_frames)" />
+    <arg name="oosm_history_duration_sec" value="$(arg oosm_history_duration_sec)" />
+    <arg name="oosm_max_snapshots" value="$(arg oosm_max_snapshots)" />
+    <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+    <arg name="vision_detections_enabled" value="true" />
+    <arg name="vision_detections_topic" value="sar_yolo_detector/detections" />
+    <arg name="vision_detector_name" value="sar_yolo_detector" />
+    <arg name="roi_recheck_enabled" value="$(arg roi_recheck_enabled)" />
+    <arg name="roi_recheck_max_rate_hz" value="$(arg roi_recheck_max_rate_hz)" />
+  </include>
+</launch>

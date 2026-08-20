@@ -1,0 +1,71 @@
+<launch>
+  <!-- Run once on each work aircraft. It receives planner assignments and
+       forwards only validated assignments to that aircraft's local executor. -->
+  <arg name="mission_id" default="mission_unset" />
+  <arg name="worker_uav_id" default="worker_01" />
+  <arg name="session_uuid" default="$(anon worker_gateway_session)" />
+  <arg name="task_frame" default="map" />
+  <arg name="authorization_key_id" default="decision_primary" />
+  <arg name="authorization_key_file" default="" />
+  <arg name="authorized_decision_id" default="decision_primary" />
+  <arg name="geo_reference_validated" default="false" />
+  <arg name="geo_coordinate_type" default="LOCAL_ENU" />
+  <arg name="geo_epsg" default="" />
+  <arg name="geo_map_uuid" default="map_unset" />
+  <arg name="geo_origin_latitude_deg" default="nan" />
+  <arg name="geo_origin_longitude_deg" default="nan" />
+  <arg name="geo_origin_altitude_m" default="nan" />
+  <arg name="geo_vertical_datum" default="WGS84_ELLIPSOID" />
+  <arg name="geo_geoid_model" default="" />
+  <arg name="geo_transform_version" default="unversioned" />
+  <arg name="require_message_authentication" default="true" />
+  <arg name="require_operator_authorization" default="true" />
+  <arg name="require_known_observation" default="true" />
+  <arg name="require_geofence_id" default="true" />
+  <arg name="require_geofence_version" default="true" />
+  <arg name="minimum_executor_battery_percent" default="20.0" />
+  <arg name="state_database_path" default="" />
+
+  <group ns="$(arg worker_uav_id)">
+    <include file="$(find sar_yolo_detector)/launch/decision_bridge.launch">
+      <arg name="mission_id" value="$(arg mission_id)" />
+      <arg name="uav_id" value="$(arg worker_uav_id)" />
+      <arg name="session_uuid" value="$(arg session_uuid)" />
+      <arg name="bridge_role" value="worker" />
+      <arg name="coordinate_contract"
+           value="$(eval 'LOCAL_ENU:' + arg('task_frame'))" />
+      <arg name="required_target_frame" value="$(arg task_frame)" />
+      <arg name="authorization_key_id" value="$(arg authorization_key_id)" />
+      <arg name="authorization_key_file"
+           value="$(arg authorization_key_file)" />
+      <arg name="authorized_decision_id"
+           value="$(arg authorized_decision_id)" />
+      <arg name="require_message_authentication"
+           value="$(arg require_message_authentication)" />
+      <arg name="require_operator_authorization"
+           value="$(arg require_operator_authorization)" />
+      <arg name="require_known_observation"
+           value="$(arg require_known_observation)" />
+      <arg name="require_geofence_id" value="$(arg require_geofence_id)" />
+      <arg name="require_geofence_version"
+           value="$(arg require_geofence_version)" />
+      <arg name="minimum_executor_battery_percent"
+           value="$(arg minimum_executor_battery_percent)" />
+      <arg name="geo_reference_validated"
+           value="$(arg geo_reference_validated)" />
+      <arg name="geo_coordinate_type" value="$(arg geo_coordinate_type)" />
+      <arg name="geo_epsg" value="$(arg geo_epsg)" />
+      <arg name="geo_map_uuid" value="$(arg geo_map_uuid)" />
+      <arg name="geo_origin_latitude_deg"
+           value="$(arg geo_origin_latitude_deg)" />
+      <arg name="geo_origin_longitude_deg"
+           value="$(arg geo_origin_longitude_deg)" />
+      <arg name="geo_origin_altitude_m"
+           value="$(arg geo_origin_altitude_m)" />
+      <arg name="geo_vertical_datum" value="$(arg geo_vertical_datum)" />
+      <arg name="geo_geoid_model" value="$(arg geo_geoid_model)" />
+      <arg name="geo_transform_version" value="$(arg geo_transform_version)" />
+      <arg name="state_database_path" value="$(arg state_database_path)" />
+    </include>
+  </group>
+</launch>

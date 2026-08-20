@@ -1,0 +1,17 @@
+<launch>
+  <node pkg="sar_yolo_detector" type="sar_task_point_generator"
+        name="sar_task_gate_test" output="screen" required="true">
+    <param name="input_detections_topic" value="/sar_task_gate_test/detections" />
+    <param name="task_candidates_topic" value="/sar_task_gate_test/candidates" />
+    <param name="localization_mode" value="bearing_only" />
+    <param name="input_max_age_sec" value="5.0" />
+    <param name="task_generation_enabled" value="true" />
+    <param name="model_validated" value="false" />
+    <param name="allow_experimental_model" value="false" />
+    <param name="snapshot_period_sec" value="0.2" />
+    <rosparam param="task_class_ids">[0]</rosparam>
+    <rosparam param="class_names">[person]</rosparam>
+  </node>
+  <test test-name="task_generation_gate" pkg="sar_yolo_detector"
+        type="test_task_generation_gate.py" time-limit="30" />
+</launch>

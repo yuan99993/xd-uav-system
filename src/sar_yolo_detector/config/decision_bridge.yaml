@@ -1,0 +1,36 @@
+# Safety defaults for the perception <-> decision <-> executor boundary.
+# combined keeps the historical bidirectional behavior. Scout launch files
+# override this to scout; worker aircraft override it to worker.
+bridge_role: combined                 # scout | worker | combined
+require_operator_authorization: true
+require_known_observation: true
+allow_topic_commands: false
+require_message_authentication: true
+require_geofence_id: true
+require_geofence_version: true
+maximum_assignment_age_sec: 5.0
+maximum_authorization_age_sec: 10.0
+maximum_future_skew_sec: 0.5
+maximum_candidate_age_sec: 5.0
+executor_heartbeat_timeout_sec: 2.5
+executor_ack_timeout_sec: 2.0
+maximum_task_duration_sec: 86400.0
+maximum_area_m2: 100000000.0
+minimum_executor_battery_percent: 20.0
+heartbeat_rate_hz: 1.0
+
+# All endpoints are relative so one launch can be placed under /uav_01, etc.
+outbound_candidates_topic: mission_interface/perception_candidates
+inbound_assignment_topic: mission_interface/task_assignments
+inbound_area_assignment_topic: mission_interface/area_task_assignments
+outbound_status_topic: mission_interface/task_status
+heartbeat_topic: mission_interface/heartbeat
+executor_assignment_topic: mission_interface/executor_assignments
+executor_area_assignment_topic: mission_interface/executor_area_assignments
+executor_status_topic: mission_interface/executor_status
+executor_heartbeat_topic: mission_interface/executor_heartbeat
+submit_assignment_service: mission_interface/submit_task
+submit_area_assignment_service: mission_interface/submit_area_task
+snapshot_service: mission_interface/get_perception_snapshot
+statuses_service: mission_interface/get_task_statuses
+evidence_service: mission_interface/get_evidence

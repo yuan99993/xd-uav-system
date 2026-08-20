@@ -1,0 +1,15 @@
+# Select by stable/current target ID, image point, or normalized ROI.
+bool clear_selection
+bool use_target_id
+int64 target_id
+bool use_normalized_point
+float32 point_x
+float32 point_y
+bool use_normalized_roi
+float32[4] normalized_roi
+---
+bool success
+string message
+bool tracking_active
+int64 selected_target_id
+bool measurement_current

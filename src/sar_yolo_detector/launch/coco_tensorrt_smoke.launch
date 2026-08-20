@@ -1,0 +1,41 @@
+<launch>
+  <!--
+    GPU deployment smoke test:
+      still COCO image -> TensorRT FP16 engine -> Detection2DArray
+
+    The YOLOv5 export used by this workspace exposes the decoded `output`
+    tensor plus three intermediate heads.  Only `output` is valid input to
+    the generic YOLO postprocessor, so it is selected explicitly here.
+  -->
+  <arg name="image_path" default="" />
+  <arg name="engine_path" default="" />
+  <arg name="model_path" default="" />
+  <arg name="image_topic" default="sar_yolo_trt_demo/camera/image_raw" />
+  <arg name="publish_rate_hz" default="5.0" />
+
+  <!-- This launch is a standalone still-image smoke test, so it must not
+       inherit a stale /use_sim_time=true after a previously stopped SITL. -->
+  <param name="/use_sim_time" value="false" />
+
+  <node pkg="sar_yolo_detector" type="sar_yolo_image_replay"
+        name="sar_yolo_image_replay" output="screen" required="true">
+    <param name="image_path" value="$(arg image_path)" />
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="publish_rate_hz" value="$(arg publish_rate_hz)" />
+  </node>
+
+  <node pkg="sar_yolo_detector" type="sar_yolo_detector_node"
+        name="sar_yolo_detector" output="screen" required="true">
+    <rosparam command="load" file="$(find sar_yolo_detector)/config/detector.yaml" />
+    <param name="inference_backend" value="tensorrt" />
+    <param name="engine_path" value="$(arg engine_path)" />
+    <!-- Provenance only for an engine backend; the engine itself is loaded. -->
+    <param name="model_path" value="$(arg model_path)" />
+    <param name="input_image_topic" value="$(arg image_topic)" />
+    <param name="model_layout" value="yolov5" />
+    <param name="input_width" value="640" />
+    <param name="input_height" value="640" />
+    <param name="maximum_capture_age_sec" value="1.0" />
+    <rosparam param="tensorrt_output_binding_names">[output]</rosparam>
+  </node>
+</launch>

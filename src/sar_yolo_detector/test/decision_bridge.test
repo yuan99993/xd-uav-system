@@ -1,0 +1,23 @@
+<launch>
+  <group ns="uav_01">
+    <include file="$(find sar_yolo_detector)/launch/decision_bridge.launch">
+      <arg name="mission_id" value="mission_test" />
+      <arg name="uav_id" value="uav_01" />
+      <arg name="session_uuid" value="session_test" />
+      <arg name="source_task_candidates_topic" value="test/task_candidates" />
+      <arg name="coordinate_contract" value="LOCAL_ENU:map" />
+      <arg name="required_target_frame" value="map" />
+      <arg name="geo_reference_validated" value="true" />
+      <arg name="geo_map_uuid" value="mission-test-map" />
+      <arg name="geo_origin_latitude_deg" value="31.2304" />
+      <arg name="geo_origin_longitude_deg" value="121.4737" />
+      <arg name="geo_origin_altitude_m" value="5.0" />
+      <arg name="geo_transform_version" value="geo-test-v1" />
+      <arg name="require_message_authentication" value="false" />
+      <arg name="state_database_path" value=":memory:" />
+    </include>
+  </group>
+
+  <test test-name="decision_bridge" pkg="sar_yolo_detector"
+        type="test_decision_bridge.py" time-limit="40" />
+</launch>

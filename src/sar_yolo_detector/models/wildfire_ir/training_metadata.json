@@ -1,0 +1,20 @@
+{
+  "profile": "wildfire_fireman_ir",
+  "class_names": [
+    "fire_region",
+    "smoke_region",
+    "building"
+  ],
+  "updated_at_utc": "2026-08-16T06:44:50.271202+00:00",
+  "checkpoint": "/home/promise/mrs_test/runs/sar_yolo/fireman_ir_thermal_50ep/weights/best.pt",
+  "onnx": "/home/promise/mrs_test/runs/sar_yolo/fireman_ir_thermal_50ep/weights/best.onnx",
+  "engine_updated": true,
+  "engine": "/home/promise/mrs_test/runs/sar_yolo/fireman_ir_thermal_50ep/weights/best.engine",
+  "validation": {
+    "metrics/precision(B)": 0.9948820789557222,
+    "metrics/recall(B)": 0.27796271637816244,
+    "metrics/mAP50(B)": 0.289175897218993,
+    "metrics/mAP50-95(B)": 0.2243879357382451,
+    "fitness": 0.2243879357382451
+  }
+}

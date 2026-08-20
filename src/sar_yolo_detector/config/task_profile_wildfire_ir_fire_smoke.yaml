@@ -1,0 +1,22 @@
+# Thermal fire/smoke task policy. Fire can become a geometrically localised
+# task candidate after confirmation. Smoke remains a diagnostic/reinspection
+# cue: it must not be ground-projected as an autonomous navigation goal.
+input_detections_topic: sar_yolo_detector/wildfire_ir_fire_smoke/detections
+camera_info_topic: camera/ir/camera_info
+task_candidates_topic: sar_yolo_detector/wildfire_ir_fire_smoke/task_candidates
+task_pose_topic: sar_yolo_detector/wildfire_ir_fire_smoke/task_point
+sensor_id: wildfire_ir_fire_smoke_primary
+task_frame: map
+localization_mode: bearing_only
+ground_plane_z: 0.0
+task_class_ids: [0]
+class_names: [fire_region, smoke_region]
+global_semantic_ids: [2, 3]
+class_anchor_y_fractions: [0.75, 0.5]
+task_generation_enabled: false
+model_validated: false
+allow_experimental_model: false
+profile: wildfire_ir_fire_smoke
+model_version: fireman_thermal_fire_smoke_v2_pending_validation
+model_sha256: ""
+calibration_version: unversioned

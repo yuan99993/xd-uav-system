@@ -1,0 +1,10 @@
+# Hot-swap one trusted local Ultralytics .pt model.
+string model_path
+string device
+string model_sha256
+---
+bool success
+string message
+string effective_device
+string effective_model_path
+uint32 class_count
