@@ -1,0 +1,26 @@
+std_msgs/Header header
+sar_yolo_detector/MissionIdentity aircraft
+string interface_version
+string coordinate_contract
+sar_yolo_detector/GeoReference geo_reference
+
+uint8 STARTING=0
+uint8 RECOVERING=1
+uint8 READY=2
+uint8 DEGRADED=3
+uint8 bridge_state
+
+bool ready_for_assignments
+string not_ready_reason
+uint64 heartbeat_sequence
+uint64 last_candidate_sequence
+uint64 last_assignment_sequence
+uint64 last_status_sequence
+uint32 active_assignment_count
+string current_assignment_uuid
+time last_candidate_at
+time last_executor_heartbeat_at
+string executor_id
+string executor_session_uuid
+uint32 protocol_major
+uint32 protocol_minor

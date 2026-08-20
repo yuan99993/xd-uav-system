@@ -35,7 +35,7 @@
 #include <sar_yolo_detector/FloodRegion.h>
 #include <sar_yolo_detector/FloodRegionArray.h>
 #include <sar_yolo_detector/GetFloodRegions.h>
-#include <sar_mission_interfaces/GetEvidenceCrop.h>
+#include <sar_yolo_detector/GetEvidenceCrop.h>
 #include <sar_yolo_detector/TerrainGrid.h>
 #include <sar_yolo_detector/runtime_identity.hpp>
 
@@ -415,8 +415,8 @@ class FloodRegionExtractor {
   }
 
   bool HandleEvidenceService(
-      sar_mission_interfaces::GetEvidenceCrop::Request& request,
-      sar_mission_interfaces::GetEvidenceCrop::Response& response) {
+      sar_yolo_detector::GetEvidenceCrop::Request& request,
+      sar_yolo_detector::GetEvidenceCrop::Response& response) {
     response.available = false;
     if (request.source.mission_id != identity_.mission_id ||
         request.source.uav_id != identity_.uav_id ||

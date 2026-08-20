@@ -65,8 +65,8 @@ python3 src/sar_yolo_detector/training/train_profile.py \
   --device 0 --epochs 100
 ```
 
-For the current workspace's low-load validation, the native HIT-UAV archive was
-converted to `/home/promise/mrs_test/data/sar_yolo_detector/hit_uav/converted`
+For the low-load validation, the native HIT-UAV archive was converted to a
+workspace-local directory such as `/data/sar_yolo/hit_uav/converted`
 (2029 train / 290 validation images), then trained with `--batch 1 --imgsz 640
 --epochs 1`. The resulting TensorRT engine was built with the host TensorRT
 10.1 `trtexec`, rather than installing a second pip TensorRT runtime. Future
@@ -80,13 +80,37 @@ records every file's SHA-256; startup rejects a digest mismatch.
 label, skipped, malformed, and invalid-box counts. Do not train if the report
 has unexpected zero class counts.
 
-The current workspace has a CUDA/TensorRT-enabled GPU environment at
-`/home/promise/mrs_test/.venv-sar-gpu`. A 4 GB GPU should start with
+Use a CUDA/TensorRT-enabled virtual environment created on the training host.
+A 4 GB GPU should start with
 `--batch 1 --imgsz 640`; use short smoke runs before increasing epochs or
 resolution. Full three-profile training should be scheduled separately to
 avoid exhausting GPU memory.
 
-## 4. Wildfire IR: FireMan thermal v2 (recommended)
+## 4. FloodNet SegFormer-B0
+
+FloodNet training is kept with the unified package under
+`training/floodnet/`. Install its optional dependencies separately:
+
+```bash
+python3 -m venv .venv-sar-flood
+source .venv-sar-flood/bin/activate
+pip install -r src/sar_yolo_detector/training/floodnet/requirements.txt
+```
+
+Before training, edit the `dataset.archive`, `dataset.extraction_root` and
+`output.root` values in the selected YAML profile to paths on the current
+machine. The trainer does not assume a fixed catkin workspace location:
+
+```bash
+python3 src/sar_yolo_detector/training/floodnet/train_floodnet_segformer.py \
+  --config src/sar_yolo_detector/training/floodnet/floodnet_segformer_b0_pilot_10e.yaml
+```
+
+The packaged FloodNet artifacts and the pilot assessment are documented in
+`models/floodnet_segformer_b0/README.md` and
+`training/floodnet/FLOODNET_TRAINING_RESULTS.md`.
+
+## 5. Wildfire IR: FireMan thermal v2 (recommended)
 
 The original 50-epoch FireMan run is a three-class conversion baseline only.
 Its frames were not re-split by flight group, it used colour HSV augmentation
@@ -169,7 +193,7 @@ off by default; after explicit mission enablement only `fire_region` may create
 a candidate, while `smoke_region` stays visible to the operator/decision layer
 but is never falsely ground-projected as a navigation target.
 
-## 5. Wildfire IR: legacy FireMan Multiclass baseline
+## 6. Wildfire IR: legacy FireMan Multiclass baseline
 
 The FireMan archive contains RGB and thermal CVAT exports.  This legacy command
 reproduces the original three-class baseline only.  It is not the preferred

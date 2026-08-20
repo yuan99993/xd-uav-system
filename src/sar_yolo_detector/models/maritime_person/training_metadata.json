@@ -8,10 +8,10 @@
     "buoy"
   ],
   "updated_at_utc": "2026-08-14T16:47:57.907981+00:00",
-  "checkpoint": "/home/promise/mrs_test/runs/sar_yolo/seadronessee_maritime_10ep/weights/best.pt",
-  "onnx": "/home/promise/mrs_test/runs/sar_yolo/seadronessee_maritime_10ep/weights/best.onnx",
+  "checkpoint": "runs/seadronessee_maritime_10ep/weights/best.pt",
+  "onnx": "runs/seadronessee_maritime_10ep/weights/best.onnx",
   "engine_updated": true,
-  "engine": "/home/promise/mrs_test/runs/sar_yolo/seadronessee_maritime_10ep/weights/best.engine",
+  "engine": "runs/seadronessee_maritime_10ep/weights/best.engine",
   "validation": {
     "metrics/precision(B)": 0.8323922533143371,
     "metrics/recall(B)": 0.5786599990530614,

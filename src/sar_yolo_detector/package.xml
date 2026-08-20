@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>sar_yolo_detector</name>
-  <version>0.3.0</version>
+  <version>0.4.0</version>
   <description>
     Scout-side PixEagle SmartTracker and search-and-rescue perception frontend.
     Stable tracked detections are localized into planner-facing task candidates;
@@ -25,7 +25,6 @@
   <depend>libsqlite3-dev</depend>
   <depend>roscpp</depend>
   <depend>rospy</depend>
-  <depend>sar_mission_interfaces</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>tf2</depend>

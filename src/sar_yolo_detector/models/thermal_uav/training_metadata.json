@@ -7,10 +7,10 @@
     "other_vehicle"
   ],
   "updated_at_utc": "2026-08-15T05:34:23.451873+00:00",
-  "checkpoint": "/home/promise/mrs_test/runs/sar_yolo/hit_uav_thermal_30ep/weights/best.pt",
-  "onnx": "/home/promise/mrs_test/runs/sar_yolo/hit_uav_thermal_30ep/weights/best.onnx",
+  "checkpoint": "runs/hit_uav_thermal_30ep/weights/best.pt",
+  "onnx": "runs/hit_uav_thermal_30ep/weights/best.onnx",
   "engine_updated": true,
-  "engine": "/home/promise/mrs_test/runs/sar_yolo/hit_uav_thermal_30ep/weights/best.engine",
+  "engine": "runs/hit_uav_thermal_30ep/weights/best.engine",
   "validation": {
     "metrics/precision(B)": 0.6966965613729679,
     "metrics/recall(B)": 0.5976561051544046,

@@ -10,7 +10,6 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   roscpp
   rospy
-  sar_mission_interfaces
   sensor_msgs
   std_msgs
   tf2
@@ -60,6 +59,14 @@ add_message_files(
   FILES
   FloodRegion.msg
   FloodRegionArray.msg
+  AreaTaskAssignment.msg
+  EvidenceReference.msg
+  ExecutorCapabilities.msg
+  ExecutorHeartbeat.msg
+  GeoReference.msg
+  MissionIdentity.msg
+  PerceptionCandidate.msg
+  PerceptionCandidateArray.msg
   FusionDetectionProvenance.msg
   FusionProvenanceArray.msg
   PerceptionIdentity.msg
@@ -68,15 +75,23 @@ add_message_files(
   TaskCandidateArray.msg
   TerrainGrid.msg
   ThermalImageInfo.msg
+  TaskAssignment.msg
+  TaskExecutionStatus.msg
   TrackedDetection2D.msg
   TrackedDetection2DArray.msg
+  UavDecisionHeartbeat.msg
 )
 
 add_service_files(
   FILES
   GetFloodRegions.srv
   GetTaskCandidates.srv
+  GetEvidenceCrop.srv
+  GetPerceptionSnapshot.srv
+  GetTaskStatuses.srv
   SelectSmartTrack.srv
+  SubmitAreaTaskAssignment.srv
+  SubmitTaskAssignment.srv
   SwitchSmartTrackerModel.srv
 )
 
@@ -100,7 +115,6 @@ catkin_package(
     message_runtime
     roscpp
     rospy
-    sar_mission_interfaces
     sensor_msgs
     std_msgs
     tf2
@@ -282,11 +296,13 @@ install(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 catkin_install_python(PROGRAMS
+  examples/sign_and_submit_task.py
   test/test_detector_interfaces.py
   test/test_decision_bridge.py
   test/test_decision_bridge_scout.py
   test/test_flood_region_extractor.py
   test/test_late_fusion.py
+  test/test_interface_v1_md5.py
   test/test_scout_aircraft_task_chain.py
   test/test_task_point_bearing_only.py
   test/test_task_generation_gate.py
@@ -299,6 +315,7 @@ if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   catkin_add_nosetests(test/test_pixeagle_portable.py)
   catkin_add_nosetests(test/test_smart_tracker_image_codec.py)
+  catkin_add_nosetests(test/test_interface_v1_md5.py)
   catkin_add_gtest(test_yolo_postprocessor
     test/test_yolo_postprocessor.cpp
   )

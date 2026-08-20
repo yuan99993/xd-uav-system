@@ -7,7 +7,7 @@ import unittest
 import rospy
 import rostest
 
-from sar_mission_interfaces.msg import (
+from sar_yolo_detector.msg import (
     ExecutorHeartbeat,
     GeoReference,
     MissionIdentity,
@@ -15,7 +15,7 @@ from sar_mission_interfaces.msg import (
     TaskExecutionStatus,
     UavDecisionHeartbeat,
 )
-from sar_mission_interfaces.srv import (
+from sar_yolo_detector.srv import (
     GetPerceptionSnapshot,
     GetTaskStatuses,
     SubmitTaskAssignment,
@@ -43,7 +43,7 @@ class DecisionBridgeTest(unittest.TestCase):
             self._on_status,
             queue_size=20,
         )
-        from sar_mission_interfaces.msg import PerceptionCandidateArray
+        from sar_yolo_detector.msg import PerceptionCandidateArray
 
         self.candidate_subscriber = rospy.Subscriber(
             "/uav_01/mission_interface/perception_candidates",

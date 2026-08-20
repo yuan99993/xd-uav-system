@@ -8,7 +8,7 @@ PixEagle SmartTracker**：相机图像经 YOLO 识别和稳定跟踪后，目标
 包内按 `scout`（侦察感知上行）和 `worker`（规划任务下行）隔离职责。SmartTracker
 及任务候选节点不发布飞控命令；工作机网关只把通过身份、地理参考、鉴权、能力和
 状态检查的任务交给本机执行器。核心接口不依赖 Pod、Follower、MRS 或 PX4，因而可由
-MRS 执行器在边界之外接入。`sar_mission_interfaces` 是规划电脑和各飞机之间的稳定
+MRS 执行器在边界之外接入。`sar_yolo_detector` 是规划电脑和各飞机之间的稳定
 ROS 消息合同。
 
 ## 支持范围
@@ -111,9 +111,9 @@ roslaunch sar_yolo_detector floodnet_profile.launch
 `models/floodnet_segformer_b0/floodnet_segformer_b0_pilot_10e_best.pt`、对应
 ONNX 和 TensorRT 10.1 FP16 engine；输入固定为 `1×3×1024×1024`，engine 输出
 十类 `1×10×256×256` logits。C++ 推理节点完成 ImageNet 预处理、FP16/FP32
-输出解码、argmax 和掩膜回缩，并保留采集时间戳。这样上层规划包只需依赖 `sar_yolo_detector`，无需再
-寻找独立的洪水 ROS 包。原 `sar_flood_perception` 包暂时保留为兼容副本，新的
-统一入口不再依赖它。
+输出解码、argmax 和掩膜回缩，并保留采集时间戳。这样上层规划包只需依赖
+`sar_yolo_detector`。本目录已经包含 FloodNet 的消息、推理节点、区域提取器、启动
+文件、训练脚本、配置和模型文件；移植时不需要再复制另一个洪水感知 ROS 包。
 
 Flood 区域提取器用采集时刻的 `CameraInfo`、相机/云台 TF 与 `TerrainGrid` DEM/DSM
 把简化后的图像轮廓投影为世界坐标多边形，同时发布质心、实际面积、投影覆盖率和
@@ -127,12 +127,12 @@ FireMan 模型的 50 epoch 结果及类别限制记录在
 [`models/wildfire_ir/README.md`](models/wildfire_ir/README.md)；它目前是
 山火热红外的数据转换基线，不能替代包含烟雾和建筑验证样本的生产训练。
 
-HIT-UAV smoke 训练使用 YOLO11n、640 输入、batch=1、1 epoch，产物位于：
+HIT-UAV smoke 训练使用 YOLO11n、640 输入、batch=1、1 epoch，原始训练产物示例位于：
 
 ```text
-/home/promise/mrs_test/runs/sar_yolo/hit_uav_smoke/weights/best.pt
-/home/promise/mrs_test/runs/sar_yolo/hit_uav_smoke/weights/best.onnx
-/home/promise/mrs_test/runs/sar_yolo/hit_uav_smoke/engine/hit_uav_yolo11n_fp16_sm86_trt10.engine
+/data/sar_yolo/runs/hit_uav_smoke/weights/best.pt
+/data/sar_yolo/runs/hit_uav_smoke/weights/best.onnx
+/data/sar_yolo/runs/hit_uav_smoke/engine/hit_uav_yolo11n_fp16_sm86_trt10.engine
 ```
 
 部署所需文件已同步收进包内的
@@ -338,9 +338,10 @@ TF、射线近似水平，或交点超出距离范围时，候选仍可上报，
 
 本包提供候选上行、任务下行和状态回传的通信合同，**不包含全局任务分配或路径规划
 算法**。规划功能包订阅所有侦察机的候选，完成合并、约束检查和工作机选择，然后调用
-目标工作机命名空间下的提交服务。决策端开发者只需复制
-独立目录 [`sar_mission_interfaces`](../sar_mission_interfaces/README.md) 到自己的
-catkin 工作区，无需复制 YOLO、TensorRT、OpenCV、模型或本仓库的飞控包。桥接接口
+目标工作机命名空间下的提交服务。决策端开发者只需将整个 `sar_yolo_detector` 目录
+复制到自己的 catkin 工作区 `src/` 即可；不再需要复制原有的接口包或洪水感知包。
+运行时只要求目标电脑安装 ROS Noetic、catkin、OpenCV、
+OpenSSL 和 SQLite；TensorRT、CUDA 与 Python SmartTracker 依赖按需安装。桥接接口
 统一位于 UAV 命名空间下：
 
 | 方向 | 默认端点 | 消息/服务 |
@@ -378,8 +379,8 @@ catkin 工作区，无需复制 YOLO、TensorRT、OpenCV、模型或本仓库的
 
 默认要求 HMAC-SHA256：密钥 ID 与 `decision_id` 固定绑定，nonce 持久去重，密钥文件必须
 仅 owner 可读写。签名算法与可直接复用的发送脚本见
-[`sar_mission_interfaces/README.md`](../sar_mission_interfaces/README.md) 和
-[`sign_and_submit_task.py`](../sar_mission_interfaces/examples/sign_and_submit_task.py)。
+[`sar_yolo_detector/README.md`](../sar_yolo_detector/README.md) 和
+[`sign_and_submit_task.py`](../sar_yolo_detector/examples/sign_and_submit_task.py)。
 `operator_authorized` 只是被签名的策略声明，不再被当成身份认证。
 
 机载部署必须显式提供统一地理参考和决策密钥；默认占位值会让 heartbeat 保持 fail-closed：
@@ -412,7 +413,27 @@ roslaunch sar_yolo_detector rescue_profile.launch \
 同一 ROS master 的可信局域网/VPN 可直接跨电脑通信，但两端必须正确设置可互访的
 `ROS_MASTER_URI` 与 `ROS_IP/ROS_HOSTNAME`。若使用独立 master 或不稳定无线链路，应把
 这组冻结的 v1 消息接入带 mTLS 和设备认证的 DDS/MQTT/ROS 网关，而不是把 ROS master
-暴露到公网。接口包包含 MD5 冻结测试；不兼容修改必须新建 v2 类型，而不能直接改变 v1。
+暴露到公网。接口包包含 MD5 冻结测试；原两个接口包的消息/服务现已归属
+`sar_yolo_detector/msg` 和 `sar_yolo_detector/srv`，下游规划器只需将类型导入改为
+`sar_yolo_detector.*`。接口字段保持 v1 合同，但 ROS 类型名变化后应让通信双方同时升级；
+不兼容修改必须新建 v2 类型，而不能直接改变 v1。
+
+## 独立移植清单
+
+```bash
+source /opt/ros/noetic/setup.bash
+cd /path/to/catkin_ws
+cp -a /path/to/sar_yolo_detector src/
+rosdep install --from-paths src/sar_yolo_detector --ignore-src -r -y
+catkin build sar_yolo_detector
+source devel/setup.bash
+```
+
+侦察机主要入口是 `launch/scout_perception.launch`；FloodNet 入口是
+`launch/rescue_profile.launch profile:=floodnet`。接口、模型、配置、训练工具和示例
+脚本都在本目录内。若没有 CUDA/TensorRT，可用
+`catkin build sar_yolo_detector --cmake-args -DSAR_YOLO_ENABLE_TENSORRT=OFF` 完成
+CPU/接口构建；GPU 部署再按目标机架构重新生成 TensorRT engine。
 
 ## 已验证的 COCO→Tracker 冒烟链
 

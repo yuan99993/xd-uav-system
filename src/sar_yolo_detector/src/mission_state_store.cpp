@@ -231,10 +231,10 @@ std::vector<PersistedAssignment> MissionStateStore::loadAssignments() const {
     const int size = sqlite3_column_bytes(statement.get(), 12);
     if (record.is_area) {
       record.area_assignment =
-          deserialize<sar_mission_interfaces::AreaTaskAssignment>(blob, size);
+          deserialize<sar_yolo_detector::AreaTaskAssignment>(blob, size);
     } else {
       record.point_assignment =
-          deserialize<sar_mission_interfaces::TaskAssignment>(blob, size);
+          deserialize<sar_yolo_detector::TaskAssignment>(blob, size);
     }
     result.push_back(std::move(record));
   }
@@ -263,7 +263,7 @@ MissionStateStore::loadDecisionSequences() const {
 
 void MissionStateStore::saveReplay(
     const std::string &key, bool is_area, const std::string &digest,
-    bool accepted, const sar_mission_interfaces::TaskExecutionStatus &ack) {
+    bool accepted, const sar_yolo_detector::TaskExecutionStatus &ack) {
   Statement statement(database_,
       "INSERT INTO replays VALUES(?,?,?,?,?) ON CONFLICT(replay_key) DO NOTHING;");
   bindText(statement.get(), 1, key);
@@ -284,7 +284,7 @@ PersistedReplay MissionStateStore::loadReplay(const std::string &key) const {
   result.is_area = sqlite3_column_int(statement.get(), 0) != 0;
   result.input_digest = columnText(statement.get(), 1);
   result.accepted = sqlite3_column_int(statement.get(), 2) != 0;
-  result.acknowledgment = deserialize<sar_mission_interfaces::TaskExecutionStatus>(
+  result.acknowledgment = deserialize<sar_yolo_detector::TaskExecutionStatus>(
       sqlite3_column_blob(statement.get(), 3),
       sqlite3_column_bytes(statement.get(), 3));
   return result;
@@ -311,7 +311,7 @@ void MissionStateStore::saveNonce(const std::string &key_id,
 }
 
 void MissionStateStore::saveStatus(
-    const sar_mission_interfaces::TaskExecutionStatus &status) {
+    const sar_yolo_detector::TaskExecutionStatus &status) {
   Statement statement(database_,
       "INSERT INTO statuses VALUES(?,?,?) ON CONFLICT(status_sequence) DO NOTHING;");
   sqlite3_bind_int64(statement.get(), 1, status.status_sequence);
@@ -320,7 +320,7 @@ void MissionStateStore::saveStatus(
   statement.stepDone();
 }
 
-std::vector<sar_mission_interfaces::TaskExecutionStatus>
+std::vector<sar_yolo_detector::TaskExecutionStatus>
 MissionStateStore::loadStatuses(const std::string &assignment_uuid,
                                 std::uint64_t since_sequence,
                                 std::uint32_t limit, bool *has_more,
@@ -340,7 +340,7 @@ MissionStateStore::loadStatuses(const std::string &assignment_uuid,
     limit_index = 3;
   }
   sqlite3_bind_int(statement.get(), limit_index, bounded_limit + 1U);
-  std::vector<sar_mission_interfaces::TaskExecutionStatus> result;
+  std::vector<sar_yolo_detector::TaskExecutionStatus> result;
   std::uint64_t last = since_sequence;
   bool extra_row = false;
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
@@ -349,7 +349,7 @@ MissionStateStore::loadStatuses(const std::string &assignment_uuid,
       break;
     }
     last = sqlite3_column_int64(statement.get(), 0);
-    result.push_back(deserialize<sar_mission_interfaces::TaskExecutionStatus>(
+    result.push_back(deserialize<sar_yolo_detector::TaskExecutionStatus>(
         sqlite3_column_blob(statement.get(), 1),
         sqlite3_column_bytes(statement.get(), 1)));
   }
@@ -360,13 +360,13 @@ MissionStateStore::loadStatuses(const std::string &assignment_uuid,
 
 void MissionStateStore::replaceCandidateSource(
     const std::string &source_key,
-    const std::vector<sar_mission_interfaces::PerceptionCandidate> &candidates) {
+    const std::vector<sar_yolo_detector::PerceptionCandidate> &candidates) {
   Statement remove(database_, "DELETE FROM candidates WHERE source_key=?;");
   bindText(remove.get(), 1, source_key);
   remove.stepDone();
   for (const auto &candidate : candidates) {
     if (candidate.lifecycle_state !=
-        sar_mission_interfaces::PerceptionCandidate::EXPIRED) {
+        sar_yolo_detector::PerceptionCandidate::EXPIRED) {
       saveCandidate(source_key, candidate);
     }
   }
@@ -374,7 +374,7 @@ void MissionStateStore::replaceCandidateSource(
 
 void MissionStateStore::saveCandidate(
     const std::string &source_key,
-    const sar_mission_interfaces::PerceptionCandidate &candidate) {
+    const sar_yolo_detector::PerceptionCandidate &candidate) {
   Statement statement(database_,
       "INSERT INTO candidates VALUES(?,?,?,?,?) ON CONFLICT(source_key,observation_uuid) "
       "DO UPDATE SET event_sequence=excluded.event_sequence,"
@@ -413,7 +413,7 @@ std::vector<PersistedCandidate> MissionStateStore::loadCandidates() const {
   while (sqlite3_step(statement.get()) == SQLITE_ROW) {
     PersistedCandidate record;
     record.source_key = columnText(statement.get(), 0);
-    record.candidate = deserialize<sar_mission_interfaces::PerceptionCandidate>(
+    record.candidate = deserialize<sar_yolo_detector::PerceptionCandidate>(
         sqlite3_column_blob(statement.get(), 1),
         sqlite3_column_bytes(statement.get(), 1));
     result.push_back(std::move(record));

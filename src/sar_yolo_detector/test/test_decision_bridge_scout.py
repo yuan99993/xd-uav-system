@@ -8,7 +8,7 @@ import unittest
 import rosservice
 import rospy
 import rostest
-from sar_mission_interfaces.msg import (
+from sar_yolo_detector.msg import (
     PerceptionCandidate,
     PerceptionCandidateArray,
     UavDecisionHeartbeat,

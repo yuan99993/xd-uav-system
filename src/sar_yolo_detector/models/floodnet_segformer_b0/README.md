@@ -35,10 +35,11 @@ clock throttling explains occasional tail latency.
 Re-export after changing the checkpoint with the packaged helper:
 
 ```bash
-VENV=/home/promise/mrs_test/.venv-sar-flood
-CKPT=/home/promise/mrs_test/src/sar_yolo_detector/models/floodnet_segformer_b0/floodnet_segformer_b0_pilot_10e_best.pt
+VENV=/path/to/.venv-sar-flood
+PKG=/path/to/catkin_ws/src/sar_yolo_detector
+CKPT="$PKG/models/floodnet_segformer_b0/floodnet_segformer_b0_pilot_10e_best.pt"
 OUT=${CKPT%.pt}.onnx
-$VENV/bin/python /home/promise/mrs_test/src/sar_yolo_detector/training/export_floodnet_onnx.py \
+$VENV/bin/python "$PKG/training/export_floodnet_onnx.py" \
   --checkpoint "$CKPT" --output "$OUT" --input-size 1024
 /usr/src/tensorrt/bin/trtexec --onnx="$OUT" \
   --saveEngine="${CKPT%.pt}_fp16.engine" --fp16 \

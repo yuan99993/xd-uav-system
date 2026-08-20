@@ -22,17 +22,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <sar_mission_interfaces/AreaTaskAssignment.h>
-#include <sar_mission_interfaces/ExecutorHeartbeat.h>
-#include <sar_mission_interfaces/GetEvidenceCrop.h>
-#include <sar_mission_interfaces/GetPerceptionSnapshot.h>
-#include <sar_mission_interfaces/GetTaskStatuses.h>
-#include <sar_mission_interfaces/PerceptionCandidateArray.h>
-#include <sar_mission_interfaces/SubmitAreaTaskAssignment.h>
-#include <sar_mission_interfaces/SubmitTaskAssignment.h>
-#include <sar_mission_interfaces/TaskAssignment.h>
-#include <sar_mission_interfaces/TaskExecutionStatus.h>
-#include <sar_mission_interfaces/UavDecisionHeartbeat.h>
+#include <sar_yolo_detector/AreaTaskAssignment.h>
+#include <sar_yolo_detector/ExecutorHeartbeat.h>
+#include <sar_yolo_detector/GetEvidenceCrop.h>
+#include <sar_yolo_detector/GetPerceptionSnapshot.h>
+#include <sar_yolo_detector/GetTaskStatuses.h>
+#include <sar_yolo_detector/PerceptionCandidateArray.h>
+#include <sar_yolo_detector/SubmitAreaTaskAssignment.h>
+#include <sar_yolo_detector/SubmitTaskAssignment.h>
+#include <sar_yolo_detector/TaskAssignment.h>
+#include <sar_yolo_detector/TaskExecutionStatus.h>
+#include <sar_yolo_detector/UavDecisionHeartbeat.h>
 
 #include <sar_yolo_detector/FloodRegionArray.h>
 #include <sar_yolo_detector/TaskCandidateArray.h>
@@ -43,7 +43,7 @@ namespace {
 
 constexpr std::uint16_t kProtocolMajor = 1;
 constexpr std::uint16_t kProtocolMinor = 0;
-constexpr const char *kInterfaceVersion = "sar_mission_interfaces/1.0";
+constexpr const char *kInterfaceVersion = "sar_yolo_detector/1.0";
 
 bool finite(const double value) { return std::isfinite(value); }
 
@@ -112,8 +112,8 @@ bool validPolygon(const geometry_msgs::PolygonStamped &polygon,
   return finite(*area) && *area > 0.01;
 }
 
-bool sameGeoReference(const sar_mission_interfaces::GeoReference &left,
-                      const sar_mission_interfaces::GeoReference &right) {
+bool sameGeoReference(const sar_yolo_detector::GeoReference &left,
+                      const sar_yolo_detector::GeoReference &right) {
   return left.coordinate_type == right.coordinate_type &&
          left.epsg == right.epsg && left.frame_id == right.frame_id &&
          left.map_uuid == right.map_uuid &&
@@ -161,7 +161,7 @@ sensor_msgs::RegionOfInterest detectionRoi(const vision_msgs::Detection2D &detec
 }
 
 struct ValidationError {
-  std::uint16_t code{sar_mission_interfaces::TaskExecutionStatus::INTERNAL_ERROR};
+  std::uint16_t code{sar_yolo_detector::TaskExecutionStatus::INTERNAL_ERROR};
   std::string reason;
 };
 
@@ -192,12 +192,12 @@ class DecisionBridge {
     std::uint64_t sequence{0};
     bool active{false};
     bool is_area{false};
-    std::uint8_t state{sar_mission_interfaces::TaskExecutionStatus::DISPATCHED_TO_EXECUTOR};
+    std::uint8_t state{sar_yolo_detector::TaskExecutionStatus::DISPATCHED_TO_EXECUTOR};
     std::uint64_t executor_status_sequence{0};
     ros::Time dispatch_deadline;
     std::string decision_key;
-    sar_mission_interfaces::TaskAssignment point;
-    sar_mission_interfaces::AreaTaskAssignment area;
+    sar_yolo_detector::TaskAssignment point;
+    sar_yolo_detector::AreaTaskAssignment area;
   };
 
   void loadParameters() {
@@ -224,9 +224,9 @@ class DecisionBridge {
     std::string coordinate_type;
     private_node_.param("geo_coordinate_type", coordinate_type, std::string("LOCAL_ENU"));
     geo_reference_.coordinate_type = coordinate_type == "ECEF"
-        ? sar_mission_interfaces::GeoReference::ECEF
-        : (coordinate_type == "WGS84" ? sar_mission_interfaces::GeoReference::WGS84
-                                       : sar_mission_interfaces::GeoReference::LOCAL_ENU);
+        ? sar_yolo_detector::GeoReference::ECEF
+        : (coordinate_type == "WGS84" ? sar_yolo_detector::GeoReference::WGS84
+                                       : sar_yolo_detector::GeoReference::LOCAL_ENU);
     private_node_.param("geo_epsg", geo_reference_.epsg, std::string());
     geo_reference_.frame_id = required_target_frame_;
     private_node_.param("geo_map_uuid", geo_reference_.map_uuid, std::string("map_unset"));
@@ -380,11 +380,11 @@ class DecisionBridge {
   }
 
   void configureRos() {
-    heartbeat_publisher_ = node_.advertise<sar_mission_interfaces::UavDecisionHeartbeat>(
+    heartbeat_publisher_ = node_.advertise<sar_yolo_detector::UavDecisionHeartbeat>(
         heartbeat_topic_, 1, true);
     if (perception_uplink_enabled_) {
       candidates_publisher_ =
-          node_.advertise<sar_mission_interfaces::PerceptionCandidateArray>(
+          node_.advertise<sar_yolo_detector::PerceptionCandidateArray>(
               outbound_candidates_topic_, 10, false);
       if (!source_task_candidates_topic_.empty())
         task_candidates_subscriber_ = node_.subscribe(
@@ -400,7 +400,7 @@ class DecisionBridge {
           evidence_service_name_, &DecisionBridge::evidenceCallback, this);
       if (!source_evidence_service_.empty()) {
         source_evidence_client_ =
-            node_.serviceClient<sar_mission_interfaces::GetEvidenceCrop>(
+            node_.serviceClient<sar_yolo_detector::GetEvidenceCrop>(
                 source_evidence_service_, true);
         evidence_retrieval_base_uri_ =
             "ros-service://" + node_.resolveName(evidence_service_name_);
@@ -408,13 +408,13 @@ class DecisionBridge {
     }
     if (assignment_downlink_enabled_) {
       status_publisher_ =
-          node_.advertise<sar_mission_interfaces::TaskExecutionStatus>(
+          node_.advertise<sar_yolo_detector::TaskExecutionStatus>(
               outbound_status_topic_, 20, false);
       executor_assignment_publisher_ =
-          node_.advertise<sar_mission_interfaces::TaskAssignment>(
+          node_.advertise<sar_yolo_detector::TaskAssignment>(
               executor_assignment_topic_, 10, false);
       executor_area_assignment_publisher_ =
-          node_.advertise<sar_mission_interfaces::AreaTaskAssignment>(
+          node_.advertise<sar_yolo_detector::AreaTaskAssignment>(
               executor_area_assignment_topic_, 10, false);
       if (allow_topic_commands_) {
         assignment_subscriber_ = node_.subscribe(
@@ -516,8 +516,8 @@ class DecisionBridge {
     recovering_ = true;
   }
 
-  sar_mission_interfaces::MissionIdentity identity() const {
-    sar_mission_interfaces::MissionIdentity result;
+  sar_yolo_detector::MissionIdentity identity() const {
+    sar_yolo_detector::MissionIdentity result;
     result.mission_id = mission_id_;
     result.uav_id = uav_id_;
     result.session_uuid = session_uuid_;
@@ -538,7 +538,7 @@ class DecisionBridge {
     if ((!geo_reference_.valid_from.isZero() && now < geo_reference_.valid_from) ||
         (!geo_reference_.valid_until.isZero() && now >= geo_reference_.valid_until))
       return false;
-    if (geo_reference_.coordinate_type == sar_mission_interfaces::GeoReference::LOCAL_ENU)
+    if (geo_reference_.coordinate_type == sar_yolo_detector::GeoReference::LOCAL_ENU)
       return finite(geo_reference_.origin_latitude_deg) &&
              finite(geo_reference_.origin_longitude_deg) &&
              finite(geo_reference_.origin_altitude_m) &&
@@ -547,13 +547,13 @@ class DecisionBridge {
     return !geo_reference_.epsg.empty();
   }
 
-  sar_mission_interfaces::PerceptionCandidate convert(const TaskCandidate &source) const {
-    sar_mission_interfaces::PerceptionCandidate output;
+  sar_yolo_detector::PerceptionCandidate convert(const TaskCandidate &source) const {
+    sar_yolo_detector::PerceptionCandidate output;
     output.header = source.header;
     output.observation_uuid = source.observation_uuid;
     output.event_sequence = source.event_sequence;
     output.source = identity();
-    output.candidate_shape = sar_mission_interfaces::PerceptionCandidate::POINT;
+    output.candidate_shape = sar_yolo_detector::PerceptionCandidate::POINT;
     output.local_track_id = source.track_id;
     output.source_track_id_valid = source.source_track_id_valid;
     output.source_track_id = source.source_track_id;
@@ -589,13 +589,13 @@ class DecisionBridge {
     return output;
   }
 
-  sar_mission_interfaces::PerceptionCandidate convert(const FloodRegion &source) const {
-    sar_mission_interfaces::PerceptionCandidate output;
+  sar_yolo_detector::PerceptionCandidate convert(const FloodRegion &source) const {
+    sar_yolo_detector::PerceptionCandidate output;
     output.header = source.header;
     output.observation_uuid = source.observation_uuid;
     output.event_sequence = source.event_sequence;
     output.source = identity();
-    output.candidate_shape = sar_mission_interfaces::PerceptionCandidate::IMAGE_REGION;
+    output.candidate_shape = sar_yolo_detector::PerceptionCandidate::IMAGE_REGION;
     output.local_track_id = source.track_id;
     output.raw_class_id = source.class_id;
     output.raw_class_name = source.class_name;
@@ -642,8 +642,8 @@ class DecisionBridge {
                                                 : record.point.observation_uuid;
       if (!record.active || linked != observation_uuid) continue;
       auto status = makeStatus(record,
-          sar_mission_interfaces::TaskExecutionStatus::EVIDENCE_STALE,
-          sar_mission_interfaces::TaskExecutionStatus::EVIDENCE_BECAME_STALE,
+          sar_yolo_detector::TaskExecutionStatus::EVIDENCE_STALE,
+          sar_yolo_detector::TaskExecutionStatus::EVIDENCE_BECAME_STALE,
           "linked perception evidence expired; executor policy decides whether to continue");
       persistAndPublishStatus(status);
     }
@@ -651,15 +651,15 @@ class DecisionBridge {
 
   void publishCandidates(const std::string &source_key, const std_msgs::Header &header,
       const std::uint64_t source_array_sequence, const bool full_snapshot,
-      std::vector<sar_mission_interfaces::PerceptionCandidate> candidates) {
+      std::vector<sar_yolo_detector::PerceptionCandidate> candidates) {
     auto last_array = source_array_sequences_.find(source_key);
     if (last_array != source_array_sequences_.end() &&
         source_array_sequence <= last_array->second) {
       ROS_WARN_STREAM_THROTTLE(2.0, "Dropping out-of-order candidate array from " << source_key);
       return;
     }
-    std::vector<sar_mission_interfaces::PerceptionCandidate> accepted;
-    std::vector<sar_mission_interfaces::PerceptionCandidate> persistent_snapshot;
+    std::vector<sar_yolo_detector::PerceptionCandidate> accepted;
+    std::vector<sar_yolo_detector::PerceptionCandidate> persistent_snapshot;
     std::unordered_set<std::string> snapshot_observations;
     for (auto &candidate : candidates) {
       if (candidate.observation_uuid.empty() || candidate.event_sequence == 0U ||
@@ -683,7 +683,7 @@ class DecisionBridge {
       candidate_event_sequences_[event_key] = candidate.event_sequence;
       accepted.push_back(candidate);
       if (candidate.lifecycle_state !=
-          sar_mission_interfaces::PerceptionCandidate::EXPIRED)
+          sar_yolo_detector::PerceptionCandidate::EXPIRED)
         persistent_snapshot.push_back(candidate);
     }
     store_->begin();
@@ -691,7 +691,7 @@ class DecisionBridge {
       if (full_snapshot)
         store_->replaceCandidateSource(source_key, persistent_snapshot);
       for (const auto &candidate : accepted) {
-        if (candidate.lifecycle_state == sar_mission_interfaces::PerceptionCandidate::EXPIRED)
+        if (candidate.lifecycle_state == sar_yolo_detector::PerceptionCandidate::EXPIRED)
           store_->eraseCandidate(source_key, candidate.observation_uuid);
         else if (!full_snapshot) store_->saveCandidate(source_key, candidate);
       }
@@ -715,7 +715,7 @@ class DecisionBridge {
       }
     }
     for (const auto &candidate : accepted) {
-      if (candidate.lifecycle_state == sar_mission_interfaces::PerceptionCandidate::EXPIRED) {
+      if (candidate.lifecycle_state == sar_yolo_detector::PerceptionCandidate::EXPIRED) {
         candidate_cache_.erase(candidate.observation_uuid);
         candidate_sources_.erase(candidate.observation_uuid);
         expired_observations_.insert(candidate.observation_uuid);
@@ -725,7 +725,7 @@ class DecisionBridge {
         candidate_sources_[candidate.observation_uuid] = source_key;
       }
     }
-    sar_mission_interfaces::PerceptionCandidateArray output;
+    sar_yolo_detector::PerceptionCandidateArray output;
     output.header = header;
     output.array_sequence = ++candidate_sequence_;
     output.full_snapshot = full_snapshot;
@@ -735,8 +735,8 @@ class DecisionBridge {
       for (const auto &entry : candidate_cache_)
         output.candidates.push_back(entry.second);
       std::sort(output.candidates.begin(), output.candidates.end(),
-          [](const sar_mission_interfaces::PerceptionCandidate &left,
-             const sar_mission_interfaces::PerceptionCandidate &right) {
+          [](const sar_yolo_detector::PerceptionCandidate &left,
+             const sar_yolo_detector::PerceptionCandidate &right) {
             return left.observation_uuid < right.observation_uuid;
           });
     } else {
@@ -749,7 +749,7 @@ class DecisionBridge {
 
   void taskCandidatesCallback(const TaskCandidateArray::ConstPtr &message) {
     if (!sourceIdentityMatches(message->provenance)) return;
-    std::vector<sar_mission_interfaces::PerceptionCandidate> converted;
+    std::vector<sar_yolo_detector::PerceptionCandidate> converted;
     for (const auto &candidate : message->candidates)
       if (sourceIdentityMatches(candidate.provenance)) converted.push_back(convert(candidate));
     publishCandidates(sourceKey(message->provenance, "point"), message->header,
@@ -758,7 +758,7 @@ class DecisionBridge {
 
   void floodRegionsCallback(const FloodRegionArray::ConstPtr &message) {
     if (!sourceIdentityMatches(message->provenance)) return;
-    std::vector<sar_mission_interfaces::PerceptionCandidate> converted;
+    std::vector<sar_yolo_detector::PerceptionCandidate> converted;
     for (const auto &region : message->regions)
       if (sourceIdentityMatches(region.provenance)) converted.push_back(convert(region));
     publishCandidates(sourceKey(message->provenance, "area"), message->header,
@@ -791,14 +791,14 @@ class DecisionBridge {
         assignment.authorization_signature.size() != 64U ||
         binding == authorization_key_decision_ids_.end() ||
         binding->second != assignment.decision_id) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_AUTHENTICATION;
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_AUTHENTICATION;
       error->reason = "missing or unknown authorization key/nonce/signature";
       return false;
     }
     if (assignment.authorization_issued_at.isZero() ||
         std::abs((ros::Time::now() - assignment.authorization_issued_at).toSec()) >
             maximum_authorization_age_sec_) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_AUTHENTICATION;
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_AUTHENTICATION;
       error->reason = "authorization timestamp is outside the permitted window";
       return false;
     }
@@ -809,7 +809,7 @@ class DecisionBridge {
         key->second, MissionStateStore::serialize(unsigned_assignment));
     if (!constantTimeEqual(expected, supplied) ||
         store_->nonceExists(assignment.authorization_key_id, assignment.authorization_nonce)) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_AUTHENTICATION;
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_AUTHENTICATION;
       error->reason = "assignment HMAC failed or nonce was already consumed";
       return false;
     }
@@ -863,7 +863,7 @@ class DecisionBridge {
   bool validateCommon(const Assignment &assignment, const bool is_area,
                       AssignmentRecord **existing, ValidationError *error) {
     if (assignment.protocol_major != kProtocolMajor || assignment.protocol_minor > kProtocolMinor) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_PROTOCOL_VERSION;
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_PROTOCOL_VERSION;
       error->reason = "unsupported mission interface protocol version";
       return false;
     }
@@ -872,17 +872,17 @@ class DecisionBridge {
         assignment.destination.mission_id != mission_id_ ||
         assignment.destination.uav_id != uav_id_ ||
         assignment.destination.session_uuid != session_uuid_) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_IDENTITY;
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_IDENTITY;
       error->reason = "assignment identity does not match this bridge";
       return false;
     }
     if (!allowed_decision_ids_.empty() && allowed_decision_ids_.count(assignment.decision_id) == 0U) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_AUTHENTICATION;
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_AUTHENTICATION;
       error->reason = "decision_id is not in the configured allow-list";
       return false;
     }
-    if (assignment.command > sar_mission_interfaces::TaskAssignment::CANCEL) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_COMMAND;
+    if (assignment.command > sar_yolo_detector::TaskAssignment::CANCEL) {
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_COMMAND;
       error->reason = "unknown assignment command";
       return false;
     }
@@ -890,18 +890,18 @@ class DecisionBridge {
     if (assignment.header.stamp.isZero() || age > maximum_assignment_age_sec_ ||
         age < -maximum_future_skew_sec_ || assignment.valid_until.isZero() ||
         assignment.valid_until <= ros::Time::now()) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::STALE_ASSIGNMENT;
+      error->code = sar_yolo_detector::TaskExecutionStatus::STALE_ASSIGNMENT;
       error->reason = "assignment timestamp/deadline is missing, stale, or in the future";
       return false;
     }
     if (!authenticationValid(assignment, error)) return false;
     if (require_operator_authorization_ && !assignment.operator_authorized) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::AUTHORIZATION_REQUIRED;
+      error->code = sar_yolo_detector::TaskExecutionStatus::AUTHORIZATION_REQUIRED;
       error->reason = "deployment policy authorization assertion is required";
       return false;
     }
     if (assignment.operator_authorized && assignment.policy_version.empty()) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::AUTHORIZATION_REQUIRED;
+      error->code = sar_yolo_detector::TaskExecutionStatus::AUTHORIZATION_REQUIRED;
       error->reason = "authorized assignments must identify the applied policy version";
       return false;
     }
@@ -909,21 +909,21 @@ class DecisionBridge {
     const auto last_sequence = decision_sequences_.find(key);
     if (last_sequence != decision_sequences_.end() &&
         assignment.assignment_sequence <= last_sequence->second) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::DUPLICATE_OR_OUT_OF_ORDER;
+      error->code = sar_yolo_detector::TaskExecutionStatus::DUPLICATE_OR_OUT_OF_ORDER;
       error->reason = "assignment sequence is not newer for this decision session";
       return false;
     }
     auto found = assignments_.find(assignment.assignment_uuid);
     *existing = found == assignments_.end() ? nullptr : &found->second;
-    if (assignment.command == sar_mission_interfaces::TaskAssignment::ASSIGN && *existing != nullptr) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::DUPLICATE_OR_OUT_OF_ORDER;
+    if (assignment.command == sar_yolo_detector::TaskAssignment::ASSIGN && *existing != nullptr) {
+      error->code = sar_yolo_detector::TaskExecutionStatus::DUPLICATE_OR_OUT_OF_ORDER;
       error->reason = "existing UUID must use UPDATE or CANCEL";
       return false;
     }
-    if (assignment.command != sar_mission_interfaces::TaskAssignment::ASSIGN) {
+    if (assignment.command != sar_yolo_detector::TaskAssignment::ASSIGN) {
       if (*existing == nullptr || (*existing)->is_area != is_area ||
           !(*existing)->active) {
-        error->code = sar_mission_interfaces::TaskExecutionStatus::UNKNOWN_ASSIGNMENT;
+        error->code = sar_yolo_detector::TaskExecutionStatus::UNKNOWN_ASSIGNMENT;
         error->reason = "UPDATE/CANCEL references an unknown, terminal, or different-shape task";
         return false;
       }
@@ -932,14 +932,14 @@ class DecisionBridge {
       const std::string owner_session = is_area ? (*existing)->area.decision_session_uuid
                                                 : (*existing)->point.decision_session_uuid;
       if (owner_id != assignment.decision_id || owner_session != assignment.decision_session_uuid) {
-        error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_AUTHENTICATION;
+        error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_AUTHENTICATION;
         error->reason = "only the owning decision session may update/cancel this task";
         return false;
       }
     }
-    if (assignment.command == sar_mission_interfaces::TaskAssignment::CANCEL) {
+    if (assignment.command == sar_yolo_detector::TaskAssignment::CANCEL) {
       if (!executorHeartbeatFresh()) {
-        error->code = sar_mission_interfaces::TaskExecutionStatus::EXECUTOR_UNAVAILABLE;
+        error->code = sar_yolo_detector::TaskExecutionStatus::EXECUTOR_UNAVAILABLE;
         error->reason = "cannot deliver cancellation without a fresh executor heartbeat";
         return false;
       }
@@ -947,15 +947,15 @@ class DecisionBridge {
     }
     std::string ready_reason;
     if (!bridgeReady(&ready_reason)) {
-      error->code = recovering_ ? sar_mission_interfaces::TaskExecutionStatus::RECOVERY_MISMATCH
-                                : sar_mission_interfaces::TaskExecutionStatus::EXECUTOR_NOT_READY;
+      error->code = recovering_ ? sar_yolo_detector::TaskExecutionStatus::RECOVERY_MISMATCH
+                                : sar_yolo_detector::TaskExecutionStatus::EXECUTOR_NOT_READY;
       error->reason = ready_reason;
       return false;
     }
     if (!finite(assignment.priority) || assignment.priority < 0.0F ||
         assignment.priority > 1.0F || assignment.task_type == 0U ||
-        assignment.task_type > sar_mission_interfaces::TaskAssignment::MONITOR) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_CONSTRAINT;
+        assignment.task_type > sar_yolo_detector::TaskAssignment::MONITOR) {
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_CONSTRAINT;
       error->reason = "task type or priority is outside the protocol range";
       return false;
     }
@@ -964,17 +964,17 @@ class DecisionBridge {
         (is_area && !capabilities.supports_area_tasks) ||
         (!assignment.executor_profile.empty() &&
          !contains(capabilities.supported_executor_profiles, assignment.executor_profile))) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::UNSUPPORTED_TASK;
+      error->code = sar_yolo_detector::TaskExecutionStatus::UNSUPPORTED_TASK;
       error->reason = "executor does not advertise this task type/profile";
       return false;
     }
     const bool payload_mandatory =
-        assignment.task_type == sar_mission_interfaces::TaskAssignment::RESCUE ||
-        assignment.task_type == sar_mission_interfaces::TaskAssignment::DELIVER_SUPPLIES;
+        assignment.task_type == sar_yolo_detector::TaskAssignment::RESCUE ||
+        assignment.task_type == sar_yolo_detector::TaskAssignment::DELIVER_SUPPLIES;
     if ((payload_mandatory && assignment.required_payload.empty()) ||
         (!assignment.required_payload.empty() &&
          !contains(capabilities.available_payloads, assignment.required_payload))) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::PAYLOAD_UNAVAILABLE;
+      error->code = sar_yolo_detector::TaskExecutionStatus::PAYLOAD_UNAVAILABLE;
       error->reason = payload_mandatory && assignment.required_payload.empty()
           ? "rescue/supply tasks must name a required payload"
           : "required payload is unavailable";
@@ -986,7 +986,7 @@ class DecisionBridge {
         (require_geofence_version_ && assignment.geofence_version.empty()) ||
         (!assignment.geofence_version.empty() &&
          assignment.geofence_version != capabilities.geofence_version)) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::GEOFENCE_UNKNOWN;
+      error->code = sar_yolo_detector::TaskExecutionStatus::GEOFENCE_UNKNOWN;
       error->reason = "geofence ID/version is missing or differs from executor capabilities";
       return false;
     }
@@ -994,11 +994,11 @@ class DecisionBridge {
         assignment.maximum_speed_mps > capabilities.maximum_speed_mps ||
         assignment.maximum_task_duration.toSec() <= 0.0 ||
         assignment.maximum_task_duration.toSec() > maximum_task_duration_sec_) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_CONSTRAINT;
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_CONSTRAINT;
       error->reason = "speed or task duration is invalid or exceeds capabilities";
       return false;
     }
-    if (assignment.command == sar_mission_interfaces::TaskAssignment::ASSIGN) {
+    if (assignment.command == sar_yolo_detector::TaskAssignment::ASSIGN) {
       std::size_t active = 0U;
       float lowest_priority = std::numeric_limits<float>::infinity();
       for (const auto &entry : assignments_) {
@@ -1010,7 +1010,7 @@ class DecisionBridge {
       if (active >= capabilities.maximum_active_tasks &&
           !(assignment.allow_preemption && capabilities.supports_preemption &&
             assignment.priority > lowest_priority)) {
-        error->code = sar_mission_interfaces::TaskExecutionStatus::CAPACITY_EXCEEDED;
+        error->code = sar_yolo_detector::TaskExecutionStatus::CAPACITY_EXCEEDED;
         error->reason = "executor task capacity is exhausted";
         return false;
       }
@@ -1020,39 +1020,39 @@ class DecisionBridge {
 
   template <typename Assignment>
   bool validateCandidate(const Assignment &assignment,
-                         sar_mission_interfaces::PerceptionCandidate **candidate,
+                         sar_yolo_detector::PerceptionCandidate **candidate,
                          ValidationError *error) {
     *candidate = nullptr;
-    if (assignment.command == sar_mission_interfaces::TaskAssignment::CANCEL) return true;
+    if (assignment.command == sar_yolo_detector::TaskAssignment::CANCEL) return true;
     if (assignment.observation_uuid.empty()) {
       if (!require_known_observation_) return true;
-      error->code = sar_mission_interfaces::TaskExecutionStatus::UNKNOWN_OBSERVATION;
+      error->code = sar_yolo_detector::TaskExecutionStatus::UNKNOWN_OBSERVATION;
       error->reason = "observation_uuid is required";
       return false;
     }
     auto found = candidate_cache_.find(assignment.observation_uuid);
     if (found == candidate_cache_.end()) {
       error->code = expired_observations_.count(assignment.observation_uuid) != 0U
-          ? sar_mission_interfaces::TaskExecutionStatus::OBSERVATION_EXPIRED
-          : sar_mission_interfaces::TaskExecutionStatus::UNKNOWN_OBSERVATION;
-      error->reason = error->code == sar_mission_interfaces::TaskExecutionStatus::OBSERVATION_EXPIRED
+          ? sar_yolo_detector::TaskExecutionStatus::OBSERVATION_EXPIRED
+          : sar_yolo_detector::TaskExecutionStatus::UNKNOWN_OBSERVATION;
+      error->reason = error->code == sar_yolo_detector::TaskExecutionStatus::OBSERVATION_EXPIRED
                           ? "perception observation has expired" : "perception observation is unknown";
       return false;
     }
     *candidate = &found->second;
-    if ((*candidate)->lifecycle_state != sar_mission_interfaces::PerceptionCandidate::CONFIRMED &&
-        (*candidate)->lifecycle_state != sar_mission_interfaces::PerceptionCandidate::UPDATED) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::UNKNOWN_OBSERVATION;
+    if ((*candidate)->lifecycle_state != sar_yolo_detector::PerceptionCandidate::CONFIRMED &&
+        (*candidate)->lifecycle_state != sar_yolo_detector::PerceptionCandidate::UPDATED) {
+      error->code = sar_yolo_detector::TaskExecutionStatus::UNKNOWN_OBSERVATION;
       error->reason = "only CONFIRMED/UPDATED observations may create tasks";
       return false;
     }
     if (assignment.semantic_type != (*candidate)->semantic_type) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::INVALID_CONSTRAINT;
+      error->code = sar_yolo_detector::TaskExecutionStatus::INVALID_CONSTRAINT;
       error->reason = "assignment semantic type does not match its observation";
       return false;
     }
     if ((ros::Time::now() - (*candidate)->last_seen).toSec() > maximum_candidate_age_sec_) {
-      error->code = sar_mission_interfaces::TaskExecutionStatus::OBSERVATION_EXPIRED;
+      error->code = sar_yolo_detector::TaskExecutionStatus::OBSERVATION_EXPIRED;
       error->reason = "observation is too old for a new task";
       return false;
     }
@@ -1060,10 +1060,10 @@ class DecisionBridge {
   }
 
   template <typename Assignment>
-  sar_mission_interfaces::TaskExecutionStatus makeStatus(const Assignment &assignment,
+  sar_yolo_detector::TaskExecutionStatus makeStatus(const Assignment &assignment,
       const std::uint8_t state, const std::uint16_t reason_code,
       const std::string &reason) {
-    sar_mission_interfaces::TaskExecutionStatus status;
+    sar_yolo_detector::TaskExecutionStatus status;
     status.header.stamp = ros::Time::now();
     status.assignment_uuid = assignment.assignment_uuid;
     status.assignment_sequence = assignment.assignment_sequence;
@@ -1083,14 +1083,14 @@ class DecisionBridge {
     return status;
   }
 
-  sar_mission_interfaces::TaskExecutionStatus makeStatus(const AssignmentRecord &record,
+  sar_yolo_detector::TaskExecutionStatus makeStatus(const AssignmentRecord &record,
       const std::uint8_t state, const std::uint16_t reason_code,
       const std::string &reason) {
     return record.is_area ? makeStatus(record.area, state, reason_code, reason)
                           : makeStatus(record.point, state, reason_code, reason);
   }
 
-  void persistAndPublishStatus(const sar_mission_interfaces::TaskExecutionStatus &status) {
+  void persistAndPublishStatus(const sar_yolo_detector::TaskExecutionStatus &status) {
     store_->begin();
     try {
       store_->saveStatus(status);
@@ -1105,9 +1105,9 @@ class DecisionBridge {
 
   template <typename Assignment>
   bool reject(const Assignment &assignment, const ValidationError &error,
-              sar_mission_interfaces::TaskExecutionStatus *ack) {
+              sar_yolo_detector::TaskExecutionStatus *ack) {
     *ack = makeStatus(assignment,
-        sar_mission_interfaces::TaskExecutionStatus::REJECTED_BY_ADAPTER,
+        sar_yolo_detector::TaskExecutionStatus::REJECTED_BY_ADAPTER,
         error.code, error.reason);
     persistAndPublishStatus(*ack);
     ROS_WARN_STREAM("Rejected assignment " << assignment.assignment_uuid << ": " << error.reason);
@@ -1138,12 +1138,12 @@ class DecisionBridge {
 
   template <typename Assignment>
   bool checkReplay(const Assignment &assignment, const bool is_area,
-                   sar_mission_interfaces::TaskExecutionStatus *ack, bool *accepted) {
+                   sar_yolo_detector::TaskExecutionStatus *ack, bool *accepted) {
     const PersistedReplay replay = store_->loadReplay(replayKey(assignment));
     if (!replay.found) return false;
     if (replay.is_area != is_area || replay.input_digest != assignmentDigest(assignment)) {
       ValidationError error;
-      error.code = sar_mission_interfaces::TaskExecutionStatus::DUPLICATE_OR_OUT_OF_ORDER;
+      error.code = sar_yolo_detector::TaskExecutionStatus::DUPLICATE_OR_OUT_OF_ORDER;
       error.reason = "assignment UUID/sequence was reused with different content";
       *accepted = reject(assignment, error, ack);
       return true;
@@ -1157,7 +1157,7 @@ class DecisionBridge {
   template <typename Assignment>
   void commitAccepted(const Assignment &original, const bool is_area,
       const AssignmentRecord &record,
-      const sar_mission_interfaces::TaskExecutionStatus &ack) {
+      const sar_yolo_detector::TaskExecutionStatus &ack) {
     store_->begin();
     try {
       store_->saveAssignment(persisted(original.assignment_uuid, record));
@@ -1175,15 +1175,15 @@ class DecisionBridge {
     }
   }
 
-  bool processPointAssignment(const sar_mission_interfaces::TaskAssignment &input,
-                              sar_mission_interfaces::TaskExecutionStatus *ack) {
+  bool processPointAssignment(const sar_yolo_detector::TaskAssignment &input,
+                              sar_yolo_detector::TaskExecutionStatus *ack) {
     bool replay_accepted = false;
     if (checkReplay(input, false, ack, &replay_accepted)) return replay_accepted;
     auto assignment = input;
     ValidationError error;
     AssignmentRecord *existing = nullptr;
     if (!validateCommon(assignment, false, &existing, &error)) return reject(input, error, ack);
-    if (assignment.command == sar_mission_interfaces::TaskAssignment::CANCEL) {
+    if (assignment.command == sar_yolo_detector::TaskAssignment::CANCEL) {
       const auto &previous = existing->point;
       assignment.task_type = previous.task_type;
       assignment.observation_uuid = previous.observation_uuid;
@@ -1201,9 +1201,9 @@ class DecisionBridge {
       assignment.executor_profile = previous.executor_profile;
       assignment.required_payload = previous.required_payload;
     }
-    sar_mission_interfaces::PerceptionCandidate *candidate = nullptr;
+    sar_yolo_detector::PerceptionCandidate *candidate = nullptr;
     if (!validateCandidate(assignment, &candidate, &error)) return reject(input, error, ack);
-    if (assignment.command != sar_mission_interfaces::TaskAssignment::CANCEL) {
+    if (assignment.command != sar_yolo_detector::TaskAssignment::CANCEL) {
       if (!assignment.target_pose_valid && candidate != nullptr && candidate->localization_valid) {
         assignment.target_pose_valid = true;
         assignment.target_pose = candidate->target_pose;
@@ -1211,13 +1211,13 @@ class DecisionBridge {
         assignment.geo_reference = candidate->geo_reference;
       }
       if (!assignment.target_pose_valid) {
-        error.code = sar_mission_interfaces::TaskExecutionStatus::LOCALIZATION_REQUIRED;
+        error.code = sar_yolo_detector::TaskExecutionStatus::LOCALIZATION_REQUIRED;
         error.reason = "point task has no reliable navigation target";
         return reject(input, error, ack);
       }
       if (assignment.coordinate_contract != coordinate_contract_ ||
           !sameGeoReference(assignment.geo_reference, geo_reference_)) {
-        error.code = sar_mission_interfaces::TaskExecutionStatus::COORDINATE_CONTRACT_MISMATCH;
+        error.code = sar_yolo_detector::TaskExecutionStatus::COORDINATE_CONTRACT_MISMATCH;
         error.reason = "point task geographic reference does not match the aircraft";
         return reject(input, error, ack);
       }
@@ -1226,7 +1226,7 @@ class DecisionBridge {
           !finite(assignment.arrival_tolerance_m) ||
           assignment.arrival_tolerance_m < capabilities.minimum_arrival_tolerance_m ||
           assignment.arrival_tolerance_m > capabilities.maximum_arrival_tolerance_m) {
-        error.code = sar_mission_interfaces::TaskExecutionStatus::INVALID_TARGET_POSE;
+        error.code = sar_yolo_detector::TaskExecutionStatus::INVALID_TARGET_POSE;
         error.reason = "target pose or arrival tolerance is invalid";
         return reject(input, error, ack);
       }
@@ -1235,12 +1235,12 @@ class DecisionBridge {
     record.sequence = assignment.assignment_sequence;
     record.active = true;
     record.is_area = false;
-    record.state = sar_mission_interfaces::TaskExecutionStatus::DISPATCHED_TO_EXECUTOR;
+    record.state = sar_yolo_detector::TaskExecutionStatus::DISPATCHED_TO_EXECUTOR;
     record.dispatch_deadline = ros::Time::now() + ros::Duration(executor_ack_timeout_sec_);
     record.decision_key = decisionKey(assignment);
     record.point = assignment;
     *ack = makeStatus(assignment, record.state,
-        sar_mission_interfaces::TaskExecutionStatus::REASON_NONE,
+        sar_yolo_detector::TaskExecutionStatus::REASON_NONE,
         "durably recorded and dispatched; awaiting executor acceptance");
     commitAccepted(input, false, record, *ack);
     assignments_[assignment.assignment_uuid] = record;
@@ -1251,15 +1251,15 @@ class DecisionBridge {
     return true;
   }
 
-  bool processAreaAssignment(const sar_mission_interfaces::AreaTaskAssignment &input,
-                             sar_mission_interfaces::TaskExecutionStatus *ack) {
+  bool processAreaAssignment(const sar_yolo_detector::AreaTaskAssignment &input,
+                             sar_yolo_detector::TaskExecutionStatus *ack) {
     bool replay_accepted = false;
     if (checkReplay(input, true, ack, &replay_accepted)) return replay_accepted;
     auto assignment = input;
     ValidationError error;
     AssignmentRecord *existing = nullptr;
     if (!validateCommon(assignment, true, &existing, &error)) return reject(input, error, ack);
-    if (assignment.command == sar_mission_interfaces::AreaTaskAssignment::CANCEL) {
+    if (assignment.command == sar_yolo_detector::AreaTaskAssignment::CANCEL) {
       const auto &previous = existing->area;
       assignment.task_type = previous.task_type;
       assignment.observation_uuid = previous.observation_uuid;
@@ -1283,9 +1283,9 @@ class DecisionBridge {
       assignment.executor_profile = previous.executor_profile;
       assignment.required_payload = previous.required_payload;
     }
-    sar_mission_interfaces::PerceptionCandidate *candidate = nullptr;
+    sar_yolo_detector::PerceptionCandidate *candidate = nullptr;
     if (!validateCandidate(assignment, &candidate, &error)) return reject(input, error, ack);
-    if (assignment.command != sar_mission_interfaces::AreaTaskAssignment::CANCEL) {
+    if (assignment.command != sar_yolo_detector::AreaTaskAssignment::CANCEL) {
       if (assignment.global_region_uuid.empty())
         assignment.global_region_uuid = assignment.observation_uuid;
       if (assignment.source_observation_uuids.empty())
@@ -1301,7 +1301,7 @@ class DecisionBridge {
       }
       if (assignment.global_region_uuid.empty() || evidence_ids.empty() ||
           !evidence_list_valid) {
-        error.code = sar_mission_interfaces::TaskExecutionStatus::INVALID_CONSTRAINT;
+        error.code = sar_yolo_detector::TaskExecutionStatus::INVALID_CONSTRAINT;
         error.reason = "area task global region/evidence UUID set is invalid";
         return reject(input, error, ack);
       }
@@ -1324,7 +1324,7 @@ class DecisionBridge {
           assignment.side_overlap < 0.0F || assignment.side_overlap >= 1.0F ||
           (assignment.preferred_entry_pose_valid &&
            !validPose(assignment.preferred_entry_pose, required_target_frame_))) {
-        error.code = sar_mission_interfaces::TaskExecutionStatus::INVALID_CONSTRAINT;
+        error.code = sar_yolo_detector::TaskExecutionStatus::INVALID_CONSTRAINT;
         error.reason = "area geometry or survey parameters are invalid";
         return reject(input, error, ack);
       }
@@ -1333,12 +1333,12 @@ class DecisionBridge {
     record.sequence = assignment.assignment_sequence;
     record.active = true;
     record.is_area = true;
-    record.state = sar_mission_interfaces::TaskExecutionStatus::DISPATCHED_TO_EXECUTOR;
+    record.state = sar_yolo_detector::TaskExecutionStatus::DISPATCHED_TO_EXECUTOR;
     record.dispatch_deadline = ros::Time::now() + ros::Duration(executor_ack_timeout_sec_);
     record.decision_key = decisionKey(assignment);
     record.area = assignment;
     *ack = makeStatus(assignment, record.state,
-        sar_mission_interfaces::TaskExecutionStatus::REASON_NONE,
+        sar_yolo_detector::TaskExecutionStatus::REASON_NONE,
         "durably recorded and dispatched; awaiting executor acceptance");
     commitAccepted(input, true, record, *ack);
     assignments_[assignment.assignment_uuid] = record;
@@ -1349,29 +1349,29 @@ class DecisionBridge {
     return true;
   }
 
-  void assignmentCallback(const sar_mission_interfaces::TaskAssignment::ConstPtr &message) {
-    sar_mission_interfaces::TaskExecutionStatus ack;
+  void assignmentCallback(const sar_yolo_detector::TaskAssignment::ConstPtr &message) {
+    sar_yolo_detector::TaskExecutionStatus ack;
     processPointAssignment(*message, &ack);
   }
   void areaAssignmentCallback(
-      const sar_mission_interfaces::AreaTaskAssignment::ConstPtr &message) {
-    sar_mission_interfaces::TaskExecutionStatus ack;
+      const sar_yolo_detector::AreaTaskAssignment::ConstPtr &message) {
+    sar_yolo_detector::TaskExecutionStatus ack;
     processAreaAssignment(*message, &ack);
   }
-  bool submitAssignmentCallback(sar_mission_interfaces::SubmitTaskAssignment::Request &request,
-      sar_mission_interfaces::SubmitTaskAssignment::Response &response) {
+  bool submitAssignmentCallback(sar_yolo_detector::SubmitTaskAssignment::Request &request,
+      sar_yolo_detector::SubmitTaskAssignment::Response &response) {
     response.accepted = processPointAssignment(request.assignment, &response.acknowledgment);
     return true;
   }
   bool submitAreaAssignmentCallback(
-      sar_mission_interfaces::SubmitAreaTaskAssignment::Request &request,
-      sar_mission_interfaces::SubmitAreaTaskAssignment::Response &response) {
+      sar_yolo_detector::SubmitAreaTaskAssignment::Request &request,
+      sar_yolo_detector::SubmitAreaTaskAssignment::Response &response) {
     response.accepted = processAreaAssignment(request.assignment, &response.acknowledgment);
     return true;
   }
 
   bool validTransition(const std::uint8_t current, const std::uint8_t next) const {
-    using Status = sar_mission_interfaces::TaskExecutionStatus;
+    using Status = sar_yolo_detector::TaskExecutionStatus;
     if (current == next) return true;
     if (current == Status::DISPATCHED_TO_EXECUTOR)
       return next == Status::ACCEPTED_BY_EXECUTOR || next == Status::FAILED ||
@@ -1389,14 +1389,14 @@ class DecisionBridge {
   }
 
   bool terminalState(const std::uint8_t state) const {
-    using Status = sar_mission_interfaces::TaskExecutionStatus;
+    using Status = sar_yolo_detector::TaskExecutionStatus;
     return state == Status::SUCCEEDED || state == Status::FAILED ||
            state == Status::CANCELLED || state == Status::PREEMPTED ||
            state == Status::EXECUTOR_TIMEOUT;
   }
 
   void executorStatusCallback(
-      const sar_mission_interfaces::TaskExecutionStatus::ConstPtr &message) {
+      const sar_yolo_detector::TaskExecutionStatus::ConstPtr &message) {
     auto found = assignments_.find(message->assignment_uuid);
     if (!executorHeartbeatFresh() || found == assignments_.end() ||
         message->aircraft.mission_id != mission_id_ || message->aircraft.uav_id != uav_id_ ||
@@ -1407,7 +1407,7 @@ class DecisionBridge {
     if (message->executor_status_sequence <= record.executor_status_sequence) return;
     if (!validTransition(record.state, message->state)) {
       auto rejected = makeStatus(record, record.state,
-          sar_mission_interfaces::TaskExecutionStatus::INVALID_STATE_TRANSITION,
+          sar_yolo_detector::TaskExecutionStatus::INVALID_STATE_TRANSITION,
           "executor attempted an illegal task state transition");
       persistAndPublishStatus(rejected);
       return;
@@ -1418,7 +1418,7 @@ class DecisionBridge {
     record.state = message->state;
     record.executor_status_sequence = message->executor_status_sequence;
     record.active = !terminalState(message->state);
-    sar_mission_interfaces::TaskExecutionStatus output = *message;
+    sar_yolo_detector::TaskExecutionStatus output = *message;
     output.header.stamp = ros::Time::now();
     output.status_sequence = ++status_sequence_;
     output.aircraft = identity();
@@ -1444,7 +1444,7 @@ class DecisionBridge {
   }
 
   void executorHeartbeatCallback(
-      const sar_mission_interfaces::ExecutorHeartbeat::ConstPtr &message) {
+      const sar_yolo_detector::ExecutorHeartbeat::ConstPtr &message) {
     const auto &capabilities = message->capabilities;
     const double stamp_age = message->header.stamp.isZero()
         ? std::numeric_limits<double>::infinity()
@@ -1487,13 +1487,13 @@ class DecisionBridge {
   }
 
   void reconcileExecutorState() {
-    std::unordered_map<std::string, sar_mission_interfaces::TaskExecutionStatus> executor_active;
+    std::unordered_map<std::string, sar_yolo_detector::TaskExecutionStatus> executor_active;
     bool orphaned = false;
     for (const auto &status : executor_heartbeat_.active_tasks) {
       const bool active_state =
-          status.state == sar_mission_interfaces::TaskExecutionStatus::ACCEPTED_BY_EXECUTOR ||
-          status.state == sar_mission_interfaces::TaskExecutionStatus::QUEUED ||
-          status.state == sar_mission_interfaces::TaskExecutionStatus::EXECUTING;
+          status.state == sar_yolo_detector::TaskExecutionStatus::ACCEPTED_BY_EXECUTOR ||
+          status.state == sar_yolo_detector::TaskExecutionStatus::QUEUED ||
+          status.state == sar_yolo_detector::TaskExecutionStatus::EXECUTING;
       if (status.assignment_uuid.empty() || status.assignment_sequence == 0U ||
           status.executor_status_sequence == 0U || !active_state ||
           status.aircraft.mission_id != mission_id_ ||
@@ -1515,9 +1515,9 @@ class DecisionBridge {
       const auto remote = executor_active.find(entry.first);
       if (remote == executor_active.end()) {
         record.active = false;
-        record.state = sar_mission_interfaces::TaskExecutionStatus::FAILED;
+        record.state = sar_yolo_detector::TaskExecutionStatus::FAILED;
         auto status = makeStatus(record, record.state,
-            sar_mission_interfaces::TaskExecutionStatus::RECOVERY_MISMATCH,
+            sar_yolo_detector::TaskExecutionStatus::RECOVERY_MISMATCH,
             "persisted active task is absent from executor recovery snapshot");
         store_->begin();
         try {
@@ -1532,17 +1532,17 @@ class DecisionBridge {
         status_publisher_.publish(status);
       } else if (remote->second.assignment_sequence != record.sequence ||
                  (remote->second.state !=
-                      sar_mission_interfaces::TaskExecutionStatus::ACCEPTED_BY_EXECUTOR &&
+                      sar_yolo_detector::TaskExecutionStatus::ACCEPTED_BY_EXECUTOR &&
                   remote->second.state !=
-                      sar_mission_interfaces::TaskExecutionStatus::QUEUED &&
+                      sar_yolo_detector::TaskExecutionStatus::QUEUED &&
                   remote->second.state !=
-                      sar_mission_interfaces::TaskExecutionStatus::EXECUTING)) {
+                      sar_yolo_detector::TaskExecutionStatus::EXECUTING)) {
         orphaned = true;
       } else {
         record.executor_status_sequence = remote->second.executor_status_sequence;
         record.state = remote->second.state;
         auto status = makeStatus(record, record.state,
-            sar_mission_interfaces::TaskExecutionStatus::REASON_NONE,
+            sar_yolo_detector::TaskExecutionStatus::REASON_NONE,
             "active task reconciled with executor after bridge restart");
         status.executor_status_sequence = record.executor_status_sequence;
         store_->begin();
@@ -1568,12 +1568,12 @@ class DecisionBridge {
     for (auto &entry : assignments_) {
       AssignmentRecord &record = entry.second;
       if (!record.active || record.state !=
-              sar_mission_interfaces::TaskExecutionStatus::DISPATCHED_TO_EXECUTOR ||
+              sar_yolo_detector::TaskExecutionStatus::DISPATCHED_TO_EXECUTOR ||
           record.dispatch_deadline.isZero() || now <= record.dispatch_deadline) continue;
       record.active = false;
-      record.state = sar_mission_interfaces::TaskExecutionStatus::EXECUTOR_TIMEOUT;
+      record.state = sar_yolo_detector::TaskExecutionStatus::EXECUTOR_TIMEOUT;
       auto status = makeStatus(record, record.state,
-          sar_mission_interfaces::TaskExecutionStatus::EXECUTOR_ACK_TIMEOUT,
+          sar_yolo_detector::TaskExecutionStatus::EXECUTOR_ACK_TIMEOUT,
           "executor did not acknowledge the durable command before its deadline");
       store_->begin();
       try {
@@ -1589,8 +1589,8 @@ class DecisionBridge {
     }
   }
 
-  bool snapshotCallback(sar_mission_interfaces::GetPerceptionSnapshot::Request &,
-      sar_mission_interfaces::GetPerceptionSnapshot::Response &response) {
+  bool snapshotCallback(sar_yolo_detector::GetPerceptionSnapshot::Request &,
+      sar_yolo_detector::GetPerceptionSnapshot::Response &response) {
     response.available = perception_available_;
     response.snapshot.header.stamp = ros::Time::now();
     response.snapshot.array_sequence = candidate_sequence_;
@@ -1598,29 +1598,29 @@ class DecisionBridge {
     response.snapshot.source = identity();
     for (const auto &entry : candidate_cache_) response.snapshot.candidates.push_back(entry.second);
     std::sort(response.snapshot.candidates.begin(), response.snapshot.candidates.end(),
-        [](const sar_mission_interfaces::PerceptionCandidate &left,
-           const sar_mission_interfaces::PerceptionCandidate &right) {
+        [](const sar_yolo_detector::PerceptionCandidate &left,
+           const sar_yolo_detector::PerceptionCandidate &right) {
           return left.observation_uuid < right.observation_uuid;
         });
     return true;
   }
 
-  bool evidenceCallback(sar_mission_interfaces::GetEvidenceCrop::Request &request,
-      sar_mission_interfaces::GetEvidenceCrop::Response &response) {
+  bool evidenceCallback(sar_yolo_detector::GetEvidenceCrop::Request &request,
+      sar_yolo_detector::GetEvidenceCrop::Response &response) {
     response.available = false;
     if (request.evidence_uuid.empty() ||
         request.source.mission_id != mission_id_ ||
         request.source.uav_id != uav_id_ ||
         request.source.session_uuid != session_uuid_ ||
         source_evidence_service_.empty()) return true;
-    sar_mission_interfaces::GetEvidenceCrop local;
+    sar_yolo_detector::GetEvidenceCrop local;
     local.request = request;
     if (source_evidence_client_.call(local)) response = local.response;
     return true;
   }
 
-  bool statusesCallback(sar_mission_interfaces::GetTaskStatuses::Request &request,
-      sar_mission_interfaces::GetTaskStatuses::Response &response) {
+  bool statusesCallback(sar_yolo_detector::GetTaskStatuses::Request &request,
+      sar_yolo_detector::GetTaskStatuses::Response &response) {
     const std::uint32_t limit = request.limit == 0U ? 100U : request.limit;
     bool has_more = false;
     response.statuses = store_->loadStatuses(request.assignment_uuid,
@@ -1633,7 +1633,7 @@ class DecisionBridge {
   void heartbeatTimerCallback(const ros::TimerEvent &) { publishHeartbeat(); }
 
   void publishHeartbeat() {
-    sar_mission_interfaces::UavDecisionHeartbeat heartbeat;
+    sar_yolo_detector::UavDecisionHeartbeat heartbeat;
     heartbeat.header.stamp = ros::Time::now();
     heartbeat.aircraft = identity();
     heartbeat.interface_version = kInterfaceVersion;
@@ -1646,14 +1646,14 @@ class DecisionBridge {
     heartbeat.not_ready_reason = reason;
     if (!assignment_downlink_enabled_) {
       heartbeat.bridge_state = perception_uplink_enabled_
-          ? sar_mission_interfaces::UavDecisionHeartbeat::READY
-          : sar_mission_interfaces::UavDecisionHeartbeat::DEGRADED;
+          ? sar_yolo_detector::UavDecisionHeartbeat::READY
+          : sar_yolo_detector::UavDecisionHeartbeat::DEGRADED;
     } else {
       heartbeat.bridge_state = recovering_
-          ? sar_mission_interfaces::UavDecisionHeartbeat::RECOVERING
+          ? sar_yolo_detector::UavDecisionHeartbeat::RECOVERING
           : (heartbeat.ready_for_assignments
-                 ? sar_mission_interfaces::UavDecisionHeartbeat::READY
-                 : sar_mission_interfaces::UavDecisionHeartbeat::DEGRADED);
+                 ? sar_yolo_detector::UavDecisionHeartbeat::READY
+                 : sar_yolo_detector::UavDecisionHeartbeat::DEGRADED);
     }
     heartbeat.heartbeat_sequence = ++heartbeat_sequence_;
     heartbeat.last_candidate_sequence = candidate_sequence_;
@@ -1686,7 +1686,7 @@ class DecisionBridge {
 
   std::string mission_id_, uav_id_, session_uuid_, bridge_role_;
   std::string coordinate_contract_, required_target_frame_;
-  sar_mission_interfaces::GeoReference geo_reference_;
+  sar_yolo_detector::GeoReference geo_reference_;
   bool geo_reference_validated_{false};
   std::string source_task_candidates_topic_, source_flood_regions_topic_;
   std::string outbound_candidates_topic_, inbound_assignment_topic_;
@@ -1716,12 +1716,12 @@ class DecisionBridge {
   std::unordered_set<std::string> allowed_decision_ids_;
   std::unordered_map<std::string, std::uint64_t> decision_sequences_;
   std::unordered_map<std::string, AssignmentRecord> assignments_;
-  std::unordered_map<std::string, sar_mission_interfaces::PerceptionCandidate> candidate_cache_;
+  std::unordered_map<std::string, sar_yolo_detector::PerceptionCandidate> candidate_cache_;
   std::unordered_map<std::string, std::string> candidate_sources_;
   std::unordered_map<std::string, std::uint64_t> candidate_event_sequences_;
   std::unordered_map<std::string, std::uint64_t> source_array_sequences_;
   std::unordered_set<std::string> expired_observations_;
-  sar_mission_interfaces::ExecutorHeartbeat executor_heartbeat_;
+  sar_yolo_detector::ExecutorHeartbeat executor_heartbeat_;
   bool have_executor_heartbeat_{false}, recovering_{true}, perception_available_{false};
   std::string recovery_reason_;
   ros::Time last_candidate_at_, last_executor_heartbeat_at_;

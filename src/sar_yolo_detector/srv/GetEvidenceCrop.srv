@@ -1,0 +1,7 @@
+sar_yolo_detector/MissionIdentity source
+string evidence_uuid
+---
+bool available
+sensor_msgs/CompressedImage image
+string source_image_sha256
+sensor_msgs/RegionOfInterest roi

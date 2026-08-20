@@ -8,10 +8,10 @@
 
 #include <ros/serialization.h>
 
-#include <sar_mission_interfaces/AreaTaskAssignment.h>
-#include <sar_mission_interfaces/PerceptionCandidate.h>
-#include <sar_mission_interfaces/TaskAssignment.h>
-#include <sar_mission_interfaces/TaskExecutionStatus.h>
+#include <sar_yolo_detector/AreaTaskAssignment.h>
+#include <sar_yolo_detector/PerceptionCandidate.h>
+#include <sar_yolo_detector/TaskAssignment.h>
+#include <sar_yolo_detector/TaskExecutionStatus.h>
 
 struct sqlite3;
 
@@ -30,8 +30,8 @@ struct PersistedAssignment {
   std::string executor_session_uuid;
   std::uint64_t executor_status_sequence{0};
   std::int64_t dispatch_deadline_ns{0};
-  sar_mission_interfaces::TaskAssignment point_assignment;
-  sar_mission_interfaces::AreaTaskAssignment area_assignment;
+  sar_yolo_detector::TaskAssignment point_assignment;
+  sar_yolo_detector::AreaTaskAssignment area_assignment;
 };
 
 struct PersistedReplay {
@@ -39,12 +39,12 @@ struct PersistedReplay {
   bool accepted{false};
   bool is_area{false};
   std::string input_digest;
-  sar_mission_interfaces::TaskExecutionStatus acknowledgment;
+  sar_yolo_detector::TaskExecutionStatus acknowledgment;
 };
 
 struct PersistedCandidate {
   std::string source_key;
-  sar_mission_interfaces::PerceptionCandidate candidate;
+  sar_yolo_detector::PerceptionCandidate candidate;
 };
 
 class MissionStateStore {
@@ -67,7 +67,7 @@ class MissionStateStore {
 
   void saveReplay(const std::string &replay_key, bool is_area,
                   const std::string &input_digest, bool accepted,
-                  const sar_mission_interfaces::TaskExecutionStatus &ack);
+                  const sar_yolo_detector::TaskExecutionStatus &ack);
   PersistedReplay loadReplay(const std::string &replay_key) const;
 
   bool nonceExists(const std::string &key_id, const std::string &nonce) const;
@@ -75,18 +75,18 @@ class MissionStateStore {
                  const std::string &replay_key);
 
   void saveStatus(
-      const sar_mission_interfaces::TaskExecutionStatus &status);
-  std::vector<sar_mission_interfaces::TaskExecutionStatus> loadStatuses(
+      const sar_yolo_detector::TaskExecutionStatus &status);
+  std::vector<sar_yolo_detector::TaskExecutionStatus> loadStatuses(
       const std::string &assignment_uuid, std::uint64_t since_sequence,
       std::uint32_t limit, bool *has_more,
       std::uint64_t *next_sequence) const;
 
   void replaceCandidateSource(
       const std::string &source_key,
-      const std::vector<sar_mission_interfaces::PerceptionCandidate> &candidates);
+      const std::vector<sar_yolo_detector::PerceptionCandidate> &candidates);
   void saveCandidate(
       const std::string &source_key,
-      const sar_mission_interfaces::PerceptionCandidate &candidate);
+      const sar_yolo_detector::PerceptionCandidate &candidate);
   void eraseCandidate(const std::string &source_key,
                       const std::string &observation_uuid);
   void eraseCandidateSource(const std::string &source_key);
