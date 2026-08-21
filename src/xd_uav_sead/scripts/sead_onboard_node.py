@@ -35,6 +35,11 @@ import rospy
 import multiprocessing as mp
 import xd_uav_sead.planning.DPGA as DPGA
 from xd_uav_sead.airspace.airspace_manager import AirspaceManager, ZoneDef
+from xd_uav_sead.airspace.dynamic_nofly import (
+    DynamicNoFlyConfig,
+    DynamicNoFlyZoneReceiver,
+)
+from xd_uav_sead.msg import NoFlyZone
 from xd_uav_sead.formation.formation_control import (
     FormationConfig,
     FormationController,
@@ -204,6 +209,7 @@ def activate_sead_mission(
             log_jsonl=log_jsonl,
             airspace=airspace,
             control_mode=simple_strike_control_mode,
+            reference_frame=UAV.reference_frame,
         )
         if getattr(simple_manager, "simple_strike_control_mode", "") == "swiftwing_vector":
             UAV.simple_strike_control_backend = "swiftwing_vector"
@@ -256,6 +262,57 @@ def activate_sead_mission(
                 rospy.logwarn(f"[SEAD] OFFBOARD switch failed: {ex}")
         return None, None, height, waypoint_radius, simple_manager, "simple_strike"
 
+    use_single_route = sead_runtime_mode_env in [
+        "single_route",
+        "single_uav_route",
+    ]
+    if use_single_route:
+        runtime_message = (
+            "[SEAD] runtime=single_route; distributed GA intentionally "
+            "disabled for this one-aircraft route"
+        )
+        xbee.send_data_async(
+            gcs_address,
+            data.pack_info_packet(runtime_message),
+        )
+        rospy.logwarn(runtime_message)
+        main_process = DPGA.main_process(
+            sead_info[0],
+            sead_info[1],
+            sead_info[3],
+            u2u_address,
+            mp.Queue(),
+            mp.Queue(),
+            airspace=airspace,
+            uav_id=uav_id,
+            control_mode=sead_control_mode,
+            zone_clearance=float(
+                rospy.get_param("~airspace/default_clearance", 40.0)
+            ),
+            reference_frame=UAV.reference_frame,
+        )
+        if not main_process.configure_single_uav_route(
+            UAV, mission_type=int(UAV.type)
+        ):
+            rospy.logerr(
+                "[SEAD] single_route could not produce a safe initial path"
+            )
+            if UAV.frame_type == FrameType.Fixed_wing and UAV.armed:
+                UAV.enter_fail_closed_loiter()
+        elif not UAV.mode == Mode.GUIDED.name:
+            try:
+                UAV.set_mode("OFFBOARD")
+            except Exception as ex:
+                rospy.logwarn(f"[SEAD] OFFBOARD switch failed: {ex}")
+        return (
+            main_process,
+            None,
+            height,
+            waypoint_radius,
+            None,
+            "single_route",
+        )
+
     runtime_message = (
         f"[SEAD] runtime=dpga_sead, SEAD_CONTROL_MODE={sead_control_mode}"
     )
@@ -292,6 +349,8 @@ def activate_sead_mission(
         airspace=airspace,
         uav_id=uav_id,
         control_mode=sead_control_mode,
+        zone_clearance=float(rospy.get_param("~airspace/default_clearance", 40.0)),
+        reference_frame=UAV.reference_frame,
     )
     if not UAV.mode == Mode.GUIDED.name:
         try:
@@ -596,6 +655,57 @@ if __name__ == "__main__":
     UAV = Drone(uav_name=uav_name)
     # onboard.py 接入 AirspaceManager，并对 GCS 回 Ack
     airspace = AirspaceManager()
+    dynamic_nofly_config = DynamicNoFlyConfig(
+        expected_frame=rospy.get_param(
+            "~dynamic_nofly/expected_frame", UAV.reference_frame
+        ),
+        max_message_age=float(
+            rospy.get_param("~dynamic_nofly/max_message_age", 0.5)
+        ),
+        future_stamp_tolerance=float(
+            rospy.get_param("~dynamic_nofly/future_stamp_tolerance", 0.05)
+        ),
+        max_ttl=float(rospy.get_param("~dynamic_nofly/max_ttl", 60.0)),
+        min_altitude_limit=float(
+            rospy.get_param("~dynamic_nofly/min_altitude_limit", -1000.0)
+        ),
+        max_altitude_limit=float(
+            rospy.get_param("~dynamic_nofly/max_altitude_limit", 10000.0)
+        ),
+        max_abs_coordinate=float(
+            rospy.get_param("~dynamic_nofly/max_abs_coordinate", 100000.0)
+        ),
+        min_polygon_area=float(
+            rospy.get_param("~dynamic_nofly/min_polygon_area", 1.0)
+        ),
+        max_vertices=int(rospy.get_param("~dynamic_nofly/max_vertices", 64)),
+    )
+    dynamic_nofly = DynamicNoFlyZoneReceiver(airspace, dynamic_nofly_config)
+
+    def dynamic_nofly_callback(message):
+        accepted = dynamic_nofly.accept(message, rospy.Time.now().to_sec())
+        if accepted:
+            rospy.loginfo(
+                f"[AIRSPACE][ROS] accepted op={message.operation} zone={message.zone_id}"
+            )
+        else:
+            rospy.logerr(
+                f"[AIRSPACE][ROS] rejected op={message.operation} zone={message.zone_id}"
+            )
+
+    dynamic_nofly_topic = rospy.get_param(
+        "~dynamic_nofly/topic", "dynamic_nofly_zone"
+    )
+    dynamic_nofly_sub = rospy.Subscriber(
+        dynamic_nofly_topic,
+        NoFlyZone,
+        dynamic_nofly_callback,
+        queue_size=10,
+    )
+    rospy.logwarn(
+        f"[AIRSPACE][ROS] topic={rospy.resolve_name(dynamic_nofly_topic)}, "
+        f"frame={dynamic_nofly_config.expected_frame}, schema=1"
+    )
 
     # --- Communication setting ---
     data = packet_processing(uav_id)
@@ -637,6 +747,9 @@ if __name__ == "__main__":
     pending_task_inserts = []  # list of [E,N]
     pending_sead_payload = None
     pending_sead_received_time = 0.0
+    airspace_safety_latched = False
+    airspace_safety_reason = ""
+    airspace_last_loiter_request = 0.0
     formation_config = FormationConfig(
         spacing=float(rospy.get_param("~formation/spacing", 220.0)),
         standoff_distance=float(
@@ -707,12 +820,84 @@ if __name__ == "__main__":
         except Exception as ex:
             rospy.logwarn_throttle(2.0, f"[LOG] jsonl write failed: {ex}")
 
+    def latch_airspace_safety(reason, event=None):
+        global airspace_safety_latched, airspace_safety_reason
+        global airspace_last_loiter_request
+        if not airspace_safety_latched:
+            airspace_safety_latched = True
+            airspace_safety_reason = str(reason)
+            log_jsonl(
+                "dynamic_nofly_safety_latched",
+                reason=airspace_safety_reason,
+                event=(event.__dict__ if event is not None else None),
+                action="LOITER",
+            )
+        now_wall = time()
+        if (
+            UAV.frame_type == FrameType.Fixed_wing
+            and UAV.armed
+            and UAV.mode != "LOITER"
+            and now_wall - airspace_last_loiter_request >= 1.0
+        ):
+            airspace_last_loiter_request = now_wall
+            try:
+                if hasattr(UAV, "enter_fail_closed_loiter"):
+                    UAV.enter_fail_closed_loiter()
+                else:
+                    UAV.set_mode("LOITER")
+            except Exception as ex:
+                rospy.logerr_throttle(
+                    1.0, f"[AIRSPACE] LOITER request failed: {ex}"
+                )
+        rospy.logerr_throttle(
+            1.0,
+            f"[AIRSPACE] safety latched, old path rejected: {airspace_safety_reason}",
+        )
+
     # ==================== MainProgram ====================
     # Keep the idle path from busy-spinning.  Three onboard instances share the
     # simulator host with Gazebo/PX4/MAVROS, so yielding here is also part of
     # keeping their safety-critical state and service callbacks responsive.
     main_loop_rate = rospy.Rate(100)
     while not rospy.is_shutdown():
+        dynamic_nofly.poll_expirations(rospy.Time.now().to_sec())
+        while True:
+            airspace_event = dynamic_nofly.pop_event()
+            if airspace_event is None:
+                break
+            log_jsonl("dynamic_nofly_event", **airspace_event.__dict__)
+            if airspace_event.fault:
+                latch_airspace_safety(airspace_event.reason, event=airspace_event)
+                continue
+            if Mission != Message_ID.SEAD_mission:
+                continue
+            replan_result = "unchanged"
+            try:
+                if simpleStrikeManager is not None:
+                    replan_result = simpleStrikeManager.handle_airspace_update(
+                        UAV, float(UAV.local_pose[2])
+                    )
+                elif mainProcess is not None:
+                    replan_result = mainProcess.handle_airspace_update(UAV)
+            except Exception as ex:
+                replan_result = "failed"
+                rospy.logerr(f"[AIRSPACE] dynamic replan exception: {ex}")
+            log_jsonl(
+                "dynamic_nofly_replan_result",
+                revision=airspace_event.revision,
+                operation=airspace_event.operation,
+                zone_id=airspace_event.zone_id,
+                result=replan_result,
+            )
+            if replan_result == "failed":
+                latch_airspace_safety(
+                    "dynamic no-fly zone left no safe turn-constrained path",
+                    event=airspace_event,
+                )
+            elif replan_result == "replanned":
+                rospy.logwarn(
+                    f"[AIRSPACE] safe path replanned for revision {airspace_event.revision}"
+                )
         "receive data (U2U)(G2U)"
         try:
             drain_start = time()
@@ -1844,7 +2029,9 @@ if __name__ == "__main__":
                                 )
 
         elif Mission == Message_ID.SEAD_mission:  # 执行SEAD任务
-            if not formation.active:
+            if airspace_safety_latched:
+                latch_airspace_safety(airspace_safety_reason)
+            elif not formation.active:
                 if sead_runtime_mode == "simple_strike" and simpleStrikeManager is not None:
                     simpleStrikeManager.run(
                         xbee,

@@ -12,6 +12,8 @@
 
   <depend>rospy</depend>
   <depend>geometry_msgs</depend>
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
   <depend>mavros_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
@@ -23,8 +25,11 @@
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>xd_uav_controller</exec_depend>
+  <exec_depend>xd_uav_control_manager</exec_depend>
+  <exec_depend>xd_uav_state_estimators</exec_depend>
 
   <test_depend>python3-nose</test_depend>
+  <test_depend>rostest</test_depend>
 
   <export/>
 </package>

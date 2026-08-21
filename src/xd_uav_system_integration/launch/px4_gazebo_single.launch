@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="world_name" default="grass_plane"/>
+  <arg name="gui" default="false"/>
+  <arg name="vehicle" default="x500"/>
+  <arg name="spawn_options" default=""/>
+
+  <include file="$(find mrs_uav_gazebo_simulation)/launch/simulation.launch">
+    <arg name="world_name" value="$(arg world_name)"/>
+    <arg name="gui" value="$(arg gui)"/>
+  </include>
+
+  <node pkg="xd_uav_system_integration" type="spawn_px4_vehicle_node.py"
+        name="spawn_px4_vehicle" output="screen">
+    <param name="service" value="/mrs_drone_spawner/spawn"/>
+    <param name="request" value="1 --$(arg vehicle) $(arg spawn_options)"/>
+    <param name="timeout" value="30.0"/>
+  </node>
+</launch>

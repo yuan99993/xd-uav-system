@@ -44,6 +44,9 @@ class Drone(object):
         self.uses_external_control_manager = (
             self.control_backend == "xd_control_manager"
         )
+        self.headless_sitl_failsafe_bypass = bool(
+            rospy.get_param("~headless_sitl_failsafe_bypass", False)
+        )
         self.reference_frame = rospy.get_param(
             "~control_reference_frame", f"{uav_name}/local_origin"
         )
@@ -98,19 +101,17 @@ class Drone(object):
         self.last_setpoint_time = time()
         self.home = [0, 0, 0]
         self.home_valid = False
-        # classifier 从 mavros param 读取 PX4 机型而非死等
-        # SITL 里 param 读不到时默认多旋翼
+        # Classify from the standard MAV_TYPE parameter.  Never guess a frame
+        # type: sending multirotor controls to a fixed-wing vehicle is unsafe.
         self.frame_type = None # 初始化为 None 只等 classifier 确认
         self._classifier_attempts = 0
         while not self.frame_type:
             self._classifier_attempts += 1
             if self._classifier_attempts > 5:
-                rospy.logwarn(
-                    f"uav_classifier failed after {self._classifier_attempts} attempts, "
-                    "defaulting to Quad"
+                raise RuntimeError(
+                    "uav_classifier could not determine a supported MAV_TYPE "
+                    f"after {self._classifier_attempts - 1} attempts"
                 )
-                self.frame_type = FrameType.Quad
-                break
             self.uav_classifier()
             if not self.frame_type:
                 rospy.sleep(0.5)
@@ -130,7 +131,10 @@ class Drone(object):
             f"{self.ns_mavros}/battery", BatteryState, self.battery_callback
         )
         setpoint_topic = (
-            f"/{self.uav_name}/control/reference/setpoint"
+            rospy.get_param(
+                "~control_setpoint_topic",
+                f"/{self.uav_name}/control/reference/setpoint",
+            )
             if self.uses_external_control_manager
             else f"{self.ns_mavros}/setpoint_raw/local"
         )
@@ -193,6 +197,32 @@ class Drone(object):
             return bool(response.success)
         except (rospy.ROSException, rospy.ServiceException) as exc:
             rospy.logerr(f"[{self.uav_name}] {service_name} failed: {exc}")
+            return False
+
+    def enter_fail_closed_loiter(self):
+        """Relinquish external control, then request PX4 fixed-wing loiter."""
+        self.keepoffboard = None
+        self.defaultoffboard = None
+        if self.uses_external_control_manager:
+            # The manager owns OFFBOARD.  Its public cancellation service must
+            # complete before SEAD asks PX4 for AUTO.LOITER, preserving a single
+            # control owner throughout the fail-closed transition.
+            if not self._call_manager_trigger("cancel_offboard"):
+                rospy.logerr(
+                    f"[{self.uav_name}] cannot enter fail-closed loiter: "
+                    "control manager retained OFFBOARD"
+                )
+                return False
+        try:
+            rospy.wait_for_service(f"{self.ns_mavros}/set_mode", timeout=2.0)
+            response = rospy.ServiceProxy(
+                f"{self.ns_mavros}/set_mode", SetMode
+            )(custom_mode="AUTO.LOITER")
+            if not response.mode_sent:
+                rospy.logerr(f"[{self.uav_name}] PX4 rejected AUTO.LOITER")
+            return bool(response.mode_sent)
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            rospy.logerr(f"[{self.uav_name}] AUTO.LOITER request failed: {exc}")
             return False
 
     def state_callback(self, msg):
@@ -313,6 +343,16 @@ class Drone(object):
         if self.uses_external_control_manager:
             service_name = f"/{self.uav_name}/control_manager/takeoff"
             try:
+                if (
+                    self.frame_type == FrameType.Fixed_wing
+                    and self.headless_sitl_failsafe_bypass
+                    and not self._configure_fixedwing_takeoff_safety()
+                ):
+                    rospy.logerr(
+                        f"[{self.uav_name}] headless fixed-wing safety "
+                        "configuration failed; manager takeoff not requested"
+                    )
+                    return False
                 rospy.wait_for_service(service_name, timeout=2.0)
                 response = rospy.ServiceProxy(service_name, ManagerTakeoff)(
                     altitude=float(alt)
@@ -364,9 +404,41 @@ class Drone(object):
                 req.value.integer = value_int
             if value_real is not None:
                 req.value.real = value_real
-            client(req)
+            response = client(req)
+            if not response.success:
+                rospy.logerr(f"Param set rejected: {param_id}")
+                return False
+            return True
         except Exception as e:
             rospy.logwarn(f"Param set failed: {param_id} - {e}")
+            return False
+
+    def _configure_fixedwing_takeoff_safety(self):
+        """Configure fixed-wing loss actions, with an explicit SITL-only bypass."""
+        if self.headless_sitl_failsafe_bypass:
+            rospy.logwarn(
+                "Fixed-wing headless SITL bypass enabled: disabling RC/data-link "
+                "loss actions and airspeed preflight check for this process"
+            )
+            settings = (
+                ("CBRK_AIRSPD_CHK", 162128, None),
+                ("COM_RC_IN_MODE", 4, None),
+                ("NAV_DLL_ACT", 0, None),
+            )
+        else:
+            settings = (
+                ("NAV_RCL_ACT", 1, None),
+                ("COM_RCL_EXCEPT", 4, None),
+                ("COM_OF_LOSS_T", None, 5.0),
+                ("COM_OBL_RC_ACT", 5, None),
+            )
+        for param_id, value_int, value_real in settings:
+            if not self._set_px4_param(
+                param_id, value_int=value_int, value_real=value_real
+            ):
+                return False
+            rospy.sleep(0.2)
+        return True
 
     def set_mode(self, mode):
         """
@@ -499,26 +571,9 @@ class Drone(object):
                 # 1. 如果还在地上 (<30m)，先执行起飞
                 if self.local_pose[2] < 15.0:
                     rospy.loginfo("Fixed-wing: On ground. Setting launch params...")
-                    # self._set_px4_param("COM_OBL_ACT", value_int=0)
-                    # rospy.sleep(0.1)
-                    # self._set_px4_param("COM_OBL_RC_ACT", value_int=0)
-                    # rospy.sleep(0.1)
-                    # self._set_px4_param("COM_FAIL_ACT", value_int=0)
-                    # rospy.sleep(0.1)
-                    # self._set_px4_param("NAV_DLL_ACT", value_int=0)
-                    # rospy.sleep(0.1)
-                    # self._set_px4_param("COM_RCL_EXCEPT", value_int=4)
-                    # rospy.sleep(0.1)
-                    # self._set_px4_param("COM_RC_IN_MODE", value_int=1)
-
-                    self._set_px4_param("NAV_RCL_ACT", value_int=1)
-                    rospy.sleep(1)
-                    self._set_px4_param("COM_RCL_EXCEPT", value_int=4)
-                    rospy.sleep(1)
-                    self._set_px4_param("COM_OF_LOSS_T", value_real=5.0)
-                    rospy.sleep(1)
-                    self._set_px4_param("COM_OBL_RC_ACT", value_int=5)
-                    rospy.sleep(1)
+                    if not self._configure_fixedwing_takeoff_safety():
+                        rospy.logerr("Fixed-wing takeoff safety parameter setup failed")
+                        return False
 
                     rospy.loginfo("Fixed-wing: Switching to AUTO.TAKEOFF...")
                     try:
@@ -526,13 +581,22 @@ class Drone(object):
                         set_mode_client = rospy.ServiceProxy(
                             f"{ns_mavros}/set_mode", SetMode
                         )
-                        set_mode_client(custom_mode="AUTO.TAKEOFF")
+                        mode_response = set_mode_client(custom_mode="AUTO.TAKEOFF")
+                        if not mode_response.mode_sent:
+                            rospy.logerr("Fixed-wing AUTO.TAKEOFF mode rejected")
+                            return False
 
                         rospy.wait_for_service(f"{ns_mavros}/cmd/arming", timeout=2.0)
                         arm_client = rospy.ServiceProxy(
                             f"{ns_mavros}/cmd/arming", CommandBool
                         )
-                        arm_client(True)
+                        arm_response = arm_client(True)
+                        if not arm_response.success:
+                            rospy.logerr(
+                                "Fixed-wing arming rejected "
+                                f"(result={arm_response.result})"
+                            )
+                            return False
                     except Exception as e:
                         rospy.logerr(f"Fixed-wing Takeoff Trigger Failed: {e}")
                         return False
@@ -724,20 +788,26 @@ class Drone(object):
             return False
 
     def uav_classifier(self):
-        """读取 PX4 SITL mavros 参数进行判断"""
-        servo_1 = self.get_param("SERVO1_FUNCTION")
-        rospy.loginfo(f"[classifier] SERVO1_FUNCTION = {servo_1}")
-        if servo_1 is not None and servo_1 is not False:
-            rospy.loginfo(f"[classifier] integer = {servo_1.integer}")
-            if servo_1.integer == 4:
-                "Aileron: 4"
-                rospy.loginfo("[classifier] => Fixed_wing")
-                self.frame_type = FrameType.Fixed_wing
-            else:
-                rospy.loginfo("[classifier] => Quad")
-                self.frame_type = FrameType.Quad
+        """Classify a supported airframe from the standard MAV_TYPE parameter."""
+        mav_type_param = self.get_param("MAV_TYPE")
+        if mav_type_param is None or mav_type_param is False:
+            rospy.logwarn("[classifier] MAV_TYPE read failed; retrying")
+            return None
+
+        mav_type = int(mav_type_param.integer)
+        rospy.loginfo(f"[classifier] MAV_TYPE = {mav_type}")
+        if mav_type == 1:  # MAV_TYPE_FIXED_WING
+            self.frame_type = FrameType.Fixed_wing
+        elif mav_type in {2, 3, 4, 13, 14, 15, 20, 21}:
+            # Quadrotor, coaxial, helicopter, hexa-, octo-, tri-, deca- and
+            # dodecarotor all use the existing multirotor control path.
+            self.frame_type = FrameType.Quad
         else:
-            rospy.logwarn("[classifier] param read failed; retrying")
+            rospy.logerr(f"[classifier] unsupported MAV_TYPE = {mav_type}")
+            return None
+
+        rospy.loginfo(f"[classifier] => {self.frame_type}")
+        return self.frame_type
 
 
 

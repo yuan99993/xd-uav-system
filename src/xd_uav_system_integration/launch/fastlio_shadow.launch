@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="cloud_topic" default="/$(arg UAV_NAME)/mid360_cloud_nodelet/points"/>
+  <arg name="imu_topic" default="/$(arg UAV_NAME)/mid360_cloud_nodelet/imu"/>
+  <arg name="map_frame" default="$(arg UAV_NAME)/fastlio_origin"/>
+  <arg name="imu_frame" default="$(arg UAV_NAME)/mid360_imu"/>
+  <arg name="maximum_flight_speed_mps" default="1.50"/>
+  <arg name="maximum_horizontal_radius_m" default="2.0"/>
+  <arg name="maximum_height_m" default="2.0"/>
+
+  <include file="$(find fast_lio)/launch/mapping_px4_gazebo.launch">
+    <arg name="uav_name" value="$(arg UAV_NAME)"/>
+    <arg name="rviz" value="false"/>
+    <arg name="map_frame" value="$(arg map_frame)"/>
+    <arg name="body_frame" value="$(arg imu_frame)"/>
+    <arg name="publish_tf" value="false"/>
+  </include>
+  <!-- Overrides come from the checked MRS x500 Mid-360 model, not relabeling. -->
+  <param name="/$(arg UAV_NAME)/fastlio/common/lid_topic" value="$(arg cloud_topic)"/>
+  <param name="/$(arg UAV_NAME)/fastlio/common/imu_topic" value="$(arg imu_topic)"/>
+  <rosparam param="/$(arg UAV_NAME)/fastlio/mapping/extrinsic_T">[-0.011, -0.02329, 0.081845]</rosparam>
+  <rosparam param="/$(arg UAV_NAME)/fastlio/mapping/extrinsic_R">[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]</rosparam>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_system_integration" type="fastlio_shadow_gate.py"
+          name="fastlio_shadow_gate" output="screen" required="true">
+      <param name="odometry_topic" value="fastlio/Odometry"/>
+      <param name="gated_odometry_topic" value="fastlio_gated/Odometry"/>
+      <param name="expected_parent_frame" value="$(arg map_frame)"/>
+      <param name="expected_child_frame" value="$(arg imu_frame)"/>
+      <param name="odometry_timeout_s" value="0.30"/>
+      <param name="minimum_odometry_rate_hz" value="5.0"/>
+      <param name="vehicle_state_timeout_s" value="0.50"/>
+      <param name="maximum_ground_speed_mps" value="0.50"/>
+      <param name="maximum_flight_speed_mps" value="$(arg maximum_flight_speed_mps)"/>
+      <param name="maximum_horizontal_radius_m" value="$(arg maximum_horizontal_radius_m)"/>
+      <param name="minimum_height_m" value="-0.50"/>
+      <param name="maximum_height_m" value="$(arg maximum_height_m)"/>
+      <param name="estimator_switch_timeout_s" value="4.0"/>
+      <param name="fallback_source" value="auto"/>
+    </node>
+  </group>
+</launch>

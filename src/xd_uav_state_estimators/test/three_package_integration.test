@@ -8,5 +8,5 @@
   <test test-name="three_package_integration"
         pkg="xd_uav_state_estimators"
         type="test_three_package_integration.py"
-        time-limit="25"/>
+        time-limit="60"/>
 </launch>

@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="ego_id" default="0"/>
+  <arg name="common_frame" default="world"/>
+
+  <!-- Software-only world map for the PX4/Gazebo integration test. It is not
+       a second vehicle simulator and never publishes odometry or control. -->
+  <node pkg="map_generator" type="random_forest" name="d1_random_forest"
+        output="screen" required="true">
+    <param name="map/x_size" value="30.0"/>
+    <param name="map/y_size" value="20.0"/>
+    <param name="map/z_size" value="5.0"/>
+    <param name="map/resolution" value="0.1"/>
+    <param name="map/obs_num" value="1"/>
+    <param name="map/circle_num" value="0"/>
+    <param name="ObstacleShape/lower_rad" value="0.20"/>
+    <param name="ObstacleShape/upper_rad" value="0.30"/>
+    <param name="ObstacleShape/lower_hei" value="2.0"/>
+    <param name="ObstacleShape/upper_hei" value="3.0"/>
+    <param name="sensing/rate" value="10.0"/>
+    <param name="min_distance" value="1.0"/>
+  </node>
+
+  <include file="$(find xd_uav_ego_bridge)/launch/ego_pointcloud_adapter.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="input_topic" value="/map_generator/global_cloud"/>
+    <arg name="input_frame" value="$(arg common_frame)"/>
+    <arg name="common_frame" value="$(arg common_frame)"/>
+    <arg name="output_topic" value="/drone_$(arg ego_id)_ego/cloud_world"/>
+    <arg name="cloud_timeout" value="0.30"/>
+    <arg name="minimum_sensor_range" value="0.0"/>
+    <arg name="restamp_zero_timestamp" value="true"/>
+  </include>
+</launch>

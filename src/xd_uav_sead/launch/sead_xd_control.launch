@@ -12,6 +12,10 @@
   <arg name="shared_frame_offset_x" default="0.0"/>
   <arg name="shared_frame_offset_y" default="0.0"/>
   <arg name="shared_frame_offset_z" default="0.0"/>
+  <arg name="control_setpoint_topic"
+       default="/$(arg uav_name)/control/reference/setpoint"/>
+  <arg name="control_reference_frame" default="$(arg uav_name)/odom"/>
+  <arg name="simple_goal_topic" default="/move_base_simple/goal"/>
 
   <!-- PX4, MAVROS and the simulator must already be running. Do not run this
        beside mrs_uav_core: both stacks own /uavX/control_manager. -->
@@ -28,6 +32,7 @@
     <include file="$(find xd_uav_control_manager)/launch/multirotor_system.launch">
       <arg name="UAV_NAME" value="$(arg uav_name)"/>
       <arg name="controller_config" value="$(arg controller_config)"/>
+      <arg name="simple_goal_topic" value="$(arg simple_goal_topic)"/>
     </include>
   </group>
 
@@ -43,7 +48,8 @@
       <param name="uav_name" value="$(arg uav_name)"/>
       <param name="use_simulation" value="true"/>
       <param name="control_backend" value="xd_control_manager"/>
-      <param name="control_reference_frame" value="$(arg uav_name)/odom"/>
+      <param name="control_setpoint_topic" value="$(arg control_setpoint_topic)"/>
+      <param name="control_reference_frame" value="$(arg control_reference_frame)"/>
       <param name="shared_frame/enabled" value="$(arg shared_frame_enabled)"/>
       <param name="shared_frame/offset_x" value="$(arg shared_frame_offset_x)"/>
       <param name="shared_frame/offset_y" value="$(arg shared_frame_offset_y)"/>

@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Acceptance-only composition. PX4_PLANE_SDF must point to the matching
+       upstream-generated plane.sdf; no model or simulator file is copied. -->
+  <arg name="uav_name" default="uav1"/>
+  <arg name="plane_sdf" default="$(optenv PX4_PLANE_SDF)"/>
+  <arg name="world"
+       default="$(find mrs_gazebo_common_resources)/worlds/grass_plane.world"/>
+  <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
+
+  <include file="$(find px4)/launch/posix_sitl.launch">
+    <arg name="vehicle" value="plane"/>
+    <arg name="sdf" value="$(arg plane_sdf)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="gui" value="false"/>
+    <arg name="interactive" value="true"/>
+    <arg name="paused" value="false"/>
+  </include>
+
+  <group ns="$(arg uav_name)">
+    <include file="$(find mavros)/launch/px4.launch">
+      <arg name="fcu_url" value="$(arg fcu_url)"/>
+      <arg name="gcs_url" value=""/>
+      <arg name="respawn_mavros" value="false"/>
+    </include>
+  </group>
+</launch>

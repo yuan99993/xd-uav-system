@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- This localization composition never arms the vehicle. -->
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="sources_config" default="$(find xd_uav_system_integration)/config/x500_mid360_sources.yaml"/>
+  <arg name="algorithm_config" default="$(find xd_uav_system_integration)/config/ground_estimator.yaml"/>
+  <arg name="calibrated_imu_frame" default="$(arg UAV_NAME)/mid360_imu_calibrated"/>
+  <arg name="enable_estimator" default="false"/>
+  <arg name="maximum_flight_speed_mps" default="1.50"/>
+  <arg name="maximum_horizontal_radius_m" default="2.0"/>
+  <arg name="maximum_height_m" default="2.0"/>
+
+  <!-- From the MRS x500 Mid-360 model: sensor mount [0,0,0.13] m plus
+       IMU offset [0.011,0.02329,-0.04412] m, both zero RPY. -->
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="base_to_mid360_imu_calibrated"
+        args="0.011 0.02329 0.08588 0 0 0 1 $(arg UAV_NAME)/base_link $(arg calibrated_imu_frame)"/>
+
+  <!-- Disabled by default; raw Fast-LIO remains invisible until the shadow
+       gate authorizes the gated relay. -->
+  <include if="$(arg enable_estimator)" file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="sources_config" value="$(arg sources_config)"/>
+  </include>
+  <include if="$(arg enable_estimator)" file="$(find xd_uav_state_estimators)/launch/estimator.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="algorithm_config" value="$(arg algorithm_config)"/>
+    <arg name="sources_config" value="$(arg sources_config)"/>
+  </include>
+  <include file="$(find xd_uav_system_integration)/launch/fastlio_shadow.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="imu_frame" value="$(arg calibrated_imu_frame)"/>
+    <arg name="maximum_flight_speed_mps" value="$(arg maximum_flight_speed_mps)"/>
+    <arg name="maximum_horizontal_radius_m" value="$(arg maximum_horizontal_radius_m)"/>
+    <arg name="maximum_height_m" value="$(arg maximum_height_m)"/>
+  </include>
+</launch>

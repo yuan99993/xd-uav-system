@@ -20,6 +20,19 @@ airspace:
   default_clearance: 40.0   # meters, 安全距离
   zone_level2d: 1           # 默认 2D 避让级别
 
+# --- 动态禁飞区 ROS 契约 ---
+# frame 必须与 onboard 的 control_reference_frame 完全一致；高度是该 ENU frame 的 z。
+dynamic_nofly:
+  topic: "dynamic_nofly_zone"
+  max_message_age: 0.5       # s; 对齐 controller safety.inputs.odometry_timeout
+  future_stamp_tolerance: 0.05  # s; 对齐 controller safety.inputs.future_stamp_tolerance
+  max_ttl: 60.0              # s; 上游必须在 valid_until 前刷新
+  min_altitude_limit: -1000.0  # m ENU
+  max_altitude_limit: 10000.0  # m ENU
+  max_abs_coordinate: 100000.0 # m ENU，拒绝明显坐标系误用
+  min_polygon_area: 1.0      # m^2
+  max_vertices: 64
+
 # --- 打击参数 ---
 strike:
   waypoint_radius: 50       # meters, 到达判定半径

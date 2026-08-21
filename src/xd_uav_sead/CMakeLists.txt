@@ -3,6 +3,7 @@ project(xd_uav_sead)
 
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
+  message_generation
   mavros_msgs
   nav_msgs
   rospy
@@ -14,9 +15,21 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_python_setup()
 
+add_message_files(
+  FILES
+  NoFlyZone.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  geometry_msgs
+  std_msgs
+)
+
 catkin_package(
   CATKIN_DEPENDS
     geometry_msgs
+    message_runtime
     mavros_msgs
     nav_msgs
     rospy
@@ -44,6 +57,9 @@ install(FILES README.md
 )
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
   catkin_add_nosetests(test/test_core_functions.py)
+  catkin_add_nosetests(test/test_dynamic_nofly.py)
   catkin_add_nosetests(test/test_rosbridge_protocol.py)
+  add_rostest(test/dynamic_nofly_ros.test)
 endif()

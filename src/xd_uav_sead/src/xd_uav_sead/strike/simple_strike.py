@@ -6,6 +6,8 @@ import time
 import dubins
 import numpy as np
 import rospy
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
 
 from xd_uav_sead.planning import pathFollowing as pf
 from xd_uav_sead.comms.communication_info import pathFollowingMethod
@@ -29,6 +31,7 @@ class SimpleStrikeManager(object):
         log_jsonl=None,
         airspace=None,
         control_mode="swiftwing_vector",
+        reference_frame=None,
     ):
         self.uav_id = int(uav_id)
         self.targets = self.canonical_targets(targets)
@@ -39,6 +42,19 @@ class SimpleStrikeManager(object):
         self.rmin = float(uav_config[2]) if uav_config else 35.0
         self.log_jsonl = log_jsonl
         self.airspace = airspace
+        self.reference_frame = str(
+            reference_frame or f"uav{self.uav_id}/local_origin"
+        )
+        self.path_pub = (
+            rospy.Publisher(
+                f"/uav{self.uav_id}/sead/planned_path",
+                Path,
+                queue_size=1,
+                latch=True,
+            )
+            if rospy.core.is_initialized()
+            else None
+        )
         self.zones_cache = []
         self.zone_clearance = max(40.0, float(self.rmin) + 20.0)
         self.approach_zone_clearance = max(40.0, float(self.zone_clearance) - 15.0)
@@ -416,7 +432,7 @@ class SimpleStrikeManager(object):
         except Exception as ex:
             rospy.logwarn(f"[SEAD] simple strike GCS feedback failed: {ex}")
 
-    def _planner_zones(self, log_if_changed=False):
+    def _planner_zones(self, log_if_changed=False, altitude=None):
         if self.airspace is None:
             self.zones_cache = []
         else:
@@ -429,6 +445,16 @@ class SimpleStrikeManager(object):
                     f"[SEAD] UAV{self.uav_id} planner zones export failed: {ex}",
                 )
 
+        if altitude is not None:
+            altitude = float(altitude)
+            self.zones_cache = [
+                zone
+                for zone in self.zones_cache
+                if float(zone.get("minAlt", -float("inf")))
+                <= altitude
+                <= float(zone.get("maxAlt", float("inf")))
+            ]
+
         zones_count = len(self.zones_cache)
         if log_if_changed and zones_count != self._last_planner_zones_count:
             self._last_planner_zones_count = zones_count
@@ -439,6 +465,24 @@ class SimpleStrikeManager(object):
                 zone_clearance=self.zone_clearance,
             )
         return self.zones_cache
+
+    def publish_planned_path(self, path, height):
+        if self.path_pub is None:
+            return
+        message = Path()
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = self.reference_frame
+        for point in path or []:
+            pose = PoseStamped()
+            pose.header = message.header
+            pose.pose.position.x = float(point[0])
+            pose.pose.position.y = float(point[1])
+            pose.pose.position.z = float(height)
+            yaw = float(point[2]) if len(point) >= 3 else 0.0
+            pose.pose.orientation.z = math.sin(0.5 * yaw)
+            pose.pose.orientation.w = math.cos(0.5 * yaw)
+            message.poses.append(pose)
+        self.path_pub.publish(message)
 
     @staticmethod
     def _point_to_segment_distance(px, py, ax, ay, bx, by):
@@ -587,7 +631,7 @@ class SimpleStrikeManager(object):
         if not sampled:
             sampled = [sp3, gp3]
         min_zone_clearance = self._path_min_zone_clearance(sampled, zones=zones)
-        clearance_too_small = min_zone_clearance < effective_clearance
+        clearance_too_small = min_zone_clearance < effective_clearance + step
         blocked = bool(dubins_blocked_raw or clearance_too_small)
 
         if dubins_blocked_raw:
@@ -765,6 +809,7 @@ class SimpleStrikeManager(object):
         log_debug=False,
         allow_unsafe_fallback=False,
         clearance_threshold=None,
+        flight_altitude=None,
     ):
         sp3 = self._as_pose3(sp)
         effective_clearance = float(
@@ -786,7 +831,9 @@ class SimpleStrikeManager(object):
         speed = max(float(speed if speed is not None else self.cruise_speed), 1.0)
         step = min(max(speed / 5.0, 0.5), 5.0)
 
-        zones = self._planner_zones(log_if_changed=True)
+        zones = self._planner_zones(
+            log_if_changed=True, altitude=flight_altitude
+        )
         detail = self._segment_or_path_blocked_detail(
             sp3,
             gp3,
@@ -810,6 +857,8 @@ class SimpleStrikeManager(object):
                     buffered_zones or zones,
                     speed,
                     sampling_step=step,
+                    clearance=effective_clearance,
+                    flight_altitude=flight_altitude,
                 )
                 if path and len(path) >= 2:
                     avoidance_min_clearance = self._path_min_zone_clearance(
@@ -817,11 +866,7 @@ class SimpleStrikeManager(object):
                         zones=zones,
                     )
                     detail["avoidance_min_zone_clearance"] = avoidance_min_clearance
-                    # Simulation tolerance: allow a small 1-3 m sampling error margin
-                    # so a path is not rejected only because sampled clearance is
-                    # slightly below the threshold in simulation.
-                    clearance_tol = 2.5
-                    if avoidance_min_clearance >= effective_clearance - clearance_tol:
+                    if avoidance_min_clearance >= effective_clearance:
                         detail["path_block_reason"] = self._path_blocked_reason_after_avoidance(
                             detail
                         )
@@ -858,6 +903,44 @@ class SimpleStrikeManager(object):
         if not path:
             path = [sp3, gp3]
         return path, False, detail
+
+    def handle_airspace_update(self, uav_ros, height):
+        """Replan an invalidated remaining path, never retaining an unsafe path."""
+        path = list(self.path_following.path or [])
+        if not self.full_path_plan_built or len(path) < 2:
+            return "unchanged"
+        index = max(0, min(int(self.full_path_path_index), len(path) - 1))
+        remaining = path[index:]
+        zones = self._planner_zones(log_if_changed=True, altitude=height)
+        if self._path_is_safe_for_clearance(
+            remaining,
+            zones=zones,
+            clearance_threshold=self.final_zone_clearance,
+        ):
+            return "unchanged"
+
+        old_path = self.path_following.path
+        self.path_following.path = []
+        self.full_path_plan_built = False
+        self.full_path_path_index = 0
+        if not self._build_full_path_for_uav(uav_ros, height):
+            self.path_following.path = []
+            self.full_path_plan_built = False
+            self.publish_planned_path([], height)
+            self._log_jsonl(
+                "dynamic_nofly_replan_failed",
+                old_path_points=len(old_path or []),
+                zones_count=len(zones),
+                action="loiter_required",
+            )
+            return "failed"
+        self._log_jsonl(
+            "dynamic_nofly_replanned",
+            old_path_points=len(old_path or []),
+            new_path_points=len(self.path_following.path or []),
+            zones_count=len(zones),
+        )
+        return "replanned"
 
     def _update_path_metrics(self, current_xy=None, speed=None, force_log=False):
         full_path = self.path_following.path or []
@@ -1561,6 +1644,7 @@ class SimpleStrikeManager(object):
             log_debug=True,
             allow_unsafe_fallback=False,
             clearance_threshold=self.final_zone_clearance,
+            flight_altitude=height,
         )
         control_path_source = "strict_control_path"
         strict_plan_failed = False
@@ -1608,6 +1692,7 @@ class SimpleStrikeManager(object):
                 log_debug=True,
                 allow_unsafe_fallback=False,
                 clearance_threshold=relaxed_control_clearance,
+                flight_altitude=height,
             )
             relaxed_path_safe_for_clearance = bool(
                 relaxed_path
@@ -1751,6 +1836,7 @@ class SimpleStrikeManager(object):
         self.eta = self.path_length / max(float(self.full_path_expected_groundspeed), 1.0)
         self.path_update_flag = True
         self.path_exhausted_reported = False
+        self.publish_planned_path(path, height)
 
         rospy.logwarn(
             f"[SEAD] UAV{self.uav_id} full-path planned to target "

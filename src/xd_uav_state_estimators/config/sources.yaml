@@ -1,12 +1,14 @@
-# Odometry适配层由本文件统一管理。每个顶层名称会自动成为标准输出路径：
-# /uavX/state_estimator_inputs/<适配器名称>/{position_xy,...,yaw_rate}
-# 后续增加VIO、LIO-SAM等Odometry输入时，只需在这里增加一项，不需要修改launch。
+# Odometry适配器只读取输入消息的时间戳和数值，不依赖其frame_id。
+# 适配器名称自动生成来源原点uavX/<名称>_origin；reference_frame指定输入
+# 数值描述的机上参考点。适配器通过静态TF查询base_link -> reference_frame，
+# 再输出统一的“来源原点 -> base_link”六类修正消息。估计器根据话题的
+# 第一段名称自动找到数据提供者，并先用该提供者自己的对齐转换到odom；
+# 每个逻辑来源通常只订阅同名适配器的修正，并由自己的滤波器形成完整状态；
+# main只整包选择来源，不按position/velocity等分量跨来源组合。
 odometry_adapters:
   mavros:
     input_topic: mavros/local_position/odom
-    body_frame: base_link
-    parent_frame_override: mavros_origin
-    child_frame_override: ""
+    reference_frame: base_link
     tf_timeout: 0.03
     max_input_delay: 0.50
     fallback_covariance:
@@ -17,10 +19,7 @@ odometry_adapters:
 
   fastlio:
     input_topic: fastlio/Odometry
-    body_frame: base_link
-    parent_frame_override: fastlio_origin
-    # Fast-LIO的Odometry描述雷达IMU参考点，适配器会用TF换算到base_link。
-    child_frame_override: lidar_imu_link
+    reference_frame: lidar_imu_link #通过获取reference_frame到baselink的变换来修正这个话题输入值，用于后续输出
     tf_timeout: 0.03
     max_input_delay: 0.50
     fallback_covariance:
@@ -36,7 +35,7 @@ localization_sources: [mavros, fastlio]
 sources:
   mavros:
     # 数值越小优先级越高，只用于自动选择当前主定位源。
-    priority: 0
+    priority: 1
 
     # 字符串写法继承本组默认值；映射写法可覆盖单项参数。
     # 相对话题自动补成state_estimator_inputs/<配置值>。
@@ -67,13 +66,16 @@ sources:
       quarantine_duration: 1.0
       recovery_min_samples: 20
       recovery_stable_time: 0.5
+      # correction timeout只使来源暂时无效；连续断流达到这里的时间，才认为
+      # 定位节点可能重启并重新定义了自身原点。
+      session_reset_timeout: 2.0
 
     # 发布该来源在指定坐标系下的估计结果，不产生TF。
     # republish_in_frames: [local_origin, world]
     republish_in_frames: [local_origin]
 
   fastlio:
-    priority: 1
+    priority: 0
 
     correction_defaults:
       timeout: 0.50
@@ -81,13 +83,12 @@ sources:
     corrections:
       - position_xy: fastlio/position_xy
       - position_z: fastlio/position_z
+      - velocity_xy: fastlio/velocity_xy
+      - velocity_z: fastlio/velocity_z
       - heading: fastlio/heading
 
-      # 若以后需要其他速度源协助Fast-LIO，可直接取消下面的注释。
-      # - velocity_xy:
-      #     topic: external_velocity/velocity_xy
-      #     timeout: 0.30
-      #     required: false
+      # 速度来自Fast-LIO自身ESKF发布的Odometry.twist，不混入MAVROS速度。
+      # main整包接管这套位置、速度和航向状态。
 
     alignment:
       mode: align_on_activation
@@ -101,5 +102,6 @@ sources:
       quarantine_duration: 1.0
       recovery_min_samples: 20
       recovery_stable_time: 0.5
+      session_reset_timeout: 2.0
 
     republish_in_frames: [local_origin]

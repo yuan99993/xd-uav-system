@@ -4,9 +4,9 @@
 odometry_adapters:
   mavros:
     input_topic: mavros/local_position/odom
+    # MRS MAVROS odom 与 IMU 都以 fcu 表示同一机体参考点。
+    reference_frame: fcu
     body_frame: fcu
-    parent_frame_override: mavros_origin
-    child_frame_override: ""
     tf_timeout: 0.03
     max_input_delay: 0.50
     fallback_covariance:

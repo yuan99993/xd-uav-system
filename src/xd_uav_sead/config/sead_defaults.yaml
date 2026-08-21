@@ -15,7 +15,8 @@ simple_strike_control_mode: "swiftwing_vector"
 
 # --- SEAD 运行时模式 ---
 # simple_strike: 简化3目标打击（无GA）
-# dpga_sead: 完整DPGA任务分配
+# dpga_sead: 完整DPGA任务分配（要求侦察/打击/BDA角色覆盖）
+# single_route: 单机外部分配航线，复用同一Dubins/动态禁飞区执行链
 sead_runtime_mode: "simple_strike"
 
 # --- XBee 通信波特率 ---

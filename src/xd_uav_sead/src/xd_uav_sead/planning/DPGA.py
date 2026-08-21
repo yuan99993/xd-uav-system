@@ -95,12 +95,17 @@ class main_process(object):
         airspace=None,
         uav_id=None,
         control_mode="swiftwing_vector",
+        zone_clearance=40.0,
+        reference_frame=None,
     ):
         "SEAD mission"
         # 璁剧疆鏃犱汉鏈篒D鍜屽搴旂殑鍚嶇О銆乼opic
         self.uav_id = uav_id if uav_id is not None else 0
         self.uav_name = f"uav{self.uav_id}"
         self.viz_topic_name = f"/uav{self.uav_id}/sead/planned_path"
+        self.reference_frame = str(
+            reference_frame or f"{self.uav_name}/local_origin"
+        )
         control_mode = str(control_mode or "swiftwing_vector").lower()
         if control_mode in ["position", "position_waypoint", "waypoint"]:
             self.control_mode = "position_waypoint"
@@ -133,6 +138,7 @@ class main_process(object):
         self.packet, self.pos = [], []
         self.target = None
         self.fitness, self.best_solution = 1e-5, []
+        self.single_route_active = False
         self.terminated_tasks, self.new_targets = [], []
         self.previous_time_u2u, self.previous_time_control = 0, 0
         self.task_locking = False
@@ -158,6 +164,7 @@ class main_process(object):
         self.sencing_range = 50
         self.mission_flag = False
         self.airspace = airspace
+        self.zone_clearance = max(0.0, float(zone_clearance))
         self.significant_event = True # 鏍囪鏄惁鍙戠敓浜嗛噸瑕佷簨浠讹紙濡傛柊浠诲姟鍒嗛厤锛夛紝浠ュ喅瀹氭槸鍚︽洿鏂拌矾寰?sun
         self.last_sent_ids = []  # 璁板綍涓婃鍙戦€佺殑浠诲姟鍒楄〃
         self.path_pub = rospy.Publisher(
@@ -240,7 +247,7 @@ class main_process(object):
             return
 
         ros_path = Path()
-        ros_path.header.frame_id = "map"  # 纭繚 Rviz 鐨?Fixed Frame 璁剧疆涓?map
+        ros_path.header.frame_id = self.reference_frame
         ros_path.header.stamp = rospy.Time.now()
 
         for pt in path_points:
@@ -262,8 +269,37 @@ class main_process(object):
 
         self.path_pub.publish(ros_path)
 
-    def generate_path(self, chromosome, id, v, Rmin):
-        path_route, task_sequence_state = [], []
+    def _plan_state_sequence(self, start, states, v, Rmin, flight_altitude=None):
+        path_route = []
+        zones = (
+            self.airspace.export_zones_for_planner()
+            if self.airspace is not None
+            else []
+        )
+        current = [float(start[0]), float(start[1]), float(start[2])]
+        step = max(0.5, float(v) / 5.0)
+        for state in states:
+            goal = [float(state[0]), float(state[1]), float(state[2])]
+            if np.linalg.norm(np.array(current[:2]) - np.array(goal[:2])) < 0.5:
+                goal[2] -= 1e-5
+            segment = plan_path_with_avoidance(
+                current,
+                goal,
+                float(Rmin),
+                zones,
+                float(v),
+                sampling_step=step,
+                clearance=self.zone_clearance,
+                flight_altitude=flight_altitude,
+            )
+            if len(segment) < 2:
+                return []
+            path_route.extend(segment if not path_route else segment[1:])
+            current = goal
+        return path_route
+
+    def generate_path(self, chromosome, id, v, Rmin, flight_altitude=None):
+        task_sequence_state = []
         # if chromosome and not self.back_to_base: 
         # 娉ㄩ噴鎺変笂闈㈢殑鍒ゆ柇鏉′欢锛屽鏋滀笉娉ㄩ噴鐨勮瘽褰撳畬鎴愭墍鏈変换鍔″悗鑸嚎涓嶅啀鏇存柊锛岄鏈烘棤娉曡繑鍥炲熀鍦?
         if chromosome:
@@ -288,52 +324,157 @@ class main_process(object):
             task_sequence_state.append(self.base)
             for state in task_sequence_state[:-1]:
                 state[2] *= np.pi / 180
-            dubins_path = dubins.shortest_path(
-                self.pos, task_sequence_state[0][:3], Rmin
+            if len(self.pos) < 3 or not task_sequence_state:
+                self.path_following.path = []
+                self.target = task_sequence_state
+                return False
+            path_route = self._plan_state_sequence(
+                self.pos,
+                task_sequence_state,
+                v,
+                Rmin,
+                flight_altitude=flight_altitude,
             )
-            path_route.extend(dubins_path.sample_many(v / 5)[0])
-            for p in range(len(task_sequence_state) - 1):
-                sp = task_sequence_state[p][:3]
-                gp = (
-                    task_sequence_state[p + 1][:3]
-                    if task_sequence_state[p][:3] != task_sequence_state[p + 1][:3]
-                    else [
-                        task_sequence_state[p + 1][0],
-                        task_sequence_state[p + 1][1],
-                        task_sequence_state[p + 1][2] - 1e-5,
-                    ]
+            if not path_route:
+                self.path_following.path = []
+                self.target = task_sequence_state
+                self.path_update_flag = False
+                rospy.logerr(
+                    f"[SEAD] UAV{self.uav_id} DPGA path rejected by airspace safety"
                 )
-                dubins_path = dubins.shortest_path(sp, gp, Rmin)
-                # path_route.extend(dubins_path.sample_many(v / 10)[0][1:])
-                path_route.extend(dubins_path.sample_many(v / 5)[0][1:])
+                return False
             self.path_following.path, self.target = path_route, task_sequence_state
             " Initiate the index on path"
             self.intial_windowIndex = 0
             self.path_update_flag = True # 璺緞鏇存柊鏍囧織浣?sun
+            return True
+        return False
+
+    def configure_single_uav_route(self, uav_ros, mission_type=2):
+        """Build a deterministic route for one externally assigned UAV.
+
+        Distributed SEAD requires role coverage for reconnaissance, combat and
+        BDA.  A single role-specific aircraft cannot satisfy that GA contract.
+        This explicit runtime keeps task allocation out of the acceptance
+        flight while exercising the same Dubins/airspace and controller path
+        used after a distributed allocation.
+        """
+        if not self.targets_set:
+            self.path_following.path = []
+            return False
+        self.pos = [
+            float(uav_ros.local_pose[0]),
+            float(uav_ros.local_pose[1]),
+            float(uav_ros.yaw),
+        ]
+        orders = []
+        targets = []
+        missions = []
+        owners = []
+        headings = []
+        previous = self.pos
+        for index, target in enumerate(self.targets_set, start=1):
+            heading = np.arctan2(
+                float(target[1]) - float(previous[1]),
+                float(target[0]) - float(previous[0]),
+            )
+            orders.append(index)
+            targets.append(index)
+            missions.append(int(mission_type))
+            owners.append(int(self.uav_id))
+            headings.append(int(round(np.degrees(heading) / 10.0)) % 36)
+            previous = [float(target[0]), float(target[1]), heading]
+        chromosome = [orders, targets, missions, owners, headings]
+        self.best_solution = chromosome
+        self.fitness = 1.0
+        self.significant_event = False
+        self.single_route_active = True
+        planned = self.generate_path(
+            chromosome,
+            int(self.uav_id),
+            float(uav_ros.v),
+            float(uav_ros.Rmin),
+            flight_altitude=float(uav_ros.local_pose[2]),
+        )
+        if planned:
+            self.publish_rviz_path(
+                self.path_following.path,
+                height=float(uav_ros.local_pose[2]),
+            )
+        return planned
+
+    def handle_airspace_update(self, uav_ros):
+        """Replan the remaining DPGA route from the measured fixed-wing pose."""
+        path = list(self.path_following.path or [])
+        if len(path) < 2 or not self.target:
+            return "unchanged"
+        altitude = float(uav_ros.local_pose[2])
+        index = max(0, min(int(self.path_following.fw_path_index), len(path) - 1))
+        remaining = path[index:]
+        if self.airspace.path_min_horizontal_clearance(
+            remaining, altitude
+        ) >= self.zone_clearance:
+            return "unchanged"
+        if self.airspace.min_horizontal_clearance(
+            float(uav_ros.local_pose[0]), float(uav_ros.local_pose[1]), altitude
+        ) < self.zone_clearance:
+            self.path_following.path = []
+            self.path_update_flag = False
+            return "failed"
+        start = [
+            float(uav_ros.local_pose[0]),
+            float(uav_ros.local_pose[1]),
+            float(uav_ros.yaw),
+        ]
+        replanned = self._plan_state_sequence(
+            start,
+            self.target,
+            float(uav_ros.v),
+            float(uav_ros.Rmin),
+            flight_altitude=altitude,
+        )
+        if not replanned:
+            self.path_following.path = []
+            self.path_update_flag = False
+            return "failed"
+        self.path_following.path = replanned
+        self.path_following.fw_path_index = 0
+        self.path_following.Rmin = float(uav_ros.Rmin)
+        self.intial_windowIndex = 0
+        self.path_update_flag = True
+        self.publish_rviz_path(replanned, height=altitude)
+        return "replanned"
 
     def _drain_ga_queue(self):
         while not self.ga2control_queue.empty():
             self.fitness, self.best_solution = self.ga2control_queue.get()
 
     def _broadcast_self_state(self, xbee, comm_info, uav_ros, new_timer):
-        if (
-            new_timer.check_timer(self.T, self.previous_time_u2u, -0.1)
-            and not self.back_to_base
-        ):
-            self.previous_time_u2u = time.time()
-            self.packet, self.pos = comm_info.pack_SEAD_packet(
-                uav_ros.type,
-                uav_ros.v,
-                uav_ros.Rmin,
-                [uav_ros.local_pose[0], uav_ros.local_pose[1], uav_ros.yaw],
-                self.base,
-                self.task_locking,
-                1 / self.fitness,
-                self.best_solution,
-                self.terminated_tasks,
-                self.new_targets,
-            )
-            xbee.send_data_broadcast(self.packet)
+        """Publish and locally register one already-scheduled state sample.
+
+        Callers own the periodic gate.  Re-checking the narrow timer window in
+        this helper made a sample disappear whenever the two checks straddled
+        the 100 ms modulo boundary.  Since pack_SEAD_packet() is also the
+        authoritative self-roster update, that race could leave a single-UAV
+        mission with an empty GA input forever.
+        """
+        if self.back_to_base:
+            return False
+        self.previous_time_u2u = time.time()
+        self.packet, self.pos = comm_info.pack_SEAD_packet(
+            uav_ros.type,
+            uav_ros.v,
+            uav_ros.Rmin,
+            [uav_ros.local_pose[0], uav_ros.local_pose[1], uav_ros.yaw],
+            self.base,
+            self.task_locking,
+            1 / self.fitness,
+            self.best_solution,
+            self.terminated_tasks,
+            self.new_targets,
+        )
+        xbee.send_data_broadcast(self.packet)
+        return True
 
     def _refresh_team_plan(self, comm_info, uav_ros, xbee=None, gcs=None):
         if not self.packet:
@@ -369,7 +510,11 @@ class main_process(object):
                 if candidates and self.significant_event:
                     best_entry = sorted(candidates, key=lambda x: (x[0], x[1]))[0][2]
                     self.generate_path(
-                        best_entry, comm_info.uav_id, uav_ros.v, uav_ros.Rmin
+                        best_entry,
+                        comm_info.uav_id,
+                        uav_ros.v,
+                        uav_ros.Rmin,
+                        flight_altitude=uav_ros.local_pose[2],
                     )
 
                 cur_h = (
@@ -410,7 +555,8 @@ class main_process(object):
 
     def plan_only(self, xbee, comm_info, uav_ros, new_timer, gcs=None):
         self._drain_ga_queue()
-        self._broadcast_self_state(xbee, comm_info, uav_ros, new_timer)
+        if new_timer.check_timer(self.T, self.previous_time_u2u, -0.1):
+            self._broadcast_self_state(xbee, comm_info, uav_ros, new_timer)
         if new_timer.check_period(self.T_comm, self.previous_time_u2u) and self.packet:
             self._refresh_team_plan(comm_info, uav_ros, xbee=xbee, gcs=gcs)
 
@@ -452,13 +598,19 @@ class main_process(object):
 
         " Broadcast every T seceods"
         if (
+            not self.single_route_active
+            and
             new_timer.check_timer(self.T, self.previous_time_u2u, -0.1)
             and not self.back_to_base
         ):
             self._broadcast_self_state(xbee, comm_info, uav_ros, new_timer)
 
         " Receive the information of UAVs after Tcomm seconds "
-        if new_timer.check_period(self.T_comm, self.previous_time_u2u) and self.packet:
+        if (
+            not self.single_route_active
+            and new_timer.check_period(self.T_comm, self.previous_time_u2u)
+            and self.packet
+        ):
             for uid, info in comm_info.uavs_info.items():
                 self.AT.extend(info["completed_tasks"])
                 self.NT.extend(info["new_targets"])
@@ -508,6 +660,7 @@ class main_process(object):
                             comm_info.uav_id,
                             uav_ros.v,
                             uav_ros.Rmin,
+                            flight_altitude=uav_ros.local_pose[2],
                         )
                 self.update = True
             else:
@@ -957,7 +1110,13 @@ class main_process(object):
                     # 娣诲姞浜唖elf.significant_event鏍囧織浣嶏紝榛樿涓篢rue锛屽綋鍙戠敓閲嶈浜嬩欢锛堝鏂颁换鍔″垎閰嶏級鏃惰缃负True锛岃矾寰勭敓鎴愬悗閲嶇疆涓篎alse
                     if candidates and self.significant_event:
                         best_entry = sorted(candidates, key=lambda x: (x[0], x[1]))[0][2]
-                        self.generate_path(best_entry, comm_info.uav_id, uav_ros.v, uav_ros.Rmin)
+                        self.generate_path(
+                            best_entry,
+                            comm_info.uav_id,
+                            uav_ros.v,
+                            uav_ros.Rmin,
+                            flight_altitude=uav_ros.local_pose[2],
+                        )
 
                         # ===== RViz 鏄剧ず =====
                         cur_h = (

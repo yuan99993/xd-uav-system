@@ -8,6 +8,8 @@
   <arg name="sead_runtime_mode" default="simple_strike"/>
   <arg name="sead_control_mode" default="swiftwing_vector"/>
   <arg name="simple_strike_control_mode" default="swiftwing_vector"/>
+  <!-- Acceptance-only. Keep false for production and hardware launches. -->
+  <arg name="headless_sitl_failsafe_bypass" default="false"/>
 
   <!-- 通用启动: 从 XBee/ROS 话题等待命令 -->
   <group ns="$(arg uav_name)">
@@ -26,6 +28,8 @@
       <param name="sead_control_mode" value="$(arg sead_control_mode)"/>
       <param name="simple_strike_control_mode"
              value="$(arg simple_strike_control_mode)"/>
+      <param name="headless_sitl_failsafe_bypass"
+             value="$(arg headless_sitl_failsafe_bypass)"/>
     </node>
   </group>
 </launch>

@@ -1,0 +1,29 @@
+odometry_adapters:
+  fastlio:
+    input_topic: fastlio_gated/Odometry
+    reference_frame: mid360_imu_calibrated
+    tf_timeout: 0.03
+    max_input_delay: 0.50
+    fallback_covariance: {position: 0.05, velocity: 0.10, heading: 0.05, yaw_rate: 0.10}
+localization_sources: [fastlio]
+sources:
+  fastlio:
+    priority: 0
+    correction_defaults: {timeout: 0.50, required: true}
+    corrections:
+      - position_xy: fastlio/position_xy
+      - position_z: fastlio/position_z
+      - velocity_xy: fastlio/velocity_xy
+      - velocity_z: fastlio/velocity_z
+      - heading: fastlio/heading
+    alignment: {mode: align_on_activation}
+    reliability:
+      max_position_variance: 100.0
+      max_velocity_variance: 100.0
+      max_heading_variance: 10.0
+      max_yaw_rate_variance: 10.0
+      max_consecutive_rejections: 5
+      quarantine_duration: 1.0
+      recovery_min_samples: 20
+      recovery_stable_time: 0.5
+      session_reset_timeout: 2.0

@@ -1,0 +1,18 @@
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="detect_config" default="$(find xd_uav_detect)/config/detect.yaml"/>
+  <arg name="track_config" default="$(find xd_uav_track)/config/track.yaml"/>
+  <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
+
+  <include file="$(find xd_uav_detect)/launch/detect.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="config" value="$(arg detect_config)"/>
+    <arg name="body_frame" value="$(arg body_frame)"/>
+  </include>
+
+  <include file="$(find xd_uav_track)/launch/track.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="config" value="$(arg track_config)"/>
+    <arg name="body_frame" value="$(arg body_frame)"/>
+  </include>
+</launch>

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="uav_name" default="uav1"/>
+  <arg name="plane_sdf" default="$(optenv PX4_PLANE_SDF)"/>
+  <arg name="world"
+       default="$(find mrs_gazebo_common_resources)/worlds/grass_plane.world"/>
+  <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
+
+  <include file="$(find xd_uav_sead)/launch/plane_headless_sitl_acceptance.launch">
+    <arg name="uav_name" value="$(arg uav_name)"/>
+    <arg name="plane_sdf" value="$(arg plane_sdf)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="fcu_url" value="$(arg fcu_url)"/>
+  </include>
+
+  <include file="$(find xd_uav_sead)/launch/sead_fixedwing_xd_control.launch">
+    <arg name="UAV_NAME" value="$(arg uav_name)"/>
+    <arg name="sead_runtime_mode" value="single_route"/>
+    <arg name="sead_control_mode" value="position_waypoint"/>
+    <arg name="headless_sitl_failsafe_bypass" value="true"/>
+  </include>
+</launch>

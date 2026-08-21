@@ -1,35 +1,74 @@
 control_rate: 50.0
 
 fixedwing:
-  gravity: 9.80665
-  cruise_airspeed: 15.0
-  minimum_airspeed: 11.0
-  maximum_airspeed: 24.0
-  trim_throttle: 0.25
-  min_throttle: 0.05
-  max_throttle: 1.0
-  airspeed_throttle_gain: 0.08
-  course_time_constant: 3.0
-  guidance:
+  model:
+    gravity: 9.80665
+
+  # 输入适配层：仅在流式VXY没有AXY/yaw_rate时估计course-rate。
+  # 完整P/V/A参考不会使用这组差分参数。
+  reference_adapter:
+    streaming_course_rate_feedforward: true
+    course_rate_filter_time_constant: 0.25
+    minimum_course_rate_speed: 2.0
+
+  path_guidance:
     # 对“位置+速度”轨迹，在速度切线前方构造几何前视点，
     # 使固定翼既跟随切线方向，也闭环修正水平位置偏差。
     # 这不是PID增益；过小会频繁修正，过大会收敛较慢。
-    lookahead_distance: 60.0
-  altitude_time_constant: 5.0
-  roll_time_constant: 0.45
-  pitch_time_constant: 0.45
-  max_roll: 0.79
-  max_pitch: 0.35
-  max_climb_rate: 4.0
-  max_body_rate: [2.0, 1.5, 1.5]
-  loiter:
-    # 起飞达到目标高度后，固定翼以当前位置和航向切入圆的切点，
-    # 在该圆上等待外部参考。+1为逆时针，-1为顺时针。
-    radius: 80.0
-    airspeed: 15.0
-    direction: 1
-    radial_gain: 1.0
-    max_course_correction: 0.70
+    lookahead_distance: 40.0
+    # 任意PXY+VXY参考存在曲率前馈时按L=turn_radius_gain*R调整前视距离。
+    adaptive_lookahead: true
+    minimum_lookahead_distance: 15.0
+    maximum_lookahead_distance: 70.0
+    turn_radius_gain: 1.15
+    lookahead_filter_time_constant: 0.55
+
+  lateral_control:
+    course_time_constant: 0.8
+    # 所有常规外部参考（轨迹或PositionTarget）共用course PI环；积分输出单位rad/s，
+    # 用于消除风、舵效和模型偏差，限幅与滚转限幅共同防止wind-up。
+    course_integral_gain: 0.08
+    course_integral_rate_limit: 0.25
+    roll_time_constant: 0.20
+
+  vertical_control:
+    altitude_time_constant: 5.0
+    # 高度P环输出爬升率修正；积分项用于消除持续高度偏差，输出单位m/s。
+    altitude_integral_gain: 0.02
+    altitude_integral_climb_rate_limit: 1.0
+    # 爬升率闭环直接修正俯仰角，单位rad/(m/s)；测量先低通滤波。
+    climb_rate_pitch_gain: 0.06
+    climb_rate_filter_time_constant: 0.50
+    # AZ转换为俯仰角速度前馈。
+    vertical_acceleration_pitch_rate_gain: 1.0
+    pitch_time_constant: 0.45
+
+  energy_control:
+    cruise_airspeed: 15.0
+    minimum_airspeed: 11.0
+    maximum_airspeed: 24.0
+    trim_throttle: 0.25
+    airspeed_throttle_gain: 0.08
+    # 爬升时同步补油以维持空速。
+    climb_rate_throttle_gain: 0.03
+
+  limits:
+    minimum_throttle: 0.05
+    maximum_throttle: 1.0
+    maximum_roll: 0.95
+    maximum_pitch: 0.35
+    maximum_climb_rate: 4.0
+    maximum_body_rate: [2.0, 1.5, 1.5]
+
+  modes:
+    loiter:
+      # 起飞达到目标高度后，固定翼以当前位置和航向切入圆的切点，
+      # 在该圆上等待外部参考。+1为逆时针，-1为顺时针。
+      radius: 80.0
+      airspeed: 15.0
+      direction: 1
+      radial_gain: 1.0
+      max_course_correction: 0.70
 
 takeoff:
   default_altitude: 30.0
@@ -41,13 +80,14 @@ takeoff:
   altitude_tolerance: 3.0
 
 landing:
-  # 接地点上游的进近点。飞机先到达该点并对准航向，再进入下滑。
+  # 接地点上游的进近点。进入捕获半径后先连续切入最终进近直线并保持高度，
+  # 航向与高度满足容差后只开启下滑，避免横向参考在切换瞬间跳变。
   approach_distance: 400.0
   approach_height: 30.0
   approach_airspeed: 15.0
   approach_acceptance_radius: 50.0
-  approach_altitude_tolerance: 8.0
-  approach_course_tolerance: 0.52
+  approach_altitude_tolerance: 5.0
+  approach_course_tolerance: 0.55
   # 实际捕获半径还会取“着陆速度对应转弯半径×该系数”的较大值，
   # 避免固定翼因无法精确飞过静止进近点而一直绕圈。
   approach_capture_turn_radius_factor: 2.0
@@ -56,15 +96,10 @@ landing:
   max_course_correction: 0.70
   # 弧度，约4.6度。高度参考由距接地点的沿航向距离实时生成。
   glide_slope_angle: 0.08
-  flare_height: 3.0
-  flare_distance: 45.0
-  # 正数表示拉平时的抬头角绝对值，内部转换为ROS FLU负pitch。
-  flare_pitch: 0.10
-  flare_throttle: 0.0
-  # land没有固定接地点时，在当前航向前方建立临时接地点。
-  local_touchdown_ahead: 400.0
   rollout_distance: 200.0
   max_roll: 0.35
   touchdown_height_tolerance: 1.0
   touchdown_groundspeed: 2.0
   touchdown_vertical_speed: 2.0
+  # land没有固定接地点时，在当前航向前方建立临时接地点。
+  local_touchdown_ahead: 400.0

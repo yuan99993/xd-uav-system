@@ -19,7 +19,7 @@ from xd_uav_sead.planning.GA_SEAD_process import (
     _point_in_poly,
     plan_path_with_avoidance,
 )
-from xd_uav_sead.comms.communication_info import packet_processing
+from xd_uav_sead.comms.communication_info import FrameType, packet_processing
 from xd_uav_sead.planning.pathFollowing import CraigReynolds_Path_Following
 from xd_uav_sead.planning import DPGA
 from xd_uav_sead.strike.simple_strike import SimpleStrikeManager
@@ -51,6 +51,69 @@ class AirspaceFunctionTest(unittest.TestCase):
 
 
 class SharedFrameFunctionTest(unittest.TestCase):
+    def test_headless_sitl_bypass_is_explicit_and_fail_closed(self):
+        drone = object.__new__(Drone)
+        drone.headless_sitl_failsafe_bypass = True
+        calls = []
+        drone._set_px4_param = lambda name, value_int=None, value_real=None: (
+            calls.append((name, value_int, value_real)) or True
+        )
+        with mock.patch("xd_uav_sead.drone.drone.rospy.sleep"):
+            self.assertTrue(drone._configure_fixedwing_takeoff_safety())
+        self.assertEqual(
+            calls,
+            [
+                ("CBRK_AIRSPD_CHK", 162128, None),
+                ("COM_RC_IN_MODE", 4, None),
+                ("NAV_DLL_ACT", 0, None),
+            ],
+        )
+
+        drone._set_px4_param = mock.Mock(side_effect=[True, False])
+        with mock.patch("xd_uav_sead.drone.drone.rospy.sleep"):
+            self.assertFalse(drone._configure_fixedwing_takeoff_safety())
+
+    def test_uav_classifier_uses_standard_mav_type(self):
+        drone = object.__new__(Drone)
+        drone.frame_type = None
+
+        drone.get_param = mock.Mock(return_value=mock.Mock(integer=1))
+        self.assertEqual(drone.uav_classifier(), FrameType.Fixed_wing)
+        drone.get_param.assert_called_once_with("MAV_TYPE")
+
+        drone.frame_type = None
+        drone.get_param = mock.Mock(return_value=mock.Mock(integer=2))
+        self.assertEqual(drone.uav_classifier(), FrameType.Quad)
+
+        drone.frame_type = None
+        drone.get_param = mock.Mock(return_value=mock.Mock(integer=10))
+        self.assertIsNone(drone.uav_classifier())
+        self.assertIsNone(drone.frame_type)
+
+    def test_manager_fixedwing_takeoff_applies_explicit_sitl_safety_first(self):
+        drone = object.__new__(Drone)
+        drone.uav_name = "uav1"
+        drone.uses_external_control_manager = True
+        drone.frame_type = FrameType.Fixed_wing
+        drone.headless_sitl_failsafe_bypass = True
+        order = []
+        drone._configure_fixedwing_takeoff_safety = lambda: (
+            order.append("safety") or True
+        )
+        response = mock.Mock(success=True, message="accepted")
+
+        def service_proxy(_name, _service_type):
+            return lambda altitude: (order.append(("takeoff", altitude)) or response)
+
+        with mock.patch(
+            "xd_uav_sead.drone.drone.rospy.wait_for_service"
+        ), mock.patch(
+            "xd_uav_sead.drone.drone.rospy.ServiceProxy",
+            side_effect=service_proxy,
+        ):
+            self.assertTrue(drone.takeoff(30.0))
+        self.assertEqual(order, ["safety", ("takeoff", 30.0)])
+
     def test_shared_waypoint_is_converted_back_to_control_local_frame(self):
         drone = object.__new__(Drone)
         drone.shared_frame_enabled = True
@@ -64,6 +127,31 @@ class SharedFrameFunctionTest(unittest.TestCase):
             drone.shared_to_control_waypoint([10.0, 5.0, 3.0]),
             [10.0, 5.0, 3.0],
         )
+
+    def test_external_manager_is_cancelled_before_px4_loiter(self):
+        drone = object.__new__(Drone)
+        drone.uav_name = "uav1"
+        drone.ns_mavros = "/uav1/mavros"
+        drone.uses_external_control_manager = True
+        drone.keepoffboard = [1.0, 2.0, 3.0]
+        drone.defaultoffboard = [1.0, 2.0, 3.0]
+        order = []
+
+        def cancel(service):
+            order.append(service)
+            return True
+
+        drone._call_manager_trigger = cancel
+        response = mock.Mock(mode_sent=True)
+        with mock.patch(
+            "xd_uav_sead.drone.drone.rospy.wait_for_service"
+        ), mock.patch(
+            "xd_uav_sead.drone.drone.rospy.ServiceProxy",
+            return_value=lambda **kwargs: (order.append("AUTO.LOITER") or response),
+        ):
+            self.assertTrue(drone.enter_fail_closed_loiter())
+        self.assertEqual(order, ["cancel_offboard", "AUTO.LOITER"])
+        self.assertIsNone(drone.keepoffboard)
 
 
 class PathFollowingFunctionTest(unittest.TestCase):
@@ -292,6 +380,77 @@ class PlannerFunctionTest(unittest.TestCase):
 
 
 class DpgaFunctionTest(unittest.TestCase):
+    def test_single_uav_route_uses_normal_airspace_planner_without_ga(self):
+        airspace = AirspaceManager()
+        with mock.patch.object(DPGA.rospy, "Publisher", return_value=mock.Mock()):
+            process = DPGA.main_process(
+                targets_sites=[[300.0, 0.0]],
+                unknown_targets=[],
+                base_config=[600.0, 0.0, 0.0],
+                u2u_communication=None,
+                ga2control_queue=queue.Queue(),
+                control2ga_queue=queue.Queue(),
+                airspace=airspace,
+                uav_id=1,
+                control_mode="position_waypoint",
+                zone_clearance=20.0,
+            )
+        uav = mock.Mock(
+            type=2,
+            v=15.0,
+            Rmin=50.0,
+            local_pose=[0.0, 0.0, 30.0],
+            yaw=0.0,
+        )
+        process.publish_rviz_path = mock.Mock()
+        self.assertTrue(process.configure_single_uav_route(uav))
+        self.assertEqual(process.best_solution[3], [1])
+        self.assertGreater(len(process.path_following.path), 2)
+        process.publish_rviz_path.assert_called_once()
+
+    def test_fixedwing_periodic_broadcast_always_seeds_local_roster(self):
+        with mock.patch.object(DPGA.rospy, "Publisher", return_value=mock.Mock()):
+            process = DPGA.main_process(
+                targets_sites=[[300.0, 0.0]],
+                unknown_targets=[],
+                base_config=[0.0, 0.0, 0.0],
+                u2u_communication=None,
+                ga2control_queue=queue.Queue(),
+                control2ga_queue=queue.Queue(),
+                uav_id=1,
+                control_mode="position_waypoint",
+            )
+        protocol = packet_processing(1)
+        radio = mock.Mock()
+        uav = mock.Mock(
+            type=2,
+            v=15.0,
+            Rmin=50.0,
+            local_pose=[12.0, -3.0, 30.0],
+            yaw=0.25,
+        )
+
+        class _SingleGateTimer:
+            def __init__(self):
+                self.calls = 0
+
+            def check_timer(self, *_args):
+                self.calls += 1
+                if self.calls > 1:
+                    raise AssertionError("periodic gate was evaluated twice")
+                return True
+
+            @staticmethod
+            def check_period(*_args):
+                return False
+
+        timer = _SingleGateTimer()
+        process.run_fixedWing(radio, protocol, uav, timer, 0, 30.0, 50.0)
+        self.assertEqual(timer.calls, 1)
+        self.assertIn(1, protocol.uavs_info)
+        self.assertEqual(protocol.uavs_info[1]["pos"], [12.0, -3.0, 0.25])
+        radio.send_data_broadcast.assert_called_once()
+
     def test_team_state_is_stably_flattened_for_ga(self):
         with mock.patch.object(DPGA.rospy, "Publisher", return_value=mock.Mock()):
             process = DPGA.main_process(
@@ -347,6 +506,48 @@ class DpgaFunctionTest(unittest.TestCase):
             )
         self.assertEqual(ga_to_control.get_nowait(), [0.25, "solution"])
         self.assertTrue(control_to_ga.empty())
+
+    def test_dynamic_zone_replans_dpga_remaining_path(self):
+        airspace = AirspaceManager()
+        with mock.patch.object(DPGA.rospy, "Publisher", return_value=mock.Mock()):
+            process = DPGA.main_process(
+                targets_sites=[[220.0, 0.0]],
+                unknown_targets=[],
+                base_config=[300.0, 0.0, 0.0],
+                u2u_communication=None,
+                ga2control_queue=queue.Queue(),
+                control2ga_queue=queue.Queue(),
+                airspace=airspace,
+                uav_id=1,
+                control_mode="position_waypoint",
+                zone_clearance=20.0,
+            )
+        process.target = [[220.0, 0.0, 0.0, 1, 1], [300.0, 0.0, 0.0]]
+        process.path_following.path = process._plan_state_sequence(
+            [0.0, 0.0, 0.0], process.target, 15.0, 20.0, flight_altitude=60.0
+        )
+        process.path_following.fw_path_index = 0
+        process.publish_rviz_path = mock.Mock()
+        airspace.update_zone(
+            ZoneDef(
+                zone_id=9,
+                enabled=True,
+                zone_type=0,
+                level2d=0,
+                levelH=0,
+                minAlt=20.0,
+                maxAlt=120.0,
+                vertices=[(80.0, -30.0), (120.0, -30.0), (120.0, 30.0), (80.0, 30.0)],
+            )
+        )
+        uav = mock.Mock(
+            local_pose=[0.0, 0.0, 60.0], yaw=0.0, v=15.0, Rmin=20.0
+        )
+        self.assertEqual(process.handle_airspace_update(uav), "replanned")
+        self.assertGreaterEqual(
+            airspace.path_min_horizontal_clearance(process.path_following.path, 60.0),
+            20.0 - 1e-6,
+        )
 
 
 class SimpleStrikeFunctionTest(unittest.TestCase):
@@ -443,6 +644,68 @@ class SimpleStrikeFunctionTest(unittest.TestCase):
         self.assertGreater(leader.full_path_common_hit_time, 1000.0)
         decoded, info = protocol.unpack_packet(radio.packets[-1])
         self.assertAlmostEqual(info["release_time"], leader.full_path_common_hit_time)
+
+    def test_dynamic_zone_replans_simple_strike_or_clears_unsafe_path(self):
+        airspace = AirspaceManager()
+        manager = SimpleStrikeManager(
+            [[220.0, 0.0], [300.0, 100.0], [300.0, -100.0]],
+            [],
+            [0.0, 0.0, 0.0],
+            1,
+            [1, 15.0, 20.0],
+            airspace=airspace,
+            control_mode="position_waypoint",
+        )
+        manager.assignment_map = {
+            1: {"target_id": 1, "point": [220.0, 0.0]}
+        }
+        manager.assigned_target = manager.assignment_map[1]
+        uav = mock.Mock(
+            local_pose=[0.0, 0.0, 60.0], yaw=0.0, v=15.0, Rmin=20.0
+        )
+        with mock.patch(
+            "xd_uav_sead.strike.simple_strike.rospy.logwarn_throttle"
+        ):
+            self.assertTrue(manager._build_full_path_for_uav(uav, 60.0))
+
+        airspace.update_zone(
+            ZoneDef(
+                zone_id=10,
+                enabled=True,
+                zone_type=0,
+                level2d=0,
+                levelH=0,
+                minAlt=20.0,
+                maxAlt=120.0,
+                vertices=[(80.0, -30.0), (120.0, -30.0), (120.0, 30.0), (80.0, 30.0)],
+            )
+        )
+        with mock.patch(
+            "xd_uav_sead.strike.simple_strike.rospy.logwarn_throttle"
+        ):
+            self.assertEqual(manager.handle_airspace_update(uav, 60.0), "replanned")
+        self.assertGreaterEqual(
+            airspace.path_min_horizontal_clearance(manager.path_following.path, 60.0),
+            manager.final_zone_clearance - 2.5,
+        )
+
+        airspace.update_zone(
+            ZoneDef(
+                zone_id=11,
+                enabled=True,
+                zone_type=0,
+                level2d=0,
+                levelH=0,
+                minAlt=20.0,
+                maxAlt=120.0,
+                vertices=[(10.0, -30.0), (50.0, -30.0), (50.0, 30.0), (10.0, 30.0)],
+            )
+        )
+        with mock.patch(
+            "xd_uav_sead.strike.simple_strike.rospy.logwarn_throttle"
+        ):
+            self.assertEqual(manager.handle_airspace_update(uav, 60.0), "failed")
+        self.assertEqual(manager.path_following.path, [])
 
 
 if __name__ == "__main__":

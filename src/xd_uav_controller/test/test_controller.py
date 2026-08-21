@@ -13,6 +13,7 @@ from geometry_msgs.msg import (
 )
 from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Path
+from sensor_msgs.msg import Range
 from std_msgs.msg import Bool
 import tf2_ros
 from trajectory_msgs.msg import (
@@ -33,15 +34,22 @@ class ControllerInterfaceTest(unittest.TestCase):
         self._position_x = 0.0
         self._position_y = 0.0
         self._position_z = 0.0
+        self._velocity_x = 0.0
+        self._velocity_y = 0.0
+        self._velocity_z = 0.0
         self._acceleration_x = 0.0
         self._acceleration_y = 0.0
         self._acceleration_z = 0.0
         self._acceleration_fresh = True
         self._local_to_odom_x = 10.0
         self._local_alignment_valid = True
+        self._distance = 1.0
         self._tf_broadcaster = tf2_ros.TransformBroadcaster()
         self._state_publisher = rospy.Publisher(
             "state", ControlState, queue_size=10
+        )
+        self._distance_sensor_publisher = rospy.Publisher(
+            "distance_sensor", Range, queue_size=10
         )
         self._reference_position_target_publisher = rospy.Publisher(
             "reference_position_target",
@@ -72,6 +80,9 @@ class ControllerInterfaceTest(unittest.TestCase):
         state.position_odom.x = self._position_x
         state.position_odom.y = self._position_y
         state.position_odom.z = self._position_z
+        state.velocity_odom.x = self._velocity_x
+        state.velocity_odom.y = self._velocity_y
+        state.velocity_odom.z = self._velocity_z
         state.acceleration_odom.x = self._acceleration_x
         state.acceleration_odom.y = self._acceleration_y
         state.acceleration_odom.z = self._acceleration_z
@@ -288,10 +299,22 @@ class ControllerInterfaceTest(unittest.TestCase):
         transform.transform.rotation.w = 1.0
         self._tf_broadcaster.sendTransform(transform)
 
+    def _publish_distance_sensor(self):
+        message = Range()
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = "uav1/lidarlite_laser"
+        message.radiation_type = Range.INFRARED
+        message.field_of_view = 0.01
+        message.min_range = 0.2
+        message.max_range = 15.0
+        message.range = self._distance
+        self._distance_sensor_publisher.publish(message)
+
     def _wait_for_command(self, predicate, timeout=5.0):
         deadline = time.time() + timeout
         while time.time() < deadline and not rospy.is_shutdown():
             self._state_publisher.publish(self._state())
+            self._publish_distance_sensor()
             self._publish_reference_frames()
             try:
                 command = rospy.wait_for_message(
@@ -713,7 +736,36 @@ class ControllerInterfaceTest(unittest.TestCase):
         )
         self.assertTrue(landing_command.landing_active)
 
-        self._position_z = 0.0
+        response = internal_command(
+            InternalCommandRequest.CANCEL_LANDING, 0.0
+        )
+        self.assertTrue(response.success, response.message)
+        cancelled_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and not value.landing_active
+                and value.controller == "finite_horizon_mpc_so3"
+            )
+        )
+        self.assertFalse(cancelled_command.landing_active)
+
+        response = internal_command(
+            InternalCommandRequest.LAND, 0.0
+        )
+        self.assertTrue(response.success, response.message)
+        self._wait_for_command(
+            lambda value: value.valid and value.landing_active
+        )
+
+        # The odometry altitude deliberately remains two metres above the
+        # takeoff ground.  Touchdown must come from the downward rangefinder,
+        # which represents landing on an elevated platform.  odom.vz is also
+        # deliberately impossible: distance_sensor mode must use the filtered
+        # AGL rate and must not inherit vertical velocity from the selected
+        # localization source.
+        self._position_z = 2.0
+        self._velocity_z = 5.0
+        self._distance = 0.2
         touchdown_command = self._wait_for_command(
             lambda value: (
                 value.valid
@@ -722,6 +774,7 @@ class ControllerInterfaceTest(unittest.TestCase):
             )
         )
         self.assertTrue(touchdown_command.landing_touchdown)
+        self._velocity_z = 0.0
 
         response = internal_command(
             InternalCommandRequest.RESET, 0.0

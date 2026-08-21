@@ -1,0 +1,14 @@
+<launch>
+  <group ns="uav1">
+    <node pkg="xd_uav_system_integration" type="fastlio_shadow_gate.py"
+          name="fastlio_shadow_gate" required="true">
+      <param name="expected_parent_frame" value="uav1/fastlio_origin"/>
+      <param name="expected_child_frame" value="uav1/mid360_imu"/>
+      <param name="odometry_timeout_s" value="0.20"/>
+      <param name="minimum_odometry_rate_hz" value="5.0"/>
+      <param name="vehicle_state_timeout_s" value="0.30"/>
+    </node>
+  </group>
+  <test test-name="fastlio_shadow_gate" pkg="xd_uav_system_integration"
+        type="test_fastlio_shadow_gate.py" time-limit="25"/>
+</launch>

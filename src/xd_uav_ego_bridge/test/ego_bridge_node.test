@@ -1,0 +1,20 @@
+<launch>
+  <group ns="uav1">
+    <node pkg="xd_uav_ego_bridge"
+          type="ego_bridge_node.py"
+          name="ego_bridge"
+          required="true">
+      <param name="common_frame" value="world" />
+      <param name="body_frame" value="uav1/base_link" />
+      <param name="state_timeout" value="0.2" />
+      <param name="command_timeout" value="0.2" />
+      <param name="transform_state_to_common" value="true" />
+      <param name="allow_nonfinite_yaw_rate" value="true" />
+    </node>
+  </group>
+
+  <test test-name="ego_bridge_node_test"
+        pkg="xd_uav_ego_bridge"
+        type="test_bridge_node.py"
+        time-limit="20" />
+</launch>

@@ -50,6 +50,10 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         self._airspeed = -1.5
         self._body_speed = 2.0
         self._publish_estimator = True
+        self._publish_mavros_state = True
+        self._publish_extended_state = True
+        self._publish_imu = True
+        self._imu_stamp_offset = 0.0
         self._landed_state = ExtendedState.LANDED_STATE_ON_GROUND
         self._arming_requests = []
         self._force_disarm_requests = []
@@ -148,6 +152,13 @@ class ControlManagerInterfaceTest(unittest.TestCase):
             return InternalCommandResponse(
                 success=True, message="accepted"
             )
+        if request.command == InternalCommandRequest.CANCEL_LANDING:
+            self._landing_active = False
+            self._landing_mode = ""
+            self._touchdown = False
+            return InternalCommandResponse(
+                success=True, message="landing cancelled"
+            )
         if request.command == InternalCommandRequest.RESET:
             self._controller_reset = True
             self._landing_active = False
@@ -177,10 +188,13 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         self._publishers["main_acceleration"].publish(acceleration)
 
         imu = Imu()
-        imu.header.stamp = now
+        imu.header.stamp = now + rospy.Duration(
+            self._imu_stamp_offset
+        )
         imu.header.frame_id = "uav1/base_link"
         imu.orientation.w = 1.0
-        self._publishers["imu"].publish(imu)
+        if self._publish_imu:
+            self._publishers["imu"].publish(imu)
 
         status = EstimatorStatus()
         status.header.stamp = now
@@ -197,14 +211,16 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         mavros_state.connected = True
         mavros_state.armed = self._armed
         mavros_state.mode = self._mode
-        self._publishers["mavros_state"].publish(mavros_state)
+        if self._publish_mavros_state:
+            self._publishers["mavros_state"].publish(mavros_state)
 
         extended_state = ExtendedState()
         extended_state.header.stamp = now
         extended_state.landed_state = self._landed_state
-        self._publishers["mavros_extended_state"].publish(
-            extended_state
-        )
+        if self._publish_extended_state:
+            self._publishers["mavros_extended_state"].publish(
+                extended_state
+            )
 
         airspeed = VFR_HUD()
         airspeed.header.stamp = now
@@ -256,6 +272,123 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         self.assertAlmostEqual(state.airspeed, 0.0)
         self.assertAlmostEqual(state.velocity_odom.x, 0.0, delta=0.05)
         self.assertAlmostEqual(state.velocity_odom.y, 2.0, delta=0.05)
+
+        # MAVROS FCU timesync can place a fresh IMU sample a few milliseconds
+        # ahead of ROS/Gazebo time. It must remain fresh inside the configured
+        # tolerance even though its non-zero header stamp is in the future.
+        self._imu_stamp_offset = 0.03
+        future_jitter_state = self._wait_for(
+            lambda: (
+                message
+                if (
+                    message := rospy.wait_for_message(
+                        "control_manager/state",
+                        ControlState,
+                        timeout=0.2,
+                    )
+                ).stable
+                and message.imu_fresh
+                and math.isfinite(message.imu_age)
+                else None
+            )
+        )
+        self.assertLess(future_jitter_state.imu_age, 0.1)
+
+        # A clearly inconsistent future timestamp remains a safety failure.
+        self._imu_stamp_offset = 0.20
+        invalid_future_state = self._wait_for(
+            lambda: (
+                message
+                if not (
+                    message := rospy.wait_for_message(
+                        "control_manager/state",
+                        ControlState,
+                        timeout=0.2,
+                    )
+                ).imu_fresh
+                else None
+            )
+        )
+        self.assertFalse(invalid_future_state.imu_fresh)
+        self._imu_stamp_offset = 0.0
+        self._wait_for(
+            lambda: (
+                message
+                if (
+                    message := rospy.wait_for_message(
+                        "control_manager/state",
+                        ControlState,
+                        timeout=0.2,
+                    )
+                ).stable
+                else None
+            )
+        )
+
+        # Header jitter tolerance must not hide a real transport dropout.
+        self._publish_imu = False
+        dropped_imu_state = self._wait_for(
+            lambda: (
+                message
+                if not (
+                    message := rospy.wait_for_message(
+                        "control_manager/state",
+                        ControlState,
+                        timeout=0.2,
+                    )
+                ).imu_fresh
+                else None
+            )
+        )
+        self.assertGreater(dropped_imu_state.imu_age, 0.5)
+        self._publish_imu = True
+        self._wait_for(
+            lambda: (
+                message
+                if (
+                    message := rospy.wait_for_message(
+                        "control_manager/state",
+                        ControlState,
+                        timeout=0.2,
+                    )
+                ).stable
+                else None
+            )
+        )
+
+        if self._vehicle_type == "fixedwing":
+            # 缓存的“未解锁/在地面”不能在MAVROS状态超时后继续授权负空速钳制。
+            self._publish_mavros_state = False
+            self._publish_extended_state = False
+            stale_state = self._wait_for(
+                lambda: (
+                    message
+                    if not (
+                        message := rospy.wait_for_message(
+                            "control_manager/state",
+                            ControlState,
+                            timeout=0.2,
+                        )
+                    ).airspeed_valid
+                    else None
+                )
+            )
+            self.assertFalse(stale_state.airspeed_valid)
+            self._publish_mavros_state = True
+            self._publish_extended_state = True
+            self._wait_for(
+                lambda: (
+                    message
+                    if (
+                        message := rospy.wait_for_message(
+                            "control_manager/state",
+                            ControlState,
+                            timeout=0.2,
+                        )
+                    ).airspeed_valid
+                    else None
+                )
+            )
 
         self._airspeed = -3.5
         invalid_airspeed_state = self._wait_for(
@@ -411,10 +544,49 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         self.assertTrue(self._landing_active)
         self.assertEqual(self._landing_mode, "home")
 
+        rospy.wait_for_service(
+            "control_manager/cancel_land", timeout=3.0
+        )
+        cancel_land = rospy.ServiceProxy(
+            "control_manager/cancel_land", Trigger
+        )
+        response = cancel_land()
+        self.assertTrue(response.success, response.message)
+        self.assertFalse(self._landing_active)
+        self.assertTrue(self._armed)
+        self.assertEqual(self._mode, "OFFBOARD")
+        self._wait_for(
+            lambda: (
+                message
+                if (
+                    message := rospy.wait_for_message(
+                        "control_manager/status",
+                        String,
+                        timeout=0.2,
+                    )
+                ).data.startswith("ACTIVE")
+                else None
+            )
+        )
+
+        response = land_home()
+        self.assertTrue(response.success, response.message)
+        self.assertTrue(self._landing_active)
+        self.assertEqual(self._landing_mode, "home")
+
         # PX4 may keep reporting IN_AIR while the controller still
         # supplies thrust on the ground. Verify the independent
         # controller touchdown path still disarms the vehicle.
         self._touchdown = True
+        deadline = time.time() + 0.08
+        while time.time() < deadline:
+            self._publish_inputs()
+            rospy.sleep(0.02)
+        response = cancel_land()
+        self.assertFalse(response.success)
+        self.assertTrue(self._landing_active)
+        self.assertTrue(self._armed)
+        self.assertEqual(self._mode, "OFFBOARD")
         if self._vehicle_type == "fixedwing":
             # The fixed-wing manager must not treat a contact signal
             # at high ground speed as a safe point to stop publishing

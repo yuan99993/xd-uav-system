@@ -37,6 +37,17 @@ def _seg_intersect(a, b, c, d):
 
 
 def _point_in_poly(x, y, poly):
+    if len(poly) < 3:
+        return False
+    for i, a in enumerate(poly):
+        b = poly[(i + 1) % len(poly)]
+        vx, vy = float(b[0]) - float(a[0]), float(b[1]) - float(a[1])
+        wx, wy = float(x) - float(a[0]), float(y) - float(a[1])
+        cross = vx * wy - vy * wx
+        if abs(cross) <= 1e-9:
+            dot = wx * vx + wy * vy
+            if -1e-9 <= dot <= vx * vx + vy * vy + 1e-9:
+                return True
     # ray casting
     inside = False
     j = len(poly) - 1
@@ -92,21 +103,70 @@ def _get_expanded_vertices(poly, margins):
     return candidates
 
 
-def _is_dubins_blocked(sp, gp, r_min, zones, step=5.0):
+def _point_to_segment_distance(px, py, ax, ay, bx, by):
+    vx, vy = bx - ax, by - ay
+    denom = vx * vx + vy * vy
+    if denom <= 1e-12:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / denom))
+    return math.hypot(px - (ax + t * vx), py - (ay + t * vy))
+
+
+def _point_zone_clearance(x, y, zone):
+    poly = zone.get("poly", [])
+    if len(poly) < 3:
+        return float("inf")
+    if _point_in_poly(x, y, poly):
+        return 0.0
+    return min(
+        _point_to_segment_distance(
+            float(x),
+            float(y),
+            float(poly[i][0]),
+            float(poly[i][1]),
+            float(poly[(i + 1) % len(poly)][0]),
+            float(poly[(i + 1) % len(poly)][1]),
+        )
+        for i in range(len(poly))
+    )
+
+
+def _zones_at_altitude(zones, flight_altitude=None):
+    if flight_altitude is None:
+        return list(zones or [])
+    altitude = float(flight_altitude)
+    return [
+        zone
+        for zone in zones or []
+        if float(zone.get("minAlt", -float("inf")))
+        <= altitude
+        <= float(zone.get("maxAlt", float("inf")))
+    ]
+
+
+def _samples_clear_zones(samples, zones, clearance=0.0):
+    required = max(0.0, float(clearance))
+    for point in samples or []:
+        for zone in zones or []:
+            if _point_zone_clearance(float(point[0]), float(point[1]), zone) < required:
+                return False
+            if required <= 0.0 and _point_in_poly(
+                float(point[0]), float(point[1]), zone.get("poly", [])
+            ):
+                return False
+    return True
+
+
+def _is_dubins_blocked(
+    sp, gp, r_min, zones, step=5.0, clearance=0.0, flight_altitude=None
+):
     """检测 Dubins 路径是否撞墙 (比直线检测更准)"""
     try:
         path = dubins.shortest_path(sp, gp, r_min)
         configs, _ = path.sample_many(step)
-        for pt in configs:
-            x, y = pt[0], pt[1]
-            for z in zones:
-                poly = z.get("poly", [])
-                if len(poly) < 3:
-                    continue
-                if _point_in_poly(x, y, poly):
-                    return True
-        return False
-    except:
+        active_zones = _zones_at_altitude(zones, flight_altitude)
+        return not _samples_clear_zones(configs, active_zones, clearance=clearance)
+    except Exception:
         return True
 
 
@@ -173,7 +233,16 @@ def _find_best_bypass(sp, gp, r_min, zones, uav_v=None):
 # [GA_SEAD_process.py] -> 替换 plan_path_with_avoidance
 
 
-def plan_path_with_avoidance(sp, gp, Rmin, zones, uav_v, sampling_step=5.0):
+def plan_path_with_avoidance(
+    sp,
+    gp,
+    Rmin,
+    zones,
+    uav_v,
+    sampling_step=5.0,
+    clearance=0.0,
+    flight_altitude=None,
+):
     """
     【增强旗舰版 V4】迭代式多重避障规划 - 流线型防绕圈版
     解决：
@@ -181,6 +250,17 @@ def plan_path_with_avoidance(sp, gp, Rmin, zones, uav_v, sampling_step=5.0):
     2. 狭缝逃逸：自动走外圈。
     3. 远程直飞支持：配合 DPGA 的直飞逻辑，生成高质量直线段。
     """
+    if not all(math.isfinite(float(v)) for v in list(sp[:3]) + list(gp[:3])):
+        return []
+    Rmin = float(Rmin)
+    sampling_step = float(sampling_step)
+    if Rmin <= 0.0 or sampling_step <= 0.0:
+        return []
+    # A sampled path can approach an edge between two samples.  One full sample
+    # spacing is added to the collision envelope so the continuous curve still
+    # retains at least the requested clearance.
+    clearance = max(0.0, float(clearance)) + sampling_step
+    zones = _zones_at_altitude(zones, flight_altitude)
     full_sampled_points = []
     curr_sp = sp
     waypoints = [sp]
@@ -193,7 +273,14 @@ def plan_path_with_avoidance(sp, gp, Rmin, zones, uav_v, sampling_step=5.0):
         # 1. 检查当前点到终点是否通畅
         blocked_zones = []
         for z in zones:
-            if _is_dubins_blocked(curr_sp, gp, Rmin, [z], step=sampling_step):
+            if _is_dubins_blocked(
+                curr_sp,
+                gp,
+                Rmin,
+                [z],
+                step=sampling_step,
+                clearance=clearance,
+            ):
                 poly = z.get("poly", [])
                 if len(poly) < 3:
                     continue
@@ -212,7 +299,11 @@ def plan_path_with_avoidance(sp, gp, Rmin, zones, uav_v, sampling_step=5.0):
             poly = target_zone.get("poly", [])
 
             # 多层外扩：增加一个超大圈用于包围绕行
-            margins = [Rmin * 2.0 + 50.0, Rmin * 4.0 + 100.0, Rmin * 8.0 + 200.0]
+            margins = [
+                Rmin * 2.0 + clearance,
+                Rmin * 4.0 + 2.0 * clearance,
+                Rmin * 8.0 + 4.0 * clearance,
+            ]
             candidates_pos = _get_expanded_vertices(poly, margins)
 
             candidate_options = []
@@ -221,7 +312,11 @@ def plan_path_with_avoidance(sp, gp, Rmin, zones, uav_v, sampling_step=5.0):
                 # [前置检查] 候选点不能在禁飞区内
                 cand_inside = False
                 for z_check in zones:
-                    if _point_in_poly(cand[0], cand[1], z_check.get("poly", [])):
+                    if (
+                        _point_in_poly(cand[0], cand[1], z_check.get("poly", []))
+                        or _point_zone_clearance(cand[0], cand[1], z_check)
+                        < clearance
+                    ):
                         cand_inside = True
                         break
                 if cand_inside:
@@ -304,7 +399,14 @@ def plan_path_with_avoidance(sp, gp, Rmin, zones, uav_v, sampling_step=5.0):
             best_wp = None
             for cost, wp in candidate_options:
                 # 只有在这里才做昂贵的碰撞检测
-                if not _is_dubins_blocked(curr_sp, wp, Rmin, zones, step=sampling_step):
+                if not _is_dubins_blocked(
+                    curr_sp,
+                    wp,
+                    Rmin,
+                    zones,
+                    step=sampling_step,
+                    clearance=clearance,
+                ):
                     best_wp = wp
                     break
 
@@ -316,10 +418,20 @@ def plan_path_with_avoidance(sp, gp, Rmin, zones, uav_v, sampling_step=5.0):
 
         if not found_valid_wp:
             rospy.logwarn(
-                f"[Planner] CRITICAL: Stuck! No safe bypass found. Direct Line Attempted."
+                "[Planner] CRITICAL: no safe bypass found; refusing unsafe path"
             )
-            break
+            return []
 
+    if _is_dubins_blocked(
+        curr_sp,
+        gp,
+        Rmin,
+        zones,
+        step=sampling_step,
+        clearance=clearance,
+    ):
+        rospy.logwarn("[Planner] iteration limit left final segment blocked")
+        return []
     waypoints.append(gp)
 
     # 拼接路径
@@ -338,6 +450,11 @@ def plan_path_with_avoidance(sp, gp, Rmin, zones, uav_v, sampling_step=5.0):
         except Exception as e:
             full_sampled_points.append([p_end[0], p_end[1], p_end[2]])
 
+    if len(full_sampled_points) < 2 or not _samples_clear_zones(
+        full_sampled_points, zones, clearance=clearance
+    ):
+        rospy.logwarn("[Planner] final safety validation rejected generated path")
+        return []
     return full_sampled_points
 
 

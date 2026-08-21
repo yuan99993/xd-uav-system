@@ -1,0 +1,16 @@
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="config" default="$(find xd_uav_detect)/config/detect.yaml"/>
+  <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_detect"
+          type="xd_uav_detect_node"
+          name="detect"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="frames/body" value="$(arg body_frame)"/>
+    </node>
+  </group>
+</launch>

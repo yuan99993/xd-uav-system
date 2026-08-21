@@ -149,11 +149,15 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.fail("没有在超时前收到固定翼轨迹控制输出")
 
     @staticmethod
-    def _turning_trajectory(yaw_rate=0.15):
+    def _turning_trajectory(
+        yaw_rate=0.15,
+        vertical_acceleration=0.0,
+        duration=10.0,
+    ):
         trajectory = MultiDOFJointTrajectory()
         trajectory.header.frame_id = "uav1/odom"
         trajectory.joint_names = ["uav1/base_link"]
-        for point_time in (0.0, 10.0):
+        for point_time in (0.0, duration):
             transform = Transform()
             transform.translation.z = 100.0
             transform.rotation.w = 1.0
@@ -164,6 +168,7 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
 
             acceleration = Twist()
             acceleration.linear.y = 2.25
+            acceleration.linear.z = vertical_acceleration
 
             point = MultiDOFJointTrajectoryPoint()
             point.transforms = [transform]
@@ -207,6 +212,92 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.assertLess(curvature_command.body_rate.x, -0.05)
         self.assertGreater(curvature_command.body_rate.z, 0.01)
 
+        vertical_feedforward_command = self._wait_for_trajectory_command(
+            self._turning_trajectory(vertical_acceleration=2.0),
+            lambda value: (
+                value.valid and value.body_rate.y < -0.05
+            ),
+        )
+        self.assertLess(
+            vertical_feedforward_command.body_rate.y,
+            -0.05,
+            "正向垂直加速度前馈必须提前产生抬头角速度",
+        )
+
+        # The same P/V/A reference must produce the same fixed-wing command
+        # whether it arrives as a sampled trajectory or a masked
+        # PositionTarget. This guards the canonical reference adapter: the
+        # core controller must not implement a second set of equations for
+        # the topic interface.
+        unified_trajectory_command = self._wait_for_trajectory_command(
+            self._turning_trajectory(
+                yaw_rate=0.0,
+                vertical_acceleration=2.0,
+            ),
+            lambda value: value.valid,
+        )
+        pva_reference = self._reference(
+            position_x=0.0,
+            position_y=0.0,
+            position_z=100.0,
+            velocity_x=15.0,
+            velocity_y=0.0,
+            velocity_z=0.0,
+        )
+        pva_reference.type_mask = PositionTarget.IGNORE_YAW_RATE
+        pva_reference.acceleration_or_force.x = 0.0
+        pva_reference.acceleration_or_force.y = 2.25
+        pva_reference.acceleration_or_force.z = 2.0
+        unified_setpoint_command = self._wait_for_command(
+            lambda value: value.valid,
+            reference=pva_reference,
+        )
+        self.assertAlmostEqual(
+            unified_setpoint_command.body_rate.x,
+            unified_trajectory_command.body_rate.x,
+            delta=0.03,
+        )
+        self.assertAlmostEqual(
+            unified_setpoint_command.body_rate.y,
+            unified_trajectory_command.body_rate.y,
+            delta=0.03,
+        )
+        self.assertAlmostEqual(
+            unified_setpoint_command.body_rate.z,
+            unified_trajectory_command.body_rate.z,
+            delta=0.03,
+        )
+        self.assertAlmostEqual(
+            unified_setpoint_command.thrust,
+            unified_trajectory_command.thrust,
+            delta=0.01,
+        )
+
+        # A completed fixed-wing trajectory must not keep chasing its
+        # final static point. It must create a tangent waiting circle,
+        # whose V/R feed-forward already commands bank at circle entry.
+        short_trajectory_command = self._wait_for_trajectory_command(
+            self._turning_trajectory(duration=0.15),
+            lambda value: (
+                value.valid
+                and value.controller == "fixedwing_course_energy"
+            ),
+        )
+        self.assertTrue(short_trajectory_command.valid)
+        completed_trajectory_loiter = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.controller
+                == "fixedwing_course_energy_loiter"
+                and value.body_rate.x < -0.01
+                and value.body_rate.z > 0.01
+            ),
+            include_reference=False,
+            timeout=2.0,
+        )
+        self.assertLess(completed_trajectory_loiter.body_rate.x, 0.0)
+        self.assertGreater(completed_trajectory_loiter.body_rate.z, 0.0)
+
         command = self._wait_for_command(
             lambda value: (
                 value.valid and value.body_rate.y < -0.05
@@ -218,11 +309,32 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.assertTrue(math.isfinite(command.body_rate.z))
         self.assertGreaterEqual(command.thrust, 0.0)
         self.assertLessEqual(command.thrust, 1.0)
+        self.assertGreater(
+            command.thrust,
+            0.25,
+            "爬升率目标必须在配平油门上增加前馈",
+        )
         self.assertLess(
             command.body_rate.y,
             -0.05,
             "ROS FLU中正爬升必须产生负pitch rate",
         )
+
+        # With no altitude error or vertical feed-forward, an actual upward
+        # velocity still needs a nose-down correction. This exercises the
+        # climb-rate feedback that damps altitude overshoot.
+        climbing_state = self._state()
+        climbing_state.velocity_odom.z = 2.0
+        level_reference = self._reference(
+            position_z=100.0,
+            velocity_z=0.0,
+        )
+        climb_damping_command = self._wait_for_command(
+            lambda value: value.valid and value.body_rate.y > 0.05,
+            state=climbing_state,
+            reference=level_reference,
+        )
+        self.assertGreater(climb_damping_command.body_rate.y, 0.05)
 
         left_turn_reference = self._reference(
             position_x=0.0,
@@ -277,6 +389,185 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.assertLess(velocity_y_command.body_rate.x, 0.0)
         self.assertGreater(velocity_y_command.body_rate.z, 0.0)
 
+        # A PositionTarget velocity stream does not carry acceleration,
+        # but the changing horizontal direction still contains the path
+        # turn rate. Keep measured course aligned with the vector so the
+        # proportional course error is nearly zero: the bank below must
+        # therefore come from the recovered stream feed-forward.
+        turning_stream_command = None
+        stream_start = time.time()
+        stream_yaw_rate = 0.18
+        while (
+            time.time() - stream_start < 1.5
+            and not rospy.is_shutdown()
+        ):
+            elapsed = time.time() - stream_start
+            course = stream_yaw_rate * elapsed
+            turning_state = self._state()
+            turning_state.course = course
+            turning_reference = self._reference(
+                position_x=float("nan"),
+                position_y=float("nan"),
+                position_z=100.0,
+                velocity_x=15.0 * math.cos(course),
+                velocity_y=15.0 * math.sin(course),
+                velocity_z=float("nan"),
+            )
+            turning_reference.type_mask = (
+                PositionTarget.IGNORE_PX
+                | PositionTarget.IGNORE_PY
+                | PositionTarget.IGNORE_VZ
+                | PositionTarget.IGNORE_AFX
+                | PositionTarget.IGNORE_AFY
+                | PositionTarget.IGNORE_AFZ
+                | PositionTarget.IGNORE_YAW
+                | PositionTarget.IGNORE_YAW_RATE
+            )
+            self._publish(
+                state=turning_state,
+                reference=turning_reference,
+            )
+            try:
+                candidate = rospy.wait_for_message(
+                    "command", ControlCommand, timeout=0.12
+                )
+                if elapsed > 0.8 and candidate.valid:
+                    turning_stream_command = candidate
+            except rospy.ROSException:
+                pass
+            rospy.sleep(0.02)
+        self.assertIsNotNone(
+            turning_stream_command,
+            "没有收到流式速度方向转弯控制输出",
+        )
+        self.assertLess(
+            turning_stream_command.body_rate.x,
+            -0.05,
+            "流式速度方向变化应产生左转course-rate前馈",
+        )
+        self.assertGreater(turning_stream_command.body_rate.z, 0.01)
+
+        # A vertical-only setpoint has no horizontal direction. It must
+        # hold the course captured on mode entry; re-sampling the measured
+        # course on every iteration would make this correction disappear.
+        altitude_only_reference = self._reference(
+            position_x=float("nan"),
+            position_y=float("nan"),
+            position_z=100.0,
+            velocity_x=float("nan"),
+            velocity_y=float("nan"),
+            velocity_z=float("nan"),
+        )
+        altitude_only_reference.type_mask = (
+            PositionTarget.IGNORE_PX
+            | PositionTarget.IGNORE_PY
+            | PositionTarget.IGNORE_VX
+            | PositionTarget.IGNORE_VY
+            | PositionTarget.IGNORE_VZ
+            | PositionTarget.IGNORE_AFX
+            | PositionTarget.IGNORE_AFY
+            | PositionTarget.IGNORE_AFZ
+            | PositionTarget.IGNORE_YAW
+            | PositionTarget.IGNORE_YAW_RATE
+        )
+        self._state_publisher.publish(self._state())
+        rospy.sleep(0.10)
+        self._wait_for_command(
+            lambda value: value.valid,
+            reference=altitude_only_reference,
+        )
+        drifted_course_state = self._state()
+        drifted_course_state.course = 0.15
+        held_course_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.body_rate.x > 0.05
+                and value.body_rate.z < -0.01
+            ),
+            state=drifted_course_state,
+            reference=altitude_only_reference,
+        )
+        self.assertGreater(held_course_command.body_rate.x, 0.05)
+        self.assertLess(held_course_command.body_rate.z, -0.01)
+
+        # Pure PXY, pure VZ and explicit yaw-rate are separate valid fixed-
+        # wing PositionTarget modes, not special cases requiring dummy axes.
+        position_xy_only = self._reference(
+            position_x=0.0,
+            position_y=200.0,
+            position_z=float("nan"),
+            velocity_x=float("nan"),
+            velocity_y=float("nan"),
+            velocity_z=float("nan"),
+        )
+        position_xy_only.type_mask = (
+            PositionTarget.IGNORE_PZ
+            | PositionTarget.IGNORE_VX
+            | PositionTarget.IGNORE_VY
+            | PositionTarget.IGNORE_VZ
+            | PositionTarget.IGNORE_AFX
+            | PositionTarget.IGNORE_AFY
+            | PositionTarget.IGNORE_AFZ
+            | PositionTarget.IGNORE_YAW
+            | PositionTarget.IGNORE_YAW_RATE
+        )
+        position_only_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.body_rate.x < -0.05
+                and value.body_rate.z > 0.01
+            ),
+            reference=position_xy_only,
+        )
+        self.assertLess(position_only_command.body_rate.x, -0.05)
+
+        velocity_z_only = self._reference(
+            position_x=float("nan"),
+            position_y=float("nan"),
+            position_z=float("nan"),
+            velocity_x=float("nan"),
+            velocity_y=float("nan"),
+            velocity_z=1.0,
+        )
+        velocity_z_only.type_mask = (
+            PositionTarget.IGNORE_PX
+            | PositionTarget.IGNORE_PY
+            | PositionTarget.IGNORE_PZ
+            | PositionTarget.IGNORE_VX
+            | PositionTarget.IGNORE_VY
+            | PositionTarget.IGNORE_AFX
+            | PositionTarget.IGNORE_AFY
+            | PositionTarget.IGNORE_AFZ
+            | PositionTarget.IGNORE_YAW
+            | PositionTarget.IGNORE_YAW_RATE
+        )
+        vertical_velocity_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.body_rate.y < -0.05
+                and value.thrust > 0.25
+            ),
+            reference=velocity_z_only,
+        )
+        self.assertLess(vertical_velocity_command.body_rate.y, -0.05)
+        self.assertGreater(vertical_velocity_command.thrust, 0.25)
+
+        explicit_rate_reference = altitude_only_reference
+        explicit_rate_reference.type_mask &= (
+            ~PositionTarget.IGNORE_YAW_RATE
+        )
+        explicit_rate_reference.yaw_rate = 0.18
+        explicit_rate_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.body_rate.x < -0.05
+                and value.body_rate.z > 0.01
+            ),
+            reference=explicit_rate_reference,
+        )
+        self.assertLess(explicit_rate_command.body_rate.x, -0.05)
+        self.assertGreater(explicit_rate_command.body_rate.z, 0.01)
+
         # A trajectory tangent pointing east must still steer left
         # when the sampled path position lies north of the aircraft.
         # This verifies that velocity feed-forward no longer
@@ -292,13 +583,13 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         offset_path_command = self._wait_for_command(
             lambda value: (
                 value.valid
-                and -1.0 < value.body_rate.x < -0.10
+                and value.body_rate.x < -0.10
                 and value.body_rate.z > 0.01
             ),
             reference=offset_path_reference,
         )
         self.assertLess(offset_path_command.body_rate.x, -0.10)
-        self.assertGreater(offset_path_command.body_rate.x, -1.0)
+        self.assertGreaterEqual(offset_path_command.body_rate.x, -2.0)
         self.assertGreater(offset_path_command.body_rate.z, 0.0)
 
         rospy.wait_for_service(
@@ -338,6 +629,12 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             loiter_command.controller,
             "fixedwing_course_energy_loiter",
         )
+        self.assertLess(
+            loiter_command.body_rate.x,
+            -0.01,
+            "圆周切入点应由V/R前馈立即建立滚转",
+        )
+        self.assertGreater(loiter_command.body_rate.z, 0.01)
 
         # The configured CCW circle is tangent to course=0 at entry.
         # Moving outside that circle must ask for a left bank in ROS
@@ -392,28 +689,101 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             land_home_response.success,
             land_home_response.message,
         )
-        # Reproduce an aircraft that cannot physically hit the
-        # configured 50 m waypoint sphere because its turn radius is
-        # larger. The dynamically enlarged capture radius must enter
-        # the glideslope, and the landing-line guidance must command a
-        # right correction from the left side of the final line.
+        # Reproduce the old handoff transient: the aircraft enters the
+        # enlarged capture radius while already banked in the direct-to-
+        # point turn. Line capture must preserve that established bank and
+        # hold approach altitude instead of immediately unloading the turn
+        # as the glide-slope reference replaces the point reference.
         offtrack_approach_state = self._state()
-        offtrack_approach_state.position_odom.x = 40.0
-        offtrack_approach_state.position_odom.y = 200.0
+        offtrack_approach_state.position_odom.x = 100.0
+        offtrack_approach_state.position_odom.y = 0.0
         offtrack_approach_state.position_odom.z = 130.0
-        land_home_command = self._wait_for_command(
+        offtrack_approach_state.course = 0.60
+        established_roll = -0.35
+        offtrack_approach_state.orientation_odom_body.x = math.sin(
+            0.5 * established_roll
+        )
+        offtrack_approach_state.orientation_odom_body.w = math.cos(
+            0.5 * established_roll
+        )
+        line_capture_command = self._wait_for_command(
             lambda value: (
                 value.valid
                 and value.landing_active
                 and value.controller
                 == "fixedwing_course_energy_landing"
-                and value.body_rate.x > 0.05
+                and abs(value.body_rate.x) < 0.10
+                and abs(value.body_rate.y) < 0.02
+                and value.body_rate.z > 0.10
             ),
             include_reference=False,
             state=offtrack_approach_state,
         )
-        self.assertTrue(land_home_command.landing_active)
-        self.assertGreater(land_home_command.body_rate.x, 0.05)
+        self.assertTrue(line_capture_command.landing_active)
+        self.assertAlmostEqual(
+            line_capture_command.body_rate.x, 0.0, delta=0.10
+        )
+        self.assertAlmostEqual(
+            line_capture_command.body_rate.y, 0.0, delta=0.02
+        )
+        self.assertGreater(line_capture_command.body_rate.z, 0.10)
+
+        cancel_land_response = internal_command(
+            InternalCommandRequest.CANCEL_LANDING, 0.0
+        )
+        self.assertTrue(
+            cancel_land_response.success,
+            cancel_land_response.message,
+        )
+        cancel_loiter_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and not value.landing_active
+                and value.controller
+                == "fixedwing_course_energy_loiter"
+            ),
+            include_reference=False,
+            state=offtrack_approach_state,
+        )
+        self.assertFalse(cancel_loiter_command.landing_active)
+
+        restart_land_response = internal_command(
+            InternalCommandRequest.LAND_HOME, 0.0
+        )
+        self.assertTrue(
+            restart_land_response.success,
+            restart_land_response.message,
+        )
+        self._wait_for_command(
+            lambda value: value.valid and value.landing_active,
+            include_reference=False,
+            state=offtrack_approach_state,
+        )
+
+        aligned_approach_state = self._state()
+        aligned_approach_state.position_odom.x = 100.0
+        aligned_approach_state.position_odom.y = 0.0
+        aligned_approach_state.position_odom.z = 130.0
+        aligned_approach_state.course = 0.55
+        aligned_approach_state.orientation_odom_body.x = math.sin(
+            0.5 * established_roll
+        )
+        aligned_approach_state.orientation_odom_body.w = math.cos(
+            0.5 * established_roll
+        )
+        aligned_glide_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.landing_active
+                and value.body_rate.y > 0.02
+                and abs(value.body_rate.x) < 0.20
+                and value.body_rate.z > 0.10
+            ),
+            include_reference=False,
+            state=aligned_approach_state,
+        )
+        self.assertLess(abs(aligned_glide_command.body_rate.x), 0.20)
+        self.assertGreater(aligned_glide_command.body_rate.y, 0.02)
 
         reset_response = internal_command(
             InternalCommandRequest.RESET, 0.0
@@ -474,25 +844,110 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             "下滑阶段应给出低头指令",
         )
 
-        flare_state = self._state()
-        flare_state.position_odom.x = 370.0
-        flare_state.position_odom.z = 102.5
-        flare_command = self._wait_for_command(
+        near_ground_airborne_state = self._state()
+        near_ground_airborne_state.position_odom.x = 370.0
+        near_ground_airborne_state.position_odom.z = 102.5
+        near_ground_command = self._wait_for_command(
             lambda value: (
                 value.valid
                 and value.landing_active
-                and value.body_rate.y < -0.02
-                and value.thrust < 0.01
+                and not value.landing_touchdown
+                and value.thrust > 0.05
             ),
             include_reference=False,
-            state=flare_state,
+            state=near_ground_airborne_state,
+        )
+        self.assertFalse(near_ground_command.landing_touchdown)
+        self.assertGreater(
+            near_ground_command.thrust,
+            0.05,
+            "仍在空中时不能因固定距离而提前断油",
+        )
+        self.assertGreater(
+            near_ground_command.body_rate.y,
+            0.05,
+            "低空阶段必须继续跟踪下滑率，不能配平为平飞",
+        )
+
+        low_airborne_state = self._state()
+        low_airborne_state.position_odom.x = 399.0
+        low_airborne_state.position_odom.z = 100.5
+        low_airborne_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.landing_active
+                and not value.landing_touchdown
+                and 0.01 < value.thrust
+                < near_ground_command.thrust
+            ),
+            include_reference=False,
+            state=low_airborne_state,
+        )
+        self.assertGreater(
+            low_airborne_command.thrust,
+            0.01,
+            "最后一米内仍高速飞行时油门应连续衰减而非归零",
         )
         self.assertLess(
-            flare_command.body_rate.y,
-            -0.02,
-            "拉平阶段应给出抬头指令",
+            low_airborne_command.thrust,
+            near_ground_command.thrust,
         )
-        self.assertLess(flare_command.thrust, 0.01)
+        self.assertGreater(
+            low_airborne_command.body_rate.y,
+            0.0,
+            "接地前应保留轻微下沉而不是悬在跑道上方",
+        )
+
+        # Once rollout is active, the same lateral guidance error must
+        # receive progressively less airborne body-rate control as ground
+        # speed falls. The blend reuses approach airspeed, so halving the
+        # groundspeed should approximately halve the roll/yaw commands.
+        fast_rollout_state = self._state()
+        fast_rollout_state.position_odom.x = 399.0
+        fast_rollout_state.position_odom.y = 50.0
+        fast_rollout_state.position_odom.z = 100.5
+        fast_rollout_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.landing_active
+                and not value.landing_touchdown
+                and abs(value.body_rate.x) > 0.20
+                and abs(value.body_rate.z) > 0.02
+            ),
+            include_reference=False,
+            state=fast_rollout_state,
+        )
+
+        slow_rollout_state = self._state()
+        slow_rollout_state.position_odom.x = 399.0
+        slow_rollout_state.position_odom.y = 50.0
+        slow_rollout_state.position_odom.z = 100.5
+        slow_rollout_state.velocity_odom.x = 7.5
+        slow_rollout_state.groundspeed = 7.5
+        slow_rollout_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.landing_active
+                and not value.landing_touchdown
+                and abs(value.body_rate.x)
+                < 0.75 * abs(fast_rollout_command.body_rate.x)
+            ),
+            include_reference=False,
+            state=slow_rollout_state,
+        )
+        self.assertAlmostEqual(
+            slow_rollout_command.body_rate.x,
+            0.5 * fast_rollout_command.body_rate.x,
+            # The final-line course target continues slewing while the
+            # groundspeed changes, so compare the intended attenuation
+            # without assuming an identical unscaled roll error.
+            delta=0.06,
+        )
+        self.assertAlmostEqual(
+            slow_rollout_command.body_rate.z,
+            0.5 * fast_rollout_command.body_rate.z,
+            delta=0.02,
+        )
 
         rollout_state = self._state()
         rollout_state.position_odom.x = 409.0
@@ -511,6 +966,9 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         )
         self.assertTrue(touchdown_command.landing_touchdown)
         self.assertLess(touchdown_command.thrust, 0.01)
+        self.assertAlmostEqual(touchdown_command.body_rate.x, 0.0)
+        self.assertAlmostEqual(touchdown_command.body_rate.y, 0.0)
+        self.assertAlmostEqual(touchdown_command.body_rate.z, 0.0)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="start_control_stack" default="true"/>
+  <arg name="config" default="$(find xd_uav_sead)/config/sead_defaults.yaml"/>
+  <arg name="sources_config"
+       default="$(find xd_uav_sead)/config/xd_control_sources.yaml"/>
+  <arg name="controller_common_config"
+       default="$(find xd_uav_controller)/config/common_config.yaml"/>
+  <arg name="controller_config"
+       default="$(find xd_uav_controller)/config/fixedwing.yaml"/>
+  <arg name="offboard_config"
+       default="$(find xd_uav_control_manager)/config/offboard.yaml"/>
+  <arg name="safety_config"
+       default="$(find xd_uav_control_manager)/config/safety.yaml"/>
+  <arg name="control_setpoint_topic"
+       default="/$(arg uav_name)/control/reference/setpoint"/>
+  <arg name="control_reference_frame" default="$(arg uav_name)/odom"/>
+  <arg name="simple_goal_topic" default="/move_base_simple/goal"/>
+  <arg name="shared_frame_enabled" default="false"/>
+  <arg name="shared_frame_offset_x" default="0.0"/>
+  <arg name="shared_frame_offset_y" default="0.0"/>
+  <arg name="shared_frame_offset_z" default="0.0"/>
+  <arg name="sead_runtime_mode" default="dpga_sead"/>
+  <arg name="sead_control_mode" default="position_waypoint"/>
+  <arg name="simple_strike_control_mode" default="position_waypoint"/>
+  <arg name="headless_sitl_failsafe_bypass" default="false"/>
+
+  <!-- PX4, MAVROS and Gazebo are external to this composition.  MRS core must
+       stay stopped because it owns the same /uavX/control_manager namespace. -->
+  <group if="$(arg start_control_stack)">
+    <include file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
+      <arg name="UAV_NAME" value="$(arg uav_name)"/>
+      <arg name="sources_config" value="$(arg sources_config)"/>
+    </include>
+    <include file="$(find xd_uav_state_estimators)/launch/estimator.launch">
+      <arg name="UAV_NAME" value="$(arg uav_name)"/>
+      <arg name="sources_config" value="$(arg sources_config)"/>
+      <arg name="body_frame" value="$(arg uav_name)/fcu"/>
+    </include>
+    <include file="$(find xd_uav_control_manager)/launch/fixedwing_system.launch">
+      <arg name="UAV_NAME" value="$(arg uav_name)"/>
+      <arg name="controller_common_config"
+           value="$(arg controller_common_config)"/>
+      <arg name="controller_config" value="$(arg controller_config)"/>
+      <arg name="offboard_config" value="$(arg offboard_config)"/>
+      <arg name="safety_config" value="$(arg safety_config)"/>
+      <arg name="simple_goal_topic" value="$(arg simple_goal_topic)"/>
+    </include>
+  </group>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_sead"
+          type="sead_onboard_node.py"
+          name="sead_onboard"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <rosparam command="load" file="$(find xd_uav_sead)/config/sead_planner.yaml"/>
+      <rosparam command="load" file="$(find xd_uav_sead)/config/gps_origin.yaml"/>
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="use_simulation" value="true"/>
+      <param name="control_backend" value="xd_control_manager"/>
+      <param name="control_setpoint_topic" value="$(arg control_setpoint_topic)"/>
+      <param name="control_reference_frame" value="$(arg control_reference_frame)"/>
+      <param name="sead_runtime_mode" value="$(arg sead_runtime_mode)"/>
+      <param name="sead_control_mode" value="$(arg sead_control_mode)"/>
+      <param name="simple_strike_control_mode"
+             value="$(arg simple_strike_control_mode)"/>
+      <param name="headless_sitl_failsafe_bypass"
+             value="$(arg headless_sitl_failsafe_bypass)"/>
+      <param name="shared_frame/enabled" value="$(arg shared_frame_enabled)"/>
+      <param name="shared_frame/offset_x" value="$(arg shared_frame_offset_x)"/>
+      <param name="shared_frame/offset_y" value="$(arg shared_frame_offset_y)"/>
+      <param name="shared_frame/offset_z" value="$(arg shared_frame_offset_z)"/>
+    </node>
+  </group>
+</launch>
