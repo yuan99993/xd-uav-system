@@ -1,0 +1,26 @@
+<launch>
+  <node pkg="sar_yolo_detector" type="sar_task_point_generator"
+        name="scout_aircraft_task_generator_test" output="screen" required="true">
+    <rosparam command="load"
+              file="$(find sar_yolo_detector)/config/task_profile_aircraft_coco.yaml" />
+    <param name="use_tracked_detections" value="true" />
+    <param name="tracked_detections_topic"
+           value="/scout_aircraft_chain/tracked_detections" />
+    <param name="task_candidates_topic"
+           value="/scout_aircraft_chain/task_candidates" />
+    <param name="task_pose_topic" value="/scout_aircraft_chain/task_point" />
+    <param name="localization_mode" value="bearing_only" />
+    <param name="input_max_age_sec" value="5.0" />
+    <param name="min_confirmations" value="3" />
+    <param name="confirmation_window_sec" value="2.0" />
+    <param name="task_generation_enabled" value="true" />
+    <param name="model_validated" value="true" />
+    <param name="allow_experimental_model" value="false" />
+    <param name="mission_id" value="mission_aircraft_test" />
+    <param name="uav_id" value="scout_01" />
+    <param name="session_uuid" value="scout_aircraft_test_session" />
+  </node>
+
+  <test test-name="scout_aircraft_task_chain" pkg="sar_yolo_detector"
+        type="test_scout_aircraft_task_chain.py" time-limit="30" />
+</launch>

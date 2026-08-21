@@ -92,6 +92,7 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.venv-sar-gpu/
 venv/
 env/
 ENV/

@@ -1,0 +1,11 @@
+uint32 output_index
+bool has_primary
+uint32 primary_index
+time primary_stamp
+float32 primary_confidence
+bool has_secondary
+uint32 secondary_index
+time secondary_stamp
+float32 secondary_confidence
+string registration_mode
+string calibration_version

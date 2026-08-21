@@ -1,0 +1,11 @@
+# Overrides for the XD ground-vehicle integration only.
+SmartTracker:
+  # COCO IDs: car=2, motorcycle=3, bus=5, truck=7. Filtering is applied both
+  # inside Ultralytics and again before SmartTracker draws or publishes boxes.
+  SMART_TRACKER_ALLOWED_CLASS_IDS: [2, 3, 5, 7]
+  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.45
+  SMART_TRACKER_MAX_DETECTIONS: 30
+
+  # ByteTrack is sufficient for the fixed overhead camera and lighter than
+  # BoT-SORT on the 2 GB deployment GPU.
+  TRACKER_TYPE: bytetrack

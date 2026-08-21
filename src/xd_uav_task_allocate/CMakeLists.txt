@@ -25,6 +25,16 @@ add_message_files(
   SearchAreaArray.msg
 )
 
+add_service_files(
+  FILES
+  GetMissionState.srv
+  LoadSearchAreas.srv
+  SetVehicleEnabled.srv
+  TargetCommand.srv
+  TaskCommand.srv
+  VehicleCommand.srv
+)
+
 catkin_python_setup()
 
 generate_messages(

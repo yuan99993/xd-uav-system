@@ -4,6 +4,7 @@ uint8 ASSIGNED=2
 uint8 EXECUTING=3
 uint8 COMPLETED=4
 uint8 STALE=5
+uint8 VERIFYING=6
 
 std_msgs/Header header
 uint32 target_id

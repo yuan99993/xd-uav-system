@@ -1,0 +1,43 @@
+# 多旋翼：外部二维检测 + 激光雷达/相机点云配准。
+# 单位：距离 m，时间 s。图像应与 CameraInfo 的成像模型一致。
+
+localization:
+  enabled: true
+  method: "lidar_camera"
+
+interfaces:
+  input:
+    detections_2d: "detect/input/detections_2d"
+    image: "camera/image_raw"
+    camera_info: "camera/camera_info"
+    point_cloud: "fastlio/points"
+  output:
+    # xd_uav_track 和后续任务分配继续使用这一统一输出。
+    detections_3d: "track/detections"
+    status: "detect/status"
+    debug_image: "detect/debug/image"
+
+calibration:
+  # 复制 velo2cam_calibration 输出的 x y z yaw pitch roll。
+  calibrated: true
+  translation_xyz: [-0.253366, -0.0435222, 0.185053]
+  rotation_ypr: [0.0100813, 0.00255071, -0.00259498]
+
+fusion:
+  enabled: true
+  maximum_cloud_time_difference_sec: 0.12
+  cloud_buffer_size: 10
+  tf_timeout_sec: 0.03
+  point_stride: 1
+  minimum_range_m: 0.30
+  maximum_range_m: 120.0
+  box_shrink_ratio: 0.10
+  minimum_cluster_points: 3
+  depth_cluster_tolerance_m: 0.75
+
+visualization:
+  enabled: true
+  point_stride: 1
+  point_radius_px: 1
+  minimum_depth_m: 0.30
+  maximum_depth_m: 30.0

@@ -1,0 +1,38 @@
+# Only airplane detections become planner-facing task candidates. SmartTracker
+# may still publish and display all other COCO classes for reconnaissance.
+input_detections_topic: sar_yolo_detector/aircraft/detections
+tracked_detections_topic: sar_yolo_detector/aircraft/tracked_detections
+use_tracked_detections: true
+camera_info_topic: camera/eo/camera_info
+task_candidates_topic: sar_yolo_detector/aircraft/task_candidates
+task_pose_topic: sar_yolo_detector/aircraft/task_point
+sensor_id: scout_eo_primary
+task_frame: map
+# A monocular aircraft box provides a camera bearing, not target range. Keep
+# airborne targets bearing-only unless an external ranging/triangulation stage
+# supplies 3-D position. `terrain` is only valid for a confirmed ground target.
+localization_mode: bearing_only
+ground_plane_z: 0.0
+terrain_grid_topic: terrain/elevation_grid
+
+# Keep the chain configured but fail closed until this model/camera/operating
+# altitude combination is explicitly validated by the deployment owner.
+task_generation_enabled: true
+model_validated: false
+allow_experimental_model: false
+all_task_classes: false
+task_class_ids: [4]
+minimum_detection_confidence: 0.40
+min_confirmations: 3
+confirmation_window_sec: 1.5
+track_timeout_sec: 2.5
+minimum_task_priority: 0.55
+
+class_names: [person, bicycle, car, motorcycle, airplane, bus, train, truck, boat]
+global_semantic_ids: [1, 8, 8, 8, 8, 8, 8, 8, 8]
+class_anchor_y_fractions: [0.95, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+profile: aircraft_coco
+model_version: yolo11n_coco80_baseline
+model_sha256: 0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1
+calibration_version: unversioned
+coordinate_contract: CAMERA_RAY

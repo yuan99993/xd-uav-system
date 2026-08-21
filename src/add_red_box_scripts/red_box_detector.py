@@ -38,6 +38,24 @@ def _format_topic(template: str, uav_name: str) -> str:
     return topic
 
 
+def _named_topic_overrides(raw_values: Optional[Iterable[str]]) -> Dict[str, str]:
+    """Parse repeatable NAME=TOPIC values used by mixed sensor fleets."""
+
+    result: Dict[str, str] = {}
+    for raw_value in raw_values or []:
+        name, separator, topic = str(raw_value).partition("=")
+        name = name.strip().strip("/")
+        topic = topic.strip()
+        if not separator or not name or not topic:
+            raise ValueError(
+                f"invalid --image-topic '{raw_value}'; expected NAME=TOPIC"
+            )
+        if name in result:
+            raise ValueError(f"duplicate --image-topic override for {name}")
+        result[name] = topic
+    return result
+
+
 def _command_line() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Detect red boxes for multiple UAV camera streams in one process.",
@@ -45,6 +63,8 @@ def _command_line() -> argparse.Namespace:
         epilog=(
             "Examples:\n"
             "  python3 red_box_detector.py --uavs uav1 uav2\n"
+            "  python3 red_box_detector.py --uavs uav1 uav2 "
+            "--image-topic uav1=/uav1/down_camera/image_raw\n"
             "  python3 red_box_detector.py --uavs uav1 uav2 uav3 --no-debug-image\n\n"
             "Default topics for each UAV:\n"
             "  /{uav}/camera/image_raw\n"
@@ -61,6 +81,15 @@ def _command_line() -> argparse.Namespace:
     parser.add_argument(
         "--image-template",
         help="input topic template containing {uav}",
+    )
+    parser.add_argument(
+        "--image-topic",
+        action="append",
+        metavar="NAME=TOPIC",
+        help=(
+            "per-UAV image override; repeat as needed, for example "
+            "uav1=/uav1/down_camera/image_raw"
+        ),
     )
     parser.add_argument(
         "--detections-template",
@@ -96,6 +125,13 @@ class MultiUavRedBoxDetector:
         self._image_template = arguments.image_template or rospy.get_param(
             "~image_topic_template", "/{uav}/camera/image_raw"
         )
+        self._image_topic_overrides = _named_topic_overrides(arguments.image_topic)
+        unknown_overrides = set(self._image_topic_overrides) - set(self._uavs)
+        if unknown_overrides:
+            raise ValueError(
+                "--image-topic contains UAVs not listed by --uavs: "
+                + ", ".join(sorted(unknown_overrides))
+            )
         self._detections_template = arguments.detections_template or rospy.get_param(
             "~detections_topic_template", "/{uav}/detect/input/detections_2d"
         )
@@ -145,10 +181,16 @@ class MultiUavRedBoxDetector:
 
         self._detection_publishers: Dict[str, rospy.Publisher] = {}
         self._debug_publishers: Dict[str, rospy.Publisher] = {}
+        self._image_sources: Dict[str, str] = {}
         self._subscribers: List[rospy.Subscriber] = []
         self._previous_target_counts = {name: 0 for name in self._uavs}
         for uav_name in self._uavs:
-            image_topic = _format_topic(self._image_template, uav_name)
+            image_topic = self._image_topic_overrides.get(
+                uav_name, _format_topic(self._image_template, uav_name)
+            )
+            self._image_sources[uav_name] = (
+                "down_rgb" if "/down_camera/" in image_topic else "front_rgb"
+            )
             detections_topic = _format_topic(self._detections_template, uav_name)
             debug_topic = _format_topic(self._debug_template, uav_name)
             self._detection_publishers[uav_name] = rospy.Publisher(
@@ -241,7 +283,7 @@ class MultiUavRedBoxDetector:
         message.header = image_message.header
         message.image_width = width
         message.image_height = height
-        message.image_source = "front_rgb"
+        message.image_source = self._image_sources[uav_name]
         message.sensor_id = image_message.header.frame_id
         message.detector_name = "red_box_detector"
         message.model_version = "hsv_v3_multi_uav"

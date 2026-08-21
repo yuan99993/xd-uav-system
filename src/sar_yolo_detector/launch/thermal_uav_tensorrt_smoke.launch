@@ -1,0 +1,30 @@
+<launch>
+  <!-- Still-image smoke test for the trained HIT-UAV thermal profile. -->
+  <arg name="image_path" default="" />
+  <arg name="engine_path"
+       default="$(find sar_yolo_detector)/models/thermal_uav/thermal_uav_fp16.engine" />
+  <arg name="image_topic" default="camera/ir/image_raw" />
+  <arg name="publish_rate_hz" default="2.0" />
+
+  <param name="/use_sim_time" value="false" />
+
+  <node pkg="sar_yolo_detector" type="sar_yolo_image_replay"
+        name="sar_yolo_thermal_image_replay" output="screen" required="true">
+    <param name="image_path" value="$(arg image_path)" />
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="publish_rate_hz" value="$(arg publish_rate_hz)" />
+  </node>
+
+  <node pkg="sar_yolo_detector" type="sar_yolo_detector_node"
+        name="sar_yolo_thermal_uav" output="screen" required="true">
+    <rosparam command="load" file="$(find sar_yolo_detector)/config/profile_thermal_uav.yaml" />
+    <param name="inference_backend" value="tensorrt" />
+    <param name="engine_path" value="$(arg engine_path)" />
+    <param name="input_image_topic" value="$(arg image_topic)" />
+    <param name="model_layout" value="ultralytics" />
+    <param name="input_width" value="640" />
+    <param name="input_height" value="640" />
+    <param name="maximum_capture_age_sec" value="1.0" />
+    <rosparam param="tensorrt_output_binding_names">[]</rosparam>
+  </node>
+</launch>

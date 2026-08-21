@@ -1,0 +1,8 @@
+# Optional Python runtime for the transplanted PixEagle SmartTracker node.
+# ROS Noetic Python modules are provided by the host ROS installation.
+numpy>=1.24,<3
+opencv-python>=4.8,<5.1
+torch>=2.0,<3
+ultralytics==8.4.118
+lap>=0.5.12,<1
+rospkg>=1.5,<2

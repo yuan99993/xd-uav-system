@@ -18,6 +18,7 @@ TASK_FAILED = 4
 class WorkerRecord:
     name: str
     position: List[float]
+    vehicle_type: str = "multirotor"
     online: bool = False
     last_update: float = 0.0
     assigned_task: Optional[int] = None
@@ -31,6 +32,7 @@ class RescueTaskRecord:
     target_position: List[float]
     goal: List[float]
     priority: int = 0
+    allowed_vehicle_types: Tuple[str, ...] = ()
     assigned_worker: str = ""
     status: int = TASK_PENDING
     detail: str = "waiting for an available worker"
@@ -43,17 +45,48 @@ class RescueTaskAllocator:
         self._target_to_task: Dict[int, int] = {}
         self._next_task_id = 1
 
-    def register_worker(self, name: str) -> None:
-        self.workers.setdefault(str(name), WorkerRecord(str(name), [0.0, 0.0, 0.0]))
+    def register_worker(self, name: str, vehicle_type: str = "multirotor") -> None:
+        normalized_type = str(vehicle_type).strip().lower()
+        if normalized_type not in ("multirotor", "fixedwing"):
+            raise ValueError("vehicle_type must be multirotor or fixedwing")
+        worker = self.workers.setdefault(
+            str(name),
+            WorkerRecord(str(name), [0.0, 0.0, 0.0], normalized_type),
+        )
+        if worker.vehicle_type != normalized_type:
+            raise ValueError(
+                f"worker {name} is already registered as {worker.vehicle_type}"
+            )
 
-    def update_worker(self, name: str, position: Sequence[float], stamp: float, online: bool = True) -> None:
-        self.register_worker(name)
+    def update_worker(
+        self,
+        name: str,
+        position: Sequence[float],
+        stamp: float,
+        online: bool = True,
+        vehicle_type: Optional[str] = None,
+    ) -> None:
+        existing = self.workers.get(str(name))
+        resolved_type = (
+            vehicle_type
+            if vehicle_type is not None
+            else existing.vehicle_type if existing is not None else "multirotor"
+        )
+        self.register_worker(name, resolved_type)
         worker = self.workers[str(name)]
         worker.position = [float(position[0]), float(position[1]), float(position[2])]
         worker.last_update = float(stamp)
         worker.online = bool(online)
 
-    def ensure_task(self, target: GlobalTargetRecord, priority: int = 0) -> RescueTaskRecord:
+    def ensure_task(
+        self,
+        target: GlobalTargetRecord,
+        priority: int = 0,
+        allowed_vehicle_types: Sequence[str] = (),
+    ) -> RescueTaskRecord:
+        allowed = tuple(sorted({str(item).strip().lower() for item in allowed_vehicle_types}))
+        if any(item not in ("multirotor", "fixedwing") for item in allowed):
+            raise ValueError("allowed vehicle types must be multirotor or fixedwing")
         existing = self._target_to_task.get(int(target.target_id))
         if existing is not None:
             task = self.tasks[existing]
@@ -71,6 +104,7 @@ class RescueTaskAllocator:
             target_position=list(target.position),
             goal=list(target.position),
             priority=int(priority),
+            allowed_vehicle_types=allowed,
         )
         self.tasks[task.task_id] = task
         self._target_to_task[target.target_id] = task.task_id
@@ -88,9 +122,15 @@ class RescueTaskAllocator:
                 worker
                 for worker in self.workers.values()
                 if worker.online and worker.assigned_task is None
+                and (
+                    not task.allowed_vehicle_types
+                    or worker.vehicle_type in task.allowed_vehicle_types
+                )
             ]
             if not available:
-                break
+                # A later task may allow a different vehicle type even when
+                # this task currently has no compatible worker.
+                continue
             worker = min(
                 available,
                 key=lambda item: (
@@ -150,3 +190,52 @@ class RescueTaskAllocator:
                 if task is not None:
                     released.append(task)
         return released
+
+    def cancel_task(self, task_id: int, detail: str) -> Optional[RescueTaskRecord]:
+        """Fail one task and immediately release its assigned worker."""
+
+        task = self.tasks.get(int(task_id))
+        if task is None or task.status == TASK_COMPLETED:
+            return None
+        worker = self.workers.get(task.assigned_worker)
+        if worker is not None and worker.assigned_task == task.task_id:
+            worker.assigned_task = None
+        task.assigned_worker = ""
+        task.status = TASK_FAILED
+        task.detail = str(detail)
+        return task
+
+    def retry_task(self, task_id: int, detail: str) -> Optional[RescueTaskRecord]:
+        """Return a non-completed task to the pending allocation queue."""
+
+        task = self.tasks.get(int(task_id))
+        if task is None or task.status == TASK_COMPLETED:
+            return None
+        worker = self.workers.get(task.assigned_worker)
+        if worker is not None and worker.assigned_task == task.task_id:
+            worker.assigned_task = None
+        task.assigned_worker = ""
+        task.goal = list(task.target_position)
+        task.status = TASK_PENDING
+        task.detail = str(detail)
+        return task
+
+    def remove_target_task(self, target_id: int) -> Optional[RescueTaskRecord]:
+        """Remove the task linked to an operator-rejected target."""
+
+        task_id = self._target_to_task.pop(int(target_id), None)
+        if task_id is None:
+            return None
+        task = self.cancel_task(task_id, "target rejected by operator")
+        self.tasks.pop(task_id, None)
+        return task
+
+    def clear_tasks(self, reset_ids: bool = True) -> None:
+        """Clear mission tasks while retaining the configured worker registry."""
+
+        for worker in self.workers.values():
+            worker.assigned_task = None
+        self.tasks.clear()
+        self._target_to_task.clear()
+        if reset_ids:
+            self._next_task_id = 1

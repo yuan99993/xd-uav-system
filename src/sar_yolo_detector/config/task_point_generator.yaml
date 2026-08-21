@@ -1,0 +1,96 @@
+# Converts Detection2DArray into mission-decision candidates.  This node never
+# publishes to a flight controller.  The task decision layer should consume
+# task_candidates_topic and apply its own geofence, feasibility and operator
+# approval policy before forwarding a selected task_pose anywhere else.
+
+input_detections_topic: sar_yolo_detector/detections
+tracked_detections_topic: sar_yolo_detector/tracked_detections
+use_tracked_detections: false
+camera_info_topic: camera/camera_info
+task_candidates_topic: sar_yolo_detector/task_candidates
+task_pose_topic: sar_yolo_detector/task_point
+
+sensor_id: camera_primary
+task_frame: map
+
+# ground_plane projects the calibrated camera ray through the camera-to-map TF
+# at the original capture timestamp.  bearing_only publishes no navigation
+# point and is appropriate until a reliable map/terrain model is available.
+localization_mode: bearing_only       # bearing_only | terrain | horizontal_plane
+ground_plane_z: 0.0
+terrain_grid_topic: terrain/elevation_grid
+terrain_max_age_sec: 30.0
+terrain_ray_step_m: 2.0
+tf_lookup_timeout_sec: 0.05
+tf_use_latest_on_failure: false       # preserve capture-time consistency
+minimum_intersection_range_m: 1.0
+maximum_intersection_range_m: 300.0
+pixel_measurement_stddev_px: 2.0
+ground_height_stddev_m: 1.5
+camera_position_stddev_m: 0.30
+camera_attitude_stddev_deg: 0.50
+calibration_angular_stddev_deg: 0.25
+time_sync_stddev_sec: 0.010
+vehicle_velocity_stddev_mps: 2.0
+camera_info_max_delta_sec: 0.10
+camera_info_allow_static: true
+# A camera calibration may not be silently reused for a different image stream.
+require_matching_camera_frame: true
+
+# Keep capture-time discipline consistent with the detector and Tracker OOSM.
+require_detection_timestamp: true
+reject_out_of_order: true
+input_max_age_sec: 1.0
+future_timestamp_tolerance_sec: 0.02
+
+# A raw detection is not yet a mission target.  The candidate must be observed
+# repeatedly within confirmation_window_sec and pass the combined priority
+# threshold before a task_pose is emitted.
+# Fail closed: an empty task_class_ids no longer means "all". Mission launch
+# must explicitly enable task generation and attest validation/experimental use.
+task_generation_enabled: false
+model_validated: false
+allow_experimental_model: false
+all_task_classes: false
+task_class_ids: [0]
+minimum_detection_confidence: 0.40
+min_confirmations: 3
+confirmation_window_sec: 1.0
+track_timeout_sec: 2.0
+association_iou_threshold: 0.10
+association_center_distance_px: 120.0
+association_world_distance_m: 12.0
+association_mahalanobis_threshold: 9.21
+confidence_ema_alpha: 0.45
+position_ema_alpha: 0.35
+minimum_task_priority: 0.55
+task_pose_update_distance_m: 2.0
+task_pose_refresh_sec: 3.0
+publish_pending_candidates: true
+expiration_check_period_sec: 0.20
+snapshot_period_sec: 1.0
+
+mission_id: mission_unset
+uav_id: uav_unset
+session_uuid: ""
+profile: generic
+model_version: custom
+model_sha256: ""
+calibration_version: unversioned
+coordinate_contract: CAMERA_RAY
+
+# Keep this list aligned with the detector model.  It is used only to provide
+# a human-readable class_name in TaskCandidate; class IDs remain authoritative.
+class_names:
+  - person
+  - bicycle
+  - car
+  - motorcycle
+  - airplane
+  - bus
+  - train
+  - truck
+  - boat
+global_semantic_ids: [1, 8, 8, 8, 8, 8, 8, 8, 8]
+# Person-like targets use the box foot point; vehicles/objects use center.
+class_anchor_y_fractions: [0.95, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]

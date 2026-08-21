@@ -1,0 +1,62 @@
+<launch>
+  <!-- Real Ultralytics .pt inference for the XD detection/localization stack.
+       This replaces the synthetic red-box detector but leaves xd_uav_detect
+       independently configured and running. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
+  <arg name="config"
+       default="$(find sar_yolo_detector)/config/smart_tracker_aircraft.yaml" />
+  <arg name="vehicle_config"
+       default="$(find sar_yolo_detector)/config/smart_tracker_xd_vehicle.yaml" />
+  <arg name="model_path"
+       default="$(find sar_yolo_detector)/models/aircraft_coco/yolo11n.pt" />
+  <arg name="model_sha256"
+       default="0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1" />
+  <arg name="python_executable" default="" />
+  <arg name="use_gpu" default="true" />
+  <arg name="input_image_topic" default="down_camera/image_raw" />
+  <arg name="camera_info_topic" default="down_camera/camera_info" />
+  <arg name="tracked_detections_topic"
+       default="sar_yolo_detector/coco/tracked_detections" />
+  <arg name="output_detections_topic"
+       default="detect/input/detections_2d" />
+  <arg name="publish_annotated_image" default="true" />
+
+  <group ns="$(arg UAV_NAME)">
+    <include file="$(find sar_yolo_detector)/launch/smart_tracker.launch">
+      <arg name="config" value="$(arg config)" />
+      <arg name="overlay_config" value="$(arg vehicle_config)" />
+      <arg name="input_image_topic" value="$(arg input_image_topic)" />
+      <arg name="tracked_detections_topic"
+           value="$(arg tracked_detections_topic)" />
+      <arg name="state_topic" value="sar_yolo_detector/coco/state" />
+      <arg name="annotated_image_topic"
+           value="sar_yolo_detector/coco/annotated" />
+      <arg name="model_path" value="$(arg model_path)" />
+      <arg name="model_sha256" value="$(arg model_sha256)" />
+      <arg name="use_gpu" value="$(arg use_gpu)" />
+      <!-- Fail visibly instead of silently falling back to slow CPU inference. -->
+      <arg name="fallback_to_cpu" value="false" />
+      <arg name="python_executable" value="$(arg python_executable)" />
+      <arg name="publish_annotated_image"
+           value="$(arg publish_annotated_image)" />
+      <arg name="uav_id" value="$(arg UAV_NAME)" />
+      <arg name="sensor_id" value="down_camera" />
+      <arg name="profile" value="coco80" />
+      <arg name="model_version" value="yolo11n_coco80" />
+    </include>
+  </group>
+
+  <include file="$(find sar_yolo_detector)/launch/xd_detection_bridge.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="input_detections_topic"
+         value="$(arg tracked_detections_topic)" />
+    <arg name="input_type" value="tracked" />
+    <arg name="output_detections_topic"
+         value="$(arg output_detections_topic)" />
+    <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+    <arg name="image_source" value="down_rgb" />
+    <arg name="sensor_id" value="down_camera" />
+    <arg name="detector_name" value="sar_yolo_smart_tracker" />
+    <arg name="model_version" value="yolo11n_coco80" />
+  </include>
+</launch>

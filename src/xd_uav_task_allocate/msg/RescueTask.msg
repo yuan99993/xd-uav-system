@@ -10,6 +10,7 @@ uint32 target_id
 int32 class_id
 geometry_msgs/Point goal
 uint8 priority
+string[] allowed_vehicle_types
 string assigned_worker
 uint8 status
 string detail

@@ -1,0 +1,66 @@
+# Full continuation experiment from the packaged FloodNet pilot.
+# The 20-epoch scheduler is important: resuming at epoch 11 keeps a useful
+# learning rate instead of entering the final decay tail after one epoch.
+profile_name: floodnet_segformer_b0_finetune_20e
+base_profile: floodnet_segformer_b0_pilot_10e
+dataset:
+  # Replace this path on the training computer.
+  extraction_root: /data/floodnet/extracted
+  supervised_root: FloodNet-Supervised_v1.0
+  official_split:
+    train_images: 1445
+    val_images: 450
+    test_images: 448
+  class_names:
+    - background
+    - building_flooded
+    - building_non_flooded
+    - road_flooded
+    - road_non_flooded
+    - water
+    - tree
+    - vehicle
+    - pool
+    - grass
+
+model:
+  checkpoint: nvidia/mit-b0
+  num_classes: 10
+  input_crop_px: [1024, 1024]
+  gradient_checkpointing: false
+
+optimization:
+  amp: true
+  micro_batch_size: 1
+  effective_batch_size: 12
+  gradient_accumulation_steps: 12
+  epochs: 20
+  optimizer: AdamW
+  backbone_learning_rate: 0.00002
+  decoder_learning_rate: 0.0002
+  weight_decay: 0.01
+  warmup_steps: 150
+  max_gradient_norm: 1.0
+  loss:
+    weighted_cross_entropy: 1.0
+    dice: 0.5
+    class_weighting: median_frequency_balanced
+    class_weight_cap: 3.0
+
+sampling:
+  rare_hazard_crop_probability: 0.65
+  rare_hazard_class_ids: [1, 3, 5, 7]
+  random_crop_probability: 0.35
+
+augmentation:
+  horizontal_flip_probability: 0.5
+  brightness_contrast: true
+
+validation:
+  mode: fixed_center_crop
+  max_images: 450
+
+output:
+  root: /data/sar_yolo/experiments/floodnet_segformer_b0_finetune_20e
+  save_every_epoch: true
+  seed: 20260819

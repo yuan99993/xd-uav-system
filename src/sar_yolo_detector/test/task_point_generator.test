@@ -1,0 +1,25 @@
+<launch>
+  <node pkg="sar_yolo_detector" type="sar_task_point_generator"
+        name="sar_task_point_generator_test" output="screen" required="true">
+    <param name="input_detections_topic" value="/sar_task_point_test/detections" />
+    <param name="camera_info_topic" value="/sar_task_point_test/camera_info" />
+    <param name="task_candidates_topic" value="/sar_task_point_test/candidates" />
+    <param name="task_pose_topic" value="/sar_task_point_test/task_point" />
+    <param name="task_frame" value="map" />
+    <param name="localization_mode" value="ground_plane" />
+    <param name="ground_plane_z" value="0.0" />
+    <param name="input_max_age_sec" value="5.0" />
+    <param name="min_confirmations" value="2" />
+    <param name="confirmation_window_sec" value="1.0" />
+    <param name="track_timeout_sec" value="0.35" />
+    <param name="expiration_check_period_sec" value="0.05" />
+    <param name="task_pose_refresh_sec" value="10.0" />
+    <param name="task_generation_enabled" value="true" />
+    <param name="model_validated" value="true" />
+    <rosparam param="task_class_ids">[0]</rosparam>
+    <rosparam param="class_names">[person]</rosparam>
+    <rosparam param="global_semantic_ids">[1]</rosparam>
+  </node>
+  <test test-name="task_point_generator" pkg="sar_yolo_detector"
+        type="test_task_point_generator.py" time-limit="30" />
+</launch>

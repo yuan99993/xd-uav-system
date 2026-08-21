@@ -27,6 +27,23 @@ interfaces:
     # Call only after the configured scout aircraft have taken off and their
     # world Odometry plus ControlState health are valid.
     start: /task_allocate/start
+    pause: /task_allocate/pause
+    resume: /task_allocate/resume
+    stop: /task_allocate/stop
+    reset: /task_allocate/reset
+    clear_all: /task_allocate/clear_all
+    restart: /task_allocate/restart
+    replan: /task_allocate/replan
+    clear_results: /task_allocate/clear_results
+    cancel_all_tasks: /task_allocate/cancel_all_tasks
+    load_search_areas: /task_allocate/load_search_areas
+    get_state: /task_allocate/get_state
+    skip_waypoint: /task_allocate/skip_waypoint
+    set_vehicle_enabled: /task_allocate/set_vehicle_enabled
+    cancel_task: /task_allocate/cancel_task
+    retry_task: /task_allocate/retry_task
+    reject_target: /task_allocate/reject_target
+    retry_verification: /task_allocate/retry_verification
 
 execution:
   # true is the safe default: every configured scout must be healthy when the
@@ -50,9 +67,20 @@ search_area:
   # one constant world Z, so a strongly tilted source frame is rejected.
   maximum_transformed_altitude_variation_m: 0.20
 
+search_allocation:
+  # Coverage is balanced by estimated flight time rather than raw distance.
+  # A vehicle may override this with coverage/nominal_speed_mps.
+  multirotor_nominal_speed_mps: 4.0
+  fixedwing_nominal_speed_mps: 15.0
+
 target_registry:
   # Red-target testing starts with one event site per 4 m XY cluster.
   association_radius_m: 4.0
+  # Fixed-wing ground-plane estimates can be much less accurate than 4 m.
+  # Association expands to 3 sigma from the reported XY covariance, but is
+  # capped to avoid merging unrelated nearby targets without limit.
+  association_covariance_sigma: 3.0
+  maximum_association_radius_m: 50.0
   confirmation_hits: 5
   confirmation_window_sec: 2.0
   confirmation_minimum_span_sec: 0.25
@@ -62,9 +90,31 @@ target_registry:
   # available for spatial deduplication while they wait for a worker.
   stale_timeout_sec: 15.0
 
+# Optional two-stage reconnaissance. The mixed-fleet example overrides enabled
+# to true. In that mode only fixed wings receive the original large-area route;
+# their stable detections remain VERIFYING until a multirotor locally confirms
+# the target, so no rescue task is created from coarse geolocation alone.
+hierarchical_search:
+  enabled: false
+  verification:
+    # Absolute world Z, matching SearchArea.altitude (not height above terrain).
+    altitude_m: 20.0
+    lane_spacing_m: 5.0
+    minimum_radius_m: 20.0
+    maximum_radius_m: 80.0
+    covariance_sigma: 3.0
+    # A complete local raster with no multirotor confirmation rejects the
+    # coarse candidate. Set false only if another retry policy is provided.
+    reject_after_route: true
+
 allocation:
   worker_state_timeout_sec: 1.0
   planner_failure_retry_sec: 5.0
+  # Rescue tasks are assigned to hover-capable aircraft unless a class-specific
+  # rule explicitly allows fixed-wing workers.
+  default_worker_vehicle_types: [multirotor]
+  class_worker_vehicle_types:
+    "0": [multirotor]
   worker_approach:
     # The execution goal stops before the detected object and captures the
     # worker's current world altitude when the assignment is made.
@@ -86,3 +136,14 @@ planner:
     # Face the current waypoint in world ENU while flying each route segment.
     face_goal: true
     yaw_minimum_distance_m: 0.1
+
+  fixedwing:
+    # Used to replace instantaneous lawnmower reversals with sampled Dubins
+    # connectors. The turn may leave the search polygon, so mission planning
+    # must include a correspondingly clear boundary margin.
+    minimum_turn_radius_m: 30.0
+    turn_waypoint_spacing_m: 15.0
+    # Fixed wings fly through waypoints instead of dwelling inside a 1 m ball.
+    waypoint_acceptance_radius_m: 20.0
+    waypoint_altitude_tolerance_m: 10.0
+    pass_cross_track_limit_m: 40.0

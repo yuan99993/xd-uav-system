@@ -1,0 +1,10 @@
+---
+bool success
+string state
+string detail
+uint32 loaded_area_count
+uint32 target_count
+uint32 pending_verification_count
+uint32 task_count
+string[] route_progress
+string[] active_goals

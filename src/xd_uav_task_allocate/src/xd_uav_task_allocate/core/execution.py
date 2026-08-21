@@ -48,6 +48,38 @@ def worker_approach_goal(
     return (x, y, float(current[2]))
 
 
+def fixedwing_waypoint_reached(
+    current: Sequence[float],
+    segment_start: Sequence[float],
+    goal: Sequence[float],
+    acceptance_radius_m: float,
+    altitude_tolerance_m: float,
+    pass_cross_track_limit_m: float,
+) -> bool:
+    """Accept a fixed-wing waypoint by radius or a bounded fly-through plane."""
+
+    if len(current) < 3 or len(segment_start) < 3 or len(goal) < 3:
+        return False
+    altitude_error = abs(float(current[2]) - float(goal[2]))
+    if altitude_error > max(0.0, float(altitude_tolerance_m)):
+        return False
+    dx = float(current[0]) - float(goal[0])
+    dy = float(current[1]) - float(goal[1])
+    if hypot(dx, dy) <= max(0.0, float(acceptance_radius_m)):
+        return True
+
+    leg_x = float(goal[0]) - float(segment_start[0])
+    leg_y = float(goal[1]) - float(segment_start[1])
+    leg_squared = leg_x * leg_x + leg_y * leg_y
+    if leg_squared <= 1e-9:
+        return False
+    beyond = dx * leg_x + dy * leg_y
+    if beyond < 0.0:
+        return False
+    cross_track = abs(dx * leg_y - dy * leg_x) / sqrt(leg_squared)
+    return cross_track <= max(0.0, float(pass_cross_track_limit_m))
+
+
 class ArrivalDwellTracker:
     """Declare arrival only after a goal remains inside tolerance for a dwell."""
 

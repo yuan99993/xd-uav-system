@@ -2,6 +2,7 @@
 # to detector output; they receive confirmed world-frame task goals.
 workers:
   uav3:
+    vehicle_type: multirotor
     localization:
       # Selected main estimator state, already expressed in world.
       world_odometry_topic: /uav3/state_estimator/main/frames/world/odom
@@ -14,6 +15,7 @@ workers:
       planner_status: /uav3/planning/status
 
   uav4:
+    vehicle_type: multirotor
     localization:
       world_odometry_topic: /uav4/state_estimator/main/frames/world/odom
     health:

@@ -3,7 +3,7 @@
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
   <arg name="algorithm_config" default="$(find xd_uav_state_estimators)/config/estimator.yaml"/>
   <arg name="sources_config" default="$(find xd_uav_state_estimators)/config/sources.yaml"/>
-  <arg name="tf_config" default="$(find xd_uav_single_tf_manager)/config/single_tf.yaml"/>
+  <arg name="tf_config" default="$(find xd_uav_single_tf_manager)/config/multirotor_single_tf.yaml"/>
   <arg name="start_odometry_adapters" default="true"/>
 
   <!-- 适配器种类和输入话题完全由sources.yaml定义，launch不再硬编码定位算法。 -->
