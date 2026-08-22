@@ -1,7 +1,7 @@
 # Example mixed reconnaissance fleet. Select this file with the launch
 # scout_config argument after adapting names and topics to the real vehicles.
 hierarchical_search:
-  enabled: false
+  enabled: true
 
 scouts:
   uav1:

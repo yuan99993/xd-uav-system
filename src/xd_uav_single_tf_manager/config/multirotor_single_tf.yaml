@@ -93,6 +93,22 @@ dynamic_transforms:
     child_frame: fastlio_estimated_base_link
     invert: false
 
+  - name: openvins_estimate
+    enabled: true
+    type: odometry
+    topic: state_estimator/sources/openvins/odom
+    parent_frame: openvins_origin
+    child_frame: openvins_estimated_base_link
+    invert: false
+
+  - name: openvins_alignment
+    enabled: true
+    type: transform_stamped
+    topic: state_estimator/sources/openvins/alignment
+    parent_frame: odom
+    child_frame: openvins_origin
+    invert: false
+
   - name: mavros_alignment
     enabled: true
     type: transform_stamped

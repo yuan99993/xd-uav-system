@@ -1,4 +1,7 @@
 # Reconnaissance-aircraft configuration only.
+hierarchical_search:
+  enabled: false
+
 scouts:
   uav1:
     vehicle_type: multirotor
