@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- 单架飞机名称，例如 uav1。 -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="config_path"
+       default="$(find ov_msckf)/../config/xd_uav_config/estimator_config.yaml"/>
+  <arg name="verbosity" default="INFO"/>
+  <arg name="respawn" default="false"/>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="ov_msckf"
+          type="run_subscribe_msckf"
+          name="openvins"
+          output="screen"
+          clear_params="true"
+          respawn="$(arg respawn)">
+      <!-- OpenVINS 从此文件读取算法、相机和 IMU 标定配置。 -->
+      <param name="config_path" value="$(arg config_path)"/>
+      <param name="verbosity" value="$(arg verbosity)"/>
+
+      <!-- 覆盖标定 YAML 中的默认 uav1 话题，使本 launch 支持多机复用。 -->
+      <param name="imu0_rostopic"
+             value="/$(arg UAV_NAME)/mavros/imu/data"/>
+      <param name="cam0_rostopic"
+             value="/$(arg UAV_NAME)/camera/image_raw"/>
+
+      <!-- 与 estimator_config.yaml 的单目设置保持一致。 -->
+      <param name="use_stereo" value="false"/>
+      <param name="max_cameras" value="1"/>
+
+      <!-- OpenVINS 的默认 TF 名为 global -> imu；多机下会发生冲突，禁用它。 -->
+      <param name="publish_global_to_imu_tf" value="false"/>
+      <param name="publish_calibration_tf" value="false"/>
+    </node>
+  </group>
+</launch>
