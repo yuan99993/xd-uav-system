@@ -528,6 +528,21 @@ class ControllerNode {
           "fixedwing/energy_control/climb_rate_throttle_gain",
           "fixedwing/climb_rate_throttle_gain",
           &climb_rate_throttle_gain_, 0.03);
+      private_nh_.param(
+          "fixedwing/energy_control/turn_load_factor_throttle_gain",
+          turn_load_factor_throttle_gain_, 0.16);
+      private_nh_.param(
+          "fixedwing/energy_control/bank_airspeed_margin",
+          bank_airspeed_margin_, 0.5);
+      private_nh_.param(
+          "fixedwing/energy_control/underspeed_hysteresis",
+          underspeed_hysteresis_, 0.7);
+      private_nh_.param(
+          "fixedwing/energy_control/underspeed_max_roll",
+          underspeed_max_roll_, 0.35);
+      private_nh_.param(
+          "fixedwing/energy_control/underspeed_max_nose_up_pitch",
+          underspeed_max_nose_up_pitch_, 0.05);
 
       loadParameterWithLegacy(
           private_nh_,
@@ -1003,6 +1018,16 @@ class ControllerNode {
          climb_rate_filter_time_constant_ < 0.0 ||
          vertical_acceleration_pitch_rate_gain_ < 0.0 ||
          climb_rate_throttle_gain_ < 0.0 ||
+         turn_load_factor_throttle_gain_ < 0.0 ||
+         bank_airspeed_margin_ < 0.0 ||
+         underspeed_hysteresis_ < 0.0 ||
+         underspeed_max_roll_ <= 0.0 ||
+         underspeed_max_roll_ > max_roll_ ||
+         underspeed_max_nose_up_pitch_ < 0.0 ||
+         underspeed_max_nose_up_pitch_ > max_pitch_ ||
+         minimum_airspeed_ <= 0.0 ||
+         maximum_airspeed_ <= minimum_airspeed_ ||
+         max_roll_ <= 0.0 || max_roll_ >= 0.5 * kPi ||
          !std::isfinite(fixedwing_guidance_lookahead_distance_) ||
          !std::isfinite(fixedwing_minimum_lookahead_distance_) ||
          !std::isfinite(fixedwing_maximum_lookahead_distance_) ||
@@ -1019,7 +1044,12 @@ class ControllerNode {
          !std::isfinite(climb_rate_pitch_gain_) ||
          !std::isfinite(climb_rate_filter_time_constant_) ||
          !std::isfinite(vertical_acceleration_pitch_rate_gain_) ||
-         !std::isfinite(climb_rate_throttle_gain_))) {
+         !std::isfinite(climb_rate_throttle_gain_) ||
+         !std::isfinite(turn_load_factor_throttle_gain_) ||
+         !std::isfinite(bank_airspeed_margin_) ||
+         !std::isfinite(underspeed_hysteresis_) ||
+         !std::isfinite(underspeed_max_roll_) ||
+         !std::isfinite(underspeed_max_nose_up_pitch_))) {
       throw std::runtime_error(
           "固定翼reference_adapter/path_guidance/控制参数"
           "不在安全范围内");
@@ -1671,6 +1701,7 @@ class ControllerNode {
     fixedwing_setpoint_course_hold_initialized_ = false;
     fixedwing_external_setpoint_mode_initialized_ = false;
     fixedwing_external_setpoint_mode_signature_ = 0U;
+    fixedwing_underspeed_active_ = false;
     last_fixedwing_control_time_ = ros::Time();
     filtered_fixedwing_lookahead_distance_ =
         fixedwing_guidance_lookahead_distance_;
@@ -4251,6 +4282,41 @@ class ControllerNode {
     double desired_roll = clamp(
         -std::atan2(airspeed * desired_course_rate, gravity_),
         -max_roll_, max_roll_);
+    if (reference.trajectory_reference &&
+        std::abs(target.course_rate_feedforward) > 0.03) {
+      ROS_INFO_THROTTLE(
+          1.0,
+          "[xd_uav_controller] 固定翼弯道跟踪: "
+          "course_error=%.3f ff_rate=%.3f integral=%.3f "
+          "roll=%.3f desired_roll=%.3f airspeed=%.1f",
+          course_error, target.course_rate_feedforward,
+          fixedwing_course_integral_rate_, roll,
+          desired_roll, state_.airspeed);
+    }
+
+    // A coordinated bank increases lift demand by n=1/cos(phi). The
+    // previous controller waited for the resulting drag to reduce measured
+    // airspeed before adding throttle. Use the commanded bank here so the
+    // compensation is present at turn entry, before that speed loss occurs.
+    const double load_factor = 1.0 / std::max(
+        0.20, std::cos(std::abs(desired_roll)));
+    const double bank_protected_airspeed = clamp(
+        minimum_airspeed_ * std::sqrt(load_factor) +
+            bank_airspeed_margin_,
+        minimum_airspeed_, maximum_airspeed_);
+    if (takeoff_active_ || landing_active_) {
+      // Dedicated takeoff and landing laws deliberately pass through low
+      // airspeed and must not latch the normal airborne recovery mode.
+      fixedwing_underspeed_active_ = false;
+    } else if (!fixedwing_underspeed_active_ &&
+               state_.airspeed < bank_protected_airspeed) {
+      fixedwing_underspeed_active_ = true;
+    } else if (fixedwing_underspeed_active_ &&
+               state_.airspeed >
+                   bank_protected_airspeed +
+                       underspeed_hysteresis_) {
+      fixedwing_underspeed_active_ = false;
+    }
 
     double desired_climb_rate = target.climb_rate_feedforward;
     if (target.use_altitude_feedback) {
@@ -4265,6 +4331,7 @@ class ControllerNode {
     // laws and saturation would otherwise cause wind-up.
     const bool altitude_integrator_enabled =
         target.enable_altitude_integrator &&
+        !fixedwing_underspeed_active_ &&
         altitude_integral_gain_ > 0.0 &&
         altitude_integral_climb_rate_limit_ > 0.0;
     if (altitude_integrator_enabled) {
@@ -4293,6 +4360,11 @@ class ControllerNode {
     }
     desired_climb_rate = clamp(
         desired_climb_rate, -max_climb_rate_, max_climb_rate_);
+    if (fixedwing_underspeed_active_) {
+      // Do not trade the remaining kinetic energy for altitude while
+      // recovering. The altitude loop resumes after the hysteretic exit.
+      desired_climb_rate = std::min(0.0, desired_climb_rate);
+    }
 
     const double measured_climb_rate = state_.velocity_odom.z;
     if (!filtered_climb_rate_initialized_ ||
@@ -4324,8 +4396,12 @@ class ControllerNode {
     double throttle = clamp(
         trim_throttle_ +
             airspeed_throttle_gain_ *
-                (target.airspeed - state_.airspeed) +
-            climb_rate_throttle_gain_ * desired_climb_rate,
+                (std::max(target.airspeed,
+                          bank_protected_airspeed) -
+                 state_.airspeed) +
+            climb_rate_throttle_gain_ * desired_climb_rate +
+            turn_load_factor_throttle_gain_ *
+                (load_factor - 1.0),
         minimum_throttle_, maximum_throttle_);
 
     if (takeoff_active_) {
@@ -4373,6 +4449,27 @@ class ControllerNode {
       if (landing_touchdown_) {
         throttle = 0.0;
       }
+    }
+    if (fixedwing_underspeed_active_) {
+      throttle = maximum_throttle_;
+      desired_roll = clamp(
+          desired_roll, -underspeed_max_roll_,
+          underspeed_max_roll_);
+      // ROS FLU uses negative pitch for nose-up. Limit nose-up authority;
+      // below the configured minimum airspeed command a small positive
+      // (nose-down) attitude to make recovery decisive.
+      desired_pitch = std::max(
+          desired_pitch, -underspeed_max_nose_up_pitch_);
+      if (state_.airspeed < minimum_airspeed_) {
+        desired_pitch = std::max(
+            desired_pitch, underspeed_max_nose_up_pitch_);
+      }
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[xd_uav_controller] 固定翼低空速保护: "
+          "airspeed=%.2f protected=%.2f load_factor=%.2f",
+          state_.airspeed, bank_protected_airspeed,
+          load_factor);
     }
 
     result.body_rate.x() = clamp(
@@ -4827,6 +4924,12 @@ class ControllerNode {
   double climb_rate_filter_time_constant_{0.50};
   double vertical_acceleration_pitch_rate_gain_{1.0};
   double climb_rate_throttle_gain_{0.03};
+  double turn_load_factor_throttle_gain_{0.16};
+  double bank_airspeed_margin_{0.5};
+  double underspeed_hysteresis_{0.7};
+  double underspeed_max_roll_{0.35};
+  double underspeed_max_nose_up_pitch_{0.05};
+  bool fixedwing_underspeed_active_{false};
   double fixedwing_altitude_integral_climb_rate_{0.0};
   double filtered_climb_rate_{0.0};
   bool filtered_climb_rate_initialized_{false};

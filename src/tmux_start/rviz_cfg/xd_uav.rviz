@@ -260,6 +260,14 @@ Visualization Manager:
       Topic: /uav2/planning/mission_path
       Unreliable: false
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /task_allocate/verification_markers
+      Name: Verification Areas
+      Namespaces:
+        verification_areas: true
+      Queue Size: 10
+      Value: true
     - Angle Tolerance: 0.10000000149011612
       Class: rviz/Odometry
       Covariance:

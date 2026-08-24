@@ -24,10 +24,12 @@ from xd_uav_task_allocate.core.coverage import (
     fixedwing_entry_path,
     fixedwing_lawnmower_path,
     lawnmower_path,
+    path_length,
     verification_search_area,
 )
 from xd_uav_task_allocate.core.execution import (
     ArrivalDwellTracker,
+    fixedwing_trajectory_samples,
     fixedwing_waypoint_reached,
     goal_distance,
     goal_heading,
@@ -42,6 +44,7 @@ from xd_uav_task_allocate.core.geometry import (
 )
 from xd_uav_task_allocate.core.registry import (
     TARGET_CANDIDATE,
+    TARGET_COMPLETED,
     TARGET_CONFIRMED,
     TARGET_STALE,
     TARGET_VERIFYING,
@@ -49,6 +52,7 @@ from xd_uav_task_allocate.core.registry import (
     GlobalTargetRegistry,
     TargetObservation,
 )
+from xd_uav_task_allocate.msg import PlannerStatus
 from xd_uav_task_allocate.ros.coordinator import (
     MISSION_ACTIVE,
     MISSION_PAUSED,
@@ -57,6 +61,172 @@ from xd_uav_task_allocate.ros.coordinator import (
 
 
 class CoordinatorConfigurationTest(unittest.TestCase):
+    def test_auto_mode_uses_single_stage_for_multirotor_only(self):
+        self.assertFalse(
+            TaskAllocateCoordinator._resolve_hierarchical_search_mode(
+                "auto", {"multirotor"}
+            )
+        )
+
+    def test_auto_mode_uses_hierarchy_for_mixed_scouts(self):
+        self.assertTrue(
+            TaskAllocateCoordinator._resolve_hierarchical_search_mode(
+                "auto", {"fixedwing", "multirotor"}
+            )
+        )
+
+    def test_verification_waits_until_all_fixedwing_routes_finish(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.hierarchical_search_enabled = True
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.verification_dispatch_policy = "after_coarse_complete"
+        coordinator.scout_configs = {"fw1": {}, "fw2": {}, "uav3": {}}
+        coordinator.vehicle_types = {
+            "fw1": "fixedwing",
+            "fw2": "fixedwing",
+            "uav3": "multirotor",
+        }
+        coordinator.routes = {
+            "fw1": [(0.0, 0.0, 50.0)],
+            "fw2": [(1.0, 0.0, 50.0)],
+            "uav3": [],
+        }
+        coordinator.route_indices = {"fw1": 1, "fw2": 0, "uav3": 0}
+        coordinator.verification_pending = [7]
+
+        coordinator._assign_pending_verifications()
+
+        self.assertEqual(coordinator.verification_pending, [7])
+
+    def test_targets_inside_one_verification_region_share_one_route(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.verification_altitude = 20.0
+        coordinator.verification_lane_spacing = 5.0
+        coordinator.verification_minimum_radius = 20.0
+        coordinator.verification_maximum_radius = 80.0
+        coordinator.verification_covariance_sigma = 3.0
+        coordinator.verification_radius_mode = "fixed"
+        coordinator.verification_fixed_radius = 30.0
+        coordinator.verification_pending = []
+        coordinator.verification_plans = {}
+        coordinator.verification_region_by_target = {}
+        coordinator.verification_targets_by_region = {}
+        coordinator.verification_region_states = {}
+        coordinator.search_completed_at = 1.0
+        coordinator._publish_verification_areas = lambda: None
+        coordinator._assign_pending_verifications = lambda: None
+        coordinator.registry = GlobalTargetRegistry()
+        first = GlobalTargetRecord(
+            1, 0, [100.0, 50.0, 0.0], [1.0] + [0.0] * 8,
+            1.0, 0.0, 0.0,
+        )
+        second = GlobalTargetRecord(
+            2, 0, [115.0, 55.0, 0.0], [1.0] + [0.0] * 8,
+            1.0, 0.0, 0.0,
+        )
+        coordinator.registry.targets = {1: first, 2: second}
+
+        coordinator._queue_target_verification(first)
+        coordinator._queue_target_verification(second)
+
+        self.assertEqual(coordinator.verification_pending, [1])
+        self.assertEqual(coordinator.verification_region_by_target[2], 1)
+        self.assertEqual(coordinator.verification_targets_by_region[1], {1, 2})
+
+    def test_confirmed_member_does_not_cancel_pending_region_search(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.hierarchical_search_enabled = True
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.verification_dispatch_policy = "immediate"
+        coordinator.verification_maximum_concurrent_regions = 1
+        coordinator.verification_pending = [1]
+        coordinator.verification_target_by_scout = {}
+        coordinator.verification_scout_by_target = {}
+        coordinator.verification_targets_by_region = {1: {1}}
+        coordinator.verification_region_states = {1: "pending"}
+        coordinator.verification_plans = {
+            1: PlannedArea(
+                area=SearchAreaDefinition(
+                    area_id=1,
+                    boundary=((0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)),
+                    altitude=20.0,
+                    lane_spacing=5.0,
+                ),
+                path=[(0.0, 0.0, 20.0), (20.0, 0.0, 20.0)],
+            )
+        }
+        coordinator.registry = GlobalTargetRegistry()
+        coordinator.registry.targets = {
+            1: GlobalTargetRecord(
+                1, 0, [10.0, 10.0, 0.0], [1.0] + [0.0] * 8,
+                1.0, 0.0, 0.0, status=TARGET_CONFIRMED,
+            )
+        }
+        coordinator.scout_configs = {"uav2": {}}
+        coordinator.vehicle_types = {"uav2": "multirotor"}
+        coordinator.vehicle_world_positions = {"uav2": (1.0, (0.0, 0.0, 20.0))}
+        coordinator.routes = {"uav2": []}
+        coordinator.route_indices = {"uav2": 0}
+        coordinator.active_goals = {}
+        coordinator._vehicle_ready = lambda *_args: True
+        coordinator._publish_path = lambda *_args: None
+        coordinator._publish_verification_areas = lambda: None
+        published = []
+        coordinator._publish_next_scout_goal = lambda scout: published.append(scout)
+        stamp = type("Stamp", (), {"to_sec": lambda self: 1.0})()
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=stamp,
+        ):
+            coordinator._assign_pending_verifications()
+
+        self.assertEqual(coordinator.verification_pending, [])
+        self.assertEqual(coordinator.verification_target_by_scout, {"uav2": 1})
+        self.assertEqual(coordinator.verification_region_states[1], "active")
+        self.assertEqual(published, ["uav2"])
+
+    def test_region_completion_keeps_confirmed_members_and_rejects_only_unseen(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.verification_pending = []
+        coordinator.verification_scout_by_target = {1: "uav2"}
+        coordinator.verification_target_by_scout = {"uav2": 1}
+        coordinator.verification_targets_by_region = {1: {1, 2}}
+        coordinator.verification_region_states = {1: "active"}
+        coordinator.active_goals = {}
+        coordinator.active_goal_points = {}
+        coordinator.active_goal_origins = {}
+        coordinator.active_trajectory_end_times = {}
+        coordinator.active_trajectory_route_progress = {}
+        coordinator.routes = {"uav2": [(0.0, 0.0, 20.0)]}
+        coordinator.route_indices = {"uav2": 1}
+        coordinator.reject_after_verification_route = True
+        coordinator.registry = GlobalTargetRegistry()
+        confirmed = GlobalTargetRecord(
+            1, 0, [0.0, 0.0, 0.0], [1.0] + [0.0] * 8,
+            1.0, 0.0, 0.0, status=TARGET_CONFIRMED,
+        )
+        unseen = GlobalTargetRecord(
+            2, 0, [1.0, 0.0, 0.0], [1.0] + [0.0] * 8,
+            1.0, 0.0, 0.0, status=TARGET_VERIFYING,
+        )
+        coordinator.registry.targets = {1: confirmed, 2: unseen}
+        coordinator.path_publishers = {}
+        coordinator._publish_path = lambda *_args: None
+        coordinator._publish_verification_areas = lambda: None
+        coordinator._assign_pending_verifications = lambda: None
+        coordinator._mark_search_complete_if_ready = lambda: None
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=type("Stamp", (), {})(),
+        ):
+            coordinator._finish_target_verification(1)
+
+        self.assertEqual(confirmed.status, TARGET_CONFIRMED)
+        self.assertEqual(unseen.status, TARGET_STALE)
+        self.assertEqual(coordinator.verification_region_states[1], "completed")
+
     def test_fixedwing_setting_uses_vehicle_override(self):
         coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
         coordinator.scout_configs = {
@@ -274,9 +444,11 @@ class CoverageTest(unittest.TestCase):
         multirotor = lawnmower_path(area)
         fixedwing = fixedwing_lawnmower_path(area, 30.0, 10.0)
         self.assertGreater(len(fixedwing), len(multirotor))
-        self.assertEqual(fixedwing[0], multirotor[0])
-        self.assertEqual(fixedwing[-1], multirotor[-1])
         self.assertTrue(all(point[2] == 50.0 for point in fixedwing))
+        # Every in-polygon coverage chord is preserved, even though fixed-wing
+        # lanes are visited in a different order.
+        for point in multirotor:
+            self.assertIn(point, fixedwing)
         self.assertTrue(
             any(
                 point[0] < 0.0
@@ -286,6 +458,60 @@ class CoverageTest(unittest.TestCase):
                 for point in fixedwing
             )
         )
+
+    def test_fixedwing_spreads_lane_reversals_and_levels_before_boundary(self):
+        area = SearchAreaDefinition(
+            area_id=1,
+            boundary=((0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)),
+            altitude=40.0,
+            lane_spacing=10.0,
+        )
+        route = fixedwing_lawnmower_path(
+            area,
+            minimum_turn_radius=30.0,
+            turn_waypoint_spacing=10.0,
+            straight_lead_distance=30.0,
+        )
+
+        # The first two covered lanes are 100 m apart (0 then 10), rather than
+        # adjacent 10 m lanes.  Both polygon crossings have collinear lead
+        # points, so the turn is completed outside x=[0, 200].
+        first_start = route.index((0.0, 5.0, 40.0))
+        second_start = route.index((200.0, 105.0, 40.0))
+        self.assertLess(first_start, second_start)
+        self.assertEqual(route[first_start - 1], (-30.0, 5.0, 40.0))
+        self.assertEqual(route[first_start + 2], (230.0, 5.0, 40.0))
+        self.assertEqual(route[second_start - 1], (230.0, 105.0, 40.0))
+
+    def test_turn_sampling_density_does_not_change_fixedwing_path_length(self):
+        area = SearchAreaDefinition(
+            area_id=1,
+            boundary=((0.0, 0.0), (200.0, 0.0), (200.0, 100.0), (0.0, 100.0)),
+            altitude=40.0,
+            lane_spacing=10.0,
+        )
+        dense = fixedwing_lawnmower_path(area, 30.0, 3.0, 30.0)
+        sparse = fixedwing_lawnmower_path(area, 30.0, 10.0, 30.0)
+        self.assertGreater(len(dense), len(sparse))
+        self.assertAlmostEqual(
+            path_length(dense),
+            path_length(sparse),
+            delta=0.002 * path_length(dense),
+        )
+
+    def test_coarse_lane_spacing_reduces_passes_without_losing_chords(self):
+        area = SearchAreaDefinition(
+            area_id=1,
+            boundary=((0.0, 0.0), (300.0, 0.0), (300.0, 300.0), (0.0, 300.0)),
+            altitude=40.0,
+            lane_spacing=30.0,
+        )
+        chords = lawnmower_path(area)
+        route = fixedwing_lawnmower_path(area, 30.0, 10.0, 30.0)
+        self.assertEqual(len(chords) // 2, 10)
+        for point in chords:
+            self.assertIn(point, route)
+        self.assertLess(path_length(route) / 15.0, 6.0 * 60.0)
 
     def test_separate_fixedwing_areas_are_joined_continuously(self):
         first = [(0.0, 0.0, 40.0), (100.0, 0.0, 40.0)]
@@ -326,8 +552,87 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(planned.area.boundary[2], (125.0, 75.0))
         self.assertTrue(all(point[2] == 20.0 for point in planned.path))
 
+    def test_verification_area_can_use_an_explicit_fixed_radius(self):
+        planned = verification_search_area(
+            target_id=8,
+            center=(100.0, 50.0, 0.0),
+            covariance=(1.0,) + (0.0,) * 8,
+            altitude=20.0,
+            lane_spacing=5.0,
+            minimum_radius=20.0,
+            maximum_radius=80.0,
+            covariance_sigma=3.0,
+            fixed_radius=35.0,
+        )
+        self.assertEqual(planned.area.boundary[0], (65.0, 15.0))
+        self.assertEqual(planned.area.boundary[2], (135.0, 85.0))
+
 
 class DirectExecutionTest(unittest.TestCase):
+    def test_fixedwing_path_is_time_parameterized_with_nonzero_speed(self):
+        samples = fixedwing_trajectory_samples(
+            [(0.0, 0.0, 20.0), (30.0, 0.0, 20.0), (30.0, 30.0, 20.0)],
+            15.0,
+        )
+        self.assertEqual(len(samples), 3)
+        self.assertAlmostEqual(samples[-1].time_from_start, 4.0)
+        for sample in samples:
+            speed = math.sqrt(sum(value * value for value in sample.velocity))
+            self.assertAlmostEqual(speed, 15.0)
+        self.assertNotEqual(samples[1].yaw_rate, 0.0)
+
+    def test_fixedwing_trajectory_duration_does_not_complete_before_flythrough(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.direct_controller_test = True
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.vehicle_backends = {"uav1": "direct_controller_test"}
+        coordinator.vehicle_types = {"uav1": "fixedwing"}
+        coordinator.scout_configs = {
+            "uav1": {
+                "fixedwing": {
+                    "waypoint_acceptance_radius_m": 20.0,
+                    "waypoint_altitude_tolerance_m": 10.0,
+                    "pass_cross_track_limit_m": 40.0,
+                }
+            }
+        }
+        coordinator.worker_configs = {}
+        coordinator.active_goals = {"uav1": (7, "search", 2)}
+        coordinator.active_goal_points = {"uav1": (100.0, 0.0, 40.0)}
+        coordinator.active_goal_origins = {"uav1": (0.0, 0.0, 40.0)}
+        coordinator.active_trajectory_route_progress = {"uav1": []}
+        coordinator.active_trajectory_end_times = {"uav1": 9.0}
+        coordinator.routes = {
+            "uav1": [(0.0, 0.0, 40.0), (80.0, 0.0, 40.0), (100.0, 0.0, 40.0)]
+        }
+        coordinator.route_indices = {"uav1": 0}
+        coordinator.vehicle_world_positions = {
+            "uav1": (10.0, (50.0, 50.0, 40.0))
+        }
+        coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.0)
+        coordinator.worker_arrival_tracker = ArrivalDwellTracker(0.5, 0.0)
+        coordinator._vehicle_ready = lambda *_args: True
+        coordinator._fixedwing_setting = (
+            lambda _vehicle, key, default: {
+                "waypoint_acceptance_radius_m": 20.0,
+                "waypoint_altitude_tolerance_m": 10.0,
+                "pass_cross_track_limit_m": 40.0,
+            }.get(key, default)
+        )
+        reached = []
+        coordinator._publish_direct_status = lambda *args: reached.append(args)
+        coordinator._handle_goal_status = lambda *args: reached.append(args)
+
+        coordinator._check_direct_goal_arrivals(10.0)
+        self.assertEqual(reached, [])
+
+        coordinator.vehicle_world_positions["uav1"] = (
+            10.1,
+            (105.0, 0.0, 40.0),
+        )
+        coordinator._check_direct_goal_arrivals(10.1)
+        self.assertEqual(len(reached), 2)
+
     def test_goal_heading_uses_world_enu_direction(self):
         self.assertAlmostEqual(goal_heading((0.0, 0.0), (5.0, 0.0)), 0.0)
         self.assertAlmostEqual(goal_heading((0.0, 0.0), (0.0, 5.0)), math.pi / 2.0)
@@ -346,6 +651,67 @@ class DirectExecutionTest(unittest.TestCase):
             horizontal_standoff_m=2.0,
         )
         self.assertEqual(goal, (8.0, 0.0, 5.0))
+
+    def test_worker_cannot_complete_approach_while_still_moving_fast(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.direct_controller_test = True
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.vehicle_backends = {"uav3": "direct_controller_test"}
+        coordinator.vehicle_types = {"uav3": "multirotor"}
+        coordinator.active_goals = {"uav3": (7, "rescue", 1)}
+        coordinator.active_goal_points = {"uav3": (5.0, 0.0, 4.0)}
+        coordinator.active_trajectory_route_progress = {}
+        coordinator.active_trajectory_end_times = {}
+        coordinator.vehicle_world_positions = {"uav3": (10.0, (5.0, 0.0, 4.0))}
+        coordinator.vehicle_world_speeds = {"uav3": (10.0, 2.0)}
+        coordinator.odometry_timeout = 0.5
+        coordinator.worker_maximum_arrival_speed = 0.35
+        coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.0)
+        coordinator.worker_arrival_tracker = ArrivalDwellTracker(0.5, 0.0)
+        coordinator._vehicle_ready = lambda *_args: True
+        reached = []
+        coordinator._publish_direct_status = lambda *args: reached.append(args)
+        coordinator._handle_goal_status = lambda *args: reached.append(args)
+
+        coordinator._check_direct_goal_arrivals(10.0)
+        self.assertEqual(reached, [])
+
+        coordinator.vehicle_world_speeds["uav3"] = (10.1, 0.1)
+        coordinator._check_direct_goal_arrivals(10.1)
+        self.assertEqual(len(reached), 2)
+
+    def test_completed_direct_worker_is_commanded_to_hold_current_pose(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.registry = GlobalTargetRegistry()
+        target = GlobalTargetRecord(
+            1, 0, [10.0, 0.0, 0.0], [0.0] * 9,
+            1.0, 1.0, 1.0, status=TARGET_CONFIRMED,
+        )
+        coordinator.registry.targets = {1: target}
+        coordinator.allocator = RescueTaskAllocator()
+        coordinator.allocator.update_worker("uav3", (0.0, 0.0, 4.0), 1.0, True)
+        task = coordinator.allocator.ensure_task(target)
+        coordinator.allocator.assign_pending()
+        coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
+        coordinator.vehicle_backends = {"uav3": "direct_controller_test"}
+        holds = []
+        coordinator._publish_direct_hold = lambda vehicle: holds.append(vehicle) or True
+        coordinator._clear_active_goal = lambda _vehicle: None
+        coordinator._dispatch_assignments = lambda: None
+        coordinator._check_mission_completed = lambda _now: None
+        coordinator._publish_state = lambda: None
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=type("Stamp", (), {"to_sec": lambda self: 1.0})(),
+        ):
+            coordinator._handle_goal_status(
+                "uav3", 7, PlannerStatus.REACHED, "settled at standoff"
+            )
+
+        self.assertEqual(holds, ["uav3"])
+        self.assertEqual(task.status, TASK_COMPLETED)
+        self.assertEqual(target.status, TARGET_COMPLETED)
 
     def test_worker_already_inside_standoff_holds_its_position(self):
         goal = worker_approach_goal(

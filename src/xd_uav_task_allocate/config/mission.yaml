@@ -23,6 +23,8 @@ interfaces:
     global_targets: /task_allocate/global_targets
     rescue_tasks: /task_allocate/rescue_tasks
     mission_state: /task_allocate/mission_state
+    verification_areas: /task_allocate/verification_areas
+    verification_markers: /task_allocate/verification_markers
   services:
     # Call only after the configured scout aircraft have taken off and their
     # world Odometry plus ControlState health are valid.
@@ -90,16 +92,28 @@ target_registry:
   # available for spatial deduplication while they wait for a worker.
   stale_timeout_sec: 15.0
 
-# Optional two-stage reconnaissance. The mixed-fleet example overrides enabled
-# to true. In that mode only fixed wings receive the original large-area route;
-# their stable detections remain VERIFYING until a multirotor locally confirms
-# the target, so no rescue task is created from coarse geolocation alone.
+# Reconnaissance flow selection. In auto mode a pure-multirotor scout fleet
+# performs single-stage area coverage, while a fleet containing both fixed-wing
+# and multirotor scouts performs fixed-wing coarse search followed by local
+# multirotor verification. Legacy configurations containing only `enabled` are
+# still accepted.
 hierarchical_search:
-  enabled: false
+  mode: hierarchical  # auto | single_stage | hierarchical
   verification:
-    # Absolute world Z, matching SearchArea.altitude (not height above terrain).
-    altitude_m: 20.0
+    # Publish and dispatch each local region as soon as fixed-wing evidence is
+    # ready. `after_coarse_complete` is retained only as an optional policy.
+    dispatch_policy: immediate  # immediate | after_coarse_complete
+    # Search regions are globally serialized by default, even when several
+    # multirotor scouts are idle. Increase only when parallel local search is desired.
+    maximum_concurrent_regions: 1
+    # Absolute world Z, matching the 4 m multirotor takeoff/search height in
+    # the current SITL sessions (not height above terrain).
+    altitude_m: 6.0
     lane_spacing_m: 5.0
+    # covariance: radius = covariance_sigma * largest XY standard deviation,
+    # clamped by minimum/maximum. fixed: use fixed_radius_m directly.
+    radius_mode: covariance  # covariance | fixed
+    fixed_radius_m: 30.0
     minimum_radius_m: 20.0
     maximum_radius_m: 80.0
     covariance_sigma: 3.0
@@ -116,9 +130,14 @@ allocation:
   class_worker_vehicle_types:
     "0": [multirotor]
   worker_approach:
-    # The execution goal stops before the detected object and captures the
-    # worker's current world altitude when the assignment is made.
-    horizontal_standoff_m: 2.0
+    # Stop well before the detected object. The red box is 1 m wide and the
+    # aircraft body plus braking error also need clearance; 2 m was too small.
+    horizontal_standoff_m: 5.0
+    # Completion is measured around the standoff goal, not around the object.
+    # Require the aircraft to settle so a fast fly-through cannot complete it.
+    goal_tolerance_m: 0.5
+    arrival_dwell_sec: 1.0
+    maximum_arrival_speed_mps: 0.35
   # Larger value is dispatched first. class_id 0 is the red-marker test target.
   class_priorities:
     "0": 10
@@ -128,8 +147,9 @@ planner:
   # EGO adapter is ready; there is never an automatic fallback between them.
   backend: direct_controller_test
   direct_controller_test:
-    # Mandatory acknowledgement: this backend sends raw mission points to the
-    # controller and performs no point-cloud planning or obstacle avoidance.
+    # Mandatory acknowledgement: this backend sends multirotor mission points
+    # and complete fixed-wing search trajectories directly to the controller;
+    # it performs no point-cloud planning or obstacle avoidance.
     acknowledge_no_obstacle_avoidance: true
     goal_tolerance_m: 1.0
     arrival_dwell_sec: 0.5
@@ -139,11 +159,22 @@ planner:
 
   fixedwing:
     # Used to replace instantaneous lawnmower reversals with sampled Dubins
-    # connectors. The turn may leave the search polygon, so mission planning
-    # must include a correspondingly clear boundary margin.
+    # connectors before the full path is time-parameterized as a trajectory.
+    # The turn may leave the search polygon, so mission planning must include
+    # a correspondingly clear boundary margin.
     minimum_turn_radius_m: 30.0
-    turn_waypoint_spacing_m: 15.0
-    # Fixed wings fly through waypoints instead of dwelling inside a 1 m ball.
+    turn_waypoint_spacing_m: 5.0
+    # 0 keeps SearchArea.altitude. Mixed fleets should normally set a separate
+    # fixed-wing coarse-search altitude per aircraft.
+    coverage_altitude_m: 0.0
+    # 0 keeps SearchArea.lane_spacing. Mixed fleets normally override this per
+    # fixed-wing scout using the sensor's coarse-search ground swath.
+    coverage_lane_spacing_m: 0.0
+    # Keep the banked connector outside the region and establish the straight
+    # scan heading before crossing its boundary.
+    straight_lead_distance_m: 30.0
+    # Fallback semantics for a fixed-wing direct point goal; normal fixed-wing
+    # area search uses the complete trajectory interface above.
     waypoint_acceptance_radius_m: 20.0
     waypoint_altitude_tolerance_m: 10.0
     pass_cross_track_limit_m: 40.0

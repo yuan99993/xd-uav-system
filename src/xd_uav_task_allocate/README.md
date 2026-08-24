@@ -2,12 +2,13 @@
 
 面向当前 XD UAV ROS1 工作空间的应急救援任务层。第一版采用中心协调器，负责：
 
-- 将多个搜索多边形生成割草机覆盖航线，并按预计飞行时间分给侦察机；固定翼会在扫描航段间
-  插入满足最小转弯半径的 Dubins 连接；
+- 将多个搜索多边形生成覆盖航线，并按预计飞行时间分给侦察机；四旋翼使用相邻折返，固定翼
+  使用跨区跳行并在区域外插入满足最小转弯半径的 Dubins 连接；
 - 直接读取 `xd_uav_detect` 的 `/uavX/track/detections`，无需启动 tracker 节点；
 - 使用检测时间戳对应的 `world Odometry` 位姿，把 body FRD 目标转换到共享世界坐标；
 - 对同机多帧和跨侦察机重复观测进行聚类，生成由本包维护的全局目标 ID；
-- 可选两级搜索：固定翼完成大区域粗搜，四旋翼按粗定位协方差生成局部精搜路线；
+- 自动侦察流程：纯四旋翼分配原始搜索区域；固定翼与四旋翼混合时，固定翼粗定位一旦形成
+  稳定证据便立即发布局部区域，并派四旋翼按可配置范围逐区精搜；
 - 只有精搜确认后的目标才建立救援任务，并按距离分给空闲作业机。
 
 ## 执行后端与避障边界
@@ -23,21 +24,33 @@ planner:
   backend: direct_controller_test
 ```
 
-该测试后端把 world 航点转换成控制器的一次性位置 `mavros_msgs/PositionTarget`（由控制器
-内部锁存），发布到：
+该测试后端对旋翼机把 world 航点转换成控制器的一次性位置
+`mavros_msgs/PositionTarget`（由控制器内部锁存），发布到：
 
 ```text
 /<uav>/control/reference/setpoint
 ```
 
-它不读取点云、不规划绕障路径，只允许在已确认净空的仿真或测试场使用。旋翼侦察机执行
-搜索航点 XYZ；工作机默认停在目标前 2 m，并把分配时的 world 高度写入 PZ，保持明确的
+固定翼搜索则把“当前位置 + 尚未完成的整段覆盖路线”按名义空速参数化为带 P/V/A、航向和
+时间戳的 `trajectory_msgs/MultiDOFJointTrajectory`，一次发布到：
+
+```text
+/<uav>/control/reference/trajectory
+```
+
+这样控制器连续跟踪整条曲线，不再因任务层逐个切换稀疏航点而反复摆头。轨迹到时后由固定翼
+控制器进入 Loiter。这个测试后端不读取点云、不规划绕障路径，只允许在已确认净空的仿真或
+测试场使用；固定翼路线中的 Dubins 转弯只满足最小转弯半径，并不负责绕开禁飞区。
+
+旋翼侦察机执行搜索航点 XYZ；工作机默认停在目标前 5 m，并把分配时的 world 高度写入 PZ，
+保持明确的
 垂直位置闭环，既不采用地面目标 Z，也不通过忽略 PZ 来关闭高度控制。默认根据飞机当前
 位置到当前航点的 world ENU 水平方向设置 yaw，
 使机头沿当前航段方向转动；水平距离过小时保持已有航向。旋翼根据新鲜有效的 world
-Odometry，在目标容差内持续指定时间后判定 `REACHED`。固定翼不能驻留，使用独立的
-水平接受半径、垂直容差以及带横向偏差限制的飞越航点平面判定，并且不向固定翼位置目标
-额外填写 yaw，由固定翼控制器根据 PXY 生成 course。
+Odometry，在目标容差内持续指定时间后判定 `REACHED`。固定翼搜索轨迹按规划时长推进任务
+进度；独立的航点接受半径/飞越平面判定仅保留给没有使用整段搜索轨迹的固定翼单点任务。
+工作机使用独立的到达条件：在 0.5 m 的停距目标容差内持续 1 s，且三维速度不超过
+0.35 m/s，随后立即锁存当前位置保持，避免高速掠过停距点后继续撞向目标。
 
 后续接入 EGO-Swarm 时，把 backend 改回 `ego_swarm`。该模式为每架飞机发布：
 
@@ -77,18 +90,21 @@ vehicle_type: multirotor  # 或 fixedwing
 ## 混合固定翼/旋翼机队
 
 可从 [scouts_mixed_example.yaml](config/scouts_mixed_example.yaml) 复制混合侦察机配置。
-该示例同时设置 `hierarchical_search/enabled: true`，执行下面的任务链：
+默认的 `hierarchical_search/mode: auto` 根据侦察机类型选择任务链：纯四旋翼使用单级区域
+分配；同时配置 fixedwing 和 multirotor 时自动执行下面的两阶段搜索：
 
 ```text
 原始大区域 SearchArea
         ↓ 只分给 fixedwing
 固定翼下视 detect 粗定位 + position_covariance
-        ↓ 达到粗证据阈值
-GlobalTarget.VERIFYING
+        ↓ 达到粗证据阈值，立即发布局部区域
+GlobalTarget.VERIFYING → 空闲 multirotor 出发
         ↓ 按 XY 协方差生成局部方形割草机路线
-空闲 multirotor 低空精搜
-        ↓ 四旋翼检测达到确认阈值
+四旋翼完整执行当前区域的低空精搜路线
+        ↓ 发现目标可立即确认并派工作机，但不提前结束本区域
 GlobalTarget.CONFIRMED → RescueTask → multirotor worker
+        ↓ 当前路线结束后
+下一个待搜索局部区域
 ```
 
 启用示例：
@@ -98,11 +114,27 @@ roslaunch xd_uav_task_allocate task_allocate.launch \
   scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_mixed_example.yaml
 ```
 
-两级模式下，原始输入的一个或多个大区域都只在固定翼之间分配，四旋翼侦察机保持空闲，
-等待固定翼候选。局部精搜范围不是固定半径：取固定翼 `position_covariance` 的最大 XY 主轴
-标准差乘 `hierarchical_search/verification/covariance_sigma`，再限制到
-`minimum_radius_m` 与 `maximum_radius_m` 之间。若整个局部路线完成仍没有四旋翼确认，默认
-把该粗候选标记为 `STALE`，不会创建救援任务。
+两级模式下，原始输入的一个或多个大区域都只在固定翼之间分配，四旋翼侦察机等待粗定位。
+默认 `verification/dispatch_policy: immediate`：固定翼候选达到粗证据阈值后立即发布局部区域，
+并派空闲四旋翼出发，不等待固定翼搜完整个大区域。若确实需要严格分阶段，才改成
+`after_coarse_complete`。
+
+局部区域默认 `maximum_concurrent_regions: 1`，因此无论有多少空闲四旋翼，都必须完整搜索完
+当前区域才取下一个队列区域。四旋翼在区域中确认一个目标不会提前结束路线；工作机可以立即
+执行已确认目标，同时侦察四旋翼继续把该区域扫完。新粗目标中心若落在一个已发布且尚未结束的
+局部区域内，会加入该区域的目标集合，不再生成重复区域和重复路线。
+
+局部精搜范围支持两种方式：
+
+- `radius_mode: covariance`：取固定翼 `position_covariance` 的最大 XY 主轴标准差乘
+  `covariance_sigma`，再限制到 `minimum_radius_m` 与 `maximum_radius_m`；
+- `radius_mode: fixed`：直接使用 `fixed_radius_m` 作为局部方形搜索区的半宽。
+
+局部精搜航线的 Z 由 `verification/altitude_m` 设置，它是 `world` 中的绝对高度，不是相对
+地面高度。当前 SITL 四旋翼统一在 4 m 起飞，因此默认也设为 `4.0`，避免接到区域后无意义地
+爬升到 20 m。
+
+若整个局部路线完成仍没有四旋翼确认，默认把该粗候选标记为 `STALE`，不会创建救援任务。
 
 为了让粗定位有意义，固定翼的 `xd_uav_detect` 必须使用 `ground_plane` 模式并输出
 `range_valid=true`、`has_relative_position_body=true` 和可信的 `position_covariance`；任务包
@@ -120,16 +152,26 @@ scouts:
     coverage:
       nominal_speed_mps: 15.0
     fixedwing:
+      coverage_altitude_m: 40.0
+      coverage_lane_spacing_m: 30.0
       minimum_turn_radius_m: 30.0
-      turn_waypoint_spacing_m: 15.0
+      turn_waypoint_spacing_m: 5.0
+      straight_lead_distance_m: 30.0
       waypoint_acceptance_radius_m: 20.0
       waypoint_altitude_tolerance_m: 10.0
       pass_cross_track_limit_m: 40.0
 ```
 
-固定翼覆盖规划保留多边形内的平行扫描航段，只把相邻航段之间的瞬时折返替换为
-前向飞行的 Dubins 路径。转弯通常会离开搜索多边形，任务区域外必须预留至少与
-`minimum_turn_radius_m` 同量级的已确认净空；该几何约束不等于障碍物规划。
+固定翼覆盖规划保留多边形内的全部平行扫描弦，但用 `0,N/2,1,N/2+1,...` 的跳行顺序拉开
+连续反向航段，避免“小行距、大转弯直径”在每个端点生成三圆弧。每条扫描弦前后再延长
+`straight_lead_distance_m`，确保飞机在进入区域前完成转弯、在区域内保持直飞。
+`coverage_lane_spacing_m` 是固定翼传感器在 `coverage_altitude_m` 高度的有效地面覆盖宽度，
+必须根据相机视场和所需重叠率设置；值为 0 时才沿用 `SearchArea.lane_spacing`。它与四旋翼
+局部精搜的 `hierarchical_search/verification/lane_spacing_m` 相互独立。
+
+转弯通常会离开搜索多边形，任务区域外必须预留至少与 `minimum_turn_radius_m` 和直线引导段
+同量级的已确认净空；该几何约束不等于障碍物规划。`turn_waypoint_spacing_m` 只改变同一条
+Dubins 曲线的离散密度，不会显著改变曲线长度或执行时间。
 混合机队的区域负载按“机型对应路线长度 ÷ `coverage/nominal_speed_mps`”估算，因而不会
 把同样长度机械地视为固定翼和旋翼具有相同完成时间。
 
@@ -181,7 +223,12 @@ roslaunch xd_uav_task_allocate task_allocate.launch
 /task_allocate/global_targets  xd_uav_task_allocate/GlobalTargetArray
 /task_allocate/rescue_tasks    xd_uav_task_allocate/RescueTaskArray
 /task_allocate/mission_state   std_msgs/String（IDLE/LOADED/ACTIVE/PAUSED/ABORTED/COMPLETED）
+/task_allocate/verification_areas    xd_uav_task_allocate/SearchAreaArray
+/task_allocate/verification_markers  visualization_msgs/MarkerArray
 ```
+
+RViz 中局部验证框按状态着色：黄色为等待、蓝色为正在搜索、绿色为搜完且确认过目标、红色为
+完整搜完但未确认目标。默认 RViz 配置已订阅 `/task_allocate/verification_markers`。
 
 下发搜索区域只加载任务并进入 `LOADED`，不会发布 `planning/goal`。现有控制系统完成解锁、
 起飞并稳定后，由操作员显式开始：
@@ -192,7 +239,8 @@ rosservice call /task_allocate/start
 
 默认要求 `scouts.yaml` 中全部侦察机的 world Odometry 与 ControlState 健康状态都有效；否则
 服务返回失败，已加载区域不会丢失，飞机准备好后可以再次调用。成功后才生成/分配覆盖路线，
-进入 `ACTIVE` 并向当前执行后端发布第一个航点。由于现有状态消息没有可靠的“已经离地”字段，
+进入 `ACTIVE`；旋翼向当前执行后端发布第一个航点，固定翼测试后端一次发布整段搜索轨迹。
+由于现有状态消息没有可靠的“已经离地”字段，
 `start` 必须由地面站在确认起飞后调用，任务包不会仅凭定位正常自动判定已经起飞。
 
 ## 任务生命周期与操作员服务
@@ -234,9 +282,10 @@ rosservice call /task_allocate/restart "{}"
 rosservice call /task_allocate/replan "{}"
 ```
 
-在当前 `direct_controller_test` 后端中，暂停时四旋翼会收到当前位置保持目标；固定翼停止接收
-带切向速度的流式搜索参考，参考超时后由 `xd_uav_controller` 自动进入 Loiter。恢复时任务节点
-重新发布保存的活动航点。若某架活动飞机使用 `ego_swarm`，在规划器尚未提供明确的
+在当前 `direct_controller_test` 后端中，暂停时四旋翼会收到当前位置保持目标；固定翼会收到
+一次当前位置/当前航向的过渡参考，轨迹失效后由 `xd_uav_controller` 自动进入 Loiter。恢复时
+旋翼重新发布保存的活动航点，固定翼从保存的路线进度重新发布剩余整段轨迹。若某架活动飞机
+使用 `ego_swarm`，在规划器尚未提供明确的
 cancel/pause 适配前，`pause` 和 `stop` 会返回失败，避免任务状态已经暂停而飞机仍继续执行。
 
 ### 带参数的任务恢复服务

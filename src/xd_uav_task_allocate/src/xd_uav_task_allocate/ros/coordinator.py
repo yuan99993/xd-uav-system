@@ -1,16 +1,18 @@
 """Central ROS coordinator for scout coverage and worker rescue tasks."""
 
 import threading
-from math import atan2, sqrt
-from typing import Dict, List, Tuple
+from math import atan2, cos, isfinite, sin, sqrt
+from typing import Dict, List, Set, Tuple
 
 import rospy
 import tf2_ros
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point, Point32, PoseStamped, Transform, Twist
 from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import String
 from std_srvs.srv import Trigger, TriggerResponse
+from trajectory_msgs.msg import MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint
+from visualization_msgs.msg import Marker, MarkerArray
 
 from xd_uav_controller.msg import ControlState
 from xd_uav_task_allocate.core.allocation import (
@@ -30,6 +32,7 @@ from xd_uav_task_allocate.core.coverage import (
 )
 from xd_uav_task_allocate.core.execution import (
     ArrivalDwellTracker,
+    fixedwing_trajectory_samples,
     fixedwing_waypoint_reached,
     goal_heading,
     worker_approach_goal,
@@ -58,6 +61,7 @@ from xd_uav_task_allocate.msg import (
     PlannerStatus,
     RescueTask,
     RescueTaskArray,
+    SearchArea,
     SearchAreaArray,
 )
 from xd_uav_task_allocate.srv import (
@@ -152,6 +156,23 @@ class TaskAllocateCoordinator:
                 "~planner/direct_controller_test/arrival_dwell_sec", 0.5
             ),
         )
+        self.worker_arrival_tracker = ArrivalDwellTracker(
+            tolerance_m=rospy.get_param(
+                "~allocation/worker_approach/goal_tolerance_m", 0.5
+            ),
+            dwell_sec=rospy.get_param(
+                "~allocation/worker_approach/arrival_dwell_sec", 1.0
+            ),
+        )
+        self.worker_maximum_arrival_speed = max(
+            0.0,
+            float(
+                rospy.get_param(
+                    "~allocation/worker_approach/maximum_arrival_speed_mps",
+                    0.35,
+                )
+            ),
+        )
         self.worker_state_timeout = float(
             rospy.get_param("~allocation/worker_state_timeout_sec", 1.0)
         )
@@ -159,7 +180,7 @@ class TaskAllocateCoordinator:
             0.0,
             float(
                 rospy.get_param(
-                    "~allocation/worker_approach/horizontal_standoff_m", 2.0
+                    "~allocation/worker_approach/horizontal_standoff_m", 5.0
                 )
             ),
         )
@@ -182,11 +203,42 @@ class TaskAllocateCoordinator:
             ).items()
         }
 
-        self.hierarchical_search_enabled = bool(
+        self.scout_configs = dict(rospy.get_param("~scouts", {}))
+        self.worker_configs = dict(rospy.get_param("~workers", {}))
+        configured_scout_types = {
+            self._configured_vehicle_type(dict(config))
+            for config in self.scout_configs.values()
+        }
+        hierarchical_mode = str(
+            rospy.get_param("~hierarchical_search/mode", "")
+        ).strip().lower()
+        legacy_hierarchical_enabled = bool(
             rospy.get_param("~hierarchical_search/enabled", False)
         )
+        self.hierarchical_search_enabled = self._resolve_hierarchical_search_mode(
+            hierarchical_mode,
+            configured_scout_types,
+            legacy_hierarchical_enabled,
+        )
+        self.hierarchical_search_mode = (
+            hierarchical_mode if hierarchical_mode else "legacy"
+        )
+        self.verification_dispatch_policy = str(
+            rospy.get_param(
+                "~hierarchical_search/verification/dispatch_policy",
+                "immediate",
+            )
+        ).strip().lower()
+        if self.verification_dispatch_policy not in (
+            "after_coarse_complete",
+            "immediate",
+        ):
+            raise ValueError(
+                "hierarchical_search/verification/dispatch_policy must be "
+                "after_coarse_complete or immediate"
+            )
         self.verification_altitude = float(
-            rospy.get_param("~hierarchical_search/verification/altitude_m", 20.0)
+            rospy.get_param("~hierarchical_search/verification/altitude_m", 4.0)
         )
         self.verification_lane_spacing = max(
             0.1,
@@ -217,6 +269,34 @@ class TaskAllocateCoordinator:
             float(
                 rospy.get_param(
                     "~hierarchical_search/verification/covariance_sigma", 3.0
+                )
+            ),
+        )
+        self.verification_radius_mode = str(
+            rospy.get_param(
+                "~hierarchical_search/verification/radius_mode", "covariance"
+            )
+        ).strip().lower()
+        if self.verification_radius_mode not in ("covariance", "fixed"):
+            raise ValueError(
+                "hierarchical_search/verification/radius_mode must be "
+                "covariance or fixed"
+            )
+        self.verification_fixed_radius = float(
+            rospy.get_param(
+                "~hierarchical_search/verification/fixed_radius_m", 30.0
+            )
+        )
+        if self.verification_fixed_radius <= 0.0:
+            raise ValueError(
+                "hierarchical_search/verification/fixed_radius_m must be positive"
+            )
+        self.verification_maximum_concurrent_regions = max(
+            1,
+            int(
+                rospy.get_param(
+                    "~hierarchical_search/verification/maximum_concurrent_regions",
+                    1,
                 )
             ),
         )
@@ -260,8 +340,6 @@ class TaskAllocateCoordinator:
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(tf_cache_sec))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
-        self.scout_configs = dict(rospy.get_param("~scouts", {}))
-        self.worker_configs = dict(rospy.get_param("~workers", {}))
         all_configs = dict(self.scout_configs)
         all_configs.update(self.worker_configs)
         self.vehicle_types = {
@@ -293,9 +371,11 @@ class TaskAllocateCoordinator:
 
         self.pose_histories: Dict[str, PoseHistory] = {}
         self.vehicle_world_positions: Dict[str, Tuple[float, Tuple[float, float, float]]] = {}
+        self.vehicle_world_speeds: Dict[str, Tuple[float, float]] = {}
         self.vehicle_health: Dict[str, Tuple[float, bool]] = {}
         self.goal_publishers: Dict[str, rospy.Publisher] = {}
         self.direct_goal_publishers: Dict[str, rospy.Publisher] = {}
+        self.direct_trajectory_publishers: Dict[str, rospy.Publisher] = {}
         self.direct_status_publishers: Dict[str, rospy.Publisher] = {}
         self.path_publishers: Dict[str, rospy.Publisher] = {}
         self.routes: Dict[str, List[Tuple[float, float, float]]] = {}
@@ -303,9 +383,17 @@ class TaskAllocateCoordinator:
         self.active_goals: Dict[str, Tuple[int, str, int]] = {}
         self.active_goal_points: Dict[str, Tuple[float, float, float]] = {}
         self.active_goal_origins: Dict[str, Tuple[float, float, float]] = {}
+        self.active_trajectory_end_times: Dict[str, float] = {}
+        self.active_trajectory_route_progress: Dict[
+            str, List[Tuple[float, int]]
+        ] = {}
         self.verification_pending: List[int] = []
         self.verification_target_by_scout: Dict[str, int] = {}
         self.verification_scout_by_target: Dict[int, str] = {}
+        self.verification_plans: Dict[int, PlannedArea] = {}
+        self.verification_region_by_target: Dict[int, int] = {}
+        self.verification_targets_by_region: Dict[int, Set[int]] = {}
+        self.verification_region_states: Dict[int, str] = {}
         self.worker_retry_after: Dict[str, float] = {}
         self.vehicle_operator_enabled = {
             str(name): True for name in all_configs
@@ -344,6 +432,28 @@ class TaskAllocateCoordinator:
                 )
             ),
             String,
+            queue_size=2,
+            latch=True,
+        )
+        self.verification_areas_publisher = rospy.Publisher(
+            str(
+                rospy.get_param(
+                    "~interfaces/output/verification_areas",
+                    "/task_allocate/verification_areas",
+                )
+            ),
+            SearchAreaArray,
+            queue_size=2,
+            latch=True,
+        )
+        self.verification_markers_publisher = rospy.Publisher(
+            str(
+                rospy.get_param(
+                    "~interfaces/output/verification_markers",
+                    "/task_allocate/verification_markers",
+                )
+            ),
+            MarkerArray,
             queue_size=2,
             latch=True,
         )
@@ -421,12 +531,15 @@ class TaskAllocateCoordinator:
         self._publish_mission_state()
         rospy.loginfo(
             "[task_allocate] ready: scouts=%s workers=%s shared_frame=%s; "
-            "position=main world Odometry; vehicles=%s; backends=%s",
+            "position=main world Odometry; vehicles=%s; backends=%s; "
+            "hierarchical_search=%s(mode=%s)",
             sorted(self.scout_configs),
             sorted(self.worker_configs),
             self.shared_frame,
             self.vehicle_types,
             self.vehicle_backends,
+            self.hierarchical_search_enabled,
+            self.hierarchical_search_mode,
         )
         if self.direct_controller_test:
             rospy.logwarn(
@@ -456,6 +569,26 @@ class TaskAllocateCoordinator:
         if vehicle_type not in ("multirotor", "fixedwing"):
             raise ValueError("vehicle_type must be multirotor or fixedwing")
         return vehicle_type
+
+    @staticmethod
+    def _resolve_hierarchical_search_mode(
+        mode: str, scout_vehicle_types, legacy_enabled: bool = False
+    ) -> bool:
+        """Select reconnaissance flow from policy and configured scout types."""
+
+        normalized = str(mode).strip().lower()
+        if not normalized:
+            return bool(legacy_enabled)
+        if normalized == "auto":
+            types = {str(value).strip().lower() for value in scout_vehicle_types}
+            return "fixedwing" in types and "multirotor" in types
+        if normalized == "hierarchical":
+            return True
+        if normalized == "single_stage":
+            return False
+        raise ValueError(
+            "hierarchical_search/mode must be auto, hierarchical, or single_stage"
+        )
 
     def _configured_backend(self, config: dict) -> str:
         execution = dict(config.get("execution", {}))
@@ -591,6 +724,17 @@ class TaskAllocateCoordinator:
                 queue_size=5,
                 latch=True,
             )
+            if self.vehicle_types[name] == "fixedwing":
+                self.direct_trajectory_publishers[name] = rospy.Publisher(
+                    self._topic(
+                        config,
+                        "controller_trajectory",
+                        f"/{name}/control/reference/trajectory",
+                    ),
+                    MultiDOFJointTrajectory,
+                    queue_size=1,
+                    latch=False,
+                )
         else:
             self.goal_publishers[name] = rospy.Publisher(
                 self._topic(config, "planner_goal", f"/{name}/planning/goal"),
@@ -651,13 +795,18 @@ class TaskAllocateCoordinator:
     def _vehicle_ready(self, name: str, now: float) -> bool:
         position = self.vehicle_world_positions.get(name)
         health = self.vehicle_health.get(name)
-        execution_connected = bool(
-            not self._uses_direct_controller(name)
-            or (
+        execution_connected = not self._uses_direct_controller(name)
+        if self._uses_direct_controller(name):
+            execution_connected = bool(
                 name in self.direct_goal_publishers
                 and self.direct_goal_publishers[name].get_num_connections() > 0
             )
-        )
+            if self.vehicle_types.get(name) == "fixedwing":
+                execution_connected = bool(
+                    execution_connected
+                    and name in self.direct_trajectory_publishers
+                    and self.direct_trajectory_publishers[name].get_num_connections() > 0
+                )
         return bool(
             self.vehicle_operator_enabled.get(str(name), True)
             and position is not None
@@ -735,6 +884,21 @@ class TaskAllocateCoordinator:
             self.pose_histories[name].add(pose)
             receive_time = rospy.Time.now().to_sec()
             self.vehicle_world_positions[name] = (receive_time, world_position)
+            velocity = message.twist.twist.linear
+            speed = sqrt(
+                float(velocity.x) ** 2
+                + float(velocity.y) ** 2
+                + float(velocity.z) ** 2
+            )
+            if not isfinite(speed):
+                rospy.logwarn_throttle(
+                    2.0, "[task_allocate] %s world odometry speed is invalid", name
+                )
+                return
+            self.vehicle_world_speeds[name] = (
+                receive_time,
+                speed,
+            )
             if is_worker:
                 self._refresh_worker(name, receive_time)
 
@@ -823,12 +987,50 @@ class TaskAllocateCoordinator:
                     scout, "turn_waypoint_spacing_m", 15.0
                 ),
             )
-            fixedwing_parameters[scout] = (turn_radius, waypoint_spacing)
+            straight_lead_distance = max(
+                0.0,
+                self._fixedwing_setting(
+                    scout, "straight_lead_distance_m", turn_radius
+                ),
+            )
+            fixedwing_parameters[scout] = (
+                turn_radius,
+                waypoint_spacing,
+                straight_lead_distance,
+            )
             for planned in self.loaded_areas:
+                coarse_lane_spacing = self._fixedwing_setting(
+                    scout, "coverage_lane_spacing_m", 0.0
+                )
+                coarse_altitude = self._fixedwing_setting(
+                    scout, "coverage_altitude_m", 0.0
+                )
+                fixedwing_area = planned.area
+                if coarse_lane_spacing > 0.0 or coarse_altitude > 0.0:
+                    # A mixed fleet must not force the fixed-wing coarse scan
+                    # to use the multirotor verification swath.  The override
+                    # is the sensor's effective ground footprint at the
+                    # fixed-wing search altitude. Zero keeps the area value.
+                    fixedwing_area = SearchAreaDefinition(
+                        area_id=planned.area.area_id,
+                        boundary=planned.area.boundary,
+                        altitude=(
+                            coarse_altitude
+                            if coarse_altitude > 0.0
+                            else planned.area.altitude
+                        ),
+                        lane_spacing=(
+                            coarse_lane_spacing
+                            if coarse_lane_spacing > 0.0
+                            else planned.area.lane_spacing
+                        ),
+                        priority=planned.area.priority,
+                    )
                 area_path = fixedwing_lawnmower_path(
-                    planned.area,
+                    fixedwing_area,
                     minimum_turn_radius=turn_radius,
                     turn_waypoint_spacing=waypoint_spacing,
+                    straight_lead_distance=straight_lead_distance,
                 )
                 key = (scout, planned.area.area_id)
                 fixedwing_area_paths[key] = area_path
@@ -848,7 +1050,7 @@ class TaskAllocateCoordinator:
             self.route_indices[scout] = 0
         for scout, areas in assignments.items():
             if self.vehicle_types[scout] == "fixedwing":
-                turn_radius, waypoint_spacing = fixedwing_parameters[scout]
+                turn_radius, waypoint_spacing, _ = fixedwing_parameters[scout]
                 route = connect_fixedwing_paths(
                     [
                         fixedwing_area_paths[(scout, planned.area.area_id)]
@@ -922,10 +1124,18 @@ class TaskAllocateCoordinator:
         self.active_goals.clear()
         self.active_goal_points.clear()
         self.active_goal_origins.clear()
+        self.active_trajectory_end_times.clear()
+        self.active_trajectory_route_progress.clear()
         self.verification_pending.clear()
         self.verification_target_by_scout.clear()
         self.verification_scout_by_target.clear()
+        self.verification_plans.clear()
+        self.verification_region_by_target.clear()
+        self.verification_targets_by_region.clear()
+        self.verification_region_states.clear()
+        self._publish_verification_areas()
         self.arrival_tracker.reset_all()
+        self.worker_arrival_tracker.reset_all()
         self.search_completed_at = 0.0
 
     def _clear_results_data(self) -> None:
@@ -955,10 +1165,32 @@ class TaskAllocateCoordinator:
         position = self.vehicle_world_positions.get(vehicle)
         if position is None or not self._uses_direct_controller(vehicle):
             return False
-        # Fixed-wing search references carry velocity and naturally time out
-        # into the controller's internal loiter when refresh stops. Publishing
-        # a static point here would recreate the point-orbit failure mode.
         if self.vehicle_types[vehicle] == "fixedwing":
+            latest_pose = self.pose_histories[vehicle].latest()
+            if latest_pose is None:
+                return False
+            course = self._quaternion_yaw(latest_pose.orientation_reference_body)
+            speed = self._coverage_speed(vehicle)
+            setpoint = PositionTarget()
+            setpoint.header.stamp = rospy.Time.now()
+            setpoint.header.frame_id = self.shared_frame
+            setpoint.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+            setpoint.type_mask = (
+                PositionTarget.IGNORE_VZ
+                | PositionTarget.IGNORE_AFX
+                | PositionTarget.IGNORE_AFY
+                | PositionTarget.IGNORE_AFZ
+                | PositionTarget.IGNORE_YAW
+                | PositionTarget.IGNORE_YAW_RATE
+            )
+            setpoint.position.x = float(position[1][0])
+            setpoint.position.y = float(position[1][1])
+            setpoint.position.z = float(position[1][2])
+            setpoint.velocity.x = speed * cos(course)
+            setpoint.velocity.y = speed * sin(course)
+            self.direct_goal_publishers[vehicle].publish(setpoint)
+            self.active_trajectory_end_times.pop(vehicle, None)
+            self.active_trajectory_route_progress.pop(vehicle, None)
             return True
         goal = PoseStamped()
         goal.header.stamp = rospy.Time.now()
@@ -990,6 +1222,14 @@ class TaskAllocateCoordinator:
         active = self.active_goals.get(vehicle)
         point = self.active_goal_points.get(vehicle)
         if active is None or point is None:
+            return
+        if (
+            self._uses_direct_controller(vehicle)
+            and self.vehicle_types.get(vehicle) == "fixedwing"
+            and active[1] in ("search", "verification")
+        ):
+            self._clear_active_goal(vehicle)
+            self._publish_next_scout_goal(vehicle)
             return
         goal = PoseStamped()
         goal.header.seq = int(active[0])
@@ -1143,6 +1383,11 @@ class TaskAllocateCoordinator:
             self.verification_pending.clear()
             self.verification_target_by_scout.clear()
             self.verification_scout_by_target.clear()
+            self.verification_plans.clear()
+            self.verification_region_by_target.clear()
+            self.verification_targets_by_region.clear()
+            self.verification_region_states.clear()
+            self._publish_verification_areas()
             self.mission_detail = "targets and rescue-task results cleared"
             self._publish_state()
             return TriggerResponse(True, self.mission_detail)
@@ -1328,10 +1573,6 @@ class TaskAllocateCoordinator:
                 for vehicle, active in self.active_goals.items()
                 if (
                     (
-                        active[1] == "verification"
-                        and self.verification_target_by_scout.get(vehicle) == target_id
-                    )
-                    or (
                         active[1] == "rescue"
                         and self.allocator.tasks.get(active[2]) is not None
                         and self.allocator.tasks[active[2]].target_id == target_id
@@ -1351,18 +1592,19 @@ class TaskAllocateCoordinator:
                     if active[1] == "rescue" and active[2] == task.task_id:
                         self._publish_direct_hold(vehicle)
                         self._clear_active_goal(vehicle)
-            self.verification_pending = [
-                item for item in self.verification_pending if item != target_id
-            ]
-            scout = self.verification_scout_by_target.pop(target_id, None)
-            if scout is not None:
-                self.verification_target_by_scout.pop(scout, None)
-                self._publish_direct_hold(scout)
-                self._clear_active_goal(scout)
-                self.routes[scout] = []
-                self.route_indices[scout] = 0
-                self._publish_path(scout, [], rospy.Time.now())
+            region_id = self.verification_region_by_target.pop(target_id, None)
+            if region_id is not None:
+                members = self.verification_targets_by_region.get(region_id, set())
+                members.discard(target_id)
+                if not members and region_id in self.verification_pending:
+                    self.verification_pending = [
+                        item for item in self.verification_pending if item != region_id
+                    ]
+                    self.verification_plans.pop(region_id, None)
+                    self.verification_targets_by_region.pop(region_id, None)
+                    self.verification_region_states.pop(region_id, None)
             self.registry.remove(target_id)
+            self._publish_verification_areas()
             self._publish_state()
             return TargetCommandResponse(True, f"target {target_id} rejected and removed")
 
@@ -1376,10 +1618,10 @@ class TaskAllocateCoordinator:
             target = self.registry.targets.get(target_id)
             if target is None:
                 return TargetCommandResponse(False, f"unknown target: {target_id}")
-            if (
-                target_id in self.verification_pending
-                or target_id in self.verification_scout_by_target
-            ):
+            region_id = self.verification_region_by_target.get(target_id)
+            if region_id is not None and self.verification_region_states.get(
+                region_id
+            ) in ("pending", "active"):
                 return TargetCommandResponse(False, "target verification is already pending")
             if target.status in (
                 TARGET_ASSIGNED,
@@ -1387,8 +1629,16 @@ class TaskAllocateCoordinator:
                 TARGET_COMPLETED,
             ):
                 return TargetCommandResponse(False, "target already has rescue progress")
+            if region_id is None:
+                self._queue_target_verification(target)
+                self._publish_state()
+                return TargetCommandResponse(
+                    True, f"target {target_id} verification region queued"
+                )
             self.registry.set_status(target_id, TARGET_VERIFYING)
-            self.verification_pending.append(target_id)
+            self.verification_region_states[region_id] = "pending"
+            self.verification_pending.append(region_id)
+            self._publish_verification_areas()
             self._assign_pending_verifications()
             self._publish_state()
             return TargetCommandResponse(True, f"target {target_id} verification queued")
@@ -1397,6 +1647,19 @@ class TaskAllocateCoordinator:
         return bool(self.routes) and all(
             self.route_indices.get(name, 0) >= len(vehicle_route)
             for name, vehicle_route in self.routes.items()
+        )
+
+    def _coarse_search_routes_complete(self) -> bool:
+        """Return whether every fixed-wing coarse route has finished."""
+
+        fixedwing_scouts = [
+            name
+            for name in self.scout_configs
+            if self.vehicle_types.get(name) == "fixedwing"
+        ]
+        return bool(fixedwing_scouts) and all(
+            self.route_indices.get(name, 0) >= len(self.routes.get(name, []))
+            for name in fixedwing_scouts
         )
 
     def _mark_search_complete_if_ready(self) -> None:
@@ -1413,27 +1676,173 @@ class TaskAllocateCoordinator:
                 self.completion_grace_sec,
             )
 
+    def _build_verification_plan(self, target) -> PlannedArea:
+        return verification_search_area(
+            target_id=int(target.target_id),
+            center=target.position,
+            covariance=target.covariance,
+            altitude=self.verification_altitude,
+            lane_spacing=self.verification_lane_spacing,
+            minimum_radius=self.verification_minimum_radius,
+            maximum_radius=self.verification_maximum_radius,
+            covariance_sigma=self.verification_covariance_sigma,
+            fixed_radius=(
+                self.verification_fixed_radius
+                if self.verification_radius_mode == "fixed"
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _point_inside_verification_plan(point, planned: PlannedArea) -> bool:
+        xs = [value[0] for value in planned.area.boundary]
+        ys = [value[1] for value in planned.area.boundary]
+        return (
+            min(xs) <= float(point[0]) <= max(xs)
+            and min(ys) <= float(point[1]) <= max(ys)
+        )
+
+    def _containing_verification_region(self, point):
+        candidates = [
+            region_id
+            for region_id, planned in self.verification_plans.items()
+            if self._point_inside_verification_plan(point, planned)
+        ]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda region_id: (
+                1
+                if self.verification_region_states.get(region_id)
+                in ("completed", "missed")
+                else 0,
+                self.verification_plans[region_id].length,
+                region_id,
+            ),
+        )
+
+    def _attach_target_to_verification_region(self, target, region_id: int) -> None:
+        target_id = int(target.target_id)
+        owner = int(region_id)
+        self.verification_region_by_target[target_id] = owner
+        self.verification_targets_by_region.setdefault(owner, set()).add(target_id)
+
+    def _publish_verification_areas(self) -> None:
+        if not hasattr(self, "verification_areas_publisher"):
+            return
+        stamp = rospy.Time.now()
+        areas = SearchAreaArray()
+        areas.header.stamp = stamp
+        areas.header.frame_id = self.shared_frame
+        markers = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        markers.markers.append(clear)
+        colors = {
+            "pending": (1.0, 0.75, 0.0, 0.85),
+            "active": (0.1, 0.45, 1.0, 0.95),
+            "completed": (0.1, 0.9, 0.2, 0.75),
+            "missed": (1.0, 0.15, 0.1, 0.85),
+        }
+        for region_id in sorted(self.verification_plans):
+            planned = self.verification_plans[region_id]
+            area = SearchArea()
+            area.area_id = int(region_id)
+            area.altitude = float(planned.area.altitude)
+            area.lane_spacing = float(planned.area.lane_spacing)
+            area.priority = int(planned.area.priority)
+            area.boundary.points = [
+                Point32(x=float(x), y=float(y), z=float(planned.area.altitude))
+                for x, y in planned.area.boundary
+            ]
+            areas.areas.append(area)
+
+            state = self.verification_region_states.get(region_id, "pending")
+            red, green, blue, alpha = colors.get(state, colors["pending"])
+            marker = Marker()
+            marker.header = areas.header
+            marker.ns = "verification_areas"
+            marker.id = int(region_id)
+            marker.type = Marker.LINE_STRIP
+            marker.action = Marker.ADD
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 0.8
+            marker.color.r = red
+            marker.color.g = green
+            marker.color.b = blue
+            marker.color.a = alpha
+            marker.points = [
+                Point(x=float(x), y=float(y), z=float(planned.area.altitude))
+                for x, y in planned.area.boundary
+            ]
+            marker.points.append(marker.points[0])
+            markers.markers.append(marker)
+        self.verification_areas_publisher.publish(areas)
+        self.verification_markers_publisher.publish(markers)
+
     def _queue_target_verification(self, target) -> None:
         target_id = int(target.target_id)
-        if (
-            target_id in self.verification_pending
-            or target_id in self.verification_scout_by_target
-        ):
+        if target_id in self.verification_region_by_target:
             return
+        try:
+            planned = self._build_verification_plan(target)
+        except ValueError as error:
+            rospy.logerr(
+                "[task_allocate] cannot build target %d verification area: %s",
+                target_id,
+                error,
+            )
+            self.registry.set_status(target_id, TARGET_STALE)
+            return
+        existing_region = self._containing_verification_region(target.position)
+        if existing_region is not None:
+            self._attach_target_to_verification_region(target, existing_region)
+            if self.verification_region_states.get(existing_region) in (
+                "completed",
+                "missed",
+            ):
+                self.registry.set_status(target_id, TARGET_STALE)
+            else:
+                self.registry.set_status(target_id, TARGET_VERIFYING)
+            rospy.loginfo(
+                "[task_allocate] fixed-wing target %d reuses verification region %d",
+                target_id,
+                existing_region,
+            )
+            self._publish_verification_areas()
+            return
+        region_id = target_id
+        self.verification_plans[region_id] = planned
+        self.verification_region_states[region_id] = "pending"
+        self._attach_target_to_verification_region(target, region_id)
         self.registry.set_status(target_id, TARGET_VERIFYING)
-        self.verification_pending.append(target_id)
+        self.verification_pending.append(region_id)
         self.search_completed_at = 0.0
         rospy.loginfo(
-            "[task_allocate] fixed-wing coarse target %d queued for local "
-            "multirotor verification at (%.2f, %.2f)",
+            "[task_allocate] fixed-wing coarse target %d published verification "
+            "region %d at (%.2f, %.2f)",
             target_id,
+            region_id,
             target.position[0],
             target.position[1],
         )
+        self._publish_verification_areas()
         self._assign_pending_verifications()
 
     def _assign_pending_verifications(self) -> None:
         if not self.hierarchical_search_enabled or self.mission_state != MISSION_ACTIVE:
+            return
+        if (
+            self.verification_dispatch_policy == "after_coarse_complete"
+            and not self._coarse_search_routes_complete()
+        ):
+            return
+        remaining_slots = (
+            self.verification_maximum_concurrent_regions
+            - len(self.verification_target_by_scout)
+        )
+        if remaining_slots <= 0:
             return
         now = rospy.Time.now().to_sec()
         available = [
@@ -1445,47 +1854,47 @@ class TaskAllocateCoordinator:
             and self.route_indices.get(name, 0) >= len(self.routes.get(name, []))
             and name not in self.active_goals
         ]
-        while self.verification_pending and available:
-            target_id = self.verification_pending.pop(0)
-            target = self.registry.targets.get(target_id)
-            if target is None or target.status != TARGET_VERIFYING:
+        while self.verification_pending and available and remaining_slots > 0:
+            region_id = self.verification_pending.pop(0)
+            planned = self.verification_plans.get(region_id)
+            if planned is None:
                 continue
+            members = self.verification_targets_by_region.get(region_id, set())
+            # Confirmation may dispatch a worker immediately, but it must not
+            # consume or cancel the local search region: another target can be
+            # present elsewhere inside the same box. Only an empty region
+            # (all members explicitly rejected) is safe to skip.
+            if not any(
+                self.registry.targets.get(target_id) is not None
+                for target_id in members
+            ):
+                self.verification_region_states[region_id] = "missed"
+                self._publish_verification_areas()
+                continue
+            center_x = sum(value[0] for value in planned.area.boundary) / len(
+                planned.area.boundary
+            )
+            center_y = sum(value[1] for value in planned.area.boundary) / len(
+                planned.area.boundary
+            )
             scout = min(
                 available,
                 key=lambda name: (
-                    (self.vehicle_world_positions[name][1][0] - target.position[0]) ** 2
-                    + (self.vehicle_world_positions[name][1][1] - target.position[1]) ** 2,
+                    (self.vehicle_world_positions[name][1][0] - center_x) ** 2
+                    + (self.vehicle_world_positions[name][1][1] - center_y) ** 2,
                     name,
                 ),
             )
-            try:
-                planned = verification_search_area(
-                    target_id=target_id,
-                    center=target.position,
-                    covariance=target.covariance,
-                    altitude=self.verification_altitude,
-                    lane_spacing=self.verification_lane_spacing,
-                    minimum_radius=self.verification_minimum_radius,
-                    maximum_radius=self.verification_maximum_radius,
-                    covariance_sigma=self.verification_covariance_sigma,
-                )
-            except ValueError as error:
-                rospy.logerr(
-                    "[task_allocate] cannot build target %d verification route: %s",
-                    target_id,
-                    error,
-                )
-                self.registry.set_status(target_id, TARGET_STALE)
-                continue
-            self.verification_target_by_scout[scout] = target_id
-            self.verification_scout_by_target[target_id] = scout
+            self.verification_target_by_scout[scout] = region_id
+            self.verification_scout_by_target[region_id] = scout
+            self.verification_region_states[region_id] = "active"
             self.routes[scout] = planned.path
             self.route_indices[scout] = 0
             self._publish_path(scout, planned.path, rospy.Time.now())
             rospy.loginfo(
-                "[task_allocate] verification target %d -> %s, radius=%.1f m, "
+                "[task_allocate] verification region %d -> %s, radius=%.1f m, "
                 "altitude=%.1f m, waypoints=%d",
-                target_id,
+                region_id,
                 scout,
                 0.5 * (
                     planned.area.boundary[1][0] - planned.area.boundary[0][0]
@@ -1495,6 +1904,8 @@ class TaskAllocateCoordinator:
             )
             self._publish_next_scout_goal(scout)
             available.remove(scout)
+            remaining_slots -= 1
+            self._publish_verification_areas()
         if self.verification_pending and not available:
             rospy.logwarn_throttle(
                 5.0,
@@ -1503,12 +1914,12 @@ class TaskAllocateCoordinator:
                 len(self.verification_pending),
             )
 
-    def _finish_target_verification(self, target_id: int, confirmed: bool) -> None:
-        target_id = int(target_id)
+    def _finish_target_verification(self, region_id: int) -> None:
+        region_id = int(region_id)
         self.verification_pending = [
-            item for item in self.verification_pending if item != target_id
+            item for item in self.verification_pending if item != region_id
         ]
-        scout = self.verification_scout_by_target.pop(target_id, None)
+        scout = self.verification_scout_by_target.pop(region_id, None)
         if scout is not None:
             self.verification_target_by_scout.pop(scout, None)
             active = self.active_goals.get(scout)
@@ -1517,16 +1928,31 @@ class TaskAllocateCoordinator:
             self.routes[scout] = []
             self.route_indices[scout] = 0
             self._publish_path(scout, [], rospy.Time.now())
-        if not confirmed:
+        for member_id in self.verification_targets_by_region.get(region_id, set()):
+            member = self.registry.targets.get(member_id)
+            if member is None or member.status != TARGET_VERIFYING:
+                continue
             self.registry.set_status(
-                target_id,
+                member_id,
                 TARGET_STALE if self.reject_after_verification_route else TARGET_CANDIDATE,
             )
-            rospy.logwarn(
-                "[task_allocate] multirotor verification route exhausted for "
-                "target %d without confirmation",
-                target_id,
-            )
+        members = self.verification_targets_by_region.get(region_id, set())
+        found = any(
+            self.registry.targets.get(member_id) is not None
+            and self.registry.targets[member_id].status
+            in (TARGET_CONFIRMED, TARGET_ASSIGNED, TARGET_EXECUTING, TARGET_COMPLETED)
+            for member_id in members
+        )
+        self.verification_region_states[region_id] = (
+            "completed" if found else "missed"
+        )
+        rospy.loginfo(
+            "[task_allocate] multirotor completed the full route for verification "
+            "region %d; members=%s",
+            region_id,
+            sorted(self.verification_targets_by_region.get(region_id, set())),
+        )
+        self._publish_verification_areas()
         self._assign_pending_verifications()
         self._mark_search_complete_if_ready()
 
@@ -1572,10 +1998,18 @@ class TaskAllocateCoordinator:
                 )
                 update = self.registry.observe(observation)
                 changed = True
-                if update.newly_confirmed:
-                    self._finish_target_verification(
-                        update.target.target_id, confirmed=True
+                if (
+                    self.hierarchical_search_enabled
+                    and self.vehicle_types[scout] == "multirotor"
+                ):
+                    region_id = self._containing_verification_region(
+                        update.target.position
                     )
+                    if region_id is not None:
+                        self._attach_target_to_verification_region(
+                            update.target, region_id
+                        )
+                if update.newly_confirmed:
                     priority = self.class_priorities.get(update.target.class_id, 0)
                     allowed_types = self.class_worker_vehicle_types.get(
                         update.target.class_id,
@@ -1717,7 +2151,10 @@ class TaskAllocateCoordinator:
         self.active_goals.pop(vehicle, None)
         self.active_goal_points.pop(vehicle, None)
         self.active_goal_origins.pop(vehicle, None)
+        self.active_trajectory_end_times.pop(vehicle, None)
+        self.active_trajectory_route_progress.pop(vehicle, None)
         self.arrival_tracker.reset(vehicle)
+        self.worker_arrival_tracker.reset(vehicle)
 
     def _publish_direct_status(
         self, vehicle: str, goal_id: int, state: int, detail: str
@@ -1814,6 +2251,7 @@ class TaskAllocateCoordinator:
                 self.vehicle_types.get(vehicle) != "fixedwing"
                 or not self._uses_direct_controller(vehicle)
                 or active[1] not in ("search", "verification")
+                or vehicle in self.active_trajectory_end_times
             ):
                 continue
             point = self.active_goal_points.get(vehicle)
@@ -1828,6 +2266,93 @@ class TaskAllocateCoordinator:
             goal.pose.position.z = float(point[2])
             goal.pose.orientation.w = 1.0
             self._publish_direct_controller_goal(vehicle, goal)
+
+    def _publish_fixedwing_route_trajectory(
+        self, vehicle: str, route, start_index: int, kind: str
+    ) -> int:
+        current = self.vehicle_world_positions.get(vehicle)
+        remaining = list(route[int(start_index) :])
+        if current is None or not remaining:
+            raise ValueError("fixed-wing trajectory needs current position and route")
+        current_point = tuple(float(value) for value in current[1])
+        first = remaining[0]
+        separation = sqrt(
+            (float(first[0]) - current_point[0]) ** 2
+            + (float(first[1]) - current_point[1]) ** 2
+            + (float(first[2]) - current_point[2]) ** 2
+        )
+        prepended_current = separation > 1e-3
+        trajectory_path = ([current_point] if prepended_current else []) + remaining
+        samples = fixedwing_trajectory_samples(
+            trajectory_path, self._coverage_speed(vehicle)
+        )
+
+        message = MultiDOFJointTrajectory()
+        message.header.stamp = rospy.Time.now() + rospy.Duration(0.10)
+        message.header.frame_id = self.shared_frame
+        message.joint_names = [f"{vehicle}/base_link"]
+        for sample in samples:
+            transform = Transform()
+            transform.translation.x = sample.position[0]
+            transform.translation.y = sample.position[1]
+            transform.translation.z = sample.position[2]
+            transform.rotation.z = sin(0.5 * sample.yaw)
+            transform.rotation.w = cos(0.5 * sample.yaw)
+            velocity = Twist()
+            velocity.linear.x = sample.velocity[0]
+            velocity.linear.y = sample.velocity[1]
+            velocity.linear.z = sample.velocity[2]
+            velocity.angular.z = sample.yaw_rate
+            acceleration = Twist()
+            acceleration.linear.x = sample.acceleration[0]
+            acceleration.linear.y = sample.acceleration[1]
+            acceleration.linear.z = sample.acceleration[2]
+            point = MultiDOFJointTrajectoryPoint()
+            point.transforms = [transform]
+            point.velocities = [velocity]
+            point.accelerations = [acceleration]
+            point.time_from_start = rospy.Duration(sample.time_from_start)
+            message.points.append(point)
+
+        goal_id = self._new_goal_id()
+        final_index = len(route) - 1
+        self.active_goals[vehicle] = (goal_id, str(kind), final_index)
+        self.active_goal_points[vehicle] = tuple(float(value) for value in route[-1])
+        self.active_goal_origins[vehicle] = current_point
+        start_time = message.header.stamp.to_sec()
+        self.active_trajectory_end_times[vehicle] = (
+            start_time + samples[-1].time_from_start
+        )
+        sample_offset = 1 if prepended_current else 0
+        self.active_trajectory_route_progress[vehicle] = [
+            (start_time + samples[index + sample_offset].time_from_start, route_index)
+            for index, route_index in enumerate(
+                range(int(start_index), len(route))
+            )
+            if index + sample_offset < len(samples)
+        ]
+        self.direct_trajectory_publishers[vehicle].publish(message)
+        self._publish_direct_status(
+            vehicle,
+            goal_id,
+            PlannerStatus.ACTIVE,
+            "complete fixed-wing search trajectory active; no obstacle avoidance",
+        )
+        self._handle_goal_status(
+            vehicle,
+            goal_id,
+            PlannerStatus.ACTIVE,
+            "complete fixed-wing search trajectory active; no obstacle avoidance",
+        )
+        rospy.loginfo(
+            "[task_allocate] fixed-wing %s published complete trajectory: "
+            "route_points=%d duration=%.1fs speed=%.1fm/s",
+            vehicle,
+            len(remaining),
+            samples[-1].time_from_start,
+            self._coverage_speed(vehicle),
+        )
+        return goal_id
 
     def _publish_goal(self, vehicle: str, point, kind: str, object_id: int) -> int:
         goal_id = self._new_goal_id()
@@ -1850,6 +2375,7 @@ class TaskAllocateCoordinator:
             current[1] if current is not None else self.active_goal_points[vehicle]
         )
         self.arrival_tracker.reset(vehicle)
+        self.worker_arrival_tracker.reset(vehicle)
         if self._uses_direct_controller(vehicle):
             self._publish_direct_controller_goal(vehicle, goal)
             self._publish_direct_status(
@@ -1877,12 +2403,32 @@ class TaskAllocateCoordinator:
             self._clear_active_goal(scout)
             target_id = self.verification_target_by_scout.get(scout)
             if target_id is not None:
-                self._finish_target_verification(target_id, confirmed=False)
+                self._finish_target_verification(target_id)
                 return
             rospy.loginfo("[task_allocate] scout %s completed its coarse search route", scout)
+            if (
+                self.hierarchical_search_enabled
+                and self.vehicle_types.get(scout) == "fixedwing"
+            ):
+                self._assign_pending_verifications()
             self._mark_search_complete_if_ready()
             return
         kind = "verification" if scout in self.verification_target_by_scout else "search"
+        if (
+            self._uses_direct_controller(scout)
+            and self.vehicle_types.get(scout) == "fixedwing"
+        ):
+            try:
+                self._publish_fixedwing_route_trajectory(
+                    scout, route, index, kind
+                )
+            except ValueError as error:
+                rospy.logerr(
+                    "[task_allocate] cannot publish fixed-wing trajectory for %s: %s",
+                    scout,
+                    error,
+                )
+            return
         self._publish_goal(scout, route[index], kind, index)
 
     def _dispatch_assignments(self) -> None:
@@ -1965,6 +2511,11 @@ class TaskAllocateCoordinator:
             if self.allocator.mark_executing(task.task_id):
                 self.registry.set_status(task.target_id, TARGET_EXECUTING)
         elif state == PlannerStatus.REACHED:
+            if self._uses_direct_controller(vehicle):
+                # Freeze the worker at its measured completion pose instead of
+                # leaving a stale approach command active while task state is
+                # released or another task is allocated.
+                self._publish_direct_hold(vehicle)
             completed = self.allocator.complete(task.task_id)
             if completed is not None:
                 self.registry.set_status(completed.target_id, TARGET_COMPLETED)
@@ -1996,6 +2547,12 @@ class TaskAllocateCoordinator:
         for vehicle, active in list(self.active_goals.items()):
             if not self._uses_direct_controller(vehicle):
                 continue
+            progress = self.active_trajectory_route_progress.get(vehicle, [])
+            for deadline, route_index in progress:
+                if now >= deadline:
+                    self.route_indices[vehicle] = max(
+                        self.route_indices.get(vehicle, 0), route_index
+                    )
             position = self.vehicle_world_positions.get(vehicle)
             goal = self.active_goal_points.get(vehicle)
             if (
@@ -2004,9 +2561,37 @@ class TaskAllocateCoordinator:
                 or not self._vehicle_ready(vehicle, now)
             ):
                 self.arrival_tracker.reset(vehicle)
+                self.worker_arrival_tracker.reset(vehicle)
                 continue
-            goal_id, _, _ = active
-            if self.vehicle_types[vehicle] == "fixedwing":
+            goal_id, kind, _ = active
+            trajectory_end = self.active_trajectory_end_times.get(vehicle)
+            if trajectory_end is not None:
+                arrived = now >= trajectory_end
+                if arrived and self.vehicle_types[vehicle] == "fixedwing":
+                    route = self.routes.get(vehicle, [])
+                    final_origin = (
+                        route[-2]
+                        if len(route) >= 2
+                        else self.active_goal_origins.get(vehicle, position[1])
+                    )
+                    # The controller may slow its trajectory clock while it
+                    # recaptures a turn. Nominal duration is therefore only a
+                    # lower bound; require the final fly-through as well.
+                    arrived = fixedwing_waypoint_reached(
+                        position[1],
+                        final_origin,
+                        goal,
+                        acceptance_radius_m=self._fixedwing_setting(
+                            vehicle, "waypoint_acceptance_radius_m", 20.0
+                        ),
+                        altitude_tolerance_m=self._fixedwing_setting(
+                            vehicle, "waypoint_altitude_tolerance_m", 10.0
+                        ),
+                        pass_cross_track_limit_m=self._fixedwing_setting(
+                            vehicle, "pass_cross_track_limit_m", 40.0
+                        ),
+                    )
+            elif self.vehicle_types[vehicle] == "fixedwing":
                 origin = self.active_goal_origins.get(vehicle, position[1])
                 arrived = fixedwing_waypoint_reached(
                     position[1],
@@ -2023,14 +2608,33 @@ class TaskAllocateCoordinator:
                     ),
                 )
             else:
-                arrived = self.arrival_tracker.update(
-                    vehicle, position[1], goal, now, use_z=True
+                tracker = (
+                    self.worker_arrival_tracker
+                    if kind == "rescue"
+                    else self.arrival_tracker
                 )
+                speed = self.vehicle_world_speeds.get(vehicle)
+                if (
+                    kind == "rescue"
+                    and (
+                        speed is None
+                        or now - speed[0] > self.odometry_timeout
+                        or speed[1] > self.worker_maximum_arrival_speed
+                    )
+                ):
+                    tracker.reset(vehicle)
+                    arrived = False
+                else:
+                    arrived = tracker.update(
+                        vehicle, position[1], goal, now, use_z=True
+                    )
             if arrived:
                 reached.append((vehicle, goal_id))
         for vehicle, goal_id in reached:
             detail = (
-                "fixed-wing waypoint acceptance or bounded fly-through satisfied"
+                "fixed-wing trajectory duration and final fly-through satisfied"
+                if vehicle in self.active_trajectory_end_times
+                else "fixed-wing waypoint acceptance or bounded fly-through satisfied"
                 if self.vehicle_types[vehicle] == "fixedwing"
                 else "world odometry remained inside direct-goal tolerance"
             )

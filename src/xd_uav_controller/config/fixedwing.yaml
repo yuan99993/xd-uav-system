@@ -51,11 +51,24 @@ fixedwing:
     airspeed_throttle_gain: 0.08
     # 爬升时同步补油以维持空速。
     climb_rate_throttle_gain: 0.03
+    # 2026-08-22固定翼SITL日志拟合得到约0.15；取0.16留少量模型余量。
+    # 补偿量为gain*(1/cos(bank)-1)，在空速实际下降前随目标滚转补油。
+    turn_load_factor_throttle_gain: 0.16
+    # 转弯保护空速=min_airspeed*sqrt(load_factor)+margin。
+    bank_airspeed_margin: 0.5
+    # 低于转弯保护空速进入恢复，高于保护空速+该值才退出，避免抖动。
+    underspeed_hysteresis: 0.7
+    # 恢复期间卸载滚转、限制抬头；弧度，分别约20度和3度。
+    underspeed_max_roll: 0.35
+    underspeed_max_nose_up_pitch: 0.05
 
   limits:
     minimum_throttle: 0.05
     maximum_throttle: 1.0
-    maximum_roll: 0.95
+    # R=30 m at the observed 15--17.5 m/s requires roughly 0.65--0.81 rad.
+    # Do not let course-error feedback tighten the turn far below the planned
+    # Dubins radius (the previous 0.95 rad produced the measured inner loops).
+    maximum_roll: 0.82
     maximum_pitch: 0.35
     maximum_climb_rate: 4.0
     maximum_body_rate: [2.0, 1.5, 1.5]

@@ -185,6 +185,59 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         )
         self.assertTrue(idle_command.valid)
 
+        # Turn-energy feed-forward must raise throttle before measured
+        # airspeed changes. Both cases use the same state and speed target;
+        # only the requested course rate changes.
+        straight_reference = self._reference(
+            position_z=100.0,
+            velocity_z=0.0,
+        )
+        straight_reference.type_mask &= ~PositionTarget.IGNORE_YAW_RATE
+        straight_reference.yaw_rate = 0.0
+        straight_command = self._wait_for_command(
+            lambda value: value.valid and abs(value.body_rate.x) < 0.05,
+            reference=straight_reference,
+        )
+        energetic_turn_reference = self._reference(
+            position_z=100.0,
+            velocity_z=0.0,
+        )
+        energetic_turn_reference.type_mask &= ~PositionTarget.IGNORE_YAW_RATE
+        energetic_turn_reference.yaw_rate = 0.6
+        energetic_turn_command = self._wait_for_command(
+            lambda value: value.valid and value.body_rate.x < -0.5,
+            reference=energetic_turn_reference,
+        )
+        self.assertGreater(
+            energetic_turn_command.thrust,
+            straight_command.thrust + 0.04,
+            "转弯载荷必须在实测空速下降前产生油门前馈",
+        )
+
+        # Below minimum airspeed the normal altitude demand must yield to
+        # recovery: full throttle, unloaded bank and a nose-down pitch rate
+        # in this repository's ROS FLU convention.
+        underspeed_state = self._state()
+        underspeed_state.airspeed = 10.5
+        underspeed_reference = self._reference(
+            position_z=120.0,
+            velocity_z=2.0,
+        )
+        underspeed_reference.type_mask &= ~PositionTarget.IGNORE_YAW_RATE
+        underspeed_reference.yaw_rate = 0.6
+        underspeed_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.thrust > 0.99
+                and value.body_rate.y > 0.05
+            ),
+            state=underspeed_state,
+            reference=underspeed_reference,
+        )
+        self.assertLessEqual(abs(underspeed_command.body_rate.x), 1.80)
+        self.assertGreater(underspeed_command.body_rate.y, 0.05)
+        self.assertGreater(underspeed_command.thrust, 0.99)
+
         # At a perfect circle tangent the position and course errors
         # are both zero. The trajectory yaw-rate feed-forward must
         # still establish the left bank needed for a CCW turn.

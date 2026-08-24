@@ -120,7 +120,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ground-z",
         type=float,
-        default=4.5,
+        default=2,
         help="ground height used when an explicit Z is omitted (default: 4.5)",
     )
     parser.add_argument(

@@ -1,7 +1,5 @@
-# Reconnaissance-aircraft configuration only.
-hierarchical_search:
-  enabled: false
-
+# Reconnaissance-aircraft configuration only. mission.yaml auto-selects
+# single-stage search because every configured scout below is a multirotor.
 scouts:
   uav1:
     vehicle_type: multirotor

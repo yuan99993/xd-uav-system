@@ -99,6 +99,7 @@ def verification_search_area(
     minimum_radius: float,
     maximum_radius: float,
     covariance_sigma: float = 3.0,
+    fixed_radius: float = None,
 ) -> PlannedArea:
     """Build a local multirotor raster around a coarse target estimate.
 
@@ -127,10 +128,15 @@ def verification_search_area(
         0.0,
         0.5 * (xx + yy + sqrt(max(0.0, (xx - yy) ** 2 + 4.0 * xy * xy))),
     )
-    radius = min(
-        maximum,
-        max(minimum, max(0.0, float(covariance_sigma)) * sqrt(largest_variance)),
-    )
+    if fixed_radius is None:
+        radius = min(
+            maximum,
+            max(minimum, max(0.0, float(covariance_sigma)) * sqrt(largest_variance)),
+        )
+    else:
+        radius = float(fixed_radius)
+        if not isfinite(radius) or radius <= 0.0:
+            raise ValueError("fixed verification radius must be positive and finite")
     area = SearchAreaDefinition(
         area_id=int(target_id),
         boundary=(
@@ -351,31 +357,95 @@ def fixedwing_lawnmower_path(
     area: SearchAreaDefinition,
     minimum_turn_radius: float,
     turn_waypoint_spacing: float,
+    straight_lead_distance: Optional[float] = None,
 ) -> List[Point3]:
-    """Connect scan legs with forward-only, turn-radius-constrained paths."""
+    """Generate fixed-wing coverage legs with the turns outside the polygon.
+
+    A conventional lawnmower visits adjacent lanes in alternating directions.
+    That is a poor fixed-wing path when the lane spacing is much smaller than
+    the turn diameter: the shortest Dubins connection is then an RLR/LRL loop.
+    Visit the lower and upper halves of the scan lanes alternately instead, so
+    successive reversal points are spread as far apart as the area permits.
+
+    Each polygon chord is also extended by a straight lead-in and lead-out.
+    Consequently the aircraft has already rolled out before it crosses the
+    search boundary and the complete in-polygon chord is a level scan leg.
+    Coverage still uses every chord produced by :func:`lawnmower_path`; only
+    their visit order and the out-of-polygon transit are changed.
+    """
 
     raw = lawnmower_path(area)
     if len(raw) < 2:
         return raw
-    segments = list(zip(raw[0::2], raw[1::2]))
+    radius = float(minimum_turn_radius)
+    lead_distance = radius if straight_lead_distance is None else float(
+        straight_lead_distance
+    )
+    if radius <= 0.0:
+        raise ValueError("minimum_turn_radius must be positive")
+    if lead_distance < 0.0:
+        raise ValueError("straight_lead_distance must be non-negative")
+
+    xs = [point[0] for point in area.boundary]
+    ys = [point[1] for point in area.boundary]
+    horizontal = (max(xs) - min(xs)) >= (max(ys) - min(ys))
+
+    # Recover the natural low-to-high direction of every scan chord.  The raw
+    # multirotor route has already reversed every other chord.
+    segments = []
+    for first, second in zip(raw[0::2], raw[1::2]):
+        first_along = first[0] if horizontal else first[1]
+        second_along = second[0] if horizontal else second[1]
+        segments.append(
+            (first, second) if first_along <= second_along else (second, first)
+        )
+
+    # This interleaving is an anti-bandwidth ordering for uniformly spaced
+    # lanes.  For 20 lanes it produces 0,10,1,11,... rather than 0,1,2,...,
+    # eliminating adjacent-lane reversals whenever the area is wide enough.
+    half = (len(segments) + 1) // 2
+    visit_order: List[int] = []
+    for index in range(half):
+        visit_order.append(index)
+        upper = index + half
+        if upper < len(segments):
+            visit_order.append(upper)
+
     route: List[Point3] = []
     previous_end = None
     previous_heading = 0.0
-    for start, end in segments:
+    for visit_index, segment_index in enumerate(visit_order):
+        low, high = segments[segment_index]
+        start, end = (low, high) if visit_index % 2 == 0 else (high, low)
         heading = atan2(end[1] - start[1], end[0] - start[0])
+        leg_length = hypot(end[0] - start[0], end[1] - start[1])
+        direction_x = (end[0] - start[0]) / leg_length
+        direction_y = (end[1] - start[1]) / leg_length
+        approach = (
+            start[0] - lead_distance * direction_x,
+            start[1] - lead_distance * direction_y,
+            area.altitude,
+        )
+        departure = (
+            end[0] + lead_distance * direction_x,
+            end[1] + lead_distance * direction_y,
+            area.altitude,
+        )
         if previous_end is None:
-            route.append(start)
+            route.append(approach)
         else:
             connector = dubins_path(
                 (previous_end[0], previous_end[1], previous_heading),
-                (start[0], start[1], heading),
-                minimum_turn_radius,
+                (approach[0], approach[1], heading),
+                radius,
                 turn_waypoint_spacing,
             )
             route.extend((pose[0], pose[1], area.altitude) for pose in connector[1:])
-        if not route or hypot(route[-1][0] - end[0], route[-1][1] - end[1]) > 1e-6:
-            route.append(end)
-        previous_end = end
+        # These three collinear points explicitly delimit the covered chord.
+        # The trajectory derivative therefore remains tangent to the scan leg
+        # at both polygon crossings instead of starting a bank at the boundary.
+        route.extend((start, end, departure))
+        previous_end = departure
         previous_heading = heading
     return route
 

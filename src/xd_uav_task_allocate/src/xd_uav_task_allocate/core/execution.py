@@ -1,7 +1,98 @@
 """Small execution-state helpers shared by ROS backends."""
 
-from math import atan2, hypot, sqrt
-from typing import Dict, Optional, Sequence
+from dataclasses import dataclass
+from math import atan2, cos, hypot, isfinite, sin, sqrt
+from typing import Dict, List, Optional, Sequence, Tuple
+
+
+@dataclass(frozen=True)
+class FixedwingTrajectorySample:
+    time_from_start: float
+    position: Tuple[float, float, float]
+    velocity: Tuple[float, float, float]
+    acceleration: Tuple[float, float, float]
+    yaw: float
+    yaw_rate: float
+
+
+def _wrap_angle(value: float) -> float:
+    return atan2(sin(float(value)), cos(float(value)))
+
+
+def fixedwing_trajectory_samples(
+    path: Sequence[Sequence[float]], speed_mps: float
+) -> List[FixedwingTrajectorySample]:
+    """Time-parameterize a sampled fly-through path with continuous P/V/A data."""
+
+    speed = float(speed_mps)
+    if not isfinite(speed) or speed <= 0.0:
+        raise ValueError("fixed-wing trajectory speed must be positive and finite")
+    points: List[Tuple[float, float, float]] = []
+    for value in path:
+        point = (float(value[0]), float(value[1]), float(value[2]))
+        if not all(isfinite(component) for component in point):
+            raise ValueError("fixed-wing trajectory position must be finite")
+        if points:
+            dx = point[0] - points[-1][0]
+            dy = point[1] - points[-1][1]
+            dz = point[2] - points[-1][2]
+            if sqrt(dx * dx + dy * dy + dz * dz) <= 1e-6:
+                continue
+        points.append(point)
+    if len(points) < 2:
+        raise ValueError("fixed-wing trajectory needs at least two distinct points")
+
+    times = [0.0]
+    for first, second in zip(points[:-1], points[1:]):
+        dx = second[0] - first[0]
+        dy = second[1] - first[1]
+        dz = second[2] - first[2]
+        times.append(times[-1] + sqrt(dx * dx + dy * dy + dz * dz) / speed)
+
+    velocities = []
+    for index in range(len(points)):
+        first = points[max(0, index - 1)]
+        second = points[min(len(points) - 1, index + 1)]
+        dx = second[0] - first[0]
+        dy = second[1] - first[1]
+        dz = second[2] - first[2]
+        distance = sqrt(dx * dx + dy * dy + dz * dz)
+        if distance <= 1e-9:
+            raise ValueError("fixed-wing trajectory contains an invalid tangent")
+        velocities.append(
+            (speed * dx / distance, speed * dy / distance, speed * dz / distance)
+        )
+    yaws = [atan2(value[1], value[0]) for value in velocities]
+
+    accelerations = []
+    yaw_rates = []
+    for index in range(len(points)):
+        lower = max(0, index - 1)
+        upper = min(len(points) - 1, index + 1)
+        dt = times[upper] - times[lower]
+        if dt <= 1e-9:
+            accelerations.append((0.0, 0.0, 0.0))
+            yaw_rates.append(0.0)
+            continue
+        accelerations.append(
+            tuple(
+                (velocities[upper][axis] - velocities[lower][axis]) / dt
+                for axis in range(3)
+            )
+        )
+        yaw_rates.append(_wrap_angle(yaws[upper] - yaws[lower]) / dt)
+
+    return [
+        FixedwingTrajectorySample(
+            time_from_start=times[index],
+            position=points[index],
+            velocity=velocities[index],
+            acceleration=accelerations[index],
+            yaw=yaws[index],
+            yaw_rate=yaw_rates[index],
+        )
+        for index in range(len(points))
+    ]
 
 
 def goal_distance(current: Sequence[float], goal: Sequence[float], use_z: bool) -> float:
