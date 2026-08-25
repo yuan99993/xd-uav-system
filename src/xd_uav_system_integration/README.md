@@ -12,6 +12,7 @@ XD-UAV 的组合层，负责 reference 仲裁、健康门、profile 校验以及
 - `ego_obstacle_demo.sh`：单机 EGO 障碍绕飞的 start/goal/status/land/stop 入口。
 - `ego_demo.sh`：统一的单机/三机 EGO 演示入口；三机模式使用 Gazebo Ouster
   观测真实 world 障碍，不启动人工障碍点云节点。
+- `docs/EGO_FULL_DEMO_RUNBOOK.md`：单机/三机启动、目标、观察、停止、日志和故障排查手册。
 - `fastlio_ground_switch.launch`、`fastlio_shadow.launch`：FAST-LIO 影子验证与受控接入。
 
 默认控制权为 `none`。候选来源必须同时满足消息新鲜度、健康和切换连续性约束，才能通过

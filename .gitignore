@@ -154,3 +154,8 @@ Thumbs.db
 # Local planning/report documents. Concise package README files remain versioned.
 /temp/
 **/docs/
+
+# Version the concise EGO operator runbook; keep other process documents ignored.
+!src/xd_uav_system_integration/docs/
+src/xd_uav_system_integration/docs/*
+!src/xd_uav_system_integration/docs/EGO_FULL_DEMO_RUNBOOK.md
