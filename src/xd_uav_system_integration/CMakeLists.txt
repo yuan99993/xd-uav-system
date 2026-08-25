@@ -59,7 +59,8 @@ catkin_install_python(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-install(PROGRAMS scripts/ego_obstacle_demo.sh
+install(PROGRAMS scripts/ego_obstacle_demo.sh scripts/ego_demo.sh
+  scripts/multi_odom_registration.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

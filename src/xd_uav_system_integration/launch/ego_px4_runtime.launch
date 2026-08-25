@@ -8,6 +8,7 @@
   <arg name="goal_x" default="1.0"/>
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>
+  <arg name="goal_topic" default="/move_base_simple/goal"/>
   <arg name="max_vel" default="0.30"/>
   <arg name="max_acc" default="0.30"/>
   <arg name="flight_type" default="2"/>
@@ -15,8 +16,11 @@
   <arg name="bridge_command_topic" default="$(arg traj_command_topic)"/>
 
   <!-- Start only after manager takeoff and stable hold. -->
+  <group>
+    <remap from="/move_base_simple/goal" to="$(arg goal_topic)"/>
   <include file="$(find ego_planner)/launch/advanced_param.xml">
     <arg name="drone_id" value="$(arg ego_id)"/>
+    <arg name="frame_id" value="$(arg common_frame)"/>
     <arg name="map_size_x_" value="30.0"/>
     <arg name="map_size_y_" value="20.0"/>
     <arg name="map_size_z_" value="5.0"/>
@@ -41,12 +45,14 @@
     <arg name="point3_x" value="0.0"/><arg name="point3_y" value="0.0"/><arg name="point3_z" value="$(arg goal_z)"/>
     <arg name="point4_x" value="0.0"/><arg name="point4_y" value="0.0"/><arg name="point4_z" value="$(arg goal_z)"/>
   </include>
+  </group>
 
   <node pkg="ego_planner" name="drone_$(arg ego_id)_traj_server"
         type="traj_server" output="screen" required="true">
     <remap from="position_cmd" to="$(arg traj_command_topic)"/>
     <remap from="~planning/bspline" to="/drone_$(arg ego_id)_planning/bspline"/>
     <param name="traj_server/time_forward" value="0.0"/>
+    <param name="traj_server/frame_id" value="$(arg common_frame)"/>
   </node>
 
   <include file="$(find xd_uav_ego_bridge)/launch/ego_bridge.launch">
