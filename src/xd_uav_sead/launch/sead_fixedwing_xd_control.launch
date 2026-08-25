@@ -22,6 +22,7 @@
   <arg name="shared_frame_offset_x" default="0.0"/>
   <arg name="shared_frame_offset_y" default="0.0"/>
   <arg name="shared_frame_offset_z" default="0.0"/>
+  <arg name="shared_frame_id" default="world"/>
   <arg name="sead_runtime_mode" default="dpga_sead"/>
   <arg name="sead_control_mode" default="position_waypoint"/>
   <arg name="simple_strike_control_mode" default="position_waypoint"/>
@@ -87,6 +88,7 @@
       <param name="shared_frame/offset_x" value="$(arg shared_frame_offset_x)"/>
       <param name="shared_frame/offset_y" value="$(arg shared_frame_offset_y)"/>
       <param name="shared_frame/offset_z" value="$(arg shared_frame_offset_z)"/>
+      <param name="shared_frame/frame_id" value="$(arg shared_frame_id)"/>
     </node>
   </group>
 </launch>

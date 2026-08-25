@@ -209,7 +209,7 @@ def activate_sead_mission(
             log_jsonl=log_jsonl,
             airspace=airspace,
             control_mode=simple_strike_control_mode,
-            reference_frame=UAV.reference_frame,
+            reference_frame=UAV.planning_reference_frame,
         )
         if getattr(simple_manager, "simple_strike_control_mode", "") == "swiftwing_vector":
             UAV.simple_strike_control_backend = "swiftwing_vector"
@@ -657,7 +657,7 @@ if __name__ == "__main__":
     airspace = AirspaceManager()
     dynamic_nofly_config = DynamicNoFlyConfig(
         expected_frame=rospy.get_param(
-            "~dynamic_nofly/expected_frame", UAV.reference_frame
+            "~dynamic_nofly/expected_frame", UAV.planning_reference_frame
         ),
         max_message_age=float(
             rospy.get_param("~dynamic_nofly/max_message_age", 0.5)

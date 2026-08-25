@@ -7,7 +7,7 @@ ROS1 Noetic 下的 SEAD 移植包，保留 XBee 协议、ROS 仿真桥、DPGA、
 
 - `scripts/sead_onboard_node.py`：机载主循环。
 - `scripts/mock_gcs.py`：ROS 模拟地面站命令。
-- `tmux/validation/start.sh`、`kill.sh`：V3–V9 仿真验证入口和安全清理。
+- `tmux/validation/start.sh`、`kill.sh`：V3–V10 仿真验证入口和安全清理。
 - `msg/NoFlyZone.msg`：带版本、frame、高度和有效期的动态禁飞区消息。
 - `launch/sead_fixedwing_xd_control.launch`：SEAD → 自研 manager/controller 控制链。
 
@@ -36,6 +36,24 @@ cd /home/promise/catkin_ws/src/xd-uavsystem-test/src/xd_uav_sead/tmux/validation
 
 V9 自动完成起飞、任务下发、飞行中禁飞区插入、重规划绕飞、返航和 LOITER。默认
 nominal 区域为 `36 m × 36 m`；运行期间的 ROS 动态更新方法和完整判据见使用手册。
+
+三固定翼共同动态禁飞区（V10）：
+
+```bash
+# 交互模式：打开 Gazebo、进入 tmux，并自动启动三机轨迹/NFZ 可视化
+./start.sh v10 --zone-half-size 18
+# 无人值守正式验收：不弹 GUI，等待三机聚合结果
+./start.sh v10 --no-attach --profile nominal --zone-half-size 18
+# 完成或中止后清理
+./kill.sh
+```
+
+V10 启动 3 个独立 PX4 `plane` SITL、MAVROS、自研 estimator/manager/controller 和
+SEAD。三机在 `world` 共享坐标中接收同一个 zone 9001；初始路径受影响的飞机必须产生
+安全重规划，未受影响的飞机可保持原安全路径，但聚合验收至少要求一架真实重规划。当前
+nominal 默认仍为半边长 18 m（`36 m × 36 m`）。运行期间可向
+`/sead/v10/dynamic_nofly_zone` 发布同 frame 的 `NoFlyZone`；自动验收会周期刷新 9001，
+人工接口测试应使用其他非零 zone ID。完整消息示例、判据和可视化说明见 Runbook。
 真实 XBee/DigiMesh、GCS 电台与真机仍需单独硬件验收。
 
 ## 常用命令
@@ -62,4 +80,5 @@ catkin_make -j2 run_tests_xd_uav_sead
 catkin_test_results build/test_results/xd_uav_sead
 ```
 
-最近一次自动测试结果为 37 tests、0 failures。编译并发必须保持 `-j2`。
+最近一次 V10 相关纯自动测试为 46 tests、0 failures；ROS 集成测试在受限环境因网卡枚举
+权限未启动，最终由真实三固定翼 SITL 验收覆盖。编译并发必须保持 `-j2`。

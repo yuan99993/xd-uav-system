@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="plane_sdf" default="/home/promise/PX4-Autopilot/Tools/sitl_gazebo/models/plane/plane.sdf"/>
+  <arg name="world" default="/home/promise/PX4-Autopilot/Tools/sitl_gazebo/worlds/empty.world"/>
+  <arg name="gui" default="true"/>
+  <arg name="acceptance_profile" default="nominal"/>
+  <arg name="zone_half_size" default="-1.0"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="false"/>
+  </include>
+
+  <include file="$(find xd_uav_sead)/launch/plane_multi_vehicle.launch">
+    <arg name="uav_name" value="uav1"/><arg name="instance" value="0"/>
+    <arg name="x" value="0"/><arg name="y" value="-12"/>
+    <arg name="plane_sdf" value="$(arg plane_sdf)"/><arg name="mavlink_tcp_port" value="4560"/>
+    <arg name="fcu_url" value="udp://:14540@localhost:14580"/>
+  </include>
+  <include file="$(find xd_uav_sead)/launch/plane_multi_vehicle.launch">
+    <arg name="uav_name" value="uav2"/><arg name="instance" value="1"/>
+    <arg name="x" value="0"/><arg name="y" value="0"/>
+    <arg name="plane_sdf" value="$(arg plane_sdf)"/><arg name="mavlink_tcp_port" value="4561"/>
+    <arg name="fcu_url" value="udp://:14541@localhost:14581"/>
+  </include>
+  <include file="$(find xd_uav_sead)/launch/plane_multi_vehicle.launch">
+    <arg name="uav_name" value="uav3"/><arg name="instance" value="2"/>
+    <arg name="x" value="0"/><arg name="y" value="12"/>
+    <arg name="plane_sdf" value="$(arg plane_sdf)"/><arg name="mavlink_tcp_port" value="4562"/>
+    <arg name="fcu_url" value="udp://:14542@localhost:14582"/>
+  </include>
+
+  <node pkg="xd_uav_sead" type="fixedwing_nofly_acceptance.py"
+        name="uav1_fixedwing_nofly_acceptance" output="screen">
+    <param name="uav_name" value="uav1"/><param name="profile" value="$(arg acceptance_profile)"/>
+    <param name="zone_half_size" value="$(arg zone_half_size)"/><param name="takeoff_altitude" value="30"/>
+    <param name="takeoff_timeout" value="160"/><param name="sync_timeout" value="60"/>
+    <param name="shared_frame" value="world"/><param name="shared_offset_y" value="-12"/>
+    <param name="zone_role" value="leader"/>
+  </node>
+  <node pkg="xd_uav_sead" type="fixedwing_nofly_acceptance.py"
+        name="uav2_fixedwing_nofly_acceptance" output="screen">
+    <param name="uav_name" value="uav2"/><param name="profile" value="$(arg acceptance_profile)"/>
+    <param name="zone_half_size" value="$(arg zone_half_size)"/><param name="takeoff_altitude" value="40"/>
+    <param name="takeoff_timeout" value="160"/><param name="sync_timeout" value="60"/>
+    <param name="shared_frame" value="world"/><param name="zone_role" value="follower"/>
+  </node>
+  <node pkg="xd_uav_sead" type="fixedwing_nofly_acceptance.py"
+        name="uav3_fixedwing_nofly_acceptance" output="screen">
+    <param name="uav_name" value="uav3"/><param name="profile" value="$(arg acceptance_profile)"/>
+    <param name="zone_half_size" value="$(arg zone_half_size)"/><param name="takeoff_altitude" value="50"/>
+    <param name="takeoff_timeout" value="160"/><param name="sync_timeout" value="60"/>
+    <param name="shared_frame" value="world"/><param name="shared_offset_y" value="12"/>
+    <param name="zone_role" value="follower"/>
+  </node>
+</launch>

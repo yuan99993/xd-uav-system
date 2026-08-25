@@ -128,7 +128,9 @@ help_sead() {
   echo "  strike_demo               v8 下发三目标任务"
   echo "  v9 自动执行固定翼起飞、动态禁飞区重规划、绕飞和返航验收"
   echo "     启动示例: ./start.sh v9 --zone-half-size 18（36x36 m）"
-  echo "  visualize                 v3-v9 实时显示并保存验证证据"
+  echo "  v10 自动执行三固定翼共同动态禁飞区绕飞和聚合验收"
+  echo "     启动示例: ./start.sh v10 --zone-half-size 18（36x36 m）"
+  echo "  visualize                 v3-v10 实时显示并保存验证证据"
   echo "  help_sead                 再次显示帮助"
   echo
   echo "切换窗口：Ctrl+B 后按 n/p；直接跳转：Ctrl+B 后按 0/1/2。"
@@ -136,8 +138,8 @@ help_sead() {
 
 export -f takeoff_all waypoint land_all auto_offsets trail_all formation_point airspace_demo dpga_demo dpga_insert strike_demo visualize help_sead
 help_sead
-if [[ "$scenario" == "v9" && "${SEAD_VALIDATION_AUTO_VISUALIZE:-false}" == "true" ]]; then
-  echo "v9 交互模式：自动启动可视化，从仿真开始持续记录真实轨迹。"
+if [[ ( "$scenario" == "v9" || "$scenario" == "v10" ) && "${SEAD_VALIDATION_AUTO_VISUALIZE:-false}" == "true" ]]; then
+  echo "$scenario 交互模式：自动启动可视化，从仿真开始持续记录真实轨迹。"
   visualize
 fi
 exec bash --noprofile

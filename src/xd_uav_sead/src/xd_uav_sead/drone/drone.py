@@ -58,6 +58,9 @@ class Drone(object):
             float(rospy.get_param("~shared_frame/offset_y", 0.0)),
             float(rospy.get_param("~shared_frame/offset_z", 0.0)),
         ]
+        self.planning_reference_frame = rospy.get_param(
+            "~shared_frame/frame_id", self.reference_frame
+        ) if self.shared_frame_enabled else self.reference_frame
         # derive a UAV index from name (e.g. 'uav2' -> 2). Default 0 when not present.
         try:
             digits = "".join([c for c in uav_name if c.isdigit()])

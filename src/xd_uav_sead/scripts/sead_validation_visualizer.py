@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live validation dashboard and evidence exporter for SEAD V3-V9."""
+"""Live validation dashboard and evidence exporter for SEAD V3-V10."""
 
 import base64
 import csv
@@ -44,6 +44,9 @@ class ValidationVisualizer:
                 self.expected_run_id,
             )
             self.coordinate_frame = "sead_shared_enu"
+        elif self.scenario == "v10":
+            self.offsets = {1: (0.0, -12.0, 0.0), 2: (0.0, 0.0, 0.0), 3: (0.0, 12.0, 0.0)}
+            self.coordinate_frame = "world"
         self.paths = {i: [] for i in (1, 2, 3)}
         self.events = []
         self.targets = []
@@ -56,7 +59,7 @@ class ValidationVisualizer:
         self.formation_point = None
         self.saved = False
 
-        count = {"v3": 1, "v4": 2, "v5": 3, "v9": 1}.get(self.scenario, 0)
+        count = {"v3": 1, "v4": 2, "v5": 3, "v9": 1, "v10": 3}.get(self.scenario, 0)
         for uid in range(1, count + 1):
             rospy.Subscriber(
                 "/uav%d/mavros/local_position/odom" % uid,
@@ -77,6 +80,13 @@ class ValidationVisualizer:
         if self.scenario == "v9":
             rospy.Subscriber(
                 "/uav1/dynamic_nofly_zone",
+                NoFlyZone,
+                self._dynamic_nofly,
+                queue_size=20,
+            )
+        elif self.scenario == "v10":
+            rospy.Subscriber(
+                "/sead/v10/dynamic_nofly_zone",
                 NoFlyZone,
                 self._dynamic_nofly,
                 queue_size=20,
@@ -327,7 +337,7 @@ class ValidationVisualizer:
             lines.append("assignments: %s" % (assignments or "等待 strike_demo"))
             lines.append("ACK UAVs: %s" % sorted(acks))
             lines.append("common_hit_time: %s" % hit)
-        elif self.scenario == "v9":
+        elif self.scenario in ("v9", "v10"):
             lines.append("dynamic no-fly zones: %s" % (sorted(zones) or "等待动态禁飞区"))
             for zid, zone in sorted(zones.items()):
                 lines.append(

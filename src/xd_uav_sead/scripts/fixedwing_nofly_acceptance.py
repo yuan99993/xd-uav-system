@@ -11,7 +11,7 @@ from geometry_msgs.msg import Point32
 from mavros_msgs.msg import State
 from mavros_msgs.srv import ParamGet, ParamSet, ParamSetRequest
 from nav_msgs.msg import Odometry, Path
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from xd_uav_controller.msg import ControlState
 from xd_uav_controller.srv import Takeoff
@@ -76,6 +76,8 @@ class FixedwingNoFlyAcceptance:
             rospy.get_param("~planning_clearance", profile["planning_clearance"])
         )
         self.total_timeout = float(rospy.get_param("~total_timeout", 210.0))
+        self.takeoff_timeout = float(rospy.get_param("~takeoff_timeout", 80.0))
+        self.sync_timeout = float(rospy.get_param("~sync_timeout", 30.0))
         configured_zone_half_size = float(rospy.get_param("~zone_half_size", -1.0))
         self.zone_half_size = (
             configured_zone_half_size
@@ -91,6 +93,15 @@ class FixedwingNoFlyAcceptance:
         self.configure_headless_failsafes = bool(
             rospy.get_param("~configure_headless_failsafes", True)
         )
+        self.shared_frame = str(rospy.get_param("~shared_frame", ""))
+        self.shared_offset = (
+            float(rospy.get_param("~shared_offset_x", 0.0)),
+            float(rospy.get_param("~shared_offset_y", 0.0)),
+            float(rospy.get_param("~shared_offset_z", 0.0)),
+        )
+        self.zone_role = str(rospy.get_param("~zone_role", "standalone"))
+        if self.zone_role not in ("standalone", "leader", "follower"):
+            raise AcceptanceFailure("zone_role must be standalone, leader or follower")
 
         self._lock = threading.RLock()
         self.state = None
@@ -101,6 +112,9 @@ class FixedwingNoFlyAcceptance:
         self.trajectory = []
         self.rectangle = None
         self.minimum_zone_clearance = math.inf
+        self.ready_uavs = set()
+        self.mission_ready_uavs = set()
+        self.mission_start = self.zone_role == "standalone"
 
         rospy.Subscriber(self.namespace + "/mavros/state", State, self._state_cb)
         rospy.Subscriber(
@@ -125,6 +139,53 @@ class FixedwingNoFlyAcceptance:
             queue_size=5,
             latch=True,
         )
+        self.shared_zone_pub = rospy.Publisher(
+            "/sead/v10/dynamic_nofly_zone", NoFlyZone, queue_size=1, latch=True
+        )
+        self.zone_ready_pub = rospy.Publisher(
+            "/sead/v10/%s/ready_for_zone" % self.uav_name,
+            Bool,
+            queue_size=1,
+            latch=True,
+        )
+        self.mission_ready_pub = rospy.Publisher(
+            "/sead/v10/%s/ready_for_mission" % self.uav_name,
+            Bool,
+            queue_size=1,
+            latch=True,
+        )
+        self.mission_start_pub = rospy.Publisher(
+            "/sead/v10/start_mission", Bool, queue_size=1, latch=True
+        )
+        if self.zone_role in ("leader", "follower"):
+            rospy.Subscriber(
+                "/sead/v10/dynamic_nofly_zone",
+                NoFlyZone,
+                self._shared_zone_cb,
+                queue_size=5,
+            )
+            rospy.Subscriber(
+                "/sead/v10/start_mission",
+                Bool,
+                self._mission_start_cb,
+                queue_size=1,
+            )
+        if self.zone_role == "leader":
+            for name in ("uav1", "uav2", "uav3"):
+                rospy.Subscriber(
+                    "/sead/v10/%s/ready_for_zone" % name,
+                    Bool,
+                    self._zone_ready_cb,
+                    callback_args=name,
+                    queue_size=1,
+                )
+                rospy.Subscriber(
+                    "/sead/v10/%s/ready_for_mission" % name,
+                    Bool,
+                    self._mission_ready_cb,
+                    callback_args=name,
+                    queue_size=1,
+                )
         self.result_pub = rospy.Publisher(
             self.namespace + "/sead/fixedwing_acceptance/result",
             String,
@@ -154,21 +215,67 @@ class FixedwingNoFlyAcceptance:
 
     def _odometry_cb(self, message):
         position = message.pose.pose.position
+        shared_x = float(position.x) + self.shared_offset[0]
+        shared_y = float(position.y) + self.shared_offset[1]
+        shared_z = float(position.z) + self.shared_offset[2]
         with self._lock:
             self.odometry = message
             if self.rectangle is not None:
                 clearance = _distance_to_rectangle(
-                    position.x, position.y, self.rectangle
+                    shared_x, shared_y, self.rectangle
                 )
                 self.minimum_zone_clearance = min(
                     self.minimum_zone_clearance, clearance
                 )
             self.trajectory.append((
                 rospy.Time.now().to_sec(),
-                float(position.x),
-                float(position.y),
-                float(position.z),
+                shared_x,
+                shared_y,
+                shared_z,
             ))
+
+    def _shared_position(self):
+        position = self.odometry.pose.pose.position
+        return (
+            float(position.x) + self.shared_offset[0],
+            float(position.y) + self.shared_offset[1],
+            float(position.z) + self.shared_offset[2],
+        )
+
+    def _zone_ready_cb(self, message, uav_name):
+        with self._lock:
+            if message.data:
+                self.ready_uavs.add(uav_name)
+            else:
+                self.ready_uavs.discard(uav_name)
+
+    def _mission_ready_cb(self, message, uav_name):
+        with self._lock:
+            if message.data:
+                self.mission_ready_uavs.add(uav_name)
+            else:
+                self.mission_ready_uavs.discard(uav_name)
+
+    def _mission_start_cb(self, message):
+        with self._lock:
+            self.mission_start = bool(message.data)
+
+    def _shared_zone_cb(self, message):
+        if self.shared_frame and message.header.frame_id != self.shared_frame:
+            rospy.logerr(
+                "[FW_ACCEPTANCE] shared NFZ frame mismatch: expected=%s got=%s",
+                self.shared_frame,
+                message.header.frame_id,
+            )
+            return
+        vertices = [(float(p.x), float(p.y)) for p in message.polygon.points]
+        if len(vertices) >= 3:
+            xs = [p[0] for p in vertices]
+            ys = [p[1] for p in vertices]
+            with self._lock:
+                self.rectangle = (min(xs), max(xs), min(ys), max(ys))
+                self.minimum_zone_clearance = math.inf
+        self.zone_pub.publish(message)
 
     def _path_cb(self, message):
         with self._lock:
@@ -347,7 +454,9 @@ class FixedwingNoFlyAcceptance:
         now = rospy.Time.now()
         message = NoFlyZone()
         message.header.stamp = now
-        message.header.frame_id = self.namespace.lstrip("/") + "/odom"
+        message.header.frame_id = self.shared_frame or (
+            self.namespace.lstrip("/") + "/odom"
+        )
         message.schema_version = NoFlyZone.CURRENT_SCHEMA_VERSION
         message.operation = NoFlyZone.OP_UPSERT
         message.zone_id = 9001
@@ -361,7 +470,11 @@ class FixedwingNoFlyAcceptance:
             point.x = x
             point.y = y
             message.polygon.points.append(point)
-        self.zone_pub.publish(message)
+        if self.zone_role in ("leader", "follower"):
+            if self.zone_role == "leader":
+                self.shared_zone_pub.publish(message)
+        else:
+            self.zone_pub.publish(message)
 
     def _choose_zone(self, path, current_x, current_y):
         points = self._path_points(path)
@@ -455,16 +568,29 @@ class FixedwingNoFlyAcceptance:
         self._wait(
             lambda: self.state.armed
             and self.state.mode == "OFFBOARD"
-            and self.odometry.pose.pose.position.z >= self.takeoff_altitude - 6.0
+            and self._shared_position()[2] >= self.takeoff_altitude - 6.0
             and self.control_state.airspeed >= 8.0,
-            80.0,
+            self.takeoff_timeout,
             "armed OFFBOARD climb",
         )
         with self._lock:
-            origin_x = float(self.odometry.pose.pose.position.x)
-            origin_y = float(self.odometry.pose.pose.position.y)
-            origin_z = float(self.odometry.pose.pose.position.z)
+            origin_x, origin_y, origin_z = self._shared_position()
             initial_path_version = self.path_version
+
+        if self.zone_role in ("leader", "follower"):
+            self.mission_ready_pub.publish(Bool(data=True))
+            if self.zone_role == "leader":
+                self._wait(
+                    lambda: self.mission_ready_uavs == {"uav1", "uav2", "uav3"},
+                    self.sync_timeout,
+                    "all v10 aircraft airborne",
+                )
+                self.mission_start_pub.publish(Bool(data=True))
+            self._wait(
+                lambda: self.mission_start,
+                self.sync_timeout,
+                "synchronized v10 mission start",
+            )
 
         # Align the mission with measured ground track.  A fixed world +X
         # target caused an artificial near-90-degree command at handoff after
@@ -498,24 +624,55 @@ class FixedwingNoFlyAcceptance:
         with self._lock:
             initial_path = self.path
             initial_signature = self._path_signature(initial_path)
-            current_x = float(self.odometry.pose.pose.position.x)
-            current_y = float(self.odometry.pose.pose.position.y)
+            current_x, current_y, _ = self._shared_position()
             before_replan_version = self.path_version
-            self.rectangle = self._choose_zone(initial_path, current_x, current_y)
+            if self.zone_role in ("standalone", "leader"):
+                self.rectangle = self._choose_zone(initial_path, current_x, current_y)
             self.minimum_zone_clearance = math.inf
         self.initial_path_pub.publish(initial_path)
 
-        rospy.logwarn("[FW_ACCEPTANCE] inserting NFZ rectangle=%s", self.rectangle)
-        self._publish_zone()
-        self._wait(
-            lambda: self.path_version > before_replan_version
-            and self.path is not None
-            and self._path_signature(self.path) != initial_signature,
-            20.0,
-            "dynamic NFZ replan",
+        self.zone_ready_pub.publish(Bool(data=True))
+        if self.zone_role == "leader":
+            self._wait(
+                lambda: self.ready_uavs == {"uav1", "uav2", "uav3"},
+                self.sync_timeout,
+                "all v10 aircraft initial paths",
+            )
+            rospy.logwarn("[FW_ACCEPTANCE] inserting shared NFZ rectangle=%s", self.rectangle)
+            self._publish_zone()
+        elif self.zone_role == "follower":
+            self._wait(
+                lambda: self.rectangle is not None,
+                self.sync_timeout,
+                "shared v10 NFZ",
+            )
+        else:
+            rospy.logwarn("[FW_ACCEPTANCE] inserting NFZ rectangle=%s", self.rectangle)
+            self._publish_zone()
+        initial_min_clearance = min(
+            _distance_to_rectangle(x, y, self.rectangle)
+            for x, y in self._path_points(initial_path)
         )
+        replanned = False
+        try:
+            self._wait(
+                lambda: self.path_version > before_replan_version
+                and self.path is not None
+                and self._path_signature(self.path) != initial_signature,
+                20.0,
+                "dynamic NFZ replan",
+            )
+            replanned = True
+        except AcceptanceFailure:
+            if initial_min_clearance + 1e-6 < self.planning_clearance:
+                raise
+            rospy.loginfo(
+                "[FW_ACCEPTANCE] initial path unaffected by shared NFZ "
+                "(clearance=%.1fm); retaining safe path",
+                initial_min_clearance,
+            )
         with self._lock:
-            replanned_path = self.path
+            replanned_path = self.path if replanned else initial_path
         self.replanned_path_pub.publish(replanned_path)
         planned_min_clearance = min(
             _distance_to_rectangle(x, y, self.rectangle)
@@ -537,9 +694,9 @@ class FixedwingNoFlyAcceptance:
                 self._publish_zone()
                 last_zone_refresh = now
             with self._lock:
-                position = self.odometry.pose.pose.position
-                target_distance = math.hypot(position.x - target_x, position.y - target_y)
-                home_distance = math.hypot(position.x - origin_x, position.y - origin_y)
+                position_x, position_y, position_z = self._shared_position()
+                target_distance = math.hypot(position_x - target_x, position_y - target_y)
+                home_distance = math.hypot(position_x - origin_x, position_y - origin_y)
                 mode = self.state.mode
                 armed = self.state.armed
                 arrival_distance = max(20.0, 1.25 * self.turning_radius)
@@ -552,7 +709,7 @@ class FixedwingNoFlyAcceptance:
                     and armed
                 )
                 min_actual = self.minimum_zone_clearance
-                altitude = float(position.z)
+                altitude = position_z
             if not armed:
                 raise AcceptanceFailure("aircraft disarmed before mission completion")
             if altitude < max(10.0, 0.5 * self.takeoff_altitude):
@@ -566,7 +723,8 @@ class FixedwingNoFlyAcceptance:
                 return {
                     "success": True,
                     "phase": "complete",
-                    "replanned": True,
+                    "replanned": replanned,
+                    "initial_path_clearance_m": round(initial_min_clearance, 2),
                     "profile": self.profile,
                     "planned_min_clearance_m": round(planned_min_clearance, 2),
                     "actual_min_clearance_m": round(min_actual, 2),

@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="uav_name"/>
+  <arg name="instance"/>
+  <arg name="x"/>
+  <arg name="y"/>
+  <arg name="yaw" default="0.0"/>
+  <arg name="plane_sdf"/>
+  <arg name="mavlink_tcp_port"/>
+  <arg name="fcu_url"/>
+
+  <env name="PX4_SIM_MODEL" value="plane"/>
+  <param name="$(arg uav_name)_plane_description"
+         command="$(find xd_uav_sead)/scripts/prepare_plane_sdf.py $(arg plane_sdf) $(arg uav_name)_plane $(arg mavlink_tcp_port)"/>
+  <node pkg="px4" type="px4" name="$(arg uav_name)_sitl" output="screen"
+        args="/home/promise/PX4-Autopilot/build/px4_sitl_default/etc -s etc/init.d-posix/rcS -i $(arg instance) -w sitl_plane_$(arg instance) -d"/>
+  <node pkg="gazebo_ros" type="spawn_model" name="$(arg uav_name)_plane_spawn"
+        output="screen"
+        args="-sdf -param $(arg uav_name)_plane_description -model $(arg uav_name)_plane -x $(arg x) -y $(arg y) -z 0.2 -Y $(arg yaw)"/>
+
+  <group ns="$(arg uav_name)">
+    <include file="$(find mavros)/launch/px4.launch">
+      <arg name="fcu_url" value="$(arg fcu_url)"/>
+      <arg name="gcs_url" value=""/>
+      <arg name="tgt_system" value="$(eval 1 + int(arg('instance')))"/>
+      <arg name="tgt_component" value="1"/>
+      <arg name="respawn_mavros" value="false"/>
+    </include>
+  </group>
+
+  <include file="$(find xd_uav_sead)/launch/sead_fixedwing_xd_control.launch">
+    <arg name="UAV_NAME" value="$(arg uav_name)"/>
+    <arg name="sead_runtime_mode" value="single_route"/>
+    <arg name="sead_control_mode" value="position_waypoint"/>
+    <arg name="headless_sitl_failsafe_bypass" value="true"/>
+    <arg name="shared_frame_enabled" value="true"/>
+    <arg name="shared_frame_id" value="world"/>
+    <arg name="shared_frame_offset_x" value="$(arg x)"/>
+    <arg name="shared_frame_offset_y" value="$(arg y)"/>
+  </include>
+</launch>

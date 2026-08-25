@@ -78,12 +78,20 @@ wait_flight_ready() {
         pending+=" uav${i}:manager"
       fi
     done
-    if [[ "$scenario" == "v9" ]]; then
+    if [[ "$scenario" == "v9" || "$scenario" == "v10" ]]; then
       if ! grep -q '^/uav1/sead_onboard$' <<<"$node_list"; then
         pending+=" uav1:sead"
       fi
       if ! grep -q '^/fixedwing_nofly_acceptance$' <<<"$node_list"; then
-        pending+=" acceptance"
+        if [[ "$scenario" == "v9" ]]; then pending+=" acceptance"; fi
+      fi
+      if [[ "$scenario" == "v10" ]]; then
+        for i in 1 2 3; do
+          grep -q "^/uav${i}/sead_onboard$" <<<"$node_list" \
+            || pending+=" uav${i}:sead"
+          grep -q "^/uav${i}_fixedwing_nofly_acceptance$" <<<"$node_list" \
+            || pending+=" uav${i}:acceptance"
+        done
       fi
     fi
 
@@ -103,6 +111,38 @@ wait_flight_ready() {
   echo "等待验证链就绪超时（${timeout_s}s）；最后未就绪:${pending:- unknown}" >&2
   echo "tmux 会话已保留供诊断：tmux -L sead-validation attach -t sead-validation" >&2
   echo "诊断后执行 $script_dir/kill.sh 清理。" >&2
+  return 1
+}
+
+wait_fixedwing_multi_result() {
+  local timeout_s="${SEAD_FIXEDWING_ACCEPTANCE_TIMEOUT:-420}"
+  local deadline=$((SECONDS + timeout_s)) result i complete replanned
+  echo "v10 已起飞执行：等待 3 架固定翼接收同一动态禁飞区并分别绕飞、返航盘旋..."
+  while ((SECONDS < deadline)); do
+    complete=0
+    replanned=0
+    for i in 1 2 3; do
+      result="$(timeout -k 1 4 rostopic echo -n 1 "/uav${i}/sead/fixedwing_acceptance/result" 2>/dev/null || true)"
+      if grep -Eq 'success[^[:alnum:]]+false' <<<"$result"; then
+        echo "v10 uav${i} 验收失败：$result" >&2
+        return 1
+      fi
+      if grep -Eq 'success[^[:alnum:]]+true' <<<"$result"; then
+        ((complete += 1))
+        grep -Eq 'replanned[^[:alnum:]]+true' <<<"$result" && ((replanned += 1)) || true
+      fi
+    done
+    if ((complete == 3 && replanned >= 1)); then
+      echo "v10 三固定翼动态禁飞区验收全部通过（实际重规划 ${replanned}/3）。"
+      return 0
+    fi
+    if ((complete == 3 && replanned == 0)); then
+      echo "v10 三机均未触发重规划，演示几何未实际挑战禁飞区。" >&2
+      return 1
+    fi
+    sleep 2
+  done
+  echo "v10 聚合验收等待超时（${timeout_s}s）。" >&2
   return 1
 }
 
@@ -154,15 +194,15 @@ check_fixedwing_plugins() {
 }
 
 case "$scenario" in
-  v3|v4|v5|v6|v7|v8|v9) ;;
+  v3|v4|v5|v6|v7|v8|v9|v10) ;;
   *)
-    echo "用法: $0 {v3|v4|v5|v6|v7|v8|v9} [--no-attach] [--profile nominal|relaxed1|relaxed2] [--zone-half-size M]"
-    echo "v3=单机  v4=两机并发  v5=三机编队  v6=Airspace  v7=DPGA  v8=SimpleStrike  v9=固定翼动态禁飞区"
+    echo "用法: $0 {v3|v4|v5|v6|v7|v8|v9|v10} [--no-attach] [--profile nominal|relaxed1|relaxed2] [--zone-half-size M]"
+    echo "v3=单机  v4=两机并发  v5=三机编队  v6=Airspace  v7=DPGA  v8=SimpleStrike  v9=单固定翼动态禁飞区  v10=三固定翼共同动态禁飞区"
     exit 2
     ;;
 esac
 
-if [[ "$scenario" == "v9" ]]; then
+if [[ "$scenario" == "v9" || "$scenario" == "v10" ]]; then
   check_fixedwing_plugins
   case "$v9_profile" in
     nominal|relaxed1|relaxed2) ;;
@@ -188,12 +228,18 @@ fi
 export SEAD_VALIDATION_SCENARIO="$scenario"
 export SEAD_FIXEDWING_PROFILE="$v9_profile"
 export SEAD_FIXEDWING_ZONE_HALF_SIZE="$v9_zone_half_size"
-if [[ "$scenario" == "v9" && "$attach_mode" != "--no-attach" ]]; then
+if [[ ( "$scenario" == "v9" || "$scenario" == "v10" ) && "$attach_mode" != "--no-attach" ]]; then
   auto_visualize_default="true"
 else
   auto_visualize_default="false"
 fi
 export SEAD_VALIDATION_AUTO_VISUALIZE="${SEAD_VALIDATION_AUTO_VISUALIZE:-$auto_visualize_default}"
+if [[ "$attach_mode" == "--no-attach" ]]; then
+  gazebo_gui_default="false"
+else
+  gazebo_gui_default="true"
+fi
+export SEAD_VALIDATION_GAZEBO_GUI="${SEAD_VALIDATION_GAZEBO_GUI:-$gazebo_gui_default}"
 export SEAD_VALIDATION_DIR="$script_dir"
 export SEAD_VALIDATION_RUNTIME="/home/promise/catkin_ws/src/xd-uavsystem-test/.codex-tmp/sead_validation_offsets.env"
 export SEAD_VALIDATION_RUN_ID="$(date +%s)-$$"
@@ -221,6 +267,14 @@ case "$scenario" in
       wait_fixedwing_result
     else
       echo "v9 已起飞执行；正在进入 tmux，验收器将在仿真窗口中继续运行..."
+    fi
+    ;;
+  v10)
+    wait_flight_ready 3
+    if [[ "$attach_mode" == "--no-attach" ]]; then
+      wait_fixedwing_multi_result
+    else
+      echo "v10 已起飞执行；正在进入 tmux，三机验收器将在仿真窗口中继续运行..."
     fi
     ;;
 esac

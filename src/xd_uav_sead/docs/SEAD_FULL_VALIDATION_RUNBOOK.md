@@ -11,7 +11,7 @@ cd /home/promise/catkin_ws/src/xd-uavsystem-test/src/xd_uav_sead/tmux/validation
 ./start.sh v4
 ```
 
-将 `v4` 换成 `v3`–`v8`。启动器创建专用 `sead-validation` tmux session：
+将 `v4` 换成 `v3`–`v10`。启动器创建专用 `sead-validation` tmux session：
 
 - `launch`：roscore、Gazebo/spawner（仅飞行项）及各 UAV 节点日志；
 - `status`：每两秒显示 MAVROS、estimator 和 manager 摘要；
@@ -51,7 +51,7 @@ V3–V5 启动时，`start.sh` 还会等待本场景全部 UAV 同时满足 MAVR
 
 ### 实时可视化与证据保存
 
-V3–V9 启动后，先在 `commands` 输入：
+V3–V10 启动后，先在 `commands` 输入：
 
 ```bash
 visualize
@@ -64,6 +64,7 @@ visualize
 - V7：绘制任务目标，并显示各节点 DPGA cost/chromosome 和 U2U 事件；
 - V8：绘制一机一目标分配，并显示 ACK 集合和共同命中时间。
 - V9：只绘制 uav1 蓝色实际轨迹和 `/uav1/dynamic_nofly_zone` 的红色多边形轮廓/填充，不叠加规划航线。黑色 `× T1` 是任务目标，蓝色实心点是飞机当前位置。
+- V10：在统一 `world` 坐标中同时绘制 uav1/uav2/uav3 的真实轨迹，以及 `/sead/v10/dynamic_nofly_zone` 的共同红色区域；同样不叠加规划航线。
 
 关闭窗口或运行 `kill.sh` 时会保存：
 
@@ -322,12 +323,56 @@ polygon:
 
 headless SITL 专用配置会回读确认 PX4 模拟电池保持 100%，并豁免无 RC/GCS 环境下 OFFBOARD 与 Hold 的链路丢失动作；这些旁路不用于真机。真实 XBee/DigiMesh、GCS 电台和真机仍是独立硬件验收，仿真结果不能替代射频链路、急停和设备拔插测试。
 
-## V10：QGC/UDP 与阶段 4
+## V10：三固定翼共同动态禁飞区
 
-当前没有 `start.sh v10`，也不是“没有效果可看”，而是它明确属于阶段 4。阶段 3 已交接完成；下一步先只读审计 QGC 产物/源码并设计 UDP→ROS 协议，协议确认后才实现独立适配器，最后再修改和验证 QGC。
+交互演示（Gazebo 与可视化自动打开）：
+
+```bash
+cd /home/promise/catkin_ws/src/xd-uavsystem-test/src/xd_uav_sead/tmux/validation
+./start.sh v10 --zone-half-size 18
+```
+
+无人值守聚合验收：
+
+```bash
+./start.sh v10 --no-attach --profile nominal --zone-half-size 18
+```
+
+V10 启动三架 PX4 `plane`，每架都有独立 MAVROS、estimator、manager/controller、
+SEAD 和验收器。三机采用独立 SITL instance/MAVLink 端口，出生点横向分离，并分别爬升
+到 30/40/50 m。任务发布前设置空中同步屏障，避免较早起飞的飞机在等待其他飞机时提前
+飞过待插入区域；三条初始路径准备完成后，由 uav1 验收器在其原始路径前方选择 zone
+9001，并通过锁存的 `/sead/v10/dynamic_nofly_zone` 以 `world` frame 向三机扇出。
+
+判据不是强迫所有飞机做无意义绕行：初始路径受区域影响时必须产生不同的新路径且满足
+规划净空；初始路径本来安全时允许保持原路径。无论是否重规划，每架都必须保持真实轨迹
+不进入多边形、到达目标、返航并进入保持解锁的 `AUTO.LOITER`；聚合结果还要求至少一架
+实际重规划，防止区域完全没有挑战任何航线。验收成功时终端显示：
+
+```text
+v10 三固定翼动态禁飞区验收全部通过（实际重规划 N/3）。
+```
+
+当前 nominal `36×36 m` 最终实测为 3/3 重规划并完整通过：uav1/uav2/uav3 的规划最小
+净空分别为 48.24/43.03/43.00 m，真实最小净空为 81.74/45.19/44.27 m，耗时
+106.9/80.9/81.2 s，最终均为 `AUTO.LOITER`。这些数值属于该轮证据，不是写入控制器的
+阈值。
+
+交互启动会像 V9 一样自动运行 `visualize`，从仿真早期记录三条真实轨迹和共同禁飞区；
+再次输入 `visualize` 会复用已有节点。`--no-attach` 默认关闭 Gazebo GUI 和可视化窗口。
+完成后执行：
+
+```bash
+./kill.sh
+```
+
+运行期公共动态接口为 `/sead/v10/dynamic_nofly_zone`，消息类型仍是
+`xd_uav_sead/NoFlyZone`，但 `header.frame_id` 必须为 `world`。对同一 zone ID 做 UPSERT
+即可实时改变大小/位置；自动验收会刷新 9001，因此人工接口测试使用 9100 等其他非零 ID。
+消息时间戳、TTL、简单多边形和高度限制与 V9 相同。
 
 ## 异常处置与结论边界
 
-飞行时若出现持续 estimator invalid、manager FAILSAFE、意外上锁、失控趋势或 RTF/时钟明显异常，立即停止下发新任务并执行 `land_all`；若常规降落不可用，再按现场安全流程处理。不要通过无依据地放宽安全阈值或加入 SEAD 魔法数字掩盖问题。V9 的 2 秒 MAVROS state watchdog 是针对该话题约 1 Hz 发布周期设置的两周期门限；其余高频估计器、控制器和空速门限保持原值。
+飞行时若出现持续 estimator invalid、manager FAILSAFE、意外上锁、失控趋势或 RTF/时钟明显异常，立即停止下发新任务并执行 `land_all`；若常规降落不可用，再按现场安全流程处理。不要通过无依据地放宽安全阈值或加入 SEAD 魔法数字掩盖问题。V9/V10 的 2 秒 MAVROS state watchdog 是针对该话题约 1 Hz 发布周期设置的两周期门限；其余高频估计器、控制器和空速门限保持原值。V10 只证明共同禁飞区控制，不包含固定翼之间的轨迹互避。
 
 若证据指向其他共享包缺陷，只记录复现条件、日志、影响和最小修改方案，未经授权不直接修改。阶段 3 的当前剩余边界是 DPGA/SimpleStrike 物理飞行、固定翼实飞、真实 XBee，以及已登记间歇性问题的统一归因。

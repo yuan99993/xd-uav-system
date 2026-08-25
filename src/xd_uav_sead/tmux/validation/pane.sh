@@ -52,6 +52,20 @@ case "$role" in
         fi
         exec roslaunch xd_uav_sead sead_fixedwing_headless_acceptance.launch "${launch_args[@]}"
         ;;
+      v10)
+        wait_ros
+        px4_gazebo_plugins="/home/promise/PX4-Autopilot/build/px4_sitl_default/build_gazebo"
+        export GAZEBO_PLUGIN_PATH="$px4_gazebo_plugins"
+        export LD_LIBRARY_PATH="$px4_gazebo_plugins:${LD_LIBRARY_PATH:-}"
+        launch_args=(
+          gui:="${SEAD_VALIDATION_GAZEBO_GUI:-true}"
+          acceptance_profile:="${SEAD_FIXEDWING_PROFILE:-nominal}"
+        )
+        if [[ -n "${SEAD_FIXEDWING_ZONE_HALF_SIZE:-}" ]]; then
+          launch_args+=(zone_half_size:="$SEAD_FIXEDWING_ZONE_HALF_SIZE")
+        fi
+        exec roslaunch xd_uav_sead sead_fixedwing_multi_nofly_acceptance.launch "${launch_args[@]}"
+        ;;
       *) hold_pane "$scenario 不需要 Gazebo。" ;;
     esac
     ;;
@@ -104,6 +118,9 @@ case "$role" in
         ;;
       v9)
         hold_pane "v9 的 PX4、MAVROS、自研控制链、SEAD 和自动验收器统一运行在 gazebo pane。"
+        ;;
+      v10)
+        hold_pane "v10 的三套固定翼链与聚合验收统一运行在 gazebo pane。"
         ;;
     esac
     ;;
