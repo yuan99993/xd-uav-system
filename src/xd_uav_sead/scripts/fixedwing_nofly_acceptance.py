@@ -741,8 +741,17 @@ class FixedwingNoFlyAcceptance:
         level = rospy.loginfo if result.get("success") else rospy.logerr
         level("[FW_ACCEPTANCE_RESULT] %s", payload)
         rate = rospy.Rate(1)
+        last_zone_refresh = 0.0
         while not rospy.is_shutdown():
             self.result_pub.publish(String(data=payload))
+            now = time.monotonic()
+            if (
+                self.rectangle is not None
+                and self.zone_role in ("standalone", "leader")
+                and now - last_zone_refresh >= self.zone_ttl / 3.0
+            ):
+                self._publish_zone()
+                last_zone_refresh = now
             rate.sleep()
 
 

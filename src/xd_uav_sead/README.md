@@ -52,8 +52,9 @@ V10 启动 3 个独立 PX4 `plane` SITL、MAVROS、自研 estimator/manager/cont
 SEAD。三机在 `world` 共享坐标中接收同一个 zone 9001；初始路径受影响的飞机必须产生
 安全重规划，未受影响的飞机可保持原安全路径，但聚合验收至少要求一架真实重规划。当前
 nominal 默认仍为半边长 18 m（`36 m × 36 m`）。运行期间可向
-`/sead/v10/dynamic_nofly_zone` 发布同 frame 的 `NoFlyZone`；自动验收会周期刷新 9001，
-人工接口测试应使用其他非零 zone ID。完整消息示例、判据和可视化说明见 Runbook。
+`/sead/v10/dynamic_nofly_zone` 发布同 frame 的 `NoFlyZone`；自动验收会持续刷新 9001
+直到执行 `kill.sh`，人工接口测试应使用其他非零 zone ID。可视化也按 `valid_until`
+移除真正过期的区域，避免把失效红框误判为当前禁区。完整消息示例、判据和可视化说明见 Runbook。
 真实 XBee/DigiMesh、GCS 电台与真机仍需单独硬件验收。
 
 ## 常用命令

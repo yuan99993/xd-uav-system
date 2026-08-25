@@ -239,6 +239,18 @@ class ValidationVisualizer:
 
     def _draw(self):
         with self.lock:
+            now = rospy.Time.now().to_sec()
+            expired = [
+                zid
+                for zid, zone in self.zones.items()
+                if float(zone.get("valid_until", 0.0) or 0.0) > 0.0
+                and now >= float(zone["valid_until"])
+            ]
+            for zid in expired:
+                self.zones.pop(zid, None)
+                self.events.append(
+                    {"t": self._elapsed(), "event": "no-fly zone expired", "zone_id": zid}
+                )
             paths = {k: list(v) for k, v in self.paths.items()}
             zones = dict(self.zones)
             targets = list(self.targets)
