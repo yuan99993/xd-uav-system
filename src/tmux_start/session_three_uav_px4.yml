@@ -1,0 +1,46 @@
+# do not modify these
+root: ./
+name: three_uav_px4
+socket_name: mrs
+attach: false
+tmux_options: -f /etc/ctu-mrs/tmux.conf
+
+# Three PX4 SITL vehicles: uav1, uav2 and uav3.
+pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:$ROS_PACKAGE_PATH; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
+startup_window: estimator
+
+windows:
+  - roscore:
+      layout: tiled
+      panes:
+        - roscore
+
+  - px4_sitl:
+      layout: tiled
+      panes:
+        - waitForRos; roslaunch px4 mavros_posix_sitl_3_ns.launch
+
+  - estimator:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav3
+
+  - contoller:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav1
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav2
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav3
+  - world_tf_manager:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch
+  - fastlio:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav1
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav2
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav3
+  

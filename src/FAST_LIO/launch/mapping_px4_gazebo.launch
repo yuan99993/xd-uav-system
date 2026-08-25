@@ -1,0 +1,34 @@
+<launch>
+    <arg name="uav_name" default="uav1"/>
+    <arg name="rviz" default="true"/>
+    <!-- Fast-LIO原始状态始终位于自己的独立原点，不能冒充系统标准odom。 -->
+    <arg name="map_frame" default="$(arg uav_name)/fastlio_origin"/>
+    <!-- Fast-LIO估计的是雷达IMU参考点，不是飞机base_link。 -->
+    <arg name="body_frame" default="$(arg uav_name)/lidar_imu_link"/>
+    <!-- 标准TF由状态估计器和单机TF管理器统一发布。 -->
+    <arg name="publish_tf" default="false"/>
+
+    <group ns="$(arg uav_name)/fastlio">
+        <rosparam command="load" file="$(find fast_lio)/config/px4_gazebo.yaml"/>
+
+        <!-- 坐标系名称不带前导斜杠，并由uav_name保证多机隔离。 -->
+        <param name="common/map_frame" type="string" value="$(arg map_frame)"/>
+        <param name="common/body_frame" type="string" value="$(arg body_frame)"/>
+        <param name="publish/tf_en" type="bool" value="$(arg publish_tf)"/>
+
+        <param name="feature_extract_enable" type="bool" value="false"/>
+        <param name="point_filter_num" type="int" value="3"/>
+        <param name="max_iteration" type="int" value="3"/>
+        <param name="filter_size_surf" type="double" value="0.2"/>
+        <param name="filter_size_map" type="double" value="0.3"/>
+        <param name="cube_side_length" type="double" value="1000"/>
+        <param name="runtime_pos_log_enable" type="bool" value="false"/>
+
+        <node pkg="fast_lio" type="fastlio_mapping" name="fastlio_px4" output="screen"/>
+    </group>
+
+    <!-- <group if="$(arg rviz)">
+        <node pkg="rviz" type="rviz" name="fastlio_rviz"
+              args="-d $(find fast_lio)/rviz_cfg/loam_livox.rviz"/>
+    </group> -->
+</launch>
