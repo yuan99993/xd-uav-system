@@ -5,8 +5,10 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import rospy
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import PositionTarget
+from xd_uav_controller.msg import PathStatus
 
 from xd_uav_task_allocate.core.allocation import (
     TASK_ASSIGNED,
@@ -569,6 +571,65 @@ class CoverageTest(unittest.TestCase):
 
 
 class DirectExecutionTest(unittest.TestCase):
+    def test_fixedwing_route_is_published_as_geometry_only_path(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator._next_goal_id = 12
+        coordinator.shared_frame = "world"
+        coordinator.vehicle_world_positions = {
+            "uav1": (1.0, (0.0, 0.0, 40.0))
+        }
+        coordinator.active_goals = {}
+        coordinator.active_goal_points = {}
+        coordinator.active_goal_origins = {}
+        coordinator.active_controller_paths = set()
+        published = []
+        coordinator.direct_path_publishers = {
+            "uav1": type(
+                "Publisher", (), {"publish": lambda _self, message: published.append(message)}
+            )()
+        }
+        coordinator._publish_direct_status = lambda *_args: None
+        coordinator._handle_goal_status = lambda *_args: None
+        coordinator._coverage_speed = lambda _vehicle: 15.0
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time.from_sec(1.0),
+        ):
+            goal_id = coordinator._publish_fixedwing_route_path(
+                "uav1",
+                [(20.0, 0.0, 40.0), (20.0, 20.0, 40.0)],
+                0,
+                "search",
+            )
+
+        self.assertEqual(goal_id, 12)
+        self.assertEqual(published[0].header.seq, 12)
+        self.assertEqual(published[0].header.frame_id, "world")
+        self.assertEqual(len(published[0].poses), 3)
+        self.assertEqual(published[0].poses[0].pose.position.x, 0.0)
+        self.assertIn("uav1", coordinator.active_controller_paths)
+
+    def test_controller_path_completion_drives_planner_completion(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator._lock = threading.RLock()
+        coordinator.active_controller_paths = {"uav1"}
+        coordinator.active_goals = {"uav1": (7, "search", 3)}
+        published = []
+        handled = []
+        coordinator._publish_direct_status = lambda *args: published.append(args)
+        coordinator._handle_goal_status = lambda *args: handled.append(args)
+        message = PathStatus()
+        message.path_id = 7
+        message.state = PathStatus.COMPLETED
+        message.progress = 1.0
+        message.detail = "done"
+
+        coordinator._path_status_callback("uav1", message)
+
+        self.assertEqual(published[0][2], PlannerStatus.REACHED)
+        self.assertEqual(handled[0][2], PlannerStatus.REACHED)
+
     def test_fixedwing_path_is_time_parameterized_with_nonzero_speed(self):
         samples = fixedwing_trajectory_samples(
             [(0.0, 0.0, 20.0), (30.0, 0.0, 20.0), (30.0, 30.0, 20.0)],

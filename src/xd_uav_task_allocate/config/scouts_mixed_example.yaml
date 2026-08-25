@@ -38,7 +38,8 @@ scouts:
       detections: /uav1/track/detections
       planner_goal: /uav1/planning/goal
       controller_setpoint: /uav1/control/reference/setpoint
-      controller_trajectory: /uav1/control/reference/trajectory
+      controller_path: /uav1/control/reference/path
+      controller_path_status: /uav1/controller/path_status
       mission_path: /uav1/planning/mission_path
       planner_status: /uav1/planning/status
 

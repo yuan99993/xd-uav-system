@@ -29,6 +29,11 @@ reference_input:
     # RViz的2D Nav Goal通常把z写成0，默认保持控制器当前的期望高度。
     use_message_z: false
 
+  path:
+    # 小于该长度的相邻点会被合并，避免零长度切线。
+    minimum_segment_length: 0.10
+    status_rate: 10.0
+
 home:
   # takeoff: 起飞时优先在frame中记录当前位置；对齐不可用时退化为odom。
   # fixed_local: 始终使用下面配置的固定点，起飞、降落和复位都不会覆盖它。

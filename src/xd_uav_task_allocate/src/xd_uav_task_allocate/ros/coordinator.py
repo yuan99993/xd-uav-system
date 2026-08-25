@@ -6,15 +6,14 @@ from typing import Dict, List, Set, Tuple
 
 import rospy
 import tf2_ros
-from geometry_msgs.msg import Point, Point32, PoseStamped, Transform, Twist
+from geometry_msgs.msg import Point, Point32, PoseStamped
 from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import String
 from std_srvs.srv import Trigger, TriggerResponse
-from trajectory_msgs.msg import MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
 
-from xd_uav_controller.msg import ControlState
+from xd_uav_controller.msg import ControlState, PathStatus
 from xd_uav_task_allocate.core.allocation import (
     TASK_COMPLETED,
     RescueTaskAllocator,
@@ -32,7 +31,6 @@ from xd_uav_task_allocate.core.coverage import (
 )
 from xd_uav_task_allocate.core.execution import (
     ArrivalDwellTracker,
-    fixedwing_trajectory_samples,
     fixedwing_waypoint_reached,
     goal_heading,
     worker_approach_goal,
@@ -375,7 +373,7 @@ class TaskAllocateCoordinator:
         self.vehicle_health: Dict[str, Tuple[float, bool]] = {}
         self.goal_publishers: Dict[str, rospy.Publisher] = {}
         self.direct_goal_publishers: Dict[str, rospy.Publisher] = {}
-        self.direct_trajectory_publishers: Dict[str, rospy.Publisher] = {}
+        self.direct_path_publishers: Dict[str, rospy.Publisher] = {}
         self.direct_status_publishers: Dict[str, rospy.Publisher] = {}
         self.path_publishers: Dict[str, rospy.Publisher] = {}
         self.routes: Dict[str, List[Tuple[float, float, float]]] = {}
@@ -387,6 +385,7 @@ class TaskAllocateCoordinator:
         self.active_trajectory_route_progress: Dict[
             str, List[Tuple[float, int]]
         ] = {}
+        self.active_controller_paths: Set[str] = set()
         self.verification_pending: List[int] = []
         self.verification_target_by_scout: Dict[str, int] = {}
         self.verification_scout_by_target: Dict[int, str] = {}
@@ -725,15 +724,29 @@ class TaskAllocateCoordinator:
                 latch=True,
             )
             if self.vehicle_types[name] == "fixedwing":
-                self.direct_trajectory_publishers[name] = rospy.Publisher(
+                self.direct_path_publishers[name] = rospy.Publisher(
                     self._topic(
                         config,
-                        "controller_trajectory",
-                        f"/{name}/control/reference/trajectory",
+                        "controller_path",
+                        f"/{name}/control/reference/path",
                     ),
-                    MultiDOFJointTrajectory,
+                    Path,
                     queue_size=1,
                     latch=False,
+                )
+                self._subscribers.append(
+                    rospy.Subscriber(
+                        self._topic(
+                            config,
+                            "controller_path_status",
+                            f"/{name}/controller/path_status",
+                        ),
+                        PathStatus,
+                        lambda message, vehicle=name: self._path_status_callback(
+                            vehicle, message
+                        ),
+                        queue_size=10,
+                    )
                 )
         else:
             self.goal_publishers[name] = rospy.Publisher(
@@ -804,8 +817,8 @@ class TaskAllocateCoordinator:
             if self.vehicle_types.get(name) == "fixedwing":
                 execution_connected = bool(
                     execution_connected
-                    and name in self.direct_trajectory_publishers
-                    and self.direct_trajectory_publishers[name].get_num_connections() > 0
+                    and name in self.direct_path_publishers
+                    and self.direct_path_publishers[name].get_num_connections() > 0
                 )
         return bool(
             self.vehicle_operator_enabled.get(str(name), True)
@@ -1126,6 +1139,7 @@ class TaskAllocateCoordinator:
         self.active_goal_origins.clear()
         self.active_trajectory_end_times.clear()
         self.active_trajectory_route_progress.clear()
+        self.active_controller_paths.clear()
         self.verification_pending.clear()
         self.verification_target_by_scout.clear()
         self.verification_scout_by_target.clear()
@@ -1191,6 +1205,7 @@ class TaskAllocateCoordinator:
             self.direct_goal_publishers[vehicle].publish(setpoint)
             self.active_trajectory_end_times.pop(vehicle, None)
             self.active_trajectory_route_progress.pop(vehicle, None)
+            self.active_controller_paths.discard(vehicle)
             return True
         goal = PoseStamped()
         goal.header.stamp = rospy.Time.now()
@@ -2153,6 +2168,7 @@ class TaskAllocateCoordinator:
         self.active_goal_origins.pop(vehicle, None)
         self.active_trajectory_end_times.pop(vehicle, None)
         self.active_trajectory_route_progress.pop(vehicle, None)
+        self.active_controller_paths.discard(vehicle)
         self.arrival_tracker.reset(vehicle)
         self.worker_arrival_tracker.reset(vehicle)
 
@@ -2251,7 +2267,7 @@ class TaskAllocateCoordinator:
                 self.vehicle_types.get(vehicle) != "fixedwing"
                 or not self._uses_direct_controller(vehicle)
                 or active[1] not in ("search", "verification")
-                or vehicle in self.active_trajectory_end_times
+                or vehicle in self.active_controller_paths
             ):
                 continue
             point = self.active_goal_points.get(vehicle)
@@ -2267,13 +2283,13 @@ class TaskAllocateCoordinator:
             goal.pose.orientation.w = 1.0
             self._publish_direct_controller_goal(vehicle, goal)
 
-    def _publish_fixedwing_route_trajectory(
+    def _publish_fixedwing_route_path(
         self, vehicle: str, route, start_index: int, kind: str
     ) -> int:
         current = self.vehicle_world_positions.get(vehicle)
         remaining = list(route[int(start_index) :])
         if current is None or not remaining:
-            raise ValueError("fixed-wing trajectory needs current position and route")
+            raise ValueError("fixed-wing path needs current position and route")
         current_point = tuple(float(value) for value in current[1])
         first = remaining[0]
         separation = sqrt(
@@ -2281,75 +2297,44 @@ class TaskAllocateCoordinator:
             + (float(first[1]) - current_point[1]) ** 2
             + (float(first[2]) - current_point[2]) ** 2
         )
-        prepended_current = separation > 1e-3
-        trajectory_path = ([current_point] if prepended_current else []) + remaining
-        samples = fixedwing_trajectory_samples(
-            trajectory_path, self._coverage_speed(vehicle)
-        )
-
-        message = MultiDOFJointTrajectory()
-        message.header.stamp = rospy.Time.now() + rospy.Duration(0.10)
-        message.header.frame_id = self.shared_frame
-        message.joint_names = [f"{vehicle}/base_link"]
-        for sample in samples:
-            transform = Transform()
-            transform.translation.x = sample.position[0]
-            transform.translation.y = sample.position[1]
-            transform.translation.z = sample.position[2]
-            transform.rotation.z = sin(0.5 * sample.yaw)
-            transform.rotation.w = cos(0.5 * sample.yaw)
-            velocity = Twist()
-            velocity.linear.x = sample.velocity[0]
-            velocity.linear.y = sample.velocity[1]
-            velocity.linear.z = sample.velocity[2]
-            velocity.angular.z = sample.yaw_rate
-            acceleration = Twist()
-            acceleration.linear.x = sample.acceleration[0]
-            acceleration.linear.y = sample.acceleration[1]
-            acceleration.linear.z = sample.acceleration[2]
-            point = MultiDOFJointTrajectoryPoint()
-            point.transforms = [transform]
-            point.velocities = [velocity]
-            point.accelerations = [acceleration]
-            point.time_from_start = rospy.Duration(sample.time_from_start)
-            message.points.append(point)
-
         goal_id = self._new_goal_id()
+        message = Path()
+        message.header.seq = goal_id
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = self.shared_frame
+        path_points = ([current_point] if separation > 1e-3 else []) + remaining
+        for point in path_points:
+            pose = PoseStamped()
+            pose.header = message.header
+            pose.pose.position.x = float(point[0])
+            pose.pose.position.y = float(point[1])
+            pose.pose.position.z = float(point[2])
+            pose.pose.orientation.w = 1.0
+            message.poses.append(pose)
+
         final_index = len(route) - 1
         self.active_goals[vehicle] = (goal_id, str(kind), final_index)
         self.active_goal_points[vehicle] = tuple(float(value) for value in route[-1])
         self.active_goal_origins[vehicle] = current_point
-        start_time = message.header.stamp.to_sec()
-        self.active_trajectory_end_times[vehicle] = (
-            start_time + samples[-1].time_from_start
-        )
-        sample_offset = 1 if prepended_current else 0
-        self.active_trajectory_route_progress[vehicle] = [
-            (start_time + samples[index + sample_offset].time_from_start, route_index)
-            for index, route_index in enumerate(
-                range(int(start_index), len(route))
-            )
-            if index + sample_offset < len(samples)
-        ]
-        self.direct_trajectory_publishers[vehicle].publish(message)
+        self.active_controller_paths.add(vehicle)
+        self.direct_path_publishers[vehicle].publish(message)
         self._publish_direct_status(
             vehicle,
             goal_id,
             PlannerStatus.ACTIVE,
-            "complete fixed-wing search trajectory active; no obstacle avoidance",
+            "complete fixed-wing geometric path active; no obstacle avoidance",
         )
         self._handle_goal_status(
             vehicle,
             goal_id,
             PlannerStatus.ACTIVE,
-            "complete fixed-wing search trajectory active; no obstacle avoidance",
+            "complete fixed-wing geometric path active; no obstacle avoidance",
         )
         rospy.loginfo(
-            "[task_allocate] fixed-wing %s published complete trajectory: "
-            "route_points=%d duration=%.1fs speed=%.1fm/s",
+            "[task_allocate] fixed-wing %s published complete path: "
+            "route_points=%d nominal_speed=%.1fm/s",
             vehicle,
             len(remaining),
-            samples[-1].time_from_start,
             self._coverage_speed(vehicle),
         )
         return goal_id
@@ -2419,12 +2404,12 @@ class TaskAllocateCoordinator:
             and self.vehicle_types.get(scout) == "fixedwing"
         ):
             try:
-                self._publish_fixedwing_route_trajectory(
+                self._publish_fixedwing_route_path(
                     scout, route, index, kind
                 )
             except ValueError as error:
                 rospy.logerr(
-                    "[task_allocate] cannot publish fixed-wing trajectory for %s: %s",
+                    "[task_allocate] cannot publish fixed-wing path for %s: %s",
                     scout,
                     error,
                 )
@@ -2480,6 +2465,36 @@ class TaskAllocateCoordinator:
                 int(message.goal_id),
                 int(message.state),
                 str(message.detail),
+            )
+
+    def _path_status_callback(self, vehicle: str, message: PathStatus) -> None:
+        """Translate controller path progress into the existing planner contract."""
+        with self._lock:
+            if vehicle not in self.active_controller_paths:
+                return
+            active = self.active_goals.get(vehicle)
+            if active is None or int(message.path_id) != int(active[0]):
+                return
+            state = int(message.state)
+            if state in (
+                PathStatus.ACCEPTED,
+                PathStatus.ACTIVE,
+                PathStatus.REACQUIRING,
+            ):
+                planner_state = PlannerStatus.ACTIVE
+            elif state == PathStatus.COMPLETED:
+                planner_state = PlannerStatus.REACHED
+            else:
+                planner_state = PlannerStatus.FAILED
+            detail = (
+                f"controller path {float(message.progress) * 100.0:.1f}%: "
+                f"{message.detail}"
+            )
+            self._publish_direct_status(
+                vehicle, int(message.path_id), planner_state, detail
+            )
+            self._handle_goal_status(
+                vehicle, int(message.path_id), planner_state, detail
             )
 
     def _handle_goal_status(
@@ -2546,6 +2561,11 @@ class TaskAllocateCoordinator:
         reached = []
         for vehicle, active in list(self.active_goals.items()):
             if not self._uses_direct_controller(vehicle):
+                continue
+            # Fixed-wing path completion is reported by the controller from
+            # actual along-track progress and endpoint geometry. Do not race
+            # that feedback with the waypoint/dwell fallback below.
+            if vehicle in getattr(self, "active_controller_paths", set()):
                 continue
             progress = self.active_trajectory_route_progress.get(vehicle, [])
             for deadline, route_index in progress:

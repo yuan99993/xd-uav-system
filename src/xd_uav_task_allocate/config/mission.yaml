@@ -148,7 +148,7 @@ planner:
   backend: direct_controller_test
   direct_controller_test:
     # Mandatory acknowledgement: this backend sends multirotor mission points
-    # and complete fixed-wing search trajectories directly to the controller;
+    # and complete fixed-wing geometric paths directly to the controller;
     # it performs no point-cloud planning or obstacle avoidance.
     acknowledge_no_obstacle_avoidance: true
     goal_tolerance_m: 1.0
@@ -159,7 +159,7 @@ planner:
 
   fixedwing:
     # Used to replace instantaneous lawnmower reversals with sampled Dubins
-    # connectors before the full path is time-parameterized as a trajectory.
+    # connectors before the full geometric path is sent to the controller.
     # The turn may leave the search polygon, so mission planning must include
     # a correspondingly clear boundary margin.
     minimum_turn_radius_m: 30.0
@@ -174,7 +174,7 @@ planner:
     # scan heading before crossing its boundary.
     straight_lead_distance_m: 30.0
     # Fallback semantics for a fixed-wing direct point goal; normal fixed-wing
-    # area search uses the complete trajectory interface above.
+    # area search uses the complete Path interface above.
     waypoint_acceptance_radius_m: 20.0
     waypoint_altitude_tolerance_m: 10.0
     pass_cross_track_limit_m: 40.0

@@ -26,6 +26,10 @@
              to="control/reference/setpoint"/>
       <remap from="reference_trajectory"
              to="control/reference/trajectory"/>
+      <remap from="reference_path"
+             to="control/reference/path"/>
+      <remap from="path_status"
+             to="controller/path_status"/>
       <remap from="reference_trajectory_path"
              to="control/reference/trajectory_path"/>
       <remap from="simple_goal"

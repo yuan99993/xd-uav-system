@@ -6,6 +6,14 @@ multirotor:
     gravity: 9.80665
     hover_throttle: 0.7
 
+  path_following:
+    nominal_speed: 3.0
+    lookahead_distance: 2.0
+    terminal_slowdown_distance: 4.0
+    completion_position_tolerance: 0.50
+    completion_speed_tolerance: 0.30
+    reacquisition_distance: 4.0
+
   # 期望姿态到body-rate的内环增益。
   attitude_control:
     gain: [5.0, 5.0, 2.0]

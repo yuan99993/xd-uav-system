@@ -5,14 +5,15 @@ import time
 import unittest
 
 import rospy
-from geometry_msgs.msg import Transform, Twist
+from geometry_msgs.msg import PoseStamped, Transform, Twist
 from mavros_msgs.msg import PositionTarget
+from nav_msgs.msg import Path
 from trajectory_msgs.msg import (
     MultiDOFJointTrajectory,
     MultiDOFJointTrajectoryPoint,
 )
 
-from xd_uav_controller.msg import ControlCommand, ControlState
+from xd_uav_controller.msg import ControlCommand, ControlState, PathStatus
 from xd_uav_controller.srv import (
     InternalCommand,
     InternalCommandRequest,
@@ -34,6 +35,9 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             "reference_trajectory",
             MultiDOFJointTrajectory,
             queue_size=2,
+        )
+        self._path_publisher = rospy.Publisher(
+            "reference_path", Path, queue_size=2
         )
 
     @staticmethod
@@ -213,6 +217,11 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             straight_command.thrust + 0.04,
             "转弯载荷必须在实测空速下降前产生油门前馈",
         )
+        self.assertLess(
+            energetic_turn_command.body_rate.y,
+            straight_command.body_rate.y - 0.02,
+            "转弯载荷必须在实际掉高前产生抬头前馈",
+        )
 
         # Below minimum airspeed the normal altitude demand must yield to
         # recovery: full throttle, unloaded bank and a nose-down pitch rate
@@ -350,6 +359,70 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         )
         self.assertLess(completed_trajectory_loiter.body_rate.x, 0.0)
         self.assertGreater(completed_trajectory_loiter.body_rate.z, 0.0)
+
+        geometric_path = Path()
+        geometric_path.header.seq = 52
+        geometric_path.header.stamp = rospy.Time.now()
+        geometric_path.header.frame_id = "uav1/odom"
+        for x, y in ((0.0, 0.0), (30.0, 0.0), (30.0, 30.0)):
+            pose = PoseStamped()
+            pose.header = geometric_path.header
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = 100.0
+            pose.pose.orientation.w = 1.0
+            geometric_path.poses.append(pose)
+        deadline = time.time() + 2.0
+        path_status = None
+        while time.time() < deadline:
+            self._path_publisher.publish(geometric_path)
+            try:
+                candidate = rospy.wait_for_message(
+                    "path_status", PathStatus, timeout=0.2
+                )
+                if candidate.path_id == 52:
+                    path_status = candidate
+                    break
+            except rospy.ROSException:
+                pass
+        self.assertIsNotNone(path_status)
+        self.assertEqual(path_status.path_id, 52)
+        self.assertIn(
+            path_status.state,
+            (PathStatus.ACCEPTED, PathStatus.ACTIVE),
+        )
+        straight_path_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.controller == "fixedwing_path_course_energy"
+                and abs(value.body_rate.x) < 0.05
+            ),
+            include_reference=False,
+        )
+        self.assertTrue(straight_path_command.valid)
+        self.assertAlmostEqual(
+            straight_path_command.body_rate.x,
+            0.0,
+            delta=0.05,
+            msg="远处弯道不能把固定翼提前拉离当前直线",
+        )
+
+        near_turn_state = self._state()
+        near_turn_state.position_odom.x = 24.0
+        turn_entry_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.controller == "fixedwing_path_course_energy"
+                and value.body_rate.x < -0.05
+            ),
+            include_reference=False,
+            state=near_turn_state,
+        )
+        self.assertLess(
+            turn_entry_command.body_rate.x,
+            -0.05,
+            "接近弯道时曲率短预判必须提前建立滚转",
+        )
 
         command = self._wait_for_command(
             lambda value: (
@@ -642,7 +715,8 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             reference=offset_path_reference,
         )
         self.assertLess(offset_path_command.body_rate.x, -0.10)
-        self.assertGreaterEqual(offset_path_command.body_rate.x, -2.0)
+        # fixedwing.yaml currently permits up to 2.5 rad/s roll rate.
+        self.assertGreaterEqual(offset_path_command.body_rate.x, -2.5)
         self.assertGreater(offset_path_command.body_rate.z, 0.0)
 
         rospy.wait_for_service(

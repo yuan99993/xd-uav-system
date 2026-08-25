@@ -10,7 +10,6 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   std_srvs
   tf2_ros
-  trajectory_msgs
   visualization_msgs
   xd_uav_controller
   xd_uav_track
@@ -55,7 +54,6 @@ catkin_package(
     std_msgs
     std_srvs
     tf2_ros
-    trajectory_msgs
     visualization_msgs
     xd_uav_controller
     xd_uav_track
