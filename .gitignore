@@ -148,9 +148,6 @@ Thumbs.db
 # Codex local scratch and ROS test evidence.
 /.codex-tmp/
 
-# External standalone EGO-Swarm workspace (has its own Git/build state)
-/src/ego-planner-swarm/
-
 # Local planning/report documents. Concise package README files remain versioned.
 /temp/
 **/docs/
