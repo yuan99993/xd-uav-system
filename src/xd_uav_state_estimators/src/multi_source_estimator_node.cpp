@@ -1001,7 +1001,7 @@ class MultiSourceEstimatorNode {
       return false;
     }
     if (sample.child_frame_id != body_frame_) {
-      *reason = "child_frame_id与配置的body_frame不一致";
+      *reason = "child_frame_id不是标准base_link";
       return false;
     }
     if (!std::isfinite(sample.vector.x()) ||

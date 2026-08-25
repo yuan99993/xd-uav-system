@@ -28,14 +28,28 @@ odometry_adapters:
       heading: 0.05
       yaw_rate: 0.10
 
+  # OpenVINS 发布 /uavX/openvins/odomimu；其状态表示 IMU 位姿。
+  # 当前仿真中 MAVROS IMU 的 frame_id 为 base_link，因此 reference_frame 设为
+  # base_link。真机若 IMU 与 base_link 不重合，应改为 IMU 实际 frame 并发布静态 TF。
+  openvins:
+    input_topic: openvins/odomimu
+    reference_frame: base_link
+    tf_timeout: 0.03
+    max_input_delay: 0.50
+    fallback_covariance:
+      position: 0.50
+      velocity: 0.50
+      heading: 0.25
+      yaw_rate: 0.25
+
 # localization_sources既是加载列表，也是来源名称的唯一入口。
 # 列表中存在的来源一定会加载，因此每个来源不再设置enabled。
-localization_sources: [mavros, fastlio]
+localization_sources: [mavros, fastlio, openvins]
 
 sources:
   mavros:
     # 数值越小优先级越高，只用于自动选择当前主定位源。
-    priority: 1
+    priority: 0
 
     # 字符串写法继承本组默认值；映射写法可覆盖单项参数。
     # 相对话题自动补成state_estimator_inputs/<配置值>。
@@ -72,10 +86,10 @@ sources:
 
     # 发布该来源在指定坐标系下的估计结果，不产生TF。
     # republish_in_frames: [local_origin, world]
-    republish_in_frames: [local_origin]
+    republish_in_frames: [local_origin, world]
 
   fastlio:
-    priority: 0
+    priority: 1
 
     correction_defaults:
       timeout: 0.50
@@ -104,4 +118,35 @@ sources:
       recovery_stable_time: 0.5
       session_reset_timeout: 2.0
 
-    republish_in_frames: [local_origin]
+    republish_in_frames: [local_origin, world]
+
+  # 初次接入时以较低优先级运行，仅观测和手动切换验证，不会自动取代
+  # 健康的 MAVROS 或 Fast-LIO。确认表现后再按需要调整 priority。
+  openvins:
+    priority: 2
+
+    correction_defaults:
+      timeout: 0.50
+      required: true
+    corrections:
+      - position_xy: openvins/position_xy
+      - position_z: openvins/position_z
+      - velocity_xy: openvins/velocity_xy
+      - velocity_z: openvins/velocity_z
+      - heading: openvins/heading
+
+    alignment:
+      mode: align_on_activation
+
+    reliability:
+      max_position_variance: 100.0
+      max_velocity_variance: 100.0
+      max_heading_variance: 10.0
+      max_yaw_rate_variance: 10.0
+      max_consecutive_rejections: 5
+      quarantine_duration: 1.0
+      recovery_min_samples: 20
+      recovery_stable_time: 0.5
+      session_reset_timeout: 2.0
+
+    republish_in_frames: [local_origin, world]

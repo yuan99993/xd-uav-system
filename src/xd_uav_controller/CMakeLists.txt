@@ -23,6 +23,7 @@ add_message_files(
   FILES
   ControlCommand.msg
   ControlState.msg
+  PathStatus.msg
 )
 
 add_service_files(

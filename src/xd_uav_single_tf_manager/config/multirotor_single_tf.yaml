@@ -40,13 +40,21 @@ local_alignment:
 
 # 物理安装TF。实际安装位置变化时只修改这里。
 static_transforms:
+  - name: base_to_distance_sensor
+    enabled: true
+    parent_frame: base_link
+    child_frame: distance_sensor_link
+    # iris_fastlio/model.sdf mounts lidar0 5 cm below base_link.  A ROS
+    # Range sensor measures along its +X axis, so +90 deg pitch maps +X to
+    # the multirotor base_link -Z direction (downward).
+    translation: [0.0, 0.0, -0.05]
+    rotation_rpy: [0.0, 1.57079632679, 0.0]
   - name: base_to_lidar
     enabled: true
     parent_frame: base_link
     child_frame: lidar_link
     translation: [0.0, 0.0, 0.10]
     rotation_rpy: [0.0, 0.0, 0.0]
-
   - name: lidar_to_lidar_imu
     enabled: true
     parent_frame: lidar_link
@@ -83,6 +91,22 @@ dynamic_transforms:
     topic: state_estimator/sources/fastlio/odom
     parent_frame: fastlio_origin
     child_frame: fastlio_estimated_base_link
+    invert: false
+
+  - name: openvins_estimate
+    enabled: true
+    type: odometry
+    topic: state_estimator/sources/openvins/odom
+    parent_frame: openvins_origin
+    child_frame: openvins_estimated_base_link
+    invert: false
+
+  - name: openvins_alignment
+    enabled: true
+    type: transform_stamped
+    topic: state_estimator/sources/openvins/alignment
+    parent_frame: odom
+    child_frame: openvins_origin
     invert: false
 
   - name: mavros_alignment
