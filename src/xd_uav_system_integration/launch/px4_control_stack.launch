@@ -5,6 +5,7 @@
   <arg name="simple_goal_topic"
        default="/$(arg UAV_NAME)/integration/disabled_simple_goal"/>
   <arg name="adapt_manager_imu" default="false"/>
+  <arg name="gps_origin_topic" default="mavros/global_position/gp_origin"/>
 
   <include file="$(find xd_uav_system_integration)/launch/world_registration.launch"/>
 
@@ -27,6 +28,7 @@
   <include file="$(find xd_uav_single_tf_manager)/launch/single_tf.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="body_frame" value="$(arg UAV_NAME)/base_link"/>
+    <arg name="gps_origin_topic" value="$(arg gps_origin_topic)"/>
   </include>
 
   <include unless="$(arg adapt_manager_imu)"

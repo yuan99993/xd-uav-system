@@ -2,38 +2,6 @@
 
 本文只保留当前可执行的验证主线。旧版“三终端手工展开”的大量命令已删除；它们是启动器形成前的审计/故障恢复步骤，并非未知代码或测试输出残留。
 
-## 当前实测状态与下一步（2026-08-01）
-
-| 项目 | 当前结论 | 下一步边界 |
-|---|---|---|
-| V0–V2 | 构建、launch、协议、核心算法回归通过 | 相关代码未变时不重复 |
-| V3 | 单机起飞、航点、降落通过 | 无 |
-| V4 | 两机并发稳定性通过，带已登记间歇性问题 | 后续统一归因 |
-| V5 | 三机物理 Formation 通过 | 无 |
-| V6 | Airspace 无飞行节点链通过 | 无 |
-| V7 | DPGA 无飞行三节点链通过 | 物理任务飞行未验证 |
-| V8 | SimpleStrike 无飞行协商通过 | 物理同步进场未验证 |
-| V9 | 未执行 | 需要真实 DigiMesh/GCS 电台和真机授权 |
-| V10 | 未执行 | 属于阶段 4，未获授权不进入 |
-
-阶段门结论：V0–V8 已按各自定义的验收边界通过，因此阶段 3 核心仿真验收完成。V9、DPGA/SimpleStrike 物理任务飞行、固定翼实飞及间歇性问题归因作为硬件或扩展验收项延期，不得写成已验证，但不再阻挡阶段 4 的只读审计和协议设计。
-
-关键实测摘要：
-
-- V4 两机共同 `armed=True/OFFBOARD` 134.3 仿真秒；起飞完成至首个 `LANDING` 的 123.2 秒稳定段内，无 estimator valid=false、manager FAILSAFE、意外上锁或离开 OFFBOARD。两机最终均 `armed=False`、STANDBY。
-- V4 `/clock` 约 250 Hz、无回退，CPU 平均忙碌 29.3%、峰值 62%，无 swap/I/O wait，未见性能或时钟故障证据。
-- V5 Formation 命令后保持至降落共 217.0 仿真秒；最后 60 秒两翼到中心平均距离均为 4.999 m，翼间平均 6.559 m。三机最终均安全上锁。
-- V6 成功重组并存储 Zone 1：四点 `(5,-2) (9,-2) (9,2) (5,2)`，高度 `(0,20)`。
-- V7 三节点形成一致 chromosome，动态目标 `(25,5)` 进入共享 `new_targets`。
-- V8 完成 leader 分配、两从机 ACK、路径状态聚合与共同命中时间冻结。
-- V4 证据：`.codex-tmp/sead_v4_two_uav_20260801.bag`、`.codex-tmp/sead_v4_vmstat_20260801.log`；V5 证据：`.codex-tmp/sead_v5_formation_20260801.bag`。
-
-已登记的间歇性问题：
-
-- V4 第一次 `takeoff_all` 时 uav2 瞬时因控制状态无效拒绝；valid 恢复后重试成功。2026-08-05 定向复现确认 `start.sh` 返回后仍可能短暂出现单机 `state_valid=False`，现已增加连续 readiness gate；修复后 V5 启动返回即执行 `takeoff_all`，三机首次请求全部接受并进入 ACTIVE/OFFBOARD。触地末段两机短暂隔离 `mavros/velocity_z`，未进入 FAILSAFE 并安全上锁。
-- V5 起飞初段 uav1/uav2 各一次 `PRESTREAM -> WAIT_STATE -> PRESTREAM` 后自动恢复；触地安全上锁后 uav2 valid 未在采集结束前恢复。
-- 历史轮次中 uav2 独立 `AUTO.LAND`/意外上锁尚未在 2026-08-05 两轮 V5 定向运行中复现，不能宣称已由 readiness gate 修复；若再次出现，必须同步采集后单独归因。若同类问题在空中持续、触发 FAILSAFE 或影响安全，应立即终止对应验证。
-
 ## 通用启动、观察与清理
 
 进入验证目录：
@@ -83,7 +51,7 @@ V3–V5 启动时，`start.sh` 还会等待本场景全部 UAV 同时满足 MAVR
 
 ### 实时可视化与证据保存
 
-V3–V8 启动后，先在 `commands` 输入：
+V3–V9 启动后，先在 `commands` 输入：
 
 ```bash
 visualize
@@ -95,6 +63,7 @@ visualize
 - V6：绘制禁飞区多边形、高度范围和接收事件；
 - V7：绘制任务目标，并显示各节点 DPGA cost/chromosome 和 U2U 事件；
 - V8：绘制一机一目标分配，并显示 ACK 集合和共同命中时间。
+- V9：只绘制 uav1 蓝色实际轨迹和 `/uav1/dynamic_nofly_zone` 的红色多边形轮廓/填充，不叠加规划航线。黑色 `× T1` 是任务目标，蓝色实心点是飞机当前位置。
 
 关闭窗口或运行 `kill.sh` 时会保存：
 
@@ -275,11 +244,83 @@ strike_demo
 
 通过标准：分配、ACK、路径聚合、共同时间传播全部完成，节点不崩溃。物理同步进场不由 V8 覆盖。完成后执行 `./kill.sh`。
 
-## V9：真实 XBee/DigiMesh
+## V9：固定翼动态禁飞区空地图 SITL
 
-当前没有可安全执行的 `start.sh v9`。此项必须具备真实 DigiMesh 设备、GCS 电台、正确串口映射、真机安全区和明确授权；仿真日志不能替代射频链路验收。
+默认交互启动（创建 tmux，并在就绪后进入界面）：
 
-满足条件后需要另行制定硬件检查表，至少覆盖地址映射、双向收发、丢包/重连、错误帧、急停和设备拔插恢复。在这些条件满足前，V9 保持未执行。
+```bash
+cd /home/promise/catkin_ws/src/xd-uavsystem-test/src/xd_uav_sead/tmux/validation
+./start.sh v9
+```
+
+默认 `nominal` 禁飞区半边长为 18 m，即 `36 m × 36 m`。禁飞区不是预先固定在世界坐标中：验收器先生成原始航线，再在飞机前方的原始航线上选取中心，因此原始航线必然穿过随后插入的区域。启动时可用米为单位覆盖半边长：
+
+```bash
+./start.sh v9 --zone-half-size 18
+```
+
+上例与当前 nominal 默认值相同，生成 `36 m × 36 m` 区域。半边长 25 m（`50 m × 50 m`）在一次旧规划配置下被安全拒绝，仍不作为默认演示值。`--zone-half-size` 只覆盖区域大小，不改变所选 profile 的任务距离、最小转弯半径或规划净空。三个 profile 未覆盖时的默认尺寸为：`nominal=36×36 m`、`relaxed1=30×30 m`、`relaxed2=24×24 m`。当前三个 profile 的最小转弯半径为 70/65/60 m，规划净空为 10/8/5 m；规划器从贴近请求净空且能够安全直达后续目标的候选开始，并对完整 Dubins 曲线做碰撞检查，验收仍独立要求真实轨迹不得进入红色多边形。nominal 已实飞通过，真实最小净空 39.36 m，完成到达 T1、返航和 `AUTO.LOITER`。
+
+自动验收/无人值守启动：
+
+```bash
+./start.sh v9 --no-attach --profile nominal
+```
+
+`v9` 会自动完成 PX4 固定翼解锁、起飞、SEAD 航线下发、飞行中动态插入禁飞区、剩余航线重规划、真实轨迹绕飞、到达目标、返航和 `AUTO.LOITER` 收尾，不需要手工再发任务。交互式 `./start.sh v9` 会在 `commands` pane 启动时自动等待 ROS 并打开可视化，因此能够从仿真开始记录轨迹，不会遗漏手工开窗前的飞行段。再次输入下面的命令只会检查并复用已有节点，不会重复开窗：
+
+```bash
+visualize
+```
+
+`--no-attach` 默认不启动图形窗口；如需显式覆盖，可在启动前设置 `SEAD_VALIDATION_AUTO_VISUALIZE=true|false`。
+
+面板只显示蓝色实际轨迹与红色动态禁飞区；关闭后保存 PNG/JSON/CSV。轨迹从跑道起飞时开始记录，而 SEAD 航线是在爬升完成、任务接管时才生成，两者起点本就不同，因此不再把规划线叠加到该视图。T1 在固定翼完成起飞爬升后才生成：以当时飞机位置为原点，沿实测地面航向向前放置 300 m（nominal）。可视化订阅的是锁存任务消息，所以打开窗口的第一帧就会看到 T1；这不表示飞机出生在 T1。验收终端最终必须出现 `success: true`，并同时满足：动态重规划发生、规划航线满足净空、实际轨迹未进入多边形、到达目标、返航、最终保持解锁的 `AUTO.LOITER`。完成后执行：
+
+```bash
+./kill.sh
+```
+
+仅在 nominal 的规划或真实净空确实失败时，才按顺序使用一次放宽配置，不可跳级掩盖控制故障：
+
+```bash
+./start.sh v9 --no-attach --profile relaxed1
+./start.sh v9 --no-attach --profile relaxed2
+```
+
+### 飞行期间通过 ROS 话题更新禁飞区
+
+动态接口是 `/uav1/dynamic_nofly_zone`，类型为 `xd_uav_sead/NoFlyZone`。对同一个非零 `zone_id` 再发送 `operation: 0`（UPSERT）会原子替换原多边形，因此可用来实时改变大小或位置。frame 必须是 `uav1/odom`；时间戳必须新鲜；`valid_until` 必须晚于 stamp 且 TTL 不超过 60 s；顶点应按边界顺序组成无自交多边形。下面示例读取仿真 `/clock`，把 zone 9100 更新为中心 `(225,-13)`、半边长 20 m 的 `40×40 m` 矩形，有效期 45 s：
+
+```bash
+clock_yaml="$(rostopic echo -n 1 /clock/clock)"
+zone_now_s="$(awk '/secs:/ {print $2; exit}' <<<"$clock_yaml")"
+zone_now_ns="$(awk '/nsecs:/ {print $2; exit}' <<<"$clock_yaml")"
+zone_until_s=$((zone_now_s + 45))
+
+rostopic pub -1 /uav1/dynamic_nofly_zone xd_uav_sead/NoFlyZone "
+header:
+  stamp: {secs: ${zone_now_s}, nsecs: ${zone_now_ns}}
+  frame_id: 'uav1/odom'
+schema_version: 1
+operation: 0
+zone_id: 9100
+enabled: true
+zone_type: 0
+min_altitude: 0.0
+max_altitude: 100.0
+valid_until: {secs: ${zone_until_s}, nsecs: ${zone_now_ns}}
+polygon:
+  points:
+    - {x: 205.0, y: -33.0, z: 0.0}
+    - {x: 245.0, y: -33.0, z: 0.0}
+    - {x: 245.0, y:   7.0, z: 0.0}
+    - {x: 205.0, y:   7.0, z: 0.0}"
+```
+
+改变 `zone_id: 9100` 的四个顶点并再次执行同一 UPSERT，即可实时改变该区域大小。后续独立接口测试建议使用 9100 等自定义 ID。自动 v9 验收器自身使用 zone 9001，并约每 15 s 刷新它的 45 s TTL；因此在 v9 运行中手工覆盖 9001 会被验收器恢复，不能作为持久人工修改。要观察人工区域，可使用不同 ID；但新区域若让当前航迹无安全可行解，SEAD 会 fail-closed、拒绝继续使用旧航线，这是预期安全行为。
+
+headless SITL 专用配置会回读确认 PX4 模拟电池保持 100%，并豁免无 RC/GCS 环境下 OFFBOARD 与 Hold 的链路丢失动作；这些旁路不用于真机。真实 XBee/DigiMesh、GCS 电台和真机仍是独立硬件验收，仿真结果不能替代射频链路、急停和设备拔插测试。
 
 ## V10：QGC/UDP 与阶段 4
 
@@ -287,6 +328,6 @@ strike_demo
 
 ## 异常处置与结论边界
 
-飞行时若出现持续 estimator invalid、manager FAILSAFE、意外上锁、失控趋势或 RTF/时钟明显异常，立即停止下发新任务并执行 `land_all`；若常规降落不可用，再按现场安全流程处理。不要通过放宽安全阈值或加入 SEAD 魔法数字掩盖问题。
+飞行时若出现持续 estimator invalid、manager FAILSAFE、意外上锁、失控趋势或 RTF/时钟明显异常，立即停止下发新任务并执行 `land_all`；若常规降落不可用，再按现场安全流程处理。不要通过无依据地放宽安全阈值或加入 SEAD 魔法数字掩盖问题。V9 的 2 秒 MAVROS state watchdog 是针对该话题约 1 Hz 发布周期设置的两周期门限；其余高频估计器、控制器和空速门限保持原值。
 
 若证据指向其他共享包缺陷，只记录复现条件、日志、影响和最小修改方案，未经授权不直接修改。阶段 3 的当前剩余边界是 DPGA/SimpleStrike 物理飞行、固定翼实飞、真实 XBee，以及已登记间歇性问题的统一归因。

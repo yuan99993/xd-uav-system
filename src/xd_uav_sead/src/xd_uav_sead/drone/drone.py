@@ -25,7 +25,7 @@ import xd_uav_sead.planning.pathFollowing as pf
 from std_srvs.srv import SetBool, Trigger
 from xd_uav_controller.srv import Takeoff as ManagerTakeoff
 from geometry_msgs.msg import Point, Vector3
-from time import time
+from time import monotonic, sleep as wall_sleep, time
 
 
 class Drone(object):
@@ -103,18 +103,10 @@ class Drone(object):
         self.home_valid = False
         # Classify from the standard MAV_TYPE parameter.  Never guess a frame
         # type: sending multirotor controls to a fixed-wing vehicle is unsafe.
-        self.frame_type = None # 初始化为 None 只等 classifier 确认
-        self._classifier_attempts = 0
-        while not self.frame_type:
-            self._classifier_attempts += 1
-            if self._classifier_attempts > 5:
-                raise RuntimeError(
-                    "uav_classifier could not determine a supported MAV_TYPE "
-                    f"after {self._classifier_attempts - 1} attempts"
-                )
-            self.uav_classifier()
-            if not self.frame_type:
-                rospy.sleep(0.5)
+        self.frame_type = None  # 初始化为 None，只等 classifier 确认
+        self._wait_for_supported_frame_type(
+            float(rospy.get_param("~mav_type_timeout", 45.0))
+        )
         rospy.loginfo(f"[Drone] frame_type = {self.frame_type}")
         rospy.Subscriber(f"{self.ns_mavros}/state", State, self.state_callback)
         rospy.Subscriber(f"{self.ns_mavros}/imu/data", Imu, self.imu_callback)
@@ -223,6 +215,28 @@ class Drone(object):
             return bool(response.mode_sent)
         except (rospy.ROSException, rospy.ServiceException) as exc:
             rospy.logerr(f"[{self.uav_name}] AUTO.LOITER request failed: {exc}")
+            return False
+
+    def _handoff_external_mode(self, px4_mode):
+        """Relinquish manager-owned OFFBOARD before selecting a PX4 mode."""
+        self.keepoffboard = None
+        self.defaultoffboard = None
+        if not self._call_manager_trigger("cancel_offboard"):
+            rospy.logerr(
+                f"[{self.uav_name}] cannot hand control to {px4_mode}: "
+                "control manager retained OFFBOARD"
+            )
+            return False
+        try:
+            rospy.wait_for_service(f"{self.ns_mavros}/set_mode", timeout=2.0)
+            response = rospy.ServiceProxy(
+                f"{self.ns_mavros}/set_mode", SetMode
+            )(custom_mode=str(px4_mode))
+            if not response.mode_sent:
+                rospy.logerr(f"[{self.uav_name}] PX4 rejected {px4_mode}")
+            return bool(response.mode_sent)
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            rospy.logerr(f"[{self.uav_name}] {px4_mode} request failed: {exc}")
             return False
 
     def state_callback(self, msg):
@@ -418,12 +432,23 @@ class Drone(object):
         if self.headless_sitl_failsafe_bypass:
             rospy.logwarn(
                 "Fixed-wing headless SITL bypass enabled: disabling RC/data-link "
-                "loss actions and airspeed preflight check for this process"
+                "loss actions and pinning the PX4 simulated battery at 100%; "
+                "the official simulated airspeed sensor remains required"
             )
             settings = (
-                ("CBRK_AIRSPD_CHK", 162128, None),
                 ("COM_RC_IN_MODE", 4, None),
+                # Ignore the absent RC link in both Hold (bit 1) and Offboard
+                # (bit 2), otherwise PX4 replaces the final AUTO.LOITER with
+                # the configured RC-loss action as soon as OFFBOARD ends.
+                ("COM_RCL_EXCEPT", 6, None),
                 ("NAV_DLL_ACT", 0, None),
+                # PX4's battery_simulator defaults to a 60 s discharge interval.
+                # Long SEAD routes therefore trigger a real PX4 battery failsafe
+                # even though Gazebo has no finite fuel source.  Keep this
+                # headless-SITL-only path deterministic without weakening the
+                # battery protection used by real vehicles.
+                ("SIM_BAT_DRAIN", None, 86400.0),
+                ("SIM_BAT_MIN_PCT", None, 100.0),
             )
         else:
             settings = (
@@ -460,6 +485,10 @@ class Drone(object):
             if requested in ("LAND", "AUTO.LAND"):
                 self.keepoffboard = None
                 return self._call_manager_trigger("land")
+            if requested in ("LOITER", "AUTO.LOITER"):
+                return self._handoff_external_mode("AUTO.LOITER")
+            if requested in ("RTL", "AUTO.RTL"):
+                return self._handoff_external_mode("AUTO.RTL")
             rospy.logwarn(
                 f"[{self.uav_name}] mode {mode} has no public xd_control_manager "
                 "equivalent; command rejected without bypassing the manager"
@@ -808,6 +837,26 @@ class Drone(object):
 
         rospy.loginfo(f"[classifier] => {self.frame_type}")
         return self.frame_type
+
+    def _wait_for_supported_frame_type(self, timeout):
+        """Wait for MAVROS parameter sync without depending on simulation time."""
+        deadline = monotonic() + max(0.0, float(timeout))
+        attempts = 0
+        while not rospy.is_shutdown():
+            attempts += 1
+            if self.uav_classifier():
+                self._classifier_attempts = attempts
+                return self.frame_type
+            remaining = deadline - monotonic()
+            if remaining <= 0.0:
+                break
+            # Gazebo may not publish /clock yet, so rospy.sleep() can deadlock
+            # or consume an unexpectedly short simulated interval at startup.
+            wall_sleep(min(0.5, remaining))
+        raise RuntimeError(
+            "uav_classifier could not determine a supported MAV_TYPE "
+            f"within {float(timeout):.1f}s ({attempts} attempts)"
+        )
 
 
 

@@ -9,12 +9,14 @@
   <arg name="safety_config" default="$(find xd_uav_control_manager)/config/safety.yaml"/>
   <arg name="simple_goal_topic"
        default="/move_base_simple/goal"/>
+  <arg name="imu_topic" default="mavros/imu/data"/>
 
   <include file="$(find xd_uav_control_manager)/launch/control_manager.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="vehicle_type" value="fixedwing"/>
     <arg name="offboard_config" value="$(arg offboard_config)"/>
     <arg name="safety_config" value="$(arg safety_config)"/>
+    <arg name="imu_topic" value="$(arg imu_topic)"/>
   </include>
   <include file="$(find xd_uav_controller)/launch/controller.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>

@@ -5,6 +5,7 @@ find_package(catkin REQUIRED COMPONENTS
   diagnostic_msgs
   geometry_msgs
   gazebo_msgs
+  geographic_msgs
   mavros_msgs
   nav_msgs
   quadrotor_msgs
@@ -24,6 +25,7 @@ catkin_package(CATKIN_DEPENDS
   diagnostic_msgs
   geometry_msgs
   gazebo_msgs
+  geographic_msgs
   mavros_msgs
   nav_msgs
   quadrotor_msgs
@@ -53,6 +55,7 @@ catkin_install_python(PROGRAMS
   scripts/ego_command_frame_adapter.py
   scripts/fastlio_shadow_gate.py
   scripts/gazebo_fastlio_world_alignment.py
+  scripts/navsat_origin_provider.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

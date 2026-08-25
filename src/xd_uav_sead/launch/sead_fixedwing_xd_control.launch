@@ -11,9 +11,9 @@
   <arg name="controller_config"
        default="$(find xd_uav_controller)/config/fixedwing.yaml"/>
   <arg name="offboard_config"
-       default="$(find xd_uav_control_manager)/config/offboard.yaml"/>
+       default="$(find xd_uav_sead)/config/fixedwing_offboard.yaml"/>
   <arg name="safety_config"
-       default="$(find xd_uav_control_manager)/config/safety.yaml"/>
+       default="$(find xd_uav_sead)/config/fixedwing_sitl_safety.yaml"/>
   <arg name="control_setpoint_topic"
        default="/$(arg uav_name)/control/reference/setpoint"/>
   <arg name="control_reference_frame" default="$(arg uav_name)/odom"/>
@@ -26,10 +26,22 @@
   <arg name="sead_control_mode" default="position_waypoint"/>
   <arg name="simple_strike_control_mode" default="position_waypoint"/>
   <arg name="headless_sitl_failsafe_bypass" default="false"/>
+  <arg name="manager_imu_topic" default="integration/imu_fcu"/>
 
   <!-- PX4, MAVROS and Gazebo are external to this composition.  MRS core must
        stay stopped because it owns the same /uavX/control_manager namespace. -->
   <group if="$(arg start_control_stack)">
+    <group ns="$(arg uav_name)">
+      <node pkg="xd_uav_system_integration"
+            type="imu_frame_adapter.py"
+            name="sead_imu_frame_adapter"
+            output="screen"
+            required="true">
+        <param name="input_topic" value="mavros/imu/data"/>
+        <param name="output_topic" value="$(arg manager_imu_topic)"/>
+        <param name="frame_id" value="$(arg uav_name)/fcu"/>
+      </node>
+    </group>
     <include file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
       <arg name="UAV_NAME" value="$(arg uav_name)"/>
       <arg name="sources_config" value="$(arg sources_config)"/>
@@ -47,6 +59,7 @@
       <arg name="offboard_config" value="$(arg offboard_config)"/>
       <arg name="safety_config" value="$(arg safety_config)"/>
       <arg name="simple_goal_topic" value="$(arg simple_goal_topic)"/>
+      <arg name="imu_topic" value="$(arg manager_imu_topic)"/>
     </include>
   </group>
 

@@ -2390,6 +2390,7 @@ class ControllerNode {
       acceleration_command_initialized_ = true;
     }
     takeoff_active_ = true;
+    fixedwing_takeoff_rotated_ = false;
     response.success = true;
     response.message = "起飞参考已建立";
     return true;
@@ -4330,11 +4331,32 @@ class ControllerNode {
 
     if (takeoff_active_) {
       desired_roll = clamp(desired_roll, -0.25, 0.25);
-      throttle = fixedwing_takeoff_throttle_;
-      desired_pitch =
-          state_.airspeed >= fixedwing_rotate_airspeed_
-              ? -std::abs(fixedwing_climb_pitch_)
-              : 0.0;
+      throttle = clamp(fixedwing_takeoff_throttle_,
+                       minimum_throttle_, maximum_throttle_);
+      if (!fixedwing_takeoff_rotated_ &&
+          state_.airspeed >= fixedwing_rotate_airspeed_) {
+        fixedwing_takeoff_rotated_ = true;
+        ROS_INFO(
+            "[xd_uav_controller] 固定翼达到rotate空速 %.1f m/s，"
+            "开始按空速裕度平滑爬升",
+            state_.airspeed);
+      }
+      if (fixedwing_takeoff_rotated_) {
+        // A binary rotate-pitch switch chatters when the aircraft trades
+        // airspeed for height.  Keep rotation latched, but unload pitch
+        // continuously as airspeed approaches the configured minimum so
+        // full throttle can rebuild energy without a stall/deep phugoid.
+        const double pitch_schedule_span = std::max(
+            0.5, fixedwing_climb_airspeed_ - minimum_airspeed_);
+        const double pitch_scale = clamp(
+            (state_.airspeed - minimum_airspeed_) /
+                pitch_schedule_span,
+            0.0, 1.0);
+        desired_pitch =
+            -std::abs(fixedwing_climb_pitch_) * pitch_scale;
+      } else {
+        desired_pitch = 0.0;
+      }
     }
     if (landing_active_) {
       desired_roll = clamp(
@@ -4699,6 +4721,7 @@ class ControllerNode {
   bool internal_reference_active_{false};
   bool idle_reference_active_{false};
   bool takeoff_active_{false};
+  bool fixedwing_takeoff_rotated_{false};
   bool fixedwing_loiter_active_{false};
   bool landing_active_{false};
   bool landing_return_home_{false};

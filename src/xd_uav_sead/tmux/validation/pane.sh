@@ -31,6 +31,27 @@ case "$role" in
         wait_ros
         exec roslaunch mrs_uav_gazebo_simulation simulation.launch gui:=true
         ;;
+      v9)
+        wait_ros
+        # The distro also ships plugins with identical filenames.  Keep the
+        # PX4 plane model, MAVLink interface, motor model and aerodynamics from
+        # the same source/build revision instead of silently mixing ABIs and
+        # control mappings.
+        px4_gazebo_plugins="/home/promise/PX4-Autopilot/build/px4_sitl_default/build_gazebo"
+        export GAZEBO_PLUGIN_PATH="$px4_gazebo_plugins"
+        export LD_LIBRARY_PATH="$px4_gazebo_plugins:${LD_LIBRARY_PATH:-}"
+        launch_args=(
+          plane_sdf:=/home/promise/PX4-Autopilot/Tools/sitl_gazebo/models/plane/plane.sdf \
+          world:=/home/promise/PX4-Autopilot/Tools/sitl_gazebo/worlds/empty.world \
+          gui:="${SEAD_VALIDATION_GAZEBO_GUI:-true}" \
+          run_acceptance:=true \
+          acceptance_profile:="${SEAD_FIXEDWING_PROFILE:-nominal}"
+        )
+        if [[ -n "${SEAD_FIXEDWING_ZONE_HALF_SIZE:-}" ]]; then
+          launch_args+=(zone_half_size:="$SEAD_FIXEDWING_ZONE_HALF_SIZE")
+        fi
+        exec roslaunch xd_uav_sead sead_fixedwing_headless_acceptance.launch "${launch_args[@]}"
+        ;;
       *) hold_pane "$scenario 不需要 Gazebo。" ;;
     esac
     ;;
@@ -80,6 +101,9 @@ case "$role" in
         ;;
       v8)
         exec roslaunch xd_uav_sead sead_onboard.launch UAV_NAME:="$uav" use_simulation:=true sead_runtime_mode:=simple_strike simple_strike_control_mode:=position_waypoint
+        ;;
+      v9)
+        hold_pane "v9 的 PX4、MAVROS、自研控制链、SEAD 和自动验收器统一运行在 gazebo pane。"
         ;;
     esac
     ;;

@@ -27,6 +27,7 @@
   <exec_depend>xd_uav_controller</exec_depend>
   <exec_depend>xd_uav_control_manager</exec_depend>
   <exec_depend>xd_uav_state_estimators</exec_depend>
+  <exec_depend>xd_uav_system_integration</exec_depend>
 
   <test_depend>python3-nose</test_depend>
   <test_depend>rostest</test_depend>

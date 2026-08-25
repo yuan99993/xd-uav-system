@@ -2,6 +2,7 @@
 <launch>
   <arg name="UAV_NAME" default="uav1"/>
   <arg name="common_frame" default="world"/>
+  <arg name="gps_origin_topic" default="mavros/global_position/gp_origin"/>
   <include file="$(find xd_uav_system_integration)/launch/mavros_odom_recovery_gate.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
   </include>
@@ -16,6 +17,7 @@
   <include file="$(find xd_uav_system_integration)/launch/px4_control_stack.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="common_frame" value="$(arg common_frame)"/>
+    <arg name="gps_origin_topic" value="$(arg gps_origin_topic)"/>
     <arg name="simple_goal_topic" value="/$(arg UAV_NAME)/demo/simple_goal"/>
     <arg name="adapt_manager_imu" value="true"/>
     <arg name="sources_config"

@@ -20,5 +20,17 @@ XD-UAV 的组合层，负责 reference 仲裁、健康门、profile 校验以及
 catkin_make -j2 --pkg xd_uav_system_integration
 ```
 
-单机演示：`scripts/ego_obstacle_demo.sh start`，起飞后用
-`scripts/ego_obstacle_demo.sh goal 6 0 1` 下发目标，结束时先 `land` 再 `stop`。
+单机演示会自动启动 Gazebo、RViz、PX4/MAVROS、状态估计、控制链和 EGO：
+
+```bash
+cd /home/promise/catkin_ws/src/xd-uavsystem-test/src/xd_uav_system_integration
+scripts/ego_obstacle_demo.sh start
+scripts/ego_obstacle_demo.sh goal 6 0 1
+scripts/ego_obstacle_demo.sh status
+scripts/ego_obstacle_demo.sh land
+scripts/ego_obstacle_demo.sh stop
+```
+
+`start` 只有在 MAVROS、estimator、GPS/local alignment、manager 和 EGO 全链健康且自动
+起飞完成后才返回。不要在 readiness 等待期间重复启动。RViz 默认显示无人机里程计、障碍
+点云、膨胀地图和 EGO 轨迹；`stop` 会等待 MRS spawner、Gazebo、PX4/MAVROS 完整退出。

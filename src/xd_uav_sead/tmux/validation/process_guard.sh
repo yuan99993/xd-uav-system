@@ -5,16 +5,19 @@ mode="${1:-check}"
 patterns=(
   '/opt/ros/noetic/bin/roscore'
   '/opt/ros/noetic/bin/rosmaster --core -p 11311'
-  '/opt/ros/noetic/bin/roslaunch xd_uav_sead (sead_onboard|sead_xd_control)\.launch'
+  '/opt/ros/noetic/bin/roslaunch xd_uav_sead (sead_onboard|sead_xd_control|sead_fixedwing_headless_acceptance)\.launch'
   '/devel/lib/xd_uav_sead/sead_onboard_node\.py'
   'sead_validation_visualizer\.py'
+  'fixedwing_nofly_acceptance\.py'
   '/devel/lib/xd_uav_state_estimators/multi_source_estimator_node'
   '/devel/lib/xd_uav_control_manager/control_manager_node'
   '/devel/lib/xd_uav_controller/controller_node'
   '/opt/ros/noetic/share/px4/px4/px4 .* -w sitl_uav[123]'
+  '/opt/ros/noetic/share/px4/px4/px4 .*etc/init.d-posix/rcS'
   '/opt/ros/noetic/lib/mavros/mavros_node .*uav[123]-mavros'
   '/opt/ros/noetic/bin/roslaunch mrs_uav_gazebo_simulation simulation.launch'
   'gzserver .*mrs_gazebo_common_resources/worlds/grass_plane.world'
+  'gzserver .*/PX4-Autopilot/Tools/sitl_gazebo/worlds/empty.world'
   'gzclient .*gazebo_ros_api_plugin'
 )
 

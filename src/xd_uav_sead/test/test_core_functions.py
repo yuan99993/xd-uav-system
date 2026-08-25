@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 
 import math
+import os
 import queue
 import random
+import sys
 import unittest
 from unittest import mock
 
 import numpy as np
+import rospy
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
 
 from xd_uav_sead.airspace.airspace_manager import AirspaceManager, ZoneDef
 from xd_uav_sead.formation.formation_control import (
@@ -24,6 +29,9 @@ from xd_uav_sead.planning.pathFollowing import CraigReynolds_Path_Following
 from xd_uav_sead.planning import DPGA
 from xd_uav_sead.strike.simple_strike import SimpleStrikeManager
 from xd_uav_sead.drone.drone import Drone
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+from fixedwing_nofly_acceptance import FixedwingNoFlyAcceptance
 
 
 class AirspaceFunctionTest(unittest.TestCase):
@@ -51,6 +59,51 @@ class AirspaceFunctionTest(unittest.TestCase):
 
 
 class SharedFrameFunctionTest(unittest.TestCase):
+    def test_acceptance_waits_for_mavros_parameter_sync_before_setting(self):
+        acceptance = object.__new__(FixedwingNoFlyAcceptance)
+        acceptance.namespace = "/uav1"
+        unsynchronized = mock.Mock(success=False)
+        synchronized = mock.Mock(success=True)
+        synchronized.value.integer = 1
+        verified = mock.Mock(success=True)
+        verified.value.integer = 4
+        getter = mock.Mock(
+            side_effect=[
+                rospy.ServiceException("receiving not complete"),
+                unsynchronized,
+                synchronized,
+                verified,
+            ]
+        )
+        setter_response = mock.Mock(success=True)
+        setter_response.value.integer = 4
+        setter = mock.Mock(return_value=setter_response)
+
+        def service_proxy(name, _service_type):
+            return setter if name.endswith("/set") else getter
+
+        with mock.patch(
+            "fixedwing_nofly_acceptance.rospy.wait_for_service"
+        ), mock.patch(
+            "fixedwing_nofly_acceptance.rospy.ServiceProxy",
+            side_effect=service_proxy,
+        ), mock.patch(
+            "fixedwing_nofly_acceptance.rospy.is_shutdown", return_value=False
+        ), mock.patch(
+            "fixedwing_nofly_acceptance.rospy.logwarn_throttle"
+        ), mock.patch(
+            "fixedwing_nofly_acceptance.time.monotonic",
+            side_effect=[10.0, 10.1, 10.2],
+        ), mock.patch(
+            "fixedwing_nofly_acceptance.time.sleep"
+        ) as sleep_mock:
+            acceptance._set_and_verify_px4_int_param("COM_RC_IN_MODE", 4)
+
+        self.assertEqual(getter.call_count, 4)
+        setter.assert_called_once()
+        self.assertEqual(setter.call_args.args[0].value.integer, 4)
+        self.assertEqual(sleep_mock.call_count, 3)
+
     def test_headless_sitl_bypass_is_explicit_and_fail_closed(self):
         drone = object.__new__(Drone)
         drone.headless_sitl_failsafe_bypass = True
@@ -63,15 +116,42 @@ class SharedFrameFunctionTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("CBRK_AIRSPD_CHK", 162128, None),
                 ("COM_RC_IN_MODE", 4, None),
+                ("COM_RCL_EXCEPT", 6, None),
                 ("NAV_DLL_ACT", 0, None),
+                ("SIM_BAT_DRAIN", None, 86400.0),
+                ("SIM_BAT_MIN_PCT", None, 100.0),
             ],
         )
 
         drone._set_px4_param = mock.Mock(side_effect=[True, False])
         with mock.patch("xd_uav_sead.drone.drone.rospy.sleep"):
             self.assertFalse(drone._configure_fixedwing_takeoff_safety())
+
+    def test_acceptance_verifies_float_px4_parameter_after_setting(self):
+        acceptance = object.__new__(FixedwingNoFlyAcceptance)
+        acceptance.namespace = "/uav1"
+        setter = mock.Mock(return_value=mock.Mock(success=True))
+        actual = mock.Mock(success=True)
+        actual.value.real = 86400.0
+        getter = mock.Mock(return_value=actual)
+
+        def service_proxy(name, _service_type):
+            return setter if name.endswith("/set") else getter
+
+        with mock.patch(
+            "fixedwing_nofly_acceptance.rospy.wait_for_service"
+        ), mock.patch(
+            "fixedwing_nofly_acceptance.rospy.ServiceProxy",
+            side_effect=service_proxy,
+        ), mock.patch("fixedwing_nofly_acceptance.time.sleep"):
+            acceptance._set_and_verify_px4_float_param(
+                "SIM_BAT_DRAIN", 86400.0
+            )
+
+        setter.assert_called_once()
+        self.assertEqual(setter.call_args.args[0].value.real, 86400.0)
+        getter.assert_called_once_with(param_id="SIM_BAT_DRAIN")
 
     def test_uav_classifier_uses_standard_mav_type(self):
         drone = object.__new__(Drone)
@@ -89,6 +169,48 @@ class SharedFrameFunctionTest(unittest.TestCase):
         drone.get_param = mock.Mock(return_value=mock.Mock(integer=10))
         self.assertIsNone(drone.uav_classifier())
         self.assertIsNone(drone.frame_type)
+
+    def test_uav_classifier_waits_for_delayed_mavros_parameter_sync(self):
+        drone = object.__new__(Drone)
+        drone.frame_type = None
+        attempts = []
+
+        def classify():
+            attempts.append(True)
+            if len(attempts) == 3:
+                drone.frame_type = FrameType.Fixed_wing
+            return drone.frame_type
+
+        drone.uav_classifier = classify
+        with mock.patch(
+            "xd_uav_sead.drone.drone.monotonic",
+            side_effect=[10.0, 10.1, 10.2],
+        ), mock.patch(
+            "xd_uav_sead.drone.drone.wall_sleep"
+        ) as sleep_mock, mock.patch(
+            "xd_uav_sead.drone.drone.rospy.is_shutdown", return_value=False
+        ):
+            self.assertEqual(
+                drone._wait_for_supported_frame_type(5.0),
+                FrameType.Fixed_wing,
+            )
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(sleep_mock.call_count, 2)
+
+    def test_uav_classifier_timeout_remains_fail_closed(self):
+        drone = object.__new__(Drone)
+        drone.frame_type = None
+        drone.uav_classifier = mock.Mock(return_value=None)
+        with mock.patch(
+            "xd_uav_sead.drone.drone.monotonic",
+            side_effect=[20.0, 20.2, 21.1],
+        ), mock.patch(
+            "xd_uav_sead.drone.drone.wall_sleep"
+        ), mock.patch(
+            "xd_uav_sead.drone.drone.rospy.is_shutdown", return_value=False
+        ):
+            with self.assertRaisesRegex(RuntimeError, "within 1.0s"):
+                drone._wait_for_supported_frame_type(1.0)
 
     def test_manager_fixedwing_takeoff_applies_explicit_sitl_safety_first(self):
         drone = object.__new__(Drone)
@@ -153,8 +275,34 @@ class SharedFrameFunctionTest(unittest.TestCase):
         self.assertEqual(order, ["cancel_offboard", "AUTO.LOITER"])
         self.assertIsNone(drone.keepoffboard)
 
+    def test_external_loiter_mode_hands_control_back_to_px4(self):
+        drone = object.__new__(Drone)
+        drone.uses_external_control_manager = True
+        drone._handoff_external_mode = mock.Mock(return_value=True)
+
+        self.assertTrue(drone.set_mode("LOITER"))
+        drone._handoff_external_mode.assert_called_once_with("AUTO.LOITER")
+
 
 class PathFollowingFunctionTest(unittest.TestCase):
+    def test_dpga_position_waypoint_keeps_flight_altitude_not_path_heading(self):
+        process = object.__new__(DPGA.main_process)
+        process.control_mode = "position_waypoint"
+        process.path_update_flag = True
+        process.path_following = mock.Mock()
+        process.path_following.path = [[100.0, 20.0, 1.57]]
+        process.path_following.get_fixed_wing_waypoint.return_value = [
+            100.0,
+            20.0,
+            1.57,
+        ]
+        uav = mock.Mock()
+        uav.local_pose = [10.0, 5.0, 24.0]
+
+        process._follow_fixedwing_path(uav, height=24.0)
+
+        uav.guide_to_waypoint.assert_called_once_with([100.0, 20.0, 24.0])
+
     def test_fixed_wing_waypoint_progresses_forward(self):
         follower = CraigReynolds_Path_Following(
             method=None,
@@ -166,6 +314,73 @@ class PathFollowingFunctionTest(unittest.TestCase):
         self.assertEqual(follower.get_fixed_wing_waypoint(0.0, 0.0), [100.0, 0.0, 100.0])
         self.assertEqual(follower.get_fixed_wing_waypoint(100.0, 0.0), [200.0, 0.0, 100.0])
         self.assertIsNone(follower.get_fixed_wing_waypoint(200.0, 0.0))
+
+    def test_fixed_wing_waypoint_replan_anchors_to_nearest_path_point(self):
+        follower = CraigReynolds_Path_Following(
+            method=None,
+            recedingHorizon=2.0,
+            path=[[float(x), 0.0, 0.0] for x in range(0, 101, 5)],
+        )
+        follower.Rmin = 60.0
+
+        waypoint = follower.get_fixed_wing_waypoint(
+            52.0, 3.0, update=True, lookahead_dist=20.0
+        )
+
+        self.assertEqual(waypoint[:2], [70.0, 0.0])
+        self.assertEqual(follower.fw_path_index, 10)
+
+    def test_fixed_wing_waypoint_does_not_jump_to_return_leg_near_home(self):
+        outbound = [[float(x), 0.0, 0.0] for x in range(0, 205, 5)]
+        returning = [[float(x), 5.0, math.pi] for x in range(200, -5, -5)]
+        follower = CraigReynolds_Path_Following(
+            method=None,
+            recedingHorizon=2.0,
+            path=outbound + returning,
+        )
+        follower.Rmin = 60.0
+
+        waypoint = follower.get_fixed_wing_waypoint(
+            0.0, 4.9, update=True, lookahead_dist=30.0
+        )
+
+        self.assertEqual(waypoint[:2], [30.0, 0.0])
+        self.assertEqual(follower.fw_path_index, 0)
+
+    def test_v9_zone_selection_uses_outbound_arc_not_return_leg(self):
+        acceptance = object.__new__(FixedwingNoFlyAcceptance)
+        acceptance.turning_radius = 20.0
+        acceptance.zone_ahead_distance = 75.0
+        acceptance.zone_half_size = 5.0
+        path = Path()
+        for x, y in (
+            (0.0, 0.0),
+            (50.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 50.0),
+            (50.0, 50.0),
+            (0.0, 1.0),
+        ):
+            pose = PoseStamped()
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            path.poses.append(pose)
+
+        rectangle = acceptance._choose_zone(path, 0.0, 0.0)
+
+        self.assertEqual(rectangle, (95.0, 105.0, -5.0, 5.0))
+
+    def test_v9_profiles_keep_larger_turn_radius_while_relaxing_zone(self):
+        profiles = FixedwingNoFlyAcceptance.PROFILES
+        self.assertGreaterEqual(min(p["turning_radius"] for p in profiles.values()), 60.0)
+        self.assertGreater(
+            profiles["nominal"]["planning_clearance"],
+            profiles["relaxed1"]["planning_clearance"],
+        )
+        self.assertGreater(
+            profiles["relaxed1"]["planning_clearance"],
+            profiles["relaxed2"]["planning_clearance"],
+        )
 
 
 class FormationFunctionTest(unittest.TestCase):
@@ -548,6 +763,34 @@ class DpgaFunctionTest(unittest.TestCase):
             airspace.path_min_horizontal_clearance(process.path_following.path, 60.0),
             20.0 - 1e-6,
         )
+
+    def test_fixedwing_base_completion_does_not_index_cleared_target(self):
+        process = object.__new__(DPGA.main_process)
+        process.ga2control_queue = queue.Queue()
+        process.control2ga_queue = queue.Queue()
+        process.previous_time_u2u = 0.0
+        process.previous_time_control = 0.0
+        process.T = 1.0
+        process.T_comm = 1.0
+        process.back_to_base = True
+        process.packet = []
+        process.path_following = mock.Mock(path=[[0.0, 0.0, 0.0]])
+        process.mission_flag = False
+        process.target = [[0.0, 0.0, 0.0]]
+        process.into = False
+        process.reset = mock.Mock(side_effect=lambda: process.target.clear())
+        timer = mock.Mock()
+        timer.check_timer.return_value = False
+        timer.check_period.return_value = False
+        timer.t.return_value = 1.0
+        uav = mock.Mock(local_pose=[0.0, 0.0, 30.0], Rmin=20.0)
+
+        process.run_fixedWing(
+            mock.Mock(), mock.Mock(), uav, timer, mock.Mock(), 30.0, 20.0
+        )
+
+        self.assertTrue(process.mission_flag)
+        uav.set_mode.assert_called_once_with("LOITER")
 
 
 class SimpleStrikeFunctionTest(unittest.TestCase):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live validation dashboard and evidence exporter for SEAD V3-V8."""
+"""Live validation dashboard and evidence exporter for SEAD V3-V9."""
 
 import base64
 import csv
@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 import rospy
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
+
+from xd_uav_sead.msg import NoFlyZone
 
 
 COLORS = {1: "tab:blue", 2: "tab:orange", 3: "tab:green"}
@@ -54,7 +56,7 @@ class ValidationVisualizer:
         self.formation_point = None
         self.saved = False
 
-        count = {"v3": 1, "v4": 2, "v5": 3}.get(self.scenario, 0)
+        count = {"v3": 1, "v4": 2, "v5": 3, "v9": 1}.get(self.scenario, 0)
         for uid in range(1, count + 1):
             rospy.Subscriber(
                 "/uav%d/mavros/local_position/odom" % uid,
@@ -72,6 +74,13 @@ class ValidationVisualizer:
                 queue_size=20,
             )
         rospy.Subscriber("/sead/u2u", String, self._u2u, queue_size=200)
+        if self.scenario == "v9":
+            rospy.Subscriber(
+                "/uav1/dynamic_nofly_zone",
+                NoFlyZone,
+                self._dynamic_nofly,
+                queue_size=20,
+            )
 
         self.fig, (self.map_ax, self.info_ax) = plt.subplots(1, 2, figsize=(13, 6))
         self.fig.canvas.manager.set_window_title("SEAD %s live validation" % self.scenario.upper())
@@ -158,6 +167,26 @@ class ValidationVisualizer:
                 point = info.get("point", [])
                 if len(point) >= 2:
                     self.formation_point = list(point)
+
+    def _dynamic_nofly(self, msg):
+        with self.lock:
+            if msg.operation == NoFlyZone.OP_CLEAR:
+                self.zones.clear()
+            elif msg.operation == NoFlyZone.OP_REMOVE or not msg.enabled:
+                self.zones.pop(int(msg.zone_id), None)
+            elif msg.operation == NoFlyZone.OP_UPSERT:
+                self.zones[int(msg.zone_id)] = {
+                    "vertices": [[float(p.x), float(p.y)] for p in msg.polygon.points],
+                    "minAlt": float(msg.min_altitude),
+                    "maxAlt": float(msg.max_altitude),
+                    "valid_until": msg.valid_until.to_sec(),
+                    "source": "dynamic_nofly_zone",
+                }
+        self._event(
+            "dynamic no-fly zone",
+            operation=int(msg.operation),
+            zone_id=int(msg.zone_id),
+        )
 
     @staticmethod
     def _packet(raw):
@@ -298,6 +327,18 @@ class ValidationVisualizer:
             lines.append("assignments: %s" % (assignments or "等待 strike_demo"))
             lines.append("ACK UAVs: %s" % sorted(acks))
             lines.append("common_hit_time: %s" % hit)
+        elif self.scenario == "v9":
+            lines.append("dynamic no-fly zones: %s" % (sorted(zones) or "等待动态禁飞区"))
+            for zid, zone in sorted(zones.items()):
+                lines.append(
+                    "zone %s: vertices=%d alt=[%s,%s]"
+                    % (
+                        zid,
+                        len(zone.get("vertices", [])),
+                        zone.get("minAlt"),
+                        zone.get("maxAlt"),
+                    )
+                )
         lines.append("")
         lines.append("recent events:")
         for item in events[-10:]:

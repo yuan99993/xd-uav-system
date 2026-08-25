@@ -5,6 +5,7 @@
   <arg name="config" default="$(find xd_uav_single_tf_manager)/config/single_tf.yaml"/>
   <arg name="gps_config" default="$(find xd_uav_single_tf_manager)/config/gps_alignment.yaml"/>
   <arg name="gps_alignment_enabled" default="true"/>
+  <arg name="gps_origin_topic" default="mavros/global_position/gp_origin"/>
   <arg name="local_origin_frame" default="$(arg uav_name)/local_origin"/>
   <arg name="odom_frame" default="$(arg uav_name)/odom"/>
   <arg name="body_frame" default="$(arg uav_name)/base_link"/>
@@ -21,6 +22,7 @@
           output="screen"
           clear_params="true">
       <rosparam command="load" file="$(arg gps_config)"/>
+      <param name="origin_topic" value="$(arg gps_origin_topic)"/>
       <param name="local_origin_frame" value="$(arg local_origin_frame)"/>
       <param name="body_frame" value="$(arg body_frame)"/>
     </node>

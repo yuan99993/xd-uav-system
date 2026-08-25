@@ -774,15 +774,28 @@ class main_process(object):
         mode = getattr(self, "control_mode", "swiftwing_vector")
 
         if mode == "position_waypoint":
+            try:
+                rmin = float(uav_ros.Rmin)
+            except (TypeError, ValueError, AttributeError):
+                try:
+                    rmin = float(getattr(self.path_following, "Rmin", 30.0))
+                except (TypeError, ValueError):
+                    rmin = 30.0
             wp = self.path_following.get_fixed_wing_waypoint(
                 uav_ros.local_pose[0],
                 uav_ros.local_pose[1],
                 min_dist=10.0,
                 update=self.path_update_flag,
+                lookahead_dist=max(20.0, min(0.5 * rmin, 40.0)),
             )
             self.path_update_flag = False
 
             if wp:
+                # DPGA/Dubins path states are [x, y, heading].  The generic
+                # path-following helper preserves that third component, but a
+                # PositionTarget waypoint needs altitude in slot 2.  Never
+                # interpret heading radians as metres.
+                wp[2] = float(height)
                 uav_ros.guide_to_waypoint(wp)
             else:
                 uav_ros.set_mode("LOITER")
@@ -850,7 +863,11 @@ class main_process(object):
                 ]
             )
             # print(f"Waypoint radius: {int(waypoint_radius)}") # 璋冭瘯鏃ュ織锛氭樉绀哄綋鍓嶇殑 waypoint_radius涓?
-            arrival_dist = max(waypoint_radius, 5.0 * uav_ros.Rmin)
+            # Arrival is a mission-state threshold, not a path look-ahead
+            # distance.  Five turn radii made a larger/safer Rmin report a
+            # target hundreds of metres early and could immediately mark the
+            # aircraft as returning to base.
+            arrival_dist = max(waypoint_radius, 1.25 * uav_ros.Rmin)
             if dist_to_target <= arrival_dist and not self.into:
                 print(f"[DEBUG] UAV{getattr(self, 'uav_id', 'Unknown')}: Entering target area, dist={dist_to_target:.2f}, arrival_dist={arrival_dist:.2f}")
                 print(f"[DEBUG] UAV{getattr(self, 'uav_id', 'Unknown')}: target={self.target[0] if self.target else 'None'}")
@@ -871,6 +888,10 @@ class main_process(object):
                     # self.update = False
                     # 浠诲姟瀹屾垚鍒囨崲鍒版偓鍋滄ā寮?
                     uav_ros.set_mode("LOITER")
+                    # reset() clears self.target and the active path.  Do not
+                    # fall through to the remaining target[0] checks in this
+                    # control iteration after mission completion.
+                    return
                 self.into = True
             if dist_to_target >= arrival_dist and self.into:
                 print(f"[DEBUG] UAV{getattr(self, 'uav_id', 'Unknown')}: dist_to_target={dist_to_target:.2f}, arrival_dist={arrival_dist:.2f}, into={self.into}")

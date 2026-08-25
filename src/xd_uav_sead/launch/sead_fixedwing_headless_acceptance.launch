@@ -5,12 +5,17 @@
   <arg name="world"
        default="$(find mrs_gazebo_common_resources)/worlds/grass_plane.world"/>
   <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
+  <arg name="gui" default="true"/>
+  <arg name="run_acceptance" default="false"/>
+  <arg name="acceptance_profile" default="nominal"/>
+  <arg name="zone_half_size" default="-1.0"/>
 
   <include file="$(find xd_uav_sead)/launch/plane_headless_sitl_acceptance.launch">
     <arg name="uav_name" value="$(arg uav_name)"/>
     <arg name="plane_sdf" value="$(arg plane_sdf)"/>
     <arg name="world" value="$(arg world)"/>
     <arg name="fcu_url" value="$(arg fcu_url)"/>
+    <arg name="gui" value="$(arg gui)"/>
   </include>
 
   <include file="$(find xd_uav_sead)/launch/sead_fixedwing_xd_control.launch">
@@ -19,4 +24,15 @@
     <arg name="sead_control_mode" value="position_waypoint"/>
     <arg name="headless_sitl_failsafe_bypass" value="true"/>
   </include>
+
+  <node if="$(arg run_acceptance)"
+        pkg="xd_uav_sead"
+        type="fixedwing_nofly_acceptance.py"
+        name="fixedwing_nofly_acceptance"
+        output="screen"
+        required="false">
+    <param name="uav_name" value="$(arg uav_name)"/>
+    <param name="profile" value="$(arg acceptance_profile)"/>
+    <param name="zone_half_size" value="$(arg zone_half_size)"/>
+  </node>
 </launch>

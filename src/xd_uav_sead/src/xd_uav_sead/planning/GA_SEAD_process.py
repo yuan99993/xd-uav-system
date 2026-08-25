@@ -298,17 +298,37 @@ def plan_path_with_avoidance(
         for _, target_zone in blocked_zones[:3]:
             poly = target_zone.get("poly", [])
 
-            # 多层外扩：增加一个超大圈用于包围绕行
-            margins = [
-                Rmin * 2.0 + clearance,
-                Rmin * 4.0 + 2.0 * clearance,
-                Rmin * 8.0 + 4.0 * clearance,
+            # Try the closest curvature-feasible bypass first.  Collision
+            # checking below validates the complete Dubins segment, so forcing
+            # every candidate two to eight radii outside the requested safety
+            # envelope only creates long, energy-expensive detours.
+            close_margins = [
+                clearance,
+                Rmin * 0.25 + clearance,
             ]
-            candidates_pos = _get_expanded_vertices(poly, margins)
+            fallback_margins = [
+                Rmin * 0.5 + clearance,
+                Rmin + clearance,
+                Rmin * 2.0 + 2.0 * clearance,
+            ]
+            candidates_pos = [
+                (candidate, True)
+                for candidate in _get_expanded_vertices(poly, close_margins)
+            ] + [
+                (candidate, False)
+                for candidate in _get_expanded_vertices(poly, fallback_margins)
+            ]
 
             candidate_options = []
+            goal_vector = np.array(gp[:2], dtype=float) - np.array(
+                curr_sp[:2], dtype=float
+            )
+            goal_distance = np.linalg.norm(goal_vector)
+            goal_direction = (
+                goal_vector / goal_distance if goal_distance > 1e-6 else goal_vector
+            )
 
-            for cand in candidates_pos:
+            for cand, is_close_candidate in candidates_pos:
                 # [前置检查] 候选点不能在禁飞区内
                 cand_inside = False
                 for z_check in zones:
@@ -320,6 +340,20 @@ def plan_path_with_avoidance(
                         cand_inside = True
                         break
                 if cand_inside:
+                    continue
+
+                # A bypass may legitimately need one point before and another
+                # after the obstacle.  Require each iteration to advance along
+                # the current task direction so the search cannot bounce
+                # between opposite expanded corners.
+                forward_progress = float(
+                    np.dot(
+                        np.array(cand[:2], dtype=float)
+                        - np.array(curr_sp[:2], dtype=float),
+                        goal_direction,
+                    )
+                )
+                if forward_progress < max(1.0, 0.25 * Rmin):
                     continue
 
                 # [狭缝过滤] 检查是否在两个禁飞区中间
@@ -369,6 +403,12 @@ def plan_path_with_avoidance(
 
                 for h in headings_to_test:
                     wp = (cand[0], cand[1], h)
+                    if any(
+                        np.linalg.norm(np.array(old[:2]) - np.array(wp[:2]))
+                        < max(1.0, 0.25 * Rmin)
+                        for old in waypoints
+                    ):
+                        continue
                     try:
                         # [防绕圈检查]
                         # 计算 Dubins 路径长度
@@ -386,10 +426,13 @@ def plan_path_with_avoidance(
                         if dubins_len > linear_dist * 1.5 + 2 * np.pi * Rmin:
                             loop_penalty = 10000.0  # 惩罚绕圈
 
-                        len_rem = math.hypot(gp[0] - cand[0], gp[1] - cand[1])
+                        remaining_path = dubins.shortest_path(wp, gp, Rmin)
+                        len_rem = remaining_path.path_length()
                         total_est_cost = dubins_len + len_rem + loop_penalty
 
-                        candidate_options.append((total_est_cost, wp))
+                        candidate_options.append(
+                            (total_est_cost, wp, is_close_candidate)
+                        )
                     except:
                         pass
 
@@ -397,18 +440,47 @@ def plan_path_with_avoidance(
             candidate_options.sort(key=lambda x: x[0])
 
             best_wp = None
-            for cost, wp in candidate_options:
-                # 只有在这里才做昂贵的碰撞检测
-                if not _is_dubins_blocked(
+            # Prefer a close one-turn bypass only when both complete Dubins
+            # legs are already safe.  This prevents a locally safe close
+            # corner from becoming a dead end on the next iteration.
+            for _, wp, _ in candidate_options:
+                incoming_blocked = _is_dubins_blocked(
                     curr_sp,
                     wp,
                     Rmin,
                     zones,
                     step=sampling_step,
                     clearance=clearance,
-                ):
+                )
+                outgoing_blocked = _is_dubins_blocked(
+                    wp,
+                    gp,
+                    Rmin,
+                    zones,
+                    step=sampling_step,
+                    clearance=clearance,
+                )
+                if not incoming_blocked and not outgoing_blocked:
                     best_wp = wp
                     break
+
+            # Some geometries genuinely require two bypass points.  Preserve
+            # the proven wider candidates for that iterative fallback rather
+            # than committing a close candidate with no safe onward leg.
+            if best_wp is None:
+                for _, wp, is_close_candidate in candidate_options:
+                    if is_close_candidate:
+                        continue
+                    if not _is_dubins_blocked(
+                        curr_sp,
+                        wp,
+                        Rmin,
+                        zones,
+                        step=sampling_step,
+                        clearance=clearance,
+                    ):
+                        best_wp = wp
+                        break
 
             if best_wp:
                 waypoints.append(best_wp)

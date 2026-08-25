@@ -4,7 +4,7 @@
   <arg name="uav_name" default="$(arg UAV_NAME)"/>
   <arg name="common_frame" default="world"/>
   <arg name="ego_id" default="0"/>
-  <arg name="body_frame" default="$(arg uav_name)/fcu"/>
+  <arg name="body_frame" default="$(arg uav_name)/base_link"/>
   <arg name="goal_x" default="1.0"/>
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>

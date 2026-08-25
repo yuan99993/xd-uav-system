@@ -96,10 +96,20 @@ visualize() {
   local output_root="/home/promise/catkin_ws/src/xd-uavsystem-test/.codex-tmp/visualizations"
   local offset_file="${SEAD_VALIDATION_RUNTIME:-/home/promise/catkin_ws/src/xd-uavsystem-test/.codex-tmp/sead_validation_offsets.env}"
   local run_id="${SEAD_VALIDATION_RUN_ID:-}"
-  rosrun xd_uav_sead sead_validation_visualizer.py \
-    _scenario:="$scenario" _output_root:="$output_root" \
-    _offset_file:="$offset_file" _expected_run_id:="$run_id" &
-  echo "可视化窗口启动中（PID $!）；V5 自动使用本轮 offset。"
+  if rosnode list 2>/dev/null | grep -q '^/sead_validation_visualizer'; then
+    echo "本轮可视化已经在运行，不重复启动。"
+    return 0
+  fi
+  (
+    until rosparam get /rosversion >/dev/null 2>&1; do sleep 1; done
+    if rosnode list 2>/dev/null | grep -q '^/sead_validation_visualizer'; then
+      exit 0
+    fi
+    exec rosrun xd_uav_sead sead_validation_visualizer.py \
+      _scenario:="$scenario" _output_root:="$output_root" \
+      _offset_file:="$offset_file" _expected_run_id:="$run_id"
+  ) &
+  echo "可视化窗口启动中（等待 ROS 后自动订阅，PID $!）；V5 自动使用本轮 offset。"
   echo "关闭窗口时保存 PNG/JSON/CSV，V5 额外保存 offsets.env 到 $output_root。"
 }
 
@@ -116,7 +126,9 @@ help_sead() {
   echo "  dpga_demo                 v7 下发三机分配任务"
   echo "  dpga_insert X Y           v7 动态插入目标"
   echo "  strike_demo               v8 下发三目标任务"
-  echo "  visualize                 v3-v8 实时显示并保存验证证据"
+  echo "  v9 自动执行固定翼起飞、动态禁飞区重规划、绕飞和返航验收"
+  echo "     启动示例: ./start.sh v9 --zone-half-size 18（36x36 m）"
+  echo "  visualize                 v3-v9 实时显示并保存验证证据"
   echo "  help_sead                 再次显示帮助"
   echo
   echo "切换窗口：Ctrl+B 后按 n/p；直接跳转：Ctrl+B 后按 0/1/2。"
@@ -124,4 +136,8 @@ help_sead() {
 
 export -f takeoff_all waypoint land_all auto_offsets trail_all formation_point airspace_demo dpga_demo dpga_insert strike_demo visualize help_sead
 help_sead
+if [[ "$scenario" == "v9" && "${SEAD_VALIDATION_AUTO_VISUALIZE:-false}" == "true" ]]; then
+  echo "v9 交互模式：自动启动可视化，从仿真开始持续记录真实轨迹。"
+  visualize
+fi
 exec bash --noprofile

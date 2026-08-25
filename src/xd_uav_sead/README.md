@@ -7,7 +7,7 @@ ROS1 Noetic 下的 SEAD 移植包，保留 XBee 协议、ROS 仿真桥、DPGA、
 
 - `scripts/sead_onboard_node.py`：机载主循环。
 - `scripts/mock_gcs.py`：ROS 模拟地面站命令。
-- `tmux/validation/start.sh`、`kill.sh`：V3–V8 仿真验证入口和安全清理。
+- `tmux/validation/start.sh`、`kill.sh`：V3–V9 仿真验证入口和安全清理。
 - `msg/NoFlyZone.msg`：带版本、frame、高度和有效期的动态禁飞区消息。
 - `launch/sead_fixedwing_xd_control.launch`：SEAD → 自研 manager/controller 控制链。
 
@@ -21,8 +21,22 @@ cd /home/promise/catkin_ws/src/xd-uavsystem-test/src/xd_uav_sead/tmux/validation
 ```
 
 场景含义、commands pane 操作、观察指标和清理要求见
-`docs/SEAD_FULL_VALIDATION_RUNBOOK.md`。V9 是需要真实 XBee/DigiMesh 和真机授权的硬件项，
-历史启动器不提供 `start.sh v9`。
+`docs/SEAD_FULL_VALIDATION_RUNBOOK.md`。
+
+固定翼动态禁飞区演示：
+
+```bash
+cd /home/promise/catkin_ws/src/xd-uavsystem-test/src/xd_uav_sead/tmux/validation
+./start.sh v9
+# 可选：指定禁飞区半边长（米）
+./start.sh v9 --zone-half-size 18
+# 无人值守验收
+./start.sh v9 --no-attach --profile nominal
+```
+
+V9 自动完成起飞、任务下发、飞行中禁飞区插入、重规划绕飞、返航和 LOITER。默认
+nominal 区域为 `36 m × 36 m`；运行期间的 ROS 动态更新方法和完整判据见使用手册。
+真实 XBee/DigiMesh、GCS 电台与真机仍需单独硬件验收。
 
 ## 常用命令
 

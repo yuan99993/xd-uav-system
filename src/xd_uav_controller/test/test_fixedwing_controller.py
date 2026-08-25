@@ -602,6 +602,22 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             InternalCommandRequest.TAKEOFF, 30.0
         )
         self.assertTrue(response.success, response.message)
+
+        pre_rotate_state = self._state()
+        pre_rotate_state.airspeed = 13.0
+        pre_rotate_command = self._wait_for_command(
+            lambda value: value.valid and value.takeoff_active,
+            include_reference=False,
+            state=pre_rotate_state,
+        )
+        self.assertAlmostEqual(
+            pre_rotate_command.body_rate.y,
+            0.0,
+            delta=0.04,
+            msg="rotate空速前必须保持跑道俯仰",
+        )
+        self.assertAlmostEqual(pre_rotate_command.thrust, 1.0, delta=0.01)
+
         takeoff_command = self._wait_for_command(
             lambda value: value.valid and value.takeoff_active,
             include_reference=False,
@@ -611,6 +627,46 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             takeoff_command.body_rate.y,
             -0.05,
             "达到rotate空速后应给出抬头指令",
+        )
+        self.assertAlmostEqual(takeoff_command.thrust, 1.0, delta=0.01)
+
+        # Rotation stays latched, while pitch is unloaded continuously as
+        # airspeed approaches the minimum. This guards against the old
+        # 12 m/s binary pitch switch that produced a deep phugoid in SITL.
+        marginal_airspeed_state = self._state()
+        marginal_airspeed_state.airspeed = 11.0
+        unloaded_takeoff_command = self._wait_for_command(
+            lambda value: value.valid and value.takeoff_active,
+            include_reference=False,
+            state=marginal_airspeed_state,
+        )
+        self.assertAlmostEqual(
+            unloaded_takeoff_command.body_rate.y,
+            0.0,
+            delta=0.04,
+            msg="最低空速处必须卸载爬升俯仰以恢复能量",
+        )
+        self.assertAlmostEqual(
+            unloaded_takeoff_command.thrust,
+            1.0,
+            delta=0.01,
+        )
+
+        recovered_airspeed_state = self._state()
+        recovered_airspeed_state.airspeed = 13.0
+        scheduled_takeoff_command = self._wait_for_command(
+            lambda value: (
+                value.valid
+                and value.takeoff_active
+                and value.body_rate.y < -0.02
+            ),
+            include_reference=False,
+            state=recovered_airspeed_state,
+        )
+        self.assertGreater(
+            scheduled_takeoff_command.body_rate.y,
+            takeoff_command.body_rate.y,
+            "中间空速的抬头量应小于爬升空速处",
         )
 
         climbed_state = self._state()

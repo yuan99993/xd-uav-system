@@ -72,11 +72,13 @@ fixedwing:
 
 takeoff:
   default_altitude: 30.0
-  takeoff_throttle: 0.90
-  rotate_airspeed: 12.0
+  # 跑道起飞阶段保留全部功率裕度；俯仰会按空速裕度连续卸载。
+  takeoff_throttle: 1.0
+  # PX4 runway takeoff同样以minimum_airspeed的约1.3倍才rotate；留足能量裕度。
+  rotate_airspeed: 14.5
   climb_airspeed: 15.0
   # 正数表示抬头角的绝对值；控制器会转换成ROS FLU机体系的负pitch。
-  climb_pitch: 0.21
+  climb_pitch: 0.12
   altitude_tolerance: 3.0
 
 landing:

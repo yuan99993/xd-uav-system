@@ -34,65 +34,93 @@ class CraigReynolds_Path_Following(object):
         self.Rmin = 30  # 固定翼最小转弯半径，可选参数
 
     def get_fixed_wing_waypoint(
-        self, uav_x, uav_y, min_dist=10.0, default_z=None, update=False
+        self,
+        uav_x,
+        uav_y,
+        min_dist=10.0,
+        default_z=None,
+        update=False,
+        lookahead_dist=None,
+        completion_dist=None,
     ):
-        """
-        Return ONE forward-only fixed-wing waypoint.
-        Always returns [x, y, z] or None.
-        Fixed-wing safe acceptance logic.
-        """
-        # 当重新规划路线时，重置航点索引，确保从新路径的起点开始跟踪
-        if update:
-            self.fw_path_index = 0
-            # update = False
-        
+        """Return a forward look-ahead point on the sampled fixed-wing path.
 
-        if not self.path or self.fw_path_index >= len(self.path):
+        The old implementation treated ``1.5 * Rmin`` as a waypoint acceptance
+        radius.  Since a Dubins path is sampled every few metres, that skipped
+        tens of curve samples at once and cut the corner which encoded the turn
+        radius.  Track the nearest *forward* sample instead, then walk a bounded
+        arc length along the path to obtain a stable look-ahead target.
+        """
+        if not self.path:
             return None
 
         if default_z is None:
             default_z = 0.0
+        rmin = max(float(getattr(self, "Rmin", min_dist)), float(min_dist))
+        if lookahead_dist is None:
+            lookahead_dist = max(float(min_dist), min(0.5 * rmin, 40.0))
+        if completion_dist is None:
+            completion_dist = max(float(min_dist), min(0.25 * rmin, 20.0))
 
-        uav_pos = np.array([uav_x, uav_y], dtype=float)
-
-        # 固定翼接受半径放大（关键）
-        # accept_dist = max(min_dist, 2.5 * getattr(self, "Rmin", min_dist))
-        accept_dist = max(min_dist, 1.5 * getattr(self, "Rmin", min_dist))
-
-        # -------------------------------------------------
-        # 1. Skip reached / passed waypoints
-        # -------------------------------------------------
-        while self.fw_path_index < len(self.path):
-            pt = self.path[self.fw_path_index]
-
+        points = []
+        source_indices = []
+        for index, point in enumerate(self.path):
             try:
-                px = float(pt[0])
-                py = float(pt[1])
-                pz = float(pt[2]) if len(pt) >= 3 else default_z
-            except Exception:
-                self.fw_path_index += 1
+                points.append([float(point[0]), float(point[1])])
+                source_indices.append(index)
+            except (TypeError, ValueError, IndexError):
                 continue
+        if not points:
+            return None
 
-            dist = np.hypot(px - uav_x, py - uav_y)
+        start = 0 if update else max(0, int(self.fw_path_index))
+        valid_start = 0
+        while valid_start < len(source_indices) and source_indices[valid_start] < start:
+            valid_start += 1
+        if valid_start >= len(points):
+            valid_start = len(points) - 1
 
-            if dist > accept_dist:
-                break  # 还没到 / 还没飞过
+        uav_pos = np.array([float(uav_x), float(uav_y)], dtype=float)
+        # Outbound and return legs can be geometrically close.  Searching the
+        # complete remainder may jump directly onto the return leg, especially
+        # when a newly loaded route starts and ends at home.  Project only in
+        # a bounded forward arc and advance that window with fw_path_index.
+        search_arc = max(60.0, 2.0 * rmin, 4.0 * float(lookahead_dist))
+        search_end = valid_start
+        accumulated = 0.0
+        while search_end < len(points) - 1 and accumulated < search_arc:
+            accumulated += float(
+                np.linalg.norm(
+                    np.asarray(points[search_end + 1])
+                    - np.asarray(points[search_end])
+                )
+            )
+            search_end += 1
+        distances = [
+            np.linalg.norm(np.asarray(point) - uav_pos)
+            for point in points[valid_start : search_end + 1]
+        ]
+        nearest = valid_start + int(np.argmin(distances))
+        self.fw_path_index = source_indices[nearest]
 
-            # 航点认为已完成
-            self.fw_path_index += 1
+        final_xy = np.asarray(points[-1])
+        if nearest == len(points) - 1 and np.linalg.norm(final_xy - uav_pos) <= completion_dist:
+            return None
 
-        # -------------------------------------------------
-        # 2. Return current waypoint
-        # -------------------------------------------------
-        if self.fw_path_index < len(self.path):
-            pt = self.path[self.fw_path_index]
-            return [
-                float(pt[0]),
-                float(pt[1]),
-                float(pt[2]) if len(pt) >= 3 else default_z,
-            ]
+        travelled = 0.0
+        target = nearest
+        while target < len(points) - 1 and travelled < float(lookahead_dist):
+            travelled += float(
+                np.linalg.norm(np.asarray(points[target + 1]) - np.asarray(points[target]))
+            )
+            target += 1
 
-        return None
+        point = self.path[source_indices[target]]
+        return [
+            float(point[0]),
+            float(point[1]),
+            float(point[2]) if len(point) >= 3 else default_z,
+        ]
 
     # 这段是原始代码
     def get_desirePoint_withWindow(self, v, x, y, theta, start_index):

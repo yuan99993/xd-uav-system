@@ -1,10 +1,11 @@
 # MRS PX4/MAVROS compatibility profile used only by sead_xd_control.launch.
-# MRS publishes local odometry and IMU in uavX/fcu, so the self-developed
-# estimator/control stack must use the same physical body frame.
+# The estimator normalizes MAVROS odometry to uavX/fcu.  The fixed-wing launch
+# normalizes the raw MAVROS IMU label to that same coincident body frame before
+# passing it to the strict control-manager input gate.
 odometry_adapters:
   mavros:
     input_topic: mavros/local_position/odom
-    # MRS MAVROS odom 与 IMU 都以 fcu 表示同一机体参考点。
+    # MAVROS odom 的 base_link 与本组合入口使用的 fcu 表示同一机体参考点。
     reference_frame: fcu
     body_frame: fcu
     tf_timeout: 0.03
