@@ -13,5 +13,6 @@ bool enabled
 uint8 zone_type
 float64 min_altitude
 float64 max_altitude
+# Zero means permanent until OP_REMOVE/OP_CLEAR; otherwise absolute ROS expiry time.
 time valid_until
 geometry_msgs/Polygon polygon

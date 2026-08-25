@@ -192,12 +192,15 @@ class DynamicNoFlyZoneReceiver:
             raise NoFlyZoneValidationError("altitude bounds exceed configured limits")
         valid_until = _seconds(msg.valid_until)
         stamp = _seconds(msg.header.stamp)
-        if not math.isfinite(valid_until) or valid_until <= now_sec:
-            raise NoFlyZoneValidationError("valid_until must be in the future")
-        if valid_until <= stamp:
-            raise NoFlyZoneValidationError("valid_until must be after header.stamp")
-        if valid_until - stamp > self.config.max_ttl:
-            raise NoFlyZoneValidationError("zone TTL exceeds max_ttl")
+        if not math.isfinite(valid_until) or valid_until < 0.0:
+            raise NoFlyZoneValidationError("valid_until must be zero or a future time")
+        if valid_until != 0.0:
+            if valid_until <= now_sec or valid_until <= stamp:
+                raise NoFlyZoneValidationError(
+                    "non-zero valid_until must be after stamp and current time"
+                )
+            if valid_until - stamp > self.config.max_ttl:
+                raise NoFlyZoneValidationError("zone TTL exceeds max_ttl")
         vertices = [
             (float(point.x), float(point.y))
             for point in getattr(msg.polygon, "points", [])
@@ -223,9 +226,16 @@ class DynamicNoFlyZoneReceiver:
                 if operation == self.OP_UPSERT:
                     zone, valid_until = self._validate_upsert(msg, float(now_sec))
                     self.airspace.update_zone(zone)
-                    self._expirations[zone.zone_id] = valid_until
+                    if valid_until == 0.0:
+                        self._expirations.pop(zone.zone_id, None)
+                    else:
+                        self._expirations[zone.zone_id] = valid_until
                     self._expired_reported.discard(zone.zone_id)
-                    reason = "zone_upserted"
+                    reason = (
+                        "permanent_zone_upserted"
+                        if valid_until == 0.0
+                        else "zone_upserted"
+                    )
                 elif operation == self.OP_REMOVE:
                     if zone_id <= 0:
                         raise NoFlyZoneValidationError(
@@ -265,4 +275,3 @@ class DynamicNoFlyZoneReceiver:
     def pop_event(self) -> Optional[AirspaceUpdateEvent]:
         with self._lock:
             return self._events.pop(0) if self._events else None
-

@@ -9,6 +9,7 @@
   <arg name="run_acceptance" default="false"/>
   <arg name="acceptance_profile" default="nominal"/>
   <arg name="zone_half_size" default="-1.0"/>
+  <arg name="zone_ttl" default="0.0"/>
 
   <include file="$(find xd_uav_sead)/launch/plane_headless_sitl_acceptance.launch">
     <arg name="uav_name" value="$(arg uav_name)"/>
@@ -34,5 +35,6 @@
     <param name="uav_name" value="$(arg uav_name)"/>
     <param name="profile" value="$(arg acceptance_profile)"/>
     <param name="zone_half_size" value="$(arg zone_half_size)"/>
+    <param name="zone_ttl" value="$(arg zone_ttl)"/>
   </node>
 </launch>

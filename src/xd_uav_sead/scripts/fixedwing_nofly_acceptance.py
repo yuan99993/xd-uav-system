@@ -89,7 +89,9 @@ class FixedwingNoFlyAcceptance:
                 "~zone_ahead_distance", profile["zone_ahead_distance"]
             )
         )
-        self.zone_ttl = float(rospy.get_param("~zone_ttl", 45.0))
+        self.zone_ttl = float(rospy.get_param("~zone_ttl", 0.0))
+        if self.zone_ttl < 0.0:
+            raise AcceptanceFailure("zone_ttl must be zero (permanent) or positive seconds")
         self.configure_headless_failsafes = bool(
             rospy.get_param("~configure_headless_failsafes", True)
         )
@@ -464,7 +466,11 @@ class FixedwingNoFlyAcceptance:
         message.zone_type = NoFlyZone.TYPE_NO_FLY
         message.min_altitude = 0.0
         message.max_altitude = max(100.0, self.takeoff_altitude + 30.0)
-        message.valid_until = now + rospy.Duration(self.zone_ttl)
+        message.valid_until = (
+            rospy.Time(0)
+            if self.zone_ttl == 0.0
+            else now + rospy.Duration(self.zone_ttl)
+        )
         for x, y in ((xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)):
             point = Point32()
             point.x = x
@@ -690,7 +696,7 @@ class FixedwingNoFlyAcceptance:
         rate = rospy.Rate(10)
         while not rospy.is_shutdown() and time.monotonic() < deadline:
             now = time.monotonic()
-            if now - last_zone_refresh >= self.zone_ttl / 3.0:
+            if self.zone_ttl > 0.0 and now - last_zone_refresh >= self.zone_ttl / 3.0:
                 self._publish_zone()
                 last_zone_refresh = now
             with self._lock:
@@ -748,6 +754,7 @@ class FixedwingNoFlyAcceptance:
             if (
                 self.rectangle is not None
                 and self.zone_role in ("standalone", "leader")
+                and self.zone_ttl > 0.0
                 and now - last_zone_refresh >= self.zone_ttl / 3.0
             ):
                 self._publish_zone()

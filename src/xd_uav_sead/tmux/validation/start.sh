@@ -7,6 +7,7 @@ scenario="${1:-}"
 attach_mode=""
 v9_profile="nominal"
 v9_zone_half_size=""
+fixedwing_zone_ttl="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -26,6 +27,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --zone-half-size=*)
       v9_zone_half_size="${1#*=}"
+      shift
+      ;;
+    --zone-ttl)
+      [[ $# -ge 2 ]] || { echo "--zone-ttl 缺少参数（0=永久，正数=秒）" >&2; exit 2; }
+      fixedwing_zone_ttl="$2"
+      shift 2
+      ;;
+    --zone-ttl=*)
+      fixedwing_zone_ttl="${1#*=}"
       shift
       ;;
     nominal|relaxed1|relaxed2)
@@ -196,7 +206,7 @@ check_fixedwing_plugins() {
 case "$scenario" in
   v3|v4|v5|v6|v7|v8|v9|v10) ;;
   *)
-    echo "用法: $0 {v3|v4|v5|v6|v7|v8|v9|v10} [--no-attach] [--profile nominal|relaxed1|relaxed2] [--zone-half-size M]"
+    echo "用法: $0 {v3|v4|v5|v6|v7|v8|v9|v10} [--no-attach] [--profile nominal|relaxed1|relaxed2] [--zone-half-size M] [--zone-ttl S]"
     echo "v3=单机  v4=两机并发  v5=三机编队  v6=Airspace  v7=DPGA  v8=SimpleStrike  v9=单固定翼动态禁飞区  v10=三固定翼共同动态禁飞区"
     exit 2
     ;;
@@ -215,6 +225,10 @@ if [[ "$scenario" == "v9" || "$scenario" == "v10" ]]; then
       exit 2
     fi
   fi
+  if [[ ! "$fixedwing_zone_ttl" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "--zone-ttl 必须是 0（永久）或正秒数" >&2
+    exit 2
+  fi
 fi
 
 if tmux -L sead-validation has-session -t sead-validation 2>/dev/null; then
@@ -228,6 +242,7 @@ fi
 export SEAD_VALIDATION_SCENARIO="$scenario"
 export SEAD_FIXEDWING_PROFILE="$v9_profile"
 export SEAD_FIXEDWING_ZONE_HALF_SIZE="$v9_zone_half_size"
+export SEAD_FIXEDWING_ZONE_TTL="$fixedwing_zone_ttl"
 if [[ ( "$scenario" == "v9" || "$scenario" == "v10" ) && "$attach_mode" != "--no-attach" ]]; then
   auto_visualize_default="true"
 else

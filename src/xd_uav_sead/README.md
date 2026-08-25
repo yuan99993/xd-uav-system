@@ -52,9 +52,11 @@ V10 启动 3 个独立 PX4 `plane` SITL、MAVROS、自研 estimator/manager/cont
 SEAD。三机在 `world` 共享坐标中接收同一个 zone 9001；初始路径受影响的飞机必须产生
 安全重规划，未受影响的飞机可保持原安全路径，但聚合验收至少要求一架真实重规划。当前
 nominal 默认仍为半边长 18 m（`36 m × 36 m`）。运行期间可向
-`/sead/v10/dynamic_nofly_zone` 发布同 frame 的 `NoFlyZone`；自动验收会持续刷新 9001
-直到执行 `kill.sh`，人工接口测试应使用其他非零 zone ID。可视化也按 `valid_until`
-移除真正过期的区域，避免把失效红框误判为当前禁区。完整消息示例、判据和可视化说明见 Runbook。
+`/sead/v10/dynamic_nofly_zone` 发布同 frame 的 `NoFlyZone`。启动参数 `--zone-ttl 0`
+表示 zone 9001 永久有效（默认，直到 REMOVE/CLEAR 或结束仿真），正数表示有效秒数且
+验收器会在运行期间续期；人工接口测试应使用其他非零 zone ID。可视化只按非零
+`valid_until` 移除真正过期的区域；三机各自的任务目标分别标为
+`U1-T1`、`U2-T1`、`U3-T1`。完整消息示例、判据和可视化说明见 Runbook。
 真实 XBee/DigiMesh、GCS 电台与真机仍需单独硬件验收。
 
 ## 常用命令
@@ -68,8 +70,8 @@ rosrun xd_uav_sead mock_gcs.py _uav_name:=uav1 _cmd:=sead_mission \
 ```
 
 动态禁飞区通过 `/uav1/dynamic_nofly_zone` 发布 `xd_uav_sead/NoFlyZone`。消息的
-`header.frame_id` 必须与控制参考 frame 一致，过期、非法或无法安全重规划的输入会触发
-fail-closed。
+`header.frame_id` 必须与控制参考 frame 一致。`valid_until: 0` 表示永久有效，非零值是
+绝对 ROS 到期时间；过期、非法或无法安全重规划的输入会触发 fail-closed。
 
 ## 验证
 

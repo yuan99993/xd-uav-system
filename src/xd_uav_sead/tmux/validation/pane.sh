@@ -46,6 +46,7 @@ case "$role" in
           gui:="${SEAD_VALIDATION_GAZEBO_GUI:-true}" \
           run_acceptance:=true \
           acceptance_profile:="${SEAD_FIXEDWING_PROFILE:-nominal}"
+          zone_ttl:="${SEAD_FIXEDWING_ZONE_TTL:-0}"
         )
         if [[ -n "${SEAD_FIXEDWING_ZONE_HALF_SIZE:-}" ]]; then
           launch_args+=(zone_half_size:="$SEAD_FIXEDWING_ZONE_HALF_SIZE")
@@ -60,6 +61,7 @@ case "$role" in
         launch_args=(
           gui:="${SEAD_VALIDATION_GAZEBO_GUI:-true}"
           acceptance_profile:="${SEAD_FIXEDWING_PROFILE:-nominal}"
+          zone_ttl:="${SEAD_FIXEDWING_ZONE_TTL:-0}"
         )
         if [[ -n "${SEAD_FIXEDWING_ZONE_HALF_SIZE:-}" ]]; then
           launch_args+=(zone_half_size:="$SEAD_FIXEDWING_ZONE_HALF_SIZE")

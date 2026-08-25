@@ -50,6 +50,7 @@ class ValidationVisualizer:
         self.paths = {i: [] for i in (1, 2, 3)}
         self.events = []
         self.targets = []
+        self.uav_targets = {}
         self.zones = {}
         self.assignments = {}
         self.acks = set()
@@ -166,11 +167,18 @@ class ValidationVisualizer:
             elif msg_id == 21:
                 self.zones[int(info.get("zone_id", 0))] = info
             elif msg_id == 18:
-                self.targets = [list(p[:2]) for p in info.get("targets", [])]
+                points = [list(p[:2]) for p in info.get("targets", [])]
+                if self.scenario in ("v9", "v10"):
+                    self.uav_targets[uid] = points
+                else:
+                    self.targets = points
             elif msg_id == 19:
                 point = info.get("point", [])
                 if len(point) >= 2:
-                    self.targets.append(list(point[:2]))
+                    if self.scenario in ("v9", "v10"):
+                        self.uav_targets.setdefault(uid, []).append(list(point[:2]))
+                    else:
+                        self.targets.append(list(point[:2]))
             elif msg_id == 24:
                 self.formation_config = dict(info.get("params", {}))
             elif msg_id == 26:
@@ -254,6 +262,10 @@ class ValidationVisualizer:
             paths = {k: list(v) for k, v in self.paths.items()}
             zones = dict(self.zones)
             targets = list(self.targets)
+            uav_targets = {
+                uid: [list(point) for point in points]
+                for uid, points in self.uav_targets.items()
+            }
             assignments = dict(self.assignments)
             acks = set(self.acks)
             dpga = dict(self.dpga)
@@ -284,6 +296,16 @@ class ValidationVisualizer:
         for idx, point in enumerate(targets, 1):
             self.map_ax.scatter(point[0], point[1], marker="x", s=80, color="black")
             self.map_ax.text(point[0], point[1], " T%d" % idx)
+        for uid, points in sorted(uav_targets.items()):
+            for idx, point in enumerate(points, 1):
+                self.map_ax.scatter(
+                    point[0], point[1], marker="x", s=90,
+                    color=COLORS.get(uid, "black"),
+                )
+                self.map_ax.text(
+                    point[0], point[1], " U%d-T%d" % (uid, idx),
+                    color=COLORS.get(uid, "black"),
+                )
         if formation_point is not None:
             self.map_ax.scatter(
                 formation_point[0], formation_point[1], marker="P", s=110,
@@ -297,7 +319,7 @@ class ValidationVisualizer:
             point = assignment["point"]
             self.map_ax.scatter(point[0], point[1], marker="*", s=140, color=COLORS.get(uid, "black"))
             self.map_ax.text(point[0], point[1], " uav%d→T%d" % (uid, assignment["target_id"]))
-        if any(paths.values()) or zones or targets or assignments or formation_point:
+        if any(paths.values()) or zones or targets or uav_targets or assignments or formation_point:
             self.map_ax.legend(loc="best")
 
         self.info_ax.axis("off")
@@ -379,6 +401,7 @@ class ValidationVisualizer:
                 "events": self.events,
                 "zones": self.zones,
                 "targets": self.targets,
+                "uav_targets": self.uav_targets,
                 "assignments": self.assignments,
                 "acks": sorted(self.acks),
                 "common_hit_time": self.common_hit_time,

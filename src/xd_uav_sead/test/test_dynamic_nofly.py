@@ -100,6 +100,30 @@ class DynamicNoFlyContractTest(unittest.TestCase):
         self.assertIn("expired", event.reason)
         self.assertIn(7, self.airspace.zones)
 
+    def test_zero_valid_until_is_permanent_until_remove(self):
+        self.assertTrue(self.receiver.accept(_message(valid_until=0.0), 100.0))
+        event = self.receiver.pop_event()
+        self.assertEqual(event.reason, "permanent_zone_upserted")
+        self.receiver.poll_expirations(100000.0)
+        self.assertIsNone(self.receiver.pop_event())
+        self.assertIn(7, self.airspace.zones)
+        self.assertTrue(
+            self.receiver.accept(
+                _message(
+                    now=100001.0,
+                    operation=1,
+                    vertices=[],
+                    valid_until=0.0,
+                ),
+                100001.0,
+            )
+        )
+        self.assertNotIn(7, self.airspace.zones)
+
+    def test_negative_valid_until_is_rejected(self):
+        self.assertFalse(self.receiver.accept(_message(valid_until=-1.0), 100.0))
+        self.assertTrue(self.receiver.pop_event().fault)
+
 
 class TurnConstrainedPlannerTest(unittest.TestCase):
     def setUp(self):

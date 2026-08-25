@@ -5,6 +5,7 @@
   <arg name="gui" default="true"/>
   <arg name="acceptance_profile" default="nominal"/>
   <arg name="zone_half_size" default="-1.0"/>
+  <arg name="zone_ttl" default="0.0"/>
 
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
     <arg name="world_name" value="$(arg world)"/>
@@ -35,6 +36,7 @@
         name="uav1_fixedwing_nofly_acceptance" output="screen">
     <param name="uav_name" value="uav1"/><param name="profile" value="$(arg acceptance_profile)"/>
     <param name="zone_half_size" value="$(arg zone_half_size)"/><param name="takeoff_altitude" value="30"/>
+    <param name="zone_ttl" value="$(arg zone_ttl)"/>
     <param name="takeoff_timeout" value="160"/><param name="sync_timeout" value="60"/>
     <param name="shared_frame" value="world"/><param name="shared_offset_y" value="-12"/>
     <param name="zone_role" value="leader"/>
@@ -43,6 +45,7 @@
         name="uav2_fixedwing_nofly_acceptance" output="screen">
     <param name="uav_name" value="uav2"/><param name="profile" value="$(arg acceptance_profile)"/>
     <param name="zone_half_size" value="$(arg zone_half_size)"/><param name="takeoff_altitude" value="40"/>
+    <param name="zone_ttl" value="$(arg zone_ttl)"/>
     <param name="takeoff_timeout" value="160"/><param name="sync_timeout" value="60"/>
     <param name="shared_frame" value="world"/><param name="zone_role" value="follower"/>
   </node>
@@ -50,6 +53,7 @@
         name="uav3_fixedwing_nofly_acceptance" output="screen">
     <param name="uav_name" value="uav3"/><param name="profile" value="$(arg acceptance_profile)"/>
     <param name="zone_half_size" value="$(arg zone_half_size)"/><param name="takeoff_altitude" value="50"/>
+    <param name="zone_ttl" value="$(arg zone_ttl)"/>
     <param name="takeoff_timeout" value="160"/><param name="sync_timeout" value="60"/>
     <param name="shared_frame" value="world"/><param name="shared_offset_y" value="12"/>
     <param name="zone_role" value="follower"/>

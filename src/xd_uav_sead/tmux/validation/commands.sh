@@ -130,6 +130,7 @@ help_sead() {
   echo "     启动示例: ./start.sh v9 --zone-half-size 18（36x36 m）"
   echo "  v10 自动执行三固定翼共同动态禁飞区绕飞和聚合验收"
   echo "     启动示例: ./start.sh v10 --zone-half-size 18（36x36 m）"
+  echo "     区域时效: --zone-ttl 0 永久（默认）；正数表示持续秒数"
   echo "  visualize                 v3-v10 实时显示并保存验证证据"
   echo "  help_sead                 再次显示帮助"
   echo

@@ -64,7 +64,7 @@ visualize
 - V7：绘制任务目标，并显示各节点 DPGA cost/chromosome 和 U2U 事件；
 - V8：绘制一机一目标分配，并显示 ACK 集合和共同命中时间。
 - V9：只绘制 uav1 蓝色实际轨迹和 `/uav1/dynamic_nofly_zone` 的红色多边形轮廓/填充，不叠加规划航线。黑色 `× T1` 是任务目标，蓝色实心点是飞机当前位置。
-- V10：在统一 `world` 坐标中同时绘制 uav1/uav2/uav3 的真实轨迹，以及 `/sead/v10/dynamic_nofly_zone` 的共同红色区域；同样不叠加规划航线。
+- V10：在统一 `world` 坐标中同时绘制 uav1/uav2/uav3 的真实轨迹、分别标注的 `U1-T1`/`U2-T1`/`U3-T1` 目标，以及 `/sead/v10/dynamic_nofly_zone` 的共同红色区域；同样不叠加规划航线。这些是各机独立任务目标，不是三机集结点。
 
 关闭窗口或运行 `kill.sh` 时会保存：
 
@@ -291,7 +291,7 @@ visualize
 
 ### 飞行期间通过 ROS 话题更新禁飞区
 
-动态接口是 `/uav1/dynamic_nofly_zone`，类型为 `xd_uav_sead/NoFlyZone`。对同一个非零 `zone_id` 再发送 `operation: 0`（UPSERT）会原子替换原多边形，因此可用来实时改变大小或位置。frame 必须是 `uav1/odom`；时间戳必须新鲜；`valid_until` 必须晚于 stamp 且 TTL 不超过 60 s；顶点应按边界顺序组成无自交多边形。下面示例读取仿真 `/clock`，把 zone 9100 更新为中心 `(225,-13)`、半边长 20 m 的 `40×40 m` 矩形，有效期 45 s：
+动态接口是 `/uav1/dynamic_nofly_zone`，类型为 `xd_uav_sead/NoFlyZone`。对同一个非零 `zone_id` 再发送 `operation: 0`（UPSERT）会原子替换原多边形，因此可用来实时改变大小或位置。frame 必须是 `uav1/odom`；时间戳必须新鲜；`valid_until: {secs: 0, nsecs: 0}` 表示永久有效，非零值必须晚于 stamp 且 TTL 不超过 60 s；顶点应按边界顺序组成无自交多边形。下面示例读取仿真 `/clock`，把 zone 9100 更新为中心 `(225,-13)`、半边长 20 m 的 `40×40 m` 矩形，有效期 45 s：
 
 ```bash
 clock_yaml="$(rostopic echo -n 1 /clock/clock)"
@@ -319,7 +319,7 @@ polygon:
     - {x: 205.0, y:   7.0, z: 0.0}"
 ```
 
-改变 `zone_id: 9100` 的四个顶点并再次执行同一 UPSERT，即可实时改变该区域大小。后续独立接口测试建议使用 9100 等自定义 ID。自动 v9 验收器自身使用 zone 9001，并约每 15 s 刷新它的 45 s TTL；因此在 v9 运行中手工覆盖 9001 会被验收器恢复，不能作为持久人工修改。要观察人工区域，可使用不同 ID；但新区域若让当前航迹无安全可行解，SEAD 会 fail-closed、拒绝继续使用旧航线，这是预期安全行为。
+改变 `zone_id: 9100` 的四个顶点并再次执行同一 UPSERT，即可实时改变该区域大小；把示例中的 `valid_until` 改为全零即可创建永久区域。后续独立接口测试建议使用 9100 等自定义 ID。自动 v9 验收器自身使用 zone 9001：默认 `--zone-ttl 0` 为永久区域；传入正数时按秒设置有限期，并约每 TTL/3 刷新。因此在 v9 运行中手工覆盖 9001 会被验收器恢复，不能作为持久人工修改。要观察人工区域，可使用不同 ID；但新区域若让当前航迹无安全可行解，SEAD 会 fail-closed、拒绝继续使用旧航线，这是预期安全行为。
 
 headless SITL 专用配置会回读确认 PX4 模拟电池保持 100%，并豁免无 RC/GCS 环境下 OFFBOARD 与 Hold 的链路丢失动作；这些旁路不用于真机。真实 XBee/DigiMesh、GCS 电台和真机仍是独立硬件验收，仿真结果不能替代射频链路、急停和设备拔插测试。
 
@@ -330,6 +330,8 @@ headless SITL 专用配置会回读确认 PX4 模拟电池保持 100%，并豁�
 ```bash
 cd /home/promise/catkin_ws/src/xd-uavsystem-test/src/xd_uav_sead/tmux/validation
 ./start.sh v10 --zone-half-size 18
+# 上式默认永久；下面创建 45 秒有效期并由验收器运行期续期
+./start.sh v10 --zone-half-size 18 --zone-ttl 45
 ```
 
 无人值守聚合验收：
@@ -368,10 +370,11 @@ v10 三固定翼动态禁飞区验收全部通过（实际重规划 N/3）。
 
 运行期公共动态接口为 `/sead/v10/dynamic_nofly_zone`，消息类型仍是
 `xd_uav_sead/NoFlyZone`，但 `header.frame_id` 必须为 `world`。对同一 zone ID 做 UPSERT
-即可实时改变大小/位置；自动验收在任务完成后仍会刷新 9001，直到执行 `kill.sh`，因此
-人工接口测试使用 9100 等其他非零 ID。可视化按消息的 `valid_until` 自动删除真正过期
-的红框；有效区域不会因飞机进入 LOITER 而停止刷新。消息时间戳、TTL、简单多边形和高度
-限制与 V9 相同。
+即可实时改变大小/位置。自动验收的 `--zone-ttl 0`（默认）创建永久 zone 9001；正数创建
+有限期区域并在运行期间按 TTL/3 续期。因此人工接口测试使用 9100 等其他非零 ID。
+可视化保留永久红框，只自动删除真正过期的有限期红框。三机目标用对应轨迹颜色分别标为
+`U1-T1`、`U2-T1`、`U3-T1`，它们是各机独立任务目标，不是共同集结点。消息时间戳、
+TTL、简单多边形和高度限制与 V9 相同。
 
 ## 异常处置与结论边界
 
