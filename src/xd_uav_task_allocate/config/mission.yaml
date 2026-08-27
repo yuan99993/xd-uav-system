@@ -98,7 +98,7 @@ target_registry:
 # multirotor verification. Legacy configurations containing only `enabled` are
 # still accepted.
 hierarchical_search:
-  mode: hierarchical  # auto | single_stage | hierarchical
+  mode: auto  # auto | single_stage | hierarchical
   verification:
     # Publish and dispatch each local region as soon as fixed-wing evidence is
     # ready. `after_coarse_complete` is retained only as an optional policy.

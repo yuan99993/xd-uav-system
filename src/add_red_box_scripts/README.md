@@ -1,11 +1,12 @@
 # Gazebo 搜索目标测试脚本
 
-本目录提供 3 个正式测试脚本：
+本目录提供 4 个正式测试脚本：
 
 | 脚本 | 用途 |
 |---|---|
 | `spawn_red_boxes.py` | 在 Gazebo 中按指定坐标、矩形区域或任务搜索多边形生成红色方块 |
 | `spawn_random_vehicles.py` | 在任务搜索多边形内随机生成 Gazebo 静态车辆 |
+| `spawn_yolo_vehicle_targets.py` | 随机生成兼顾固定翼下视和四旋翼平视 YOLO 识别的大型车辆 |
 | `red_box_detector.py` | 从一架或多架无人机的相机图像中检测红色目标，并发布 `DetectionArray` |
 
 `spawn_red_boxes copy.py` 是 `spawn_red_boxes.py` 的旧副本，缺少按
@@ -30,6 +31,7 @@ catkin_make && source devel/setup.bash
 ```bash
 python3 src/add_red_box_scripts/spawn_red_boxes.py --help
 python3 src/add_red_box_scripts/spawn_random_vehicles.py --help
+python3 src/add_red_box_scripts/spawn_yolo_vehicle_targets.py --help
 python3 src/add_red_box_scripts/red_box_detector.py --help
 ```
 
@@ -76,7 +78,7 @@ python3 src/add_red_box_scripts/spawn_red_boxes.py --count 8 --area=0,20,0,20 --
 终端 1：
 
 ```bash
-cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red_box_scripts/spawn_red_boxes.py --count 6 --search-area-topic /task_allocate/search_areas --size 3 3 1 --ground-z 0 --replace
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red_box_scripts/spawn_red_boxes.py --count 5 --search-area-topic /task_allocate/search_areas --size 3 3 1 --ground-z 0 --replace --min-spacing 10
 ```
 
 终端 2：执行任务系统原有的搜索区域发布命令。收到区域消息后，终端 1 才会
@@ -150,7 +152,7 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red
 
 ```bash
 # 只使用六种小汽车，不生成公交车
-python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --replace --models car_beetle car_golf car_lexus car_opel car_polo car_volvo
+python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --replace --models car_beetle car_golf car_lexus car_opel car_polo car_volvo --min-gap 5
 
 # 固定随机结果，方便重复测试
 python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --ground-z 0 --replace --seed 7
@@ -189,7 +191,35 @@ python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --model-root
 如果区域过小或车辆过多，脚本会拒绝生成。此时可减小 `--count`、
 `--margin` 或 `--min-gap`，或者发布更大的搜索区域。
 
-## 3. 检测红色方块：`red_box_detector.py`
+## 3. 生成双视角 YOLO 车辆目标：`spawn_yolo_vehicle_targets.py`
+
+该脚本与 `spawn_random_vehicles.py` 使用同一个
+`/task_allocate/search_areas` 输入和相同的边界、间距、替换检查，但默认只从
+以下较大且有真实贴图的目标中随机选择：
+
+- `bus`（预期 COCO `bus=5`）
+- `fire_truck`（预期 COCO `truck=7`）
+- `ambulance`（预期 COCO `truck=7` 或 `bus=5`）
+- `pickup`（预期 COCO `truck=7` 或 `car=2`）
+
+这些模型比普通小汽车更适合固定翼高空下视，同时从四旋翼低空平视仍保留明显的
+车辆外形。启动脚本后再发布任务区域：
+
+```bash
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash
+python3 src/add_red_box_scripts/spawn_yolo_vehicle_targets.py --count 8 --ground-z 0 --replace
+```
+
+可以通过 `--models` 限制目标类型，也可以使用 `--seed` 复现实验布局：
+
+```bash
+python3 src/add_red_box_scripts/spawn_yolo_vehicle_targets.py --count 6 --models bus fire_truck --seed 7 --replace
+```
+
+配套的 `sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml` 只输出 COCO
+`car(2)`、`bus(5)` 和 `truck(7)`，并使用适合 Gazebo 初测的 `0.30` 置信度门限。
+
+## 4. 检测红色方块：`red_box_detector.py`
 
 该脚本使用 OpenCV HSV 阈值从相机图像中提取红色区域，可在一个进程中同时
 处理多架无人机。它只输出二维检测框，不负责三维定位或跟踪。
@@ -217,7 +247,7 @@ python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2 uav3
 如果某架无人机使用下视相机，可单独覆盖输入话题；`--image-topic` 可重复使用：
 
 ```bash
-python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2 --image-topic uav1=/uav1/down_camera/image_raw --image-topic uav2=/uav2/down_camera/image_raw
+python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2 --image-topic uav1=/uav1/down_camera/image_raw
 ```
 
 也可以统一修改话题模板，模板中必须保留 `{uav}`。在 Bash 中建议用单引号：
@@ -290,7 +320,7 @@ rqt_image_view /uav1/track/red_detector/debug_image
 
 `rostopic pub -1` 只发布一次。请先运行生成脚本，看到它开始等待区域消息后，
 再发布搜索区域；或者让区域发布者使用 latched topic。
-cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 20.0, y: 0.0, z: 0.0}, {x: 20.0, y: 20.0, z: 0.0}, {x: 0.0, y: 20.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 5.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -30.0, y: -30.0, z: 0.0}, {x: -10.0, y: -30.0, z: 0.0}, {x: -10.0, y: -10.0, z: 0.0}, {x: -30.0, y: -10.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 5.0, priority: 1}]}"
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 30.0, y: 0.0, z: 0.0}, {x: 30.0, y: 30.0, z: 0.0}, {x: 0.0, y: 30.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 6.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -30.0, y: -30.0, z: 0.0}, {x: 0.0, y: -30.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -30.0, y: 0.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 5.0, priority: 1}]}"
 
 
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: -75.0, y: -75.0, z: 0.0}, {x: 75.0, y: -75.0, z: 0.0}, {x: 75.0, y: 75.0, z: 0.0}, {x: -75.0, y: 75.0, z: 0.0}]}, altitude: 30.0, lane_spacing: 5.0, priority: 1}]}"

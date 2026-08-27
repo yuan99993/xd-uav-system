@@ -39,6 +39,9 @@ DEFAULT_MODELS = (
 # Gazebo still renders the original model meshes without scaling them.
 MODEL_FOOTPRINTS = {
     "bus": (12.0, 3.2),
+    "fire_truck": (12.5, 3.7),
+    "ambulance": (7.6, 3.1),
+    "pickup": (5.5, 2.4),
     "car_beetle": (4.5, 2.2),
     "car_golf": (4.8, 2.2),
     "car_lexus": (5.0, 2.3),
@@ -71,21 +74,26 @@ class VehiclePlacement:
     area_index: int
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(
+    default_models: Sequence[str] = DEFAULT_MODELS,
+    default_prefix: str = "search_vehicle",
+    script_name: str = "spawn_random_vehicles.py",
+    description: str = (
+        "Randomly spawn Gazebo vehicle models inside every polygon received "
+        "from xd_uav_task_allocate/SearchAreaArray."
+    ),
+) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Randomly spawn Gazebo vehicle models inside every polygon received "
-            "from xd_uav_task_allocate/SearchAreaArray."
-        ),
+        description=description,
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=(
             "Example:\n"
-            "  python3 spawn_random_vehicles.py --count 14 --replace\n"
-            "  python3 spawn_random_vehicles.py --count 6 --models car_golf car_volvo\n"
-            "  python3 spawn_random_vehicles.py --count 10 --seed 7 --dry-run\n\n"
+            "  python3 {0} --count 14 --replace\n"
+            "  python3 {0} --count 6 --models {1}\n"
+            "  python3 {0} --count 10 --seed 7 --dry-run\n\n"
             "Start this script before a one-shot 'rostopic pub -1' command so it "
             "is already waiting for the search-area message."
-        ),
+        ).format(script_name, " ".join(default_models[:2])),
     )
     parser.add_argument(
         "--count",
@@ -97,10 +105,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--models",
         nargs="+",
-        choices=DEFAULT_MODELS,
-        default=list(DEFAULT_MODELS),
+        choices=tuple(default_models),
+        default=list(default_models),
         metavar="MODEL",
-        help="allowed vehicle types (default: all seven supported models)",
+        help="allowed vehicle types (default: all models in this script's profile)",
     )
     parser.add_argument(
         "--search-area-topic",
@@ -141,7 +149,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=None, help="repeatable random seed")
     parser.add_argument(
-        "--prefix", default="search_vehicle", help="Gazebo model-name prefix"
+        "--prefix", default=default_prefix, help="Gazebo model-name prefix"
     )
     parser.add_argument("--start-index", type=int, default=1)
     parser.add_argument(
@@ -429,8 +437,22 @@ def _spawn(args: argparse.Namespace, placements: Sequence[VehiclePlacement]) -> 
     return 1 if failures else 0
 
 
-def main() -> int:
-    parser = _build_parser()
+def run_profile(
+    default_models: Sequence[str] = DEFAULT_MODELS,
+    default_prefix: str = "search_vehicle",
+    script_name: str = "spawn_random_vehicles.py",
+    description: str = (
+        "Randomly spawn Gazebo vehicle models inside every polygon received "
+        "from xd_uav_task_allocate/SearchAreaArray."
+    ),
+) -> int:
+    """Run one vehicle-spawning profile while sharing placement and ROS logic."""
+    parser = _build_parser(
+        default_models=default_models,
+        default_prefix=default_prefix,
+        script_name=script_name,
+        description=description,
+    )
     args = parser.parse_args()
     _validate_args(parser, args)
     generator = random.Random(args.seed)
@@ -469,6 +491,10 @@ def main() -> int:
             )
         return 0
     return _spawn(args, placements)
+
+
+def main() -> int:
+    return run_profile()
 
 
 if __name__ == "__main__":
