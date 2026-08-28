@@ -5,9 +5,14 @@ import copy
 
 import rospy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+from geometry_msgs.msg import PoseStamped, Vector3Stamped
 from mavros_msgs.msg import PositionTarget
 from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, SetBoolResponse
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
+import tf2_ros
+from tf2_geometry_msgs.tf2_geometry_msgs import (
+    do_transform_pose, do_transform_vector3)
 
 from xd_uav_system_integration.core import (
     ReferenceSample, switch_delta, validate_reference)
@@ -16,6 +21,10 @@ from xd_uav_system_integration.core import (
 class ReferenceMux:
     def __init__(self):
         self._frame = rospy.get_param("~common_frame", "world").strip("/")
+        self._output_frame = rospy.get_param(
+            "~output_frame", self._frame).strip("/")
+        self._transform_timeout = float(rospy.get_param(
+            "~output_transform_timeout", 0.05))
         self._timeout = float(rospy.get_param("~candidate_timeout", 0.20))
         self._health_timeout = float(rospy.get_param("~health_timeout", 0.30))
         self._future_tolerance = float(rospy.get_param("~future_tolerance", 0.02))
@@ -31,6 +40,8 @@ class ReferenceMux:
         self._last_output = None
         self._baseline = None
         self._reason = "owner_none" if self._owner == "none" else "waiting"
+        self._tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(5.0))
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
 
         self._publisher = rospy.Publisher(
             rospy.get_param("~output_topic", "control/reference/setpoint"),
@@ -98,9 +109,11 @@ class ReferenceMux:
             elif not self._source_healthy(source):
                 self._reason = source + ":health_false"
             else:
-                self._publisher.publish(message)
-                self._last_output = copy.deepcopy(message)
-                self._reason = "ok"
+                output = self._transform_output(message)
+                if output is not None:
+                    self._publisher.publish(output)
+                    self._last_output = copy.deepcopy(message)
+                    self._reason = "ok"
 
     def _health_callback(self, message, source):
         self._healthy[source] = (bool(message.data), rospy.Time.now())
@@ -110,6 +123,47 @@ class ReferenceMux:
     def _baseline_callback(self, message):
         validation = self._valid(message)
         self._baseline = copy.deepcopy(message) if validation.valid else None
+
+    def _transform_output(self, message):
+        if self._output_frame == self._frame:
+            return message
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                self._output_frame, self._frame, rospy.Time(0),
+                rospy.Duration(self._transform_timeout))
+            pose = PoseStamped()
+            pose.header = message.header
+            pose.header.frame_id = self._frame
+            pose.pose.position = message.position
+            quaternion = quaternion_from_euler(0.0, 0.0, message.yaw)
+            pose.pose.orientation.x = quaternion[0]
+            pose.pose.orientation.y = quaternion[1]
+            pose.pose.orientation.z = quaternion[2]
+            pose.pose.orientation.w = quaternion[3]
+            transformed_pose = do_transform_pose(pose, transform)
+            velocity = Vector3Stamped()
+            velocity.header = pose.header
+            velocity.vector = message.velocity
+            transformed_velocity = do_transform_vector3(velocity, transform)
+            acceleration = Vector3Stamped()
+            acceleration.header = pose.header
+            acceleration.vector = message.acceleration_or_force
+            transformed_acceleration = do_transform_vector3(
+                acceleration, transform)
+            output = copy.deepcopy(message)
+            output.header.frame_id = self._output_frame
+            output.position = transformed_pose.pose.position
+            output.velocity = transformed_velocity.vector
+            output.acceleration_or_force = transformed_acceleration.vector
+            orientation = transformed_pose.pose.orientation
+            output.yaw = euler_from_quaternion((
+                orientation.x, orientation.y,
+                orientation.z, orientation.w))[2]
+            return output
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as error:
+            self._reason = "output_transform_unavailable:{}".format(error)
+            return None
 
     def _select_ego(self, request):
         target = "ego" if request.data else "sead"
@@ -166,7 +220,8 @@ class ReferenceMux:
                         else DiagnosticStatus.ERROR)
         status.message = "forwarding" if self._reason == "ok" else "fail_closed"
         status.values = [KeyValue(key="owner", value=self._owner),
-                         KeyValue(key="reason", value=self._reason)]
+                         KeyValue(key="reason", value=self._reason),
+                         KeyValue(key="output_frame", value=self._output_frame)]
         array.status = [status]
         self._diag_pub.publish(array)
 

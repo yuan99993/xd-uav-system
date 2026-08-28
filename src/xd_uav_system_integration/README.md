@@ -50,8 +50,8 @@ scripts/ego_demo.sh stop
 使用连续 ID 0/1/2，按顺序传递完整 MultiBsplines 链，并启用 EGO-Swarm
 轨迹互避；`start multi 3` 保留为 `start swarm 3` 的兼容别名。
 
-`goals formation` 会分别向三机发布 `(12,-3,1.5)`、`(12,0,1.5)`、
-`(12,3,1.5)` 的 world 坐标目标。也可以使用 `goal uavN X Y Z` 单独更新某架
+`goals formation` 会分别向三机发布 `(12,-4,1.5)`、`(12,0,1.5)`、
+`(12,4,1.5)` 的 world 坐标目标；外侧航线仍绕过真实墙体，但保留紧急恢复余量。也可以使用 `goal uavN X Y Z` 单独更新某架
 飞机的目标；演示地图的规划范围约为 x/y 各 `[-15,15] m`，目标应留在范围内。
 这里的避碰由 EGO-Swarm 使用各机交换的时参数化 B 样条轨迹完成，不是三套互不通信
 的单机规划器。

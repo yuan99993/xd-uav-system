@@ -25,6 +25,8 @@
     <arg name="gps_origin_topic" value="integration/geodetic_origin"/>
     <arg name="launch_world_registration" value="false"/>
   </include>
+  <param name="/$(arg UAV_NAME)/reference_mux/output_frame"
+         value="$(arg UAV_NAME)/odom"/>
   <include file="$(find xd_uav_ego_bridge)/launch/ego_pointcloud_adapter.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="input_topic" value="/$(arg UAV_NAME)/os_cloud_nodelet/points"/>

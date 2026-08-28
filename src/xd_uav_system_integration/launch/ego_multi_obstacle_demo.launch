@@ -28,7 +28,7 @@
     </rosparam>
   </node>
   <include file="$(find xd_uav_system_integration)/launch/ego_multi_vehicle.launch">
-    <arg name="UAV_NAME" value="uav1"/><arg name="ego_id" value="0"/><arg name="goal_y" value="-3.0"/>
+    <arg name="UAV_NAME" value="uav1"/><arg name="ego_id" value="0"/><arg name="goal_y" value="-4.0"/>
     <arg name="takeoff_altitude" value="$(arg takeoff_altitude)"/>
   </include>
   <include file="$(find xd_uav_system_integration)/launch/ego_multi_vehicle.launch">
@@ -36,7 +36,7 @@
     <arg name="takeoff_altitude" value="$(arg takeoff_altitude)"/>
   </include>
   <include file="$(find xd_uav_system_integration)/launch/ego_multi_vehicle.launch">
-    <arg name="UAV_NAME" value="uav3"/><arg name="ego_id" value="2"/><arg name="goal_y" value="3.0"/>
+    <arg name="UAV_NAME" value="uav3"/><arg name="ego_id" value="2"/><arg name="goal_y" value="4.0"/>
     <arg name="takeoff_altitude" value="$(arg takeoff_altitude)"/>
   </include>
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="ego_multi_demo_rviz"

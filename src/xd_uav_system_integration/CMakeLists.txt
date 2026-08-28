@@ -47,6 +47,7 @@ catkin_install_python(PROGRAMS
   scripts/state_hold_baseline_node.py
   scripts/spawn_px4_vehicle_node.py
   scripts/select_owner_when_ready.py
+  scripts/wait_ego_swarm_ready.py
   scripts/mavros_odom_recovery_gate.py
   scripts/auto_takeoff_when_ready.py
   scripts/deterministic_obstacle_cloud.py

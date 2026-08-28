@@ -73,9 +73,9 @@ scripts/ego_demo.sh goals formation
 
 对应 world 坐标目标为：
 
-- uav1：`(12,-3,1.5)`
+- uav1：`(12,-4,1.5)`
 - uav2：`(12,0,1.5)`
-- uav3：`(12,3,1.5)`
+- uav3：`(12,4,1.5)`
 
 单独修改某架飞机的 world 坐标目标：
 

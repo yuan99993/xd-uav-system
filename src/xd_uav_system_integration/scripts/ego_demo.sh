@@ -29,29 +29,19 @@ is_multi_running() {
 }
 
 wait_multi_ready() {
-  local pid="$1" deadline=$((SECONDS + ready_timeout)) uav state ok
-  echo "waiting for three PX4/EGO control chains and Gazebo lidars..."
-  while ((SECONDS < deadline)); do
+  local pid="$1" checker
+  echo "waiting for three closed-loop PX4/EGO chains (owner, forwarding, valid command and motion)..."
+  checker="${script_dir}/wait_ego_swarm_ready.py"
+  if timeout -k 2 "$((ready_timeout + 5))" "${checker}" \
+      --timeout "${ready_timeout}" --minimum-horizontal-motion 2.00; then
     kill -0 "${pid}" 2>/dev/null || {
-      echo "multi demo exited during startup; log: ${log_file}" >&2
-      tail -n 100 "${log_file}" >&2 || true
+      echo "multi demo exited immediately after readiness; log: ${log_file}" >&2
       return 1
     }
-    ok=true
-    for uav in uav1 uav2 uav3; do
-      state="$(timeout -k 1 3 rostopic echo -n 1 "/${uav}/mavros/state" 2>/dev/null || true)"
-      grep -q '^connected: True$' <<<"${state}" || ok=false
-      grep -q '^armed: True$' <<<"${state}" || ok=false
-      timeout -k 1 3 rostopic echo -n 1 "/${uav}/ego/system_healthy" 2>/dev/null | grep -q '^data: True$' || ok=false
-      rosservice list 2>/dev/null | grep -q "^/${uav}/control_manager/land$" || ok=false
-    done
-    if [[ "${ok}" == true ]]; then
-      echo "multi demo ready: uav1..uav3 are airborne with healthy Gazebo-lidar EGO chains"
-      return 0
-    fi
-    sleep 1
-  done
-  echo "multi readiness timed out after ${ready_timeout}s; log: ${log_file}" >&2
+    echo "multi demo ready: uav1..uav3 have EGO ownership, valid control and verified motion"
+    return 0
+  fi
+  echo "multi readiness failed; log: ${log_file}" >&2
   tail -n 100 "${log_file}" >&2 || true
   return 1
 }
@@ -113,7 +103,7 @@ case "${1:-}" in
     [[ "${2:-}" == formation ]] || { echo "usage: $0 goals formation" >&2; exit 2; }
     is_multi_running || { echo "multi demo not running" >&2; exit 1; }
     setup_ros
-    for spec in "0 -3" "1 0" "2 3"; do
+    for spec in "0 -4" "1 0" "2 4"; do
       read -r id y <<<"${spec}"
       uav_id=$((id + 1))
       rostopic pub -1 "/drone_${id}_planning/goal" geometry_msgs/PoseStamped \
