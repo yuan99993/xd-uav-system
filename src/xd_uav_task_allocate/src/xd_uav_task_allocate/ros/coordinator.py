@@ -200,6 +200,14 @@ class TaskAllocateCoordinator:
                 rospy.get_param("~allocation/class_worker_vehicle_types", {})
             ).items()
         }
+        self.task_duplicate_radius = max(
+            0.0,
+            float(
+                rospy.get_param(
+                    "~allocation/task_deduplication_radius_m", 5.0
+                )
+            ),
+        )
 
         self.scout_configs = dict(rospy.get_param("~scouts", {}))
         self.worker_configs = dict(rospy.get_param("~workers", {}))
@@ -327,6 +335,24 @@ class TaskAllocateCoordinator:
             ),
             maximum_association_radius_m=rospy.get_param(
                 "~target_registry/maximum_association_radius_m", 50.0
+            ),
+            cross_class_association_radius_m=rospy.get_param(
+                "~target_registry/cross_class_association_radius_m", 3.0
+            ),
+            stable_track_maximum_jump_m=rospy.get_param(
+                "~target_registry/stable_track_maximum_jump_m", 20.0
+            ),
+            class_confirmation_minimum_observations=rospy.get_param(
+                "~target_registry/class_confirmation_minimum_observations", 3
+            ),
+            class_confirmation_minimum_ratio=rospy.get_param(
+                "~target_registry/class_confirmation_minimum_ratio", 0.65
+            ),
+            maximum_confirmation_position_spread_m=rospy.get_param(
+                "~target_registry/maximum_confirmation_position_spread_m", 3.0
+            ),
+            position_history_size=rospy.get_param(
+                "~target_registry/position_history_size", 30
             ),
         )
         self.allocator = RescueTaskAllocator()
@@ -2010,6 +2036,9 @@ class TaskAllocateCoordinator:
                         pose.orientation_reference_body,
                     ),
                     source_vehicle_type=self.vehicle_types[scout],
+                    track_id=int(candidate.track_id),
+                    track_id_is_stable=bool(candidate.track_id_is_stable),
+                    sensor_id=str(message.sensor_id),
                 )
                 update = self.registry.observe(observation)
                 changed = True
@@ -2030,18 +2059,29 @@ class TaskAllocateCoordinator:
                         update.target.class_id,
                         self.default_worker_vehicle_types,
                     )
-                    self.allocator.ensure_task(
+                    task = self.allocator.ensure_task(
                         update.target,
                         priority=priority,
                         allowed_vehicle_types=allowed_types,
+                        duplicate_radius_m=self.task_duplicate_radius,
                     )
-                    rospy.loginfo(
-                        "[task_allocate] target %d confirmed at (%.2f, %.2f), class=%d",
-                        update.target.target_id,
-                        update.target.position[0],
-                        update.target.position[1],
-                        update.target.class_id,
-                    )
+                    if task.target_id != update.target.target_id:
+                        rospy.logwarn(
+                            "[task_allocate] target %d confirmed near existing "
+                            "same-class task %d/target %d; duplicate task suppressed",
+                            update.target.target_id,
+                            task.task_id,
+                            task.target_id,
+                        )
+                    else:
+                        rospy.loginfo(
+                            "[task_allocate] target %d confirmed at "
+                            "(%.2f, %.2f), class=%d",
+                            update.target.target_id,
+                            update.target.position[0],
+                            update.target.position[1],
+                            update.target.class_id,
+                        )
                 elif (
                     self.hierarchical_search_enabled
                     and self.vehicle_types[scout] == "fixedwing"

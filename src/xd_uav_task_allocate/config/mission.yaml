@@ -83,11 +83,28 @@ target_registry:
   # capped to avoid merging unrelated nearby targets without limit.
   association_covariance_sigma: 3.0
   maximum_association_radius_m: 50.0
+  # A stable detector track is scoped by (uav, sensor, track_id).  It may
+  # survive moderate localization motion, but an implausibly large jump is
+  # treated as tracker ID reuse instead of dragging the world target with it.
+  stable_track_maximum_jump_m: 20.0
+  # Preserve every concrete class.  A tighter gate only allows a temporally
+  # alternating class label near an existing target to contribute evidence;
+  # different-class detections in the same source frame remain distinct.
+  cross_class_association_radius_m: 3.0
   confirmation_hits: 5
   confirmation_window_sec: 2.0
-  confirmation_minimum_span_sec: 0.25
-  # Two different scouts can confirm immediately without waiting for five hits.
+  confirmation_minimum_span_sec: 1.0
+  # Independent scouts satisfy the source-diversity part of confirmation, but
+  # class and position stability below are still mandatory.
   confirmation_distinct_uavs: 2
+  # Physical identity and semantic class are confirmed separately.  Keep the
+  # concrete winning class, but require repeated, consistent evidence before a
+  # worker task can be created.
+  class_confirmation_minimum_observations: 3
+  class_confirmation_minimum_ratio: 0.65
+  # Reject confirmation while recent world positions are still widely spread.
+  maximum_confirmation_position_spread_m: 3.0
+  position_history_size: 30
   # Applies only to unconfirmed candidates. Confirmed/task-linked targets stay
   # available for spatial deduplication while they wait for a worker.
   stale_timeout_sec: 15.0
@@ -124,6 +141,11 @@ hierarchical_search:
 allocation:
   worker_state_timeout_sec: 1.0
   planner_failure_retry_sec: 5.0
+  # Final same-class dispatch guard.  Primary deduplication happens in the
+  # global target registry; this prevents a residual split from launching a
+  # second worker task.  Keep below the minimum expected spacing of real
+  # same-class targets, or set 0 to disable.
+  task_deduplication_radius_m: 5.0
   # Rescue tasks are assigned to hover-capable aircraft unless a class-specific
   # rule explicitly allows fixed-wing workers.
   default_worker_vehicle_types: [multirotor]
