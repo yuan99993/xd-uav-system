@@ -7,6 +7,7 @@ Panels:
         - /Global Options1
         - /Status1
         - /Odometry1
+        - /Axes4
       Splitter Ratio: 0.5
     Tree Height: 549
   - Class: rviz/Selection
@@ -59,8 +60,6 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        base_link:
-          Value: true
         uav1/base_link:
           Value: true
         uav1/base_link_frd:
@@ -69,11 +68,9 @@ Visualization Manager:
           Value: true
         uav1/camera_optical_frame:
           Value: true
-        uav1/hrlv_ez4_sonar:
+        uav1/down_camera_link:
           Value: true
-        uav1/lidar_imu_link:
-          Value: true
-        uav1/lidar_link:
+        uav1/down_camera_optical_frame:
           Value: true
         uav1/local_origin:
           Value: true
@@ -95,7 +92,7 @@ Visualization Manager:
           Value: true
         uav2/camera_optical_frame:
           Value: true
-        uav2/hrlv_ez4_sonar:
+        uav2/distance_sensor_link:
           Value: true
         uav2/lidar_imu_link:
           Value: true
@@ -121,7 +118,7 @@ Visualization Manager:
           Value: true
         uav3/camera_optical_frame:
           Value: true
-        uav3/hrlv_ez4_sonar:
+        uav3/distance_sensor_link:
           Value: true
         uav3/lidar_imu_link:
           Value: true
@@ -139,6 +136,32 @@ Visualization Manager:
           Value: true
         uav3/odom_ned:
           Value: true
+        uav4/base_link:
+          Value: true
+        uav4/base_link_frd:
+          Value: true
+        uav4/camera_link:
+          Value: true
+        uav4/camera_optical_frame:
+          Value: true
+        uav4/distance_sensor_link:
+          Value: true
+        uav4/lidar_imu_link:
+          Value: true
+        uav4/lidar_link:
+          Value: true
+        uav4/local_origin:
+          Value: true
+        uav4/local_origin_ned:
+          Value: true
+        uav4/mavros_estimated_base_link:
+          Value: true
+        uav4/mavros_origin:
+          Value: true
+        uav4/odom:
+          Value: true
+        uav4/odom_ned:
+          Value: true
         world:
           Value: true
       Marker Alpha: 1
@@ -148,13 +171,6 @@ Visualization Manager:
       Show Axes: true
       Show Names: true
       Tree:
-        base_link:
-          uav1/hrlv_ez4_sonar:
-            {}
-          uav2/hrlv_ez4_sonar:
-            {}
-          uav3/hrlv_ez4_sonar:
-            {}
         world:
           uav1/local_origin:
             uav1/local_origin_ned:
@@ -166,8 +182,8 @@ Visualization Manager:
                 uav1/camera_link:
                   uav1/camera_optical_frame:
                     {}
-                uav1/lidar_link:
-                  uav1/lidar_imu_link:
+                uav1/down_camera_link:
+                  uav1/down_camera_optical_frame:
                     {}
               uav1/mavros_origin:
                 uav1/mavros_estimated_base_link:
@@ -184,6 +200,8 @@ Visualization Manager:
                 uav2/camera_link:
                   uav2/camera_optical_frame:
                     {}
+                uav2/distance_sensor_link:
+                  {}
                 uav2/lidar_link:
                   uav2/lidar_imu_link:
                     {}
@@ -202,6 +220,8 @@ Visualization Manager:
                 uav3/camera_link:
                   uav3/camera_optical_frame:
                     {}
+                uav3/distance_sensor_link:
+                  {}
                 uav3/lidar_link:
                   uav3/lidar_imu_link:
                     {}
@@ -209,6 +229,26 @@ Visualization Manager:
                 uav3/mavros_estimated_base_link:
                   {}
               uav3/odom_ned:
+                {}
+          uav4/local_origin:
+            uav4/local_origin_ned:
+              {}
+            uav4/odom:
+              uav4/base_link:
+                uav4/base_link_frd:
+                  {}
+                uav4/camera_link:
+                  uav4/camera_optical_frame:
+                    {}
+                uav4/distance_sensor_link:
+                  {}
+                uav4/lidar_link:
+                  uav4/lidar_imu_link:
+                    {}
+              uav4/mavros_origin:
+                uav4/mavros_estimated_base_link:
+                  {}
+              uav4/odom_ned:
                 {}
       Update Interval: 0
       Value: true
@@ -303,6 +343,42 @@ Visualization Manager:
       Topic: /uav1/state_estimator/main/frames/world/odom
       Unreliable: false
       Value: true
+    - Alpha: 1
+      Class: rviz/Axes
+      Enabled: true
+      Length: 3
+      Name: Axes
+      Radius: 5
+      Reference Frame: uav1/base_link
+      Show Trail: false
+      Value: true
+    - Alpha: 1
+      Class: rviz/Axes
+      Enabled: true
+      Length: 3
+      Name: Axes
+      Radius: 5
+      Reference Frame: uav2/base_link
+      Show Trail: false
+      Value: true
+    - Alpha: 1
+      Class: rviz/Axes
+      Enabled: true
+      Length: 3
+      Name: Axes
+      Radius: 5
+      Reference Frame: uav3/base_link
+      Show Trail: false
+      Value: true
+    - Alpha: 1
+      Class: rviz/Axes
+      Enabled: true
+      Length: 3
+      Name: Axes
+      Radius: 5
+      Reference Frame: uav4/base_link
+      Show Trail: false
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -331,7 +407,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 61.25565719604492
+      Distance: 271.45440673828125
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -347,9 +423,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5647965669631958
+      Pitch: 0.3297969698905945
       Target Frame: <Fixed Frame>
-      Yaw: 5.510416507720947
+      Yaw: 5.235413074493408
     Saved: ~
 Window Geometry:
   Displays:
@@ -367,5 +443,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 1200
-  X: 746
-  Y: 451
+  X: 661
+  Y: 534

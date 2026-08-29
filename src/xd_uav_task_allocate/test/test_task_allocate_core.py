@@ -838,6 +838,8 @@ class RegistryAndAllocationTest(unittest.TestCase):
         registry = GlobalTargetRegistry(confirmation_hits=10, confirmation_distinct_uavs=2)
         registry.observe(self.observation("uav1", 10.0, 100.0, 50.0))
         update = registry.observe(self.observation("uav2", 10.1, 101.0, 50.5))
+        self.assertFalse(update.newly_confirmed)
+        update = registry.observe(self.observation("uav1", 10.2, 100.5, 50.2))
         self.assertTrue(update.newly_confirmed)
         self.assertEqual(len(registry.targets), 1)
 
@@ -853,6 +855,141 @@ class RegistryAndAllocationTest(unittest.TestCase):
         ]
         self.assertFalse(any(update.newly_confirmed for update in updates))
         self.assertEqual(len(updates[-1].target.recent_observations), 1)
+
+    def test_stable_track_class_flicker_keeps_one_physical_target(self):
+        registry = GlobalTargetRegistry(
+            confirmation_hits=5,
+            confirmation_minimum_span_sec=0.3,
+            confirmation_distinct_uavs=2,
+        )
+        classes = [2, 2, 5, 2, 2]
+        updates = []
+        for index, class_id in enumerate(classes):
+            updates.append(
+                registry.observe(
+                    TargetObservation(
+                        source_uav="uav1",
+                        stamp=10.0 + 0.1 * index,
+                        class_id=class_id,
+                        position=(20.0 + 0.1 * index, 5.0, 0.0),
+                        confidence=0.9,
+                        track_id=7,
+                        track_id_is_stable=True,
+                        sensor_id="front_camera",
+                    )
+                )
+            )
+        self.assertEqual(len(registry.targets), 1)
+        self.assertEqual(updates[-1].target.class_id, 2)
+        self.assertTrue(updates[-1].newly_confirmed)
+        self.assertEqual(updates[-1].target.source_tracks, {("uav1", "front_camera", 7)})
+
+    def test_changed_track_id_can_reassociate_by_world_position(self):
+        registry = GlobalTargetRegistry(
+            confirmation_hits=5,
+            confirmation_minimum_span_sec=0.3,
+        )
+        updates = []
+        for index, track_id in enumerate((7, 7, 21, 21, 21)):
+            updates.append(
+                registry.observe(
+                    TargetObservation(
+                        source_uav="uav1",
+                        stamp=20.0 + 0.1 * index,
+                        class_id=2,
+                        position=(10.0 + 0.15 * index, -4.0, 0.0),
+                        confidence=0.9,
+                        track_id=track_id,
+                        track_id_is_stable=True,
+                    )
+                )
+            )
+        self.assertEqual(len(registry.targets), 1)
+        self.assertEqual(
+            updates[-1].target.source_tracks,
+            {("uav1", "", 7), ("uav1", "", 21)},
+        )
+        self.assertTrue(updates[-1].newly_confirmed)
+
+    def test_same_frame_different_classes_remain_distinct_targets(self):
+        registry = GlobalTargetRegistry(cross_class_association_radius_m=3.0)
+        first = registry.observe(
+            TargetObservation(
+                "uav1", 10.0, 2, (0.0, 0.0, 0.0), 0.9,
+                track_id=1, track_id_is_stable=True,
+            )
+        )
+        second = registry.observe(
+            TargetObservation(
+                "uav1", 10.0, 5, (0.5, 0.0, 0.0), 0.9,
+                track_id=2, track_id_is_stable=True,
+            )
+        )
+        self.assertNotEqual(first.target.target_id, second.target.target_id)
+        self.assertEqual(len(registry.targets), 2)
+
+    def test_same_frame_stable_tracks_protect_near_same_class_targets(self):
+        registry = GlobalTargetRegistry(association_radius_m=4.0)
+        first = registry.observe(
+            TargetObservation(
+                "uav1", 10.0, 2, (0.0, 0.0, 0.0), 0.9,
+                track_id=1, track_id_is_stable=True,
+            )
+        ).target
+        second = registry.observe(
+            TargetObservation(
+                "uav1", 10.0, 2, (0.5, 0.0, 0.0), 0.9,
+                track_id=2, track_id_is_stable=True,
+            )
+        ).target
+        self.assertNotEqual(first.target_id, second.target_id)
+        self.assertIn(second.target_id, first.known_distinct_target_ids)
+        self.assertIn(first.target_id, second.known_distinct_target_ids)
+
+        first.status = TARGET_CONFIRMED
+        second.status = TARGET_CONFIRMED
+        allocator = RescueTaskAllocator()
+        first_task = allocator.ensure_task(first, duplicate_radius_m=3.0)
+        second_task = allocator.ensure_task(second, duplicate_radius_m=3.0)
+        self.assertNotEqual(first_task.task_id, second_task.task_id)
+
+    def test_unstable_world_positions_do_not_confirm(self):
+        registry = GlobalTargetRegistry(
+            association_radius_m=5.0,
+            confirmation_hits=5,
+            confirmation_minimum_span_sec=0.3,
+            maximum_confirmation_position_spread_m=3.0,
+        )
+        updates = [
+            registry.observe(self.observation("uav1", 10.0 + 0.1 * index, x, 0.0))
+            for index, x in enumerate((0.0, 4.0, 0.0, 4.0, 0.0))
+        ]
+        self.assertFalse(any(update.newly_confirmed for update in updates))
+        self.assertEqual(updates[-1].target.status, TARGET_CANDIDATE)
+
+    def test_ambiguous_class_votes_do_not_confirm(self):
+        registry = GlobalTargetRegistry(
+            confirmation_hits=5,
+            confirmation_minimum_span_sec=0.3,
+            class_confirmation_minimum_ratio=0.65,
+        )
+        updates = []
+        for index, class_id in enumerate((2, 5, 2, 5, 2)):
+            updates.append(
+                registry.observe(
+                    TargetObservation(
+                        source_uav="uav1",
+                        stamp=10.0 + 0.1 * index,
+                        class_id=class_id,
+                        position=(1.0, 1.0, 0.0),
+                        confidence=1.0,
+                        track_id=3,
+                        track_id_is_stable=True,
+                    )
+                )
+            )
+        self.assertFalse(any(update.newly_confirmed for update in updates))
+        self.assertEqual(len(registry.targets), 1)
 
     def test_fixedwing_evidence_requests_verification_but_cannot_confirm(self):
         registry = GlobalTargetRegistry(
@@ -901,9 +1038,16 @@ class RegistryAndAllocationTest(unittest.TestCase):
                 "multirotor",
             )
         )
-        update = registry.observe(
+        registry.observe(
             TargetObservation(
                 "uav2", 20.2, 0, (112.2, 50.1, 0.0), 1.0,
+                (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                "multirotor",
+            )
+        )
+        update = registry.observe(
+            TargetObservation(
+                "uav2", 20.4, 0, (112.1, 49.9, 0.0), 1.0,
                 (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
                 "multirotor",
             )
@@ -935,6 +1079,10 @@ class RegistryAndAllocationTest(unittest.TestCase):
         registry.observe(self.observation("uav1", 10.0, -15.8, -23.1))
         confirmation = registry.observe(
             self.observation("uav2", 10.1, -15.7, -23.4)
+        )
+        self.assertFalse(confirmation.newly_confirmed)
+        confirmation = registry.observe(
+            self.observation("uav1", 10.2, -15.75, -23.25)
         )
         self.assertTrue(confirmation.newly_confirmed)
         task = allocator.ensure_task(confirmation.target)
@@ -970,6 +1118,36 @@ class RegistryAndAllocationTest(unittest.TestCase):
         allocator.assign_pending()
         self.assertEqual(first.status, TASK_COMPLETED)
         self.assertEqual(second.status, TASK_ASSIGNED)
+
+    def test_final_task_guard_suppresses_only_near_same_class_duplicate(self):
+        allocator = RescueTaskAllocator()
+        first_target = GlobalTargetRecord(
+            1, 2, [10.0, 10.0, 0.0], [0.0] * 9, 1.0, 1.0, 1.0,
+            status=TARGET_CONFIRMED,
+        )
+        duplicate_target = GlobalTargetRecord(
+            2, 2, [12.0, 10.0, 0.0], [0.0] * 9, 1.0, 1.0, 1.0,
+            status=TARGET_CONFIRMED,
+        )
+        different_class = GlobalTargetRecord(
+            3, 5, [11.0, 10.0, 0.0], [0.0] * 9, 1.0, 1.0, 1.0,
+            status=TARGET_CONFIRMED,
+        )
+
+        first = allocator.ensure_task(first_target, duplicate_radius_m=3.0)
+        duplicate = allocator.ensure_task(duplicate_target, duplicate_radius_m=3.0)
+        second = allocator.ensure_task(different_class, duplicate_radius_m=3.0)
+
+        self.assertIs(duplicate, first)
+        self.assertIs(
+            allocator.ensure_task(duplicate_target, duplicate_radius_m=3.0),
+            first,
+        )
+        self.assertEqual(first.target_position[:2], [10.0, 10.0])
+        self.assertNotEqual(second.task_id, first.task_id)
+        self.assertEqual(len(allocator.tasks), 2)
+        self.assertIsNone(allocator.remove_target_task(duplicate_target.target_id))
+        self.assertIn(first.task_id, allocator.tasks)
 
     def test_worker_task_is_released_only_after_continuous_timeout(self):
         allocator = RescueTaskAllocator()

@@ -83,6 +83,7 @@ class RescueTaskAllocator:
         target: GlobalTargetRecord,
         priority: int = 0,
         allowed_vehicle_types: Sequence[str] = (),
+        duplicate_radius_m: float = 0.0,
     ) -> RescueTaskRecord:
         allowed = tuple(sorted({str(item).strip().lower() for item in allowed_vehicle_types}))
         if any(item not in ("multirotor", "fixedwing") for item in allowed):
@@ -90,6 +91,8 @@ class RescueTaskAllocator:
         existing = self._target_to_task.get(int(target.target_id))
         if existing is not None:
             task = self.tasks[existing]
+            if task.target_id != int(target.target_id):
+                return task
             if task.status in (TASK_PENDING, TASK_ASSIGNED):
                 task.target_position = list(target.position)
                 if task.status == TASK_PENDING:
@@ -97,6 +100,30 @@ class RescueTaskAllocator:
             return task
         if target.status != TARGET_CONFIRMED:
             raise ValueError("a rescue task can only be created for a confirmed target")
+        duplicate_radius = max(0.0, float(duplicate_radius_m))
+        if duplicate_radius > 0.0:
+            duplicate = min(
+                (
+                    task
+                    for task in self.tasks.values()
+                    if task.class_id == int(target.class_id)
+                    and task.target_id not in target.known_distinct_target_ids
+                    and hypot(
+                        task.target_position[0] - target.position[0],
+                        task.target_position[1] - target.position[1],
+                    )
+                    <= duplicate_radius
+                ),
+                key=lambda task: task.task_id,
+                default=None,
+            )
+            if duplicate is not None:
+                # This is a final dispatch safety net, not the primary target
+                # association mechanism.  Remember the alias so repeated
+                # ensure calls remain idempotent; remove_target_task handles
+                # aliases without cancelling the canonical target's task.
+                self._target_to_task[int(target.target_id)] = duplicate.task_id
+                return duplicate
         task = RescueTaskRecord(
             task_id=self._next_task_id,
             target_id=target.target_id,
@@ -225,6 +252,11 @@ class RescueTaskAllocator:
 
         task_id = self._target_to_task.pop(int(target_id), None)
         if task_id is None:
+            return None
+        existing = self.tasks.get(task_id)
+        if existing is not None and existing.target_id != int(target_id):
+            # This target was only a spatial duplicate alias of another
+            # target's task.  Rejecting it must leave the canonical task alone.
             return None
         task = self.cancel_task(task_id, "target rejected by operator")
         self.tasks.pop(task_id, None)
