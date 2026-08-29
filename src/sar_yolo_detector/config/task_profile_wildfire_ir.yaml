@@ -1,0 +1,21 @@
+input_detections_topic: sar_yolo_detector/wildfire_ir/detections
+camera_info_topic: camera/ir/camera_info
+task_candidates_topic: sar_yolo_detector/wildfire_ir/task_candidates
+task_pose_topic: sar_yolo_detector/wildfire_ir/task_point
+sensor_id: wildfire_ir_primary
+task_frame: map
+localization_mode: bearing_only
+ground_plane_z: 0.0
+task_class_ids: [0, 1]
+class_names: [fire_region, smoke_region, building]
+global_semantic_ids: [2, 3, 0]
+class_anchor_y_fractions: [0.75, 0.5, 0.5]
+# Legacy FireMan has zero smoke recall: detections remain visible, but planning
+# events are disabled even when allow_experimental_model is set globally.
+task_generation_enabled: false
+model_validated: false
+allow_experimental_model: false
+profile: wildfire_ir
+model_version: fireman_multiclass_thermal_50ep
+model_sha256: a798ae337f474cd49fd7f88b4a74d25af086a4148efeb33524d883ad2eb68410
+calibration_version: unversioned

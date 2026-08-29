@@ -21,7 +21,7 @@ from trajectory_msgs.msg import (
     MultiDOFJointTrajectoryPoint,
 )
 
-from xd_uav_controller.msg import ControlCommand, ControlState
+from xd_uav_controller.msg import ControlCommand, ControlState, PathStatus
 from xd_uav_controller.srv import (
     InternalCommand,
     InternalCommandRequest,
@@ -60,6 +60,9 @@ class ControllerInterfaceTest(unittest.TestCase):
             "reference_trajectory",
             MultiDOFJointTrajectory,
             queue_size=2,
+        )
+        self._reference_path_publisher = rospy.Publisher(
+            "reference_path", Path, queue_size=2
         )
         self._simple_goal_publisher = rospy.Publisher(
             "simple_goal", PoseStamped, queue_size=2
@@ -665,6 +668,77 @@ class ControllerInterfaceTest(unittest.TestCase):
             )
         )
         self.assertTrue(trajectory_command.valid)
+
+        geometric_path = Path()
+        geometric_path.header.seq = 41
+        geometric_path.header.stamp = rospy.Time.now()
+        geometric_path.header.frame_id = "uav1/odom"
+        for x, z in ((0.0, 0.0), (10.0, 2.0), (20.0, 2.0)):
+            pose = PoseStamped()
+            pose.header = geometric_path.header
+            pose.pose.position.x = x
+            pose.pose.position.z = z
+            pose.pose.orientation.w = 1.0
+            geometric_path.poses.append(pose)
+        deadline = time.time() + 2.0
+        path_status = None
+        while time.time() < deadline:
+            self._reference_path_publisher.publish(geometric_path)
+            try:
+                candidate = rospy.wait_for_message(
+                    "path_status", PathStatus, timeout=0.2
+                )
+                if candidate.path_id == 41:
+                    path_status = candidate
+                    break
+            except rospy.ROSException:
+                pass
+        self.assertIsNotNone(path_status)
+        self.assertEqual(path_status.path_id, 41)
+        self.assertIn(
+            path_status.state,
+            (PathStatus.ACCEPTED, PathStatus.ACTIVE),
+        )
+        path_command = self._wait_for_command(
+            lambda value: value.valid and value.controller.startswith("path_")
+        )
+        self.assertTrue(path_command.valid)
+
+        # Path order, rather than globally nearest geometry, determines
+        # progress. The vehicle is closest to a later branch here but must
+        # still start from segment zero.
+        ordered_path = Path()
+        ordered_path.header.seq = 42
+        ordered_path.header.stamp = rospy.Time.now()
+        ordered_path.header.frame_id = "uav1/odom"
+        for x, y in ((50.0, 0.0), (60.0, 0.0), (0.0, 0.0), (0.0, 10.0)):
+            pose = PoseStamped()
+            pose.header = ordered_path.header
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.orientation.w = 1.0
+            ordered_path.poses.append(pose)
+        self._reference_path_publisher.publish(ordered_path)
+        ordered_status = None
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            self._state_publisher.publish(self._state())
+            self._publish_reference_frames()
+            try:
+                candidate = rospy.wait_for_message(
+                    "path_status", PathStatus, timeout=0.2
+                )
+                if (
+                    candidate.path_id == 42
+                    and candidate.state == PathStatus.REACQUIRING
+                ):
+                    ordered_status = candidate
+                    break
+            except rospy.ROSException:
+                pass
+        self.assertIsNotNone(ordered_status)
+        self.assertEqual(ordered_status.current_segment, 0)
+        self.assertGreater(ordered_status.cross_track_error, 40.0)
 
         rospy.wait_for_service(
             "controller/internal/command", timeout=3.0

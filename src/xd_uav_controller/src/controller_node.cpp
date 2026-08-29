@@ -3,7 +3,6 @@
 #include <clocale>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -26,6 +25,7 @@
 #include <xd_uav_controller/ControlCommand.h>
 #include <xd_uav_controller/ControlState.h>
 #include <xd_uav_controller/InternalCommand.h>
+#include <xd_uav_controller/PathStatus.h>
 #include <xd_uav_controller/Takeoff.h>
 #include <std_srvs/Trigger.h>
 
@@ -267,6 +267,7 @@ struct Reference {
   bool use_yaw{false};
   bool use_yaw_rate{false};
   bool trajectory_reference{false};
+  bool path_reference{false};
 };
 
 // Canonical target consumed by the fixed-wing control law. Input adapters
@@ -305,6 +306,9 @@ class ControllerNode {
     reference_trajectory_subscriber_ = nh_.subscribe(
         "reference_trajectory", 5,
         &ControllerNode::referenceTrajectoryCallback, this);
+    reference_path_subscriber_ = nh_.subscribe(
+        "reference_path", 2,
+        &ControllerNode::referencePathCallback, this);
     simple_goal_subscriber_ = nh_.subscribe(
         "simple_goal", 5,
         &ControllerNode::simpleGoalCallback, this);
@@ -314,6 +318,9 @@ class ControllerNode {
     reference_trajectory_path_publisher_ =
         nh_.advertise<nav_msgs::Path>(
             "reference_trajectory_path", 1, true);
+    path_status_publisher_ =
+        nh_.advertise<xd_uav_controller::PathStatus>(
+            "path_status", 10, true);
     command_publisher_ =
         nh_.advertise<xd_uav_controller::ControlCommand>("command", 20);
     internal_command_server_ = private_nh_.advertiseService(
@@ -386,6 +393,11 @@ class ControllerNode {
         private_nh_, "reference_input/simple_goal/use_message_z",
         "simple_goal/use_message_z", &simple_goal_use_message_z_,
         false);
+    private_nh_.param(
+        "reference_input/path/minimum_segment_length",
+        path_minimum_segment_length_, 0.20);
+    private_nh_.param(
+        "reference_input/path/status_rate", path_status_rate_, 10.0);
 
     if (vehicle_type_ == "multirotor") {
       loadParameterWithLegacy(
@@ -394,6 +406,24 @@ class ControllerNode {
       loadParameterWithLegacy(
           private_nh_, "multirotor/model/hover_throttle",
           "multirotor/hover_throttle", &hover_throttle_, 0.5);
+      private_nh_.param(
+          "multirotor/path_following/nominal_speed",
+          multirotor_path_nominal_speed_, 3.0);
+      private_nh_.param(
+          "multirotor/path_following/lookahead_distance",
+          multirotor_path_lookahead_distance_, 2.0);
+      private_nh_.param(
+          "multirotor/path_following/terminal_slowdown_distance",
+          multirotor_path_terminal_slowdown_distance_, 4.0);
+      private_nh_.param(
+          "multirotor/path_following/completion_position_tolerance",
+          multirotor_path_completion_position_tolerance_, 0.5);
+      private_nh_.param(
+          "multirotor/path_following/completion_speed_tolerance",
+          multirotor_path_completion_speed_tolerance_, 0.3);
+      private_nh_.param(
+          "multirotor/path_following/reacquisition_distance",
+          multirotor_path_reacquisition_distance_, 4.0);
       loadParameterWithLegacy(
           private_nh_, "multirotor/limits/minimum_throttle",
           "multirotor/min_throttle", &minimum_throttle_, 0.05);
@@ -500,6 +530,21 @@ class ControllerNode {
       loadParameterWithLegacy(
           private_nh_, "fixedwing/model/gravity",
           "fixedwing/gravity", &gravity_, 9.80665);
+      private_nh_.param(
+          "fixedwing/path_following/curvature_estimation_distance",
+          fixedwing_path_curvature_distance_, 10.0);
+      private_nh_.param(
+          "fixedwing/path_following/curvature_preview_time",
+          fixedwing_path_curvature_preview_time_, 0.30);
+      private_nh_.param(
+          "fixedwing/path_following/completion_radius",
+          fixedwing_path_completion_radius_, 20.0);
+      private_nh_.param(
+          "fixedwing/path_following/completion_altitude_tolerance",
+          fixedwing_path_completion_altitude_tolerance_, 5.0);
+      private_nh_.param(
+          "fixedwing/path_following/reacquisition_distance",
+          fixedwing_path_reacquisition_distance_, 50.0);
       loadParameterWithLegacy(
           private_nh_, "fixedwing/energy_control/cruise_airspeed",
           "fixedwing/cruise_airspeed", &cruise_airspeed_, 15.0);
@@ -528,6 +573,21 @@ class ControllerNode {
           "fixedwing/energy_control/climb_rate_throttle_gain",
           "fixedwing/climb_rate_throttle_gain",
           &climb_rate_throttle_gain_, 0.03);
+      private_nh_.param(
+          "fixedwing/energy_control/turn_load_factor_throttle_gain",
+          turn_load_factor_throttle_gain_, 0.16);
+      private_nh_.param(
+          "fixedwing/energy_control/bank_airspeed_margin",
+          bank_airspeed_margin_, 0.5);
+      private_nh_.param(
+          "fixedwing/energy_control/underspeed_hysteresis",
+          underspeed_hysteresis_, 0.7);
+      private_nh_.param(
+          "fixedwing/energy_control/underspeed_max_roll",
+          underspeed_max_roll_, 0.35);
+      private_nh_.param(
+          "fixedwing/energy_control/underspeed_max_nose_up_pitch",
+          underspeed_max_nose_up_pitch_, 0.05);
 
       loadParameterWithLegacy(
           private_nh_,
@@ -629,6 +689,9 @@ class ControllerNode {
           "fixedwing/vertical_control/pitch_time_constant",
           "fixedwing/pitch_time_constant",
           &pitch_time_constant_, 0.45);
+      private_nh_.param(
+          "fixedwing/vertical_control/bank_load_factor_pitch_gain",
+          bank_load_factor_pitch_gain_, 0.20);
 
       loadParameterWithLegacy(
           private_nh_, "fixedwing/limits/maximum_roll",
@@ -986,7 +1049,9 @@ class ControllerNode {
           "固定翼landing参数不在安全范围内");
     }
     if (vehicle_type_ == "fixedwing" &&
-        (fixedwing_guidance_lookahead_distance_ <= 0.0 ||
+        (fixedwing_path_curvature_distance_ <= 0.0 ||
+         fixedwing_path_curvature_preview_time_ < 0.0 ||
+         fixedwing_guidance_lookahead_distance_ <= 0.0 ||
          fixedwing_minimum_lookahead_distance_ <= 0.0 ||
          fixedwing_maximum_lookahead_distance_ <
              fixedwing_minimum_lookahead_distance_ ||
@@ -1002,7 +1067,20 @@ class ControllerNode {
          climb_rate_pitch_gain_ < 0.0 ||
          climb_rate_filter_time_constant_ < 0.0 ||
          vertical_acceleration_pitch_rate_gain_ < 0.0 ||
+         bank_load_factor_pitch_gain_ < 0.0 ||
          climb_rate_throttle_gain_ < 0.0 ||
+         turn_load_factor_throttle_gain_ < 0.0 ||
+         bank_airspeed_margin_ < 0.0 ||
+         underspeed_hysteresis_ < 0.0 ||
+         underspeed_max_roll_ <= 0.0 ||
+         underspeed_max_roll_ > max_roll_ ||
+         underspeed_max_nose_up_pitch_ < 0.0 ||
+         underspeed_max_nose_up_pitch_ > max_pitch_ ||
+         minimum_airspeed_ <= 0.0 ||
+         maximum_airspeed_ <= minimum_airspeed_ ||
+         max_roll_ <= 0.0 || max_roll_ >= 0.5 * kPi ||
+         !std::isfinite(fixedwing_path_curvature_distance_) ||
+         !std::isfinite(fixedwing_path_curvature_preview_time_) ||
          !std::isfinite(fixedwing_guidance_lookahead_distance_) ||
          !std::isfinite(fixedwing_minimum_lookahead_distance_) ||
          !std::isfinite(fixedwing_maximum_lookahead_distance_) ||
@@ -1019,7 +1097,13 @@ class ControllerNode {
          !std::isfinite(climb_rate_pitch_gain_) ||
          !std::isfinite(climb_rate_filter_time_constant_) ||
          !std::isfinite(vertical_acceleration_pitch_rate_gain_) ||
-         !std::isfinite(climb_rate_throttle_gain_))) {
+         !std::isfinite(bank_load_factor_pitch_gain_) ||
+         !std::isfinite(climb_rate_throttle_gain_) ||
+         !std::isfinite(turn_load_factor_throttle_gain_) ||
+         !std::isfinite(bank_airspeed_margin_) ||
+         !std::isfinite(underspeed_hysteresis_) ||
+         !std::isfinite(underspeed_max_roll_) ||
+         !std::isfinite(underspeed_max_nose_up_pitch_))) {
       throw std::runtime_error(
           "固定翼reference_adapter/path_guidance/控制参数"
           "不在安全范围内");
@@ -1671,6 +1755,7 @@ class ControllerNode {
     fixedwing_setpoint_course_hold_initialized_ = false;
     fixedwing_external_setpoint_mode_initialized_ = false;
     fixedwing_external_setpoint_mode_signature_ = 0U;
+    fixedwing_underspeed_active_ = false;
     last_fixedwing_control_time_ = ros::Time();
     filtered_fixedwing_lookahead_distance_ =
         fixedwing_guidance_lookahead_distance_;
@@ -1832,6 +1917,7 @@ class ControllerNode {
 
     reference_source_ = source;
     reference_ = normalized;
+    path_active_ = false;
     trajectory_active_ = false;
     point_reference_latched_ =
         anyAxis(source.use_position) &&
@@ -2180,6 +2266,464 @@ class ControllerNode {
     reference_trajectory_path_publisher_.publish(path);
   }
 
+  void publishPathStatus(
+      const uint8_t status, const std::string& detail,
+      const bool force = false) {
+    const ros::Time now = ros::Time::now();
+    if (!force && path_status_rate_ > 0.0 &&
+        !last_path_status_publish_.isZero() &&
+        (now - last_path_status_publish_).toSec() <
+            1.0 / path_status_rate_) {
+      return;
+    }
+    xd_uav_controller::PathStatus message;
+    message.header.stamp = now;
+    message.header.frame_id = state_.header.frame_id;
+    message.path_id = active_path_id_;
+    message.state = status;
+    message.current_segment =
+        static_cast<uint32_t>(path_current_segment_);
+    message.progress = path_total_length_ > 1e-6
+                           ? static_cast<float>(
+                                 path_progress_ / path_total_length_)
+                           : 0.0F;
+    message.cross_track_error =
+        static_cast<float>(path_cross_track_error_);
+    message.distance_to_end = static_cast<float>(
+        std::max(0.0, path_total_length_ - path_progress_));
+    message.detail = detail;
+    path_status_publisher_.publish(message);
+    last_path_status_publish_ = now;
+  }
+
+  void rejectPath(const uint32_t path_id, const std::string& detail) {
+    const uint32_t previous_path_id = active_path_id_;
+    active_path_id_ = path_id;
+    publishPathStatus(
+        xd_uav_controller::PathStatus::REJECTED, detail, true);
+    active_path_id_ = previous_path_id;
+  }
+
+  bool samplePathAt(
+      const double requested_distance, Eigen::Vector3d* point,
+      Eigen::Vector3d* tangent, std::size_t* segment = nullptr) const {
+    if (reference_path_points_.size() < 2 ||
+        reference_path_lengths_.size() != reference_path_points_.size()) {
+      return false;
+    }
+    const double distance = clamp(
+        requested_distance, 0.0, reference_path_lengths_.back());
+    auto upper = std::upper_bound(
+        reference_path_lengths_.begin(), reference_path_lengths_.end(),
+        distance);
+    std::size_t index = upper == reference_path_lengths_.begin()
+                            ? 0
+                            : static_cast<std::size_t>(
+                                  upper - reference_path_lengths_.begin() - 1);
+    index = std::min(index, reference_path_points_.size() - 2);
+    const Eigen::Vector3d delta =
+        reference_path_points_[index + 1] - reference_path_points_[index];
+    const double length = std::max(1e-9, delta.norm());
+    const double alpha = clamp(
+        (distance - reference_path_lengths_[index]) / length, 0.0, 1.0);
+    *point = reference_path_points_[index] + alpha * delta;
+    *tangent = delta / length;
+    if (segment != nullptr) {
+      *segment = index;
+    }
+    return true;
+  }
+
+  bool estimatePathCurvature(
+      const double distance, const double window,
+      double* curvature) const {
+    if (window <= 1e-3 || curvature == nullptr) {
+      return false;
+    }
+    const double before_distance =
+        std::max(0.0, distance - 0.5 * window);
+    const double after_distance =
+        std::min(path_total_length_, distance + 0.5 * window);
+    if (after_distance - before_distance <= 1e-3) {
+      return false;
+    }
+    Eigen::Vector3d before_point;
+    Eigen::Vector3d before_tangent;
+    Eigen::Vector3d after_point;
+    Eigen::Vector3d after_tangent;
+    if (!samplePathAt(
+            before_distance, &before_point, &before_tangent) ||
+        !samplePathAt(
+            after_distance, &after_point, &after_tangent)) {
+      return false;
+    }
+    const double before_horizontal_norm =
+        std::hypot(before_tangent.x(), before_tangent.y());
+    const double after_horizontal_norm =
+        std::hypot(after_tangent.x(), after_tangent.y());
+    if (before_horizontal_norm < 1e-6 ||
+        after_horizontal_norm < 1e-6) {
+      return false;
+    }
+    const double heading_change = wrapAngle(
+        std::atan2(after_tangent.y(), after_tangent.x()) -
+        std::atan2(before_tangent.y(), before_tangent.x()));
+    *curvature =
+        heading_change / (after_distance - before_distance);
+    return std::isfinite(*curvature);
+  }
+
+  bool projectOntoPath(const Eigen::Vector3d& position) {
+    if (reference_path_points_.size() < 2) {
+      return false;
+    }
+    std::size_t segment = std::min(
+        path_current_segment_, reference_path_points_.size() - 2);
+    double projection_ratio = 0.0;
+    double projection_distance_squared = 0.0;
+    double projection_progress = path_progress_;
+    const auto project_segment = [&](const std::size_t index) {
+      const Eigen::Vector3d delta =
+          reference_path_points_[index + 1] - reference_path_points_[index];
+      const double length_squared = delta.squaredNorm();
+      if (length_squared < 1e-9) {
+        return false;
+      }
+      projection_ratio = clamp(
+          (position - reference_path_points_[index]).dot(delta) /
+              length_squared,
+          0.0, 1.0);
+      const Eigen::Vector3d projection =
+          reference_path_points_[index] + projection_ratio * delta;
+      projection_distance_squared =
+          (position - projection).squaredNorm();
+      projection_progress = reference_path_lengths_[index] +
+          projection_ratio * std::sqrt(length_squared);
+      return true;
+    };
+    if (!project_segment(segment)) {
+      return false;
+    }
+
+    // Path is an ordered geometric contract. Advance only after the aircraft
+    // reaches or passes the active segment's terminal plane. This is independent
+    // of path shape and avoids ambiguous nearest-point jumps at intersections,
+    // parallel branches and routes that return close to an earlier point.
+    constexpr double kSegmentEndRatio = 1.0 - 1e-6;
+    while (projection_ratio >= kSegmentEndRatio &&
+           segment + 2 < reference_path_points_.size()) {
+      ++segment;
+      if (!project_segment(segment)) {
+        return false;
+      }
+    }
+    path_progress_ = path_progress_initialized_
+                         ? std::max(path_progress_, projection_progress)
+                         : projection_progress;
+    path_progress_initialized_ = true;
+    path_current_segment_ = segment;
+    path_cross_track_error_ =
+        std::sqrt(projection_distance_squared);
+    return true;
+  }
+
+  bool refreshPathTransform(const ros::Time& now, std::string* reason) {
+    tf2::Transform control_source;
+    std::string transform_reason;
+    if (!lookupReferenceTransform(
+            state_.header.frame_id, reference_path_frame_, 0.0,
+            &control_source, &transform_reason)) {
+      if (active_reference_transform_failure_since_.isZero()) {
+        active_reference_transform_failure_since_ = now;
+      }
+      if (!reference_path_points_.empty() &&
+          (now - active_reference_transform_failure_since_).toSec() <=
+              reference_transform_failure_grace_) {
+        ROS_WARN_THROTTLE(
+            1.0,
+            "[xd_uav_controller] 路径TF短暂失效，保持最后一次有效路径: %s",
+            transform_reason.c_str());
+        return true;
+      }
+      *reason = "活动路径坐标系持续失效: " + transform_reason;
+      return false;
+    }
+    active_reference_transform_failure_since_ = ros::Time();
+    reference_path_points_.clear();
+    reference_path_points_.reserve(reference_path_source_points_.size());
+    for (const auto& source_point : reference_path_source_points_) {
+      const tf2::Vector3 source(
+          source_point.x(), source_point.y(), source_point.z());
+      const tf2::Vector3 transformed = control_source * source;
+      reference_path_points_.emplace_back(
+          transformed.x(), transformed.y(), transformed.z());
+    }
+    return true;
+  }
+
+  bool failActivePath(
+      const std::string& reason, Reference* reference) {
+    publishPathStatus(
+        xd_uav_controller::PathStatus::FAILED, reason, true);
+    path_active_ = false;
+    if (vehicle_type_ == "fixedwing") {
+      startFixedwingLoiter(
+          state_.position_odom.z, "路径跟随失败");
+      *reference = makeFixedwingLoiterReference();
+    } else {
+      have_reference_ = false;
+      have_normalized_reference_ = false;
+      point_reference_latched_ = false;
+      resetMultirotorControlState();
+      captureIdleReference();
+      *reference = makeIdleReference();
+    }
+    ROS_ERROR("[xd_uav_controller] %s", reason.c_str());
+    return true;
+  }
+
+  bool resolvePathReference(
+      const ros::Time& now, Reference* reference,
+      std::string* reason) {
+    if (!refreshPathTransform(now, reason)) {
+      return failActivePath(*reason, reference);
+    }
+    const Eigen::Vector3d position(
+        state_.position_odom.x, state_.position_odom.y,
+        state_.position_odom.z);
+    if (!projectOntoPath(position)) {
+      *reason = "无法把飞机位置投影到活动路径";
+      return failActivePath(*reason, reference);
+    }
+
+    const Eigen::Vector3d endpoint = reference_path_points_.back();
+    const Eigen::Vector3d endpoint_error = endpoint - position;
+    const double horizontal_endpoint_error =
+        std::hypot(endpoint_error.x(), endpoint_error.y());
+    const double speed = std::sqrt(
+        state_.velocity_odom.x * state_.velocity_odom.x +
+        state_.velocity_odom.y * state_.velocity_odom.y +
+        state_.velocity_odom.z * state_.velocity_odom.z);
+    const double completion_progress_tolerance =
+        vehicle_type_ == "multirotor"
+            ? std::max(multirotor_path_lookahead_distance_,
+                       multirotor_path_completion_position_tolerance_)
+            : fixedwing_path_completion_radius_;
+    const bool near_path_end =
+        path_progress_ >=
+        std::max(0.0, path_total_length_ - completion_progress_tolerance);
+    const bool completed = vehicle_type_ == "multirotor"
+                               ? near_path_end && endpoint_error.norm() <=
+                                         multirotor_path_completion_position_tolerance_ &&
+                                     speed <= multirotor_path_completion_speed_tolerance_
+                               : near_path_end && horizontal_endpoint_error <=
+                                         fixedwing_path_completion_radius_ &&
+                                     std::abs(endpoint_error.z()) <=
+                                         fixedwing_path_completion_altitude_tolerance_;
+
+    if (completed) {
+      path_progress_ = path_total_length_;
+      publishPathStatus(
+          xd_uav_controller::PathStatus::COMPLETED,
+          "路径已按实际位置完成", true);
+      path_active_ = false;
+      if (vehicle_type_ == "fixedwing") {
+        startFixedwingLoiter(endpoint.z(), "路径执行完成");
+        *reference = makeFixedwingLoiterReference();
+        return true;
+      }
+    }
+
+    Eigen::Vector3d path_point;
+    Eigen::Vector3d tangent;
+    double reference_distance = path_progress_;
+    if (vehicle_type_ == "multirotor") {
+      reference_distance = std::min(
+          path_total_length_,
+          path_progress_ + multirotor_path_lookahead_distance_);
+    }
+    if (!samplePathAt(reference_distance, &path_point, &tangent)) {
+      *reason = "无法在活动路径上采样参考";
+      return failActivePath(*reason, reference);
+    }
+
+    *reference = Reference();
+    reference->header.stamp = now;
+    reference->header.frame_id = state_.header.frame_id;
+    reference->path_reference = true;
+    reference->position.x = path_point.x();
+    reference->position.y = path_point.y();
+    reference->position.z = path_point.z();
+    reference->use_position = {{true, true, true}};
+
+    double desired_speed = vehicle_type_ == "multirotor"
+                               ? std::min(multirotor_path_nominal_speed_,
+                                          max_velocity_xy_)
+                               : cruise_airspeed_;
+    const double remaining = std::max(
+        0.0, path_total_length_ - path_progress_);
+    if (vehicle_type_ == "multirotor") {
+      desired_speed *= clamp(
+          remaining /
+              std::max(0.1, multirotor_path_terminal_slowdown_distance_),
+          0.0, 1.0);
+    }
+    Eigen::Vector3d velocity = tangent * desired_speed;
+    if (vehicle_type_ == "fixedwing") {
+      const double horizontal_norm =
+          std::hypot(tangent.x(), tangent.y());
+      if (horizontal_norm < 1e-6) {
+        *reason = "固定翼路径包含近似垂直的航段";
+        return failActivePath(*reason, reference);
+      }
+      velocity.x() = desired_speed * tangent.x() / horizontal_norm;
+      velocity.y() = desired_speed * tangent.y() / horizontal_norm;
+      velocity.z() = clamp(
+          desired_speed * tangent.z() / horizontal_norm,
+          -max_climb_rate_, max_climb_rate_);
+    }
+    reference->velocity.x = velocity.x();
+    reference->velocity.y = velocity.y();
+    reference->velocity.z = velocity.z();
+    reference->use_velocity = {{true, true, true}};
+    reference->yaw = std::atan2(velocity.y(), velocity.x());
+    reference->use_yaw = true;
+
+    const double curvature_window =
+        vehicle_type_ == "fixedwing"
+            ? fixedwing_path_curvature_distance_
+            : std::max(1.0, multirotor_path_lookahead_distance_);
+    double curvature_distance = path_progress_;
+    if (vehicle_type_ == "fixedwing") {
+      // Keep lateral position guidance attached to the local path tangent.
+      // Only curvature is previewed by the short distance needed to establish
+      // bank. Using the full geometric lookahead as the path sample makes the
+      // aircraft aim directly at the next bend and cut away from the current
+      // straight tens of metres too early.
+      const double horizontal_groundspeed = std::hypot(
+          state_.velocity_odom.x, state_.velocity_odom.y);
+      curvature_distance = std::min(
+          path_total_length_,
+          path_progress_ +
+              horizontal_groundspeed *
+                  fixedwing_path_curvature_preview_time_);
+    }
+    double curvature = 0.0;
+    if (estimatePathCurvature(
+            curvature_distance, curvature_window, &curvature)) {
+      reference->yaw_rate =
+          desired_speed * curvature;
+      reference->use_yaw_rate = true;
+      reference->acceleration.x =
+          -reference->yaw_rate * velocity.y();
+      reference->acceleration.y =
+          reference->yaw_rate * velocity.x();
+      reference->acceleration.z = 0.0;
+      reference->use_acceleration = {{true, true, true}};
+    }
+
+    if (completed && vehicle_type_ == "multirotor") {
+      reference->position.x = endpoint.x();
+      reference->position.y = endpoint.y();
+      reference->position.z = endpoint.z();
+      reference->velocity = geometry_msgs::Vector3();
+      reference->acceleration = geometry_msgs::Vector3();
+      reference_source_ = *reference;
+      reference_ = *reference;
+      point_reference_latched_ = true;
+      return true;
+    }
+
+    const double reacquisition_distance =
+        vehicle_type_ == "multirotor"
+            ? multirotor_path_reacquisition_distance_
+            : fixedwing_path_reacquisition_distance_;
+    publishPathStatus(
+        path_cross_track_error_ > reacquisition_distance
+            ? xd_uav_controller::PathStatus::REACQUIRING
+            : xd_uav_controller::PathStatus::ACTIVE,
+        path_cross_track_error_ > reacquisition_distance
+            ? "正在重新捕获路径"
+            : "路径跟随中");
+    return true;
+  }
+
+  void referencePathCallback(const nav_msgs::Path::ConstPtr& message) {
+    const uint32_t requested_id = message->header.seq != 0U
+                                      ? message->header.seq
+                                      : ++path_sequence_counter_;
+    if (!externalReferenceAllowed() || !have_state_ ||
+        !state_.state_valid) {
+      rejectPath(requested_id, "当前状态不允许接受外部路径");
+      return;
+    }
+    if (message->header.frame_id.empty() || message->poses.size() < 2) {
+      rejectPath(requested_id, "Path必须包含frame_id和至少两个点");
+      return;
+    }
+    tf2::Transform control_source;
+    std::string reason;
+    if (!lookupReferenceTransform(
+            state_.header.frame_id, message->header.frame_id,
+            reference_transform_timeout_, &control_source, &reason)) {
+      rejectPath(requested_id, reason);
+      return;
+    }
+    std::vector<Eigen::Vector3d> source_points;
+    std::vector<Eigen::Vector3d> points;
+    for (const auto& pose : message->poses) {
+      if ((!pose.header.frame_id.empty() &&
+           canonicalFrame(pose.header.frame_id) !=
+               canonicalFrame(message->header.frame_id)) ||
+          !finite(pose.pose.position)) {
+        rejectPath(requested_id, "Path中的点坐标或frame_id无效");
+        return;
+      }
+      const tf2::Vector3 source(
+          pose.pose.position.x, pose.pose.position.y,
+          pose.pose.position.z);
+      const tf2::Vector3 transformed = control_source * source;
+      const Eigen::Vector3d point(
+          transformed.x(), transformed.y(), transformed.z());
+      if (points.empty() ||
+          (point - points.back()).norm() >= path_minimum_segment_length_) {
+        source_points.emplace_back(source.x(), source.y(), source.z());
+        points.push_back(point);
+      }
+    }
+    if (points.size() < 2) {
+      rejectPath(requested_id, "去除重复点后Path不足两个点");
+      return;
+    }
+    reference_path_source_points_ = std::move(source_points);
+    reference_path_points_ = std::move(points);
+    reference_path_frame_ = canonicalFrame(message->header.frame_id);
+    reference_path_lengths_.assign(reference_path_points_.size(), 0.0);
+    for (std::size_t index = 1; index < reference_path_points_.size(); ++index) {
+      reference_path_lengths_[index] = reference_path_lengths_[index - 1] +
+          (reference_path_points_[index] -
+           reference_path_points_[index - 1]).norm();
+    }
+    path_total_length_ = reference_path_lengths_.back();
+    path_progress_ = 0.0;
+    path_cross_track_error_ = 0.0;
+    path_current_segment_ = 0;
+    path_progress_initialized_ = false;
+    active_path_id_ = requested_id;
+    path_active_ = true;
+    trajectory_active_ = false;
+    point_reference_latched_ = false;
+    if (vehicle_type_ == "fixedwing") {
+      resetFixedwingControlState();
+    } else {
+      resetMultirotorControlState();
+    }
+    activateExternalReference();
+    publishPathStatus(
+        xd_uav_controller::PathStatus::ACCEPTED,
+        "路径已接受", true);
+  }
+
   void referenceTrajectoryCallback(
       const trajectory_msgs::MultiDOFJointTrajectory::ConstPtr&
           message) {
@@ -2219,6 +2763,7 @@ class ControllerNode {
       resetFixedwingControlState();
     }
     publishTrajectoryPath(*message);
+    path_active_ = false;
     trajectory_active_ = true;
     point_reference_latched_ = false;
     activateExternalReference();
@@ -2768,6 +3313,7 @@ class ControllerNode {
     have_reference_ = false;
     have_reference_error_ = false;
     have_normalized_reference_ = false;
+    path_active_ = false;
     trajectory_active_ = false;
     point_reference_latched_ = false;
     active_reference_transform_failure_since_ = ros::Time();
@@ -2810,6 +3356,7 @@ class ControllerNode {
     have_reference_ = false;
     have_reference_error_ = false;
     have_normalized_reference_ = false;
+    path_active_ = false;
     trajectory_active_ = false;
     point_reference_latched_ = false;
     have_takeoff_origin_ = false;
@@ -2895,6 +3442,7 @@ class ControllerNode {
     have_reference_ = false;
     have_reference_error_ = false;
     have_normalized_reference_ = false;
+    path_active_ = false;
     trajectory_active_ = false;
     point_reference_latched_ = false;
     active_reference_transform_failure_since_ = ros::Time();
@@ -3998,7 +4546,8 @@ class ControllerNode {
         !landing_active_ &&
         !fixedwing_loiter_active_;
     const bool external_setpoint =
-        external_reference && !reference.trajectory_reference;
+        external_reference && !reference.trajectory_reference &&
+        !reference.path_reference;
     const bool use_horizontal_position =
         external_reference &&
         (reference.use_position[0] ||
@@ -4131,6 +4680,11 @@ class ControllerNode {
               reference.use_position[1]
                   ? reference.position.y
                   : state_.position_odom.y;
+          // The guidance point stays on the local tangent. For a Path, the
+          // anchor is the aircraft projection on the active segment; curvature
+          // preview is handled separately as course-rate feed-forward. This
+          // separation prevents a far lookahead point on the following bend
+          // from pulling the aircraft off the current straight.
           const double guidance_x =
               path_x + guidance_lookahead_distance *
                            reference.velocity.x * inverse_speed;
@@ -4251,6 +4805,41 @@ class ControllerNode {
     double desired_roll = clamp(
         -std::atan2(airspeed * desired_course_rate, gravity_),
         -max_roll_, max_roll_);
+    if ((reference.trajectory_reference || reference.path_reference) &&
+        std::abs(target.course_rate_feedforward) > 0.03) {
+      ROS_INFO_THROTTLE(
+          1.0,
+          "[xd_uav_controller] 固定翼弯道跟踪: "
+          "course_error=%.3f ff_rate=%.3f integral=%.3f "
+          "roll=%.3f desired_roll=%.3f airspeed=%.1f",
+          course_error, target.course_rate_feedforward,
+          fixedwing_course_integral_rate_, roll,
+          desired_roll, state_.airspeed);
+    }
+
+    // A coordinated bank increases lift demand by n=1/cos(phi). The
+    // previous controller waited for the resulting drag to reduce measured
+    // airspeed before adding throttle. Use the commanded bank here so the
+    // compensation is present at turn entry, before that speed loss occurs.
+    const double load_factor = 1.0 / std::max(
+        0.20, std::cos(std::abs(desired_roll)));
+    const double bank_protected_airspeed = clamp(
+        minimum_airspeed_ * std::sqrt(load_factor) +
+            bank_airspeed_margin_,
+        minimum_airspeed_, maximum_airspeed_);
+    if (takeoff_active_ || landing_active_) {
+      // Dedicated takeoff and landing laws deliberately pass through low
+      // airspeed and must not latch the normal airborne recovery mode.
+      fixedwing_underspeed_active_ = false;
+    } else if (!fixedwing_underspeed_active_ &&
+               state_.airspeed < bank_protected_airspeed) {
+      fixedwing_underspeed_active_ = true;
+    } else if (fixedwing_underspeed_active_ &&
+               state_.airspeed >
+                   bank_protected_airspeed +
+                       underspeed_hysteresis_) {
+      fixedwing_underspeed_active_ = false;
+    }
 
     double desired_climb_rate = target.climb_rate_feedforward;
     if (target.use_altitude_feedback) {
@@ -4265,6 +4854,7 @@ class ControllerNode {
     // laws and saturation would otherwise cause wind-up.
     const bool altitude_integrator_enabled =
         target.enable_altitude_integrator &&
+        !fixedwing_underspeed_active_ &&
         altitude_integral_gain_ > 0.0 &&
         altitude_integral_climb_rate_limit_ > 0.0;
     if (altitude_integrator_enabled) {
@@ -4293,6 +4883,11 @@ class ControllerNode {
     }
     desired_climb_rate = clamp(
         desired_climb_rate, -max_climb_rate_, max_climb_rate_);
+    if (fixedwing_underspeed_active_) {
+      // Do not trade the remaining kinetic energy for altitude while
+      // recovering. The altitude loop resumes after the hysteretic exit.
+      desired_climb_rate = std::min(0.0, desired_climb_rate);
+    }
 
     const double measured_climb_rate = state_.velocity_odom.z;
     if (!filtered_climb_rate_initialized_ ||
@@ -4315,6 +4910,18 @@ class ControllerNode {
                          -0.95, 0.95)) -
             climb_rate_pitch_gain_ * climb_rate_error,
         -max_pitch_, max_pitch_);
+    if (!takeoff_active_ && !landing_active_ &&
+        !fixedwing_underspeed_active_) {
+      // A coordinated turn needs n=1/cos(bank) times the straight-flight
+      // lift. Throttle feed-forward supplies the extra energy, while this
+      // small nose-up feed-forward supplies angle of attack before the
+      // reactive altitude loop observes a height loss. The gain remains an
+      // airframe parameter because lift-curve slope is not part of State.
+      desired_pitch = clamp(
+          desired_pitch -
+              bank_load_factor_pitch_gain_ * (load_factor - 1.0),
+          -max_pitch_, max_pitch_);
+    }
     // With the repository's ROS FLU convention, positive inertial-z
     // acceleration requires a negative (nose-up) pitch rate.
     const double pitch_rate_feedforward =
@@ -4324,8 +4931,12 @@ class ControllerNode {
     double throttle = clamp(
         trim_throttle_ +
             airspeed_throttle_gain_ *
-                (target.airspeed - state_.airspeed) +
-            climb_rate_throttle_gain_ * desired_climb_rate,
+                (std::max(target.airspeed,
+                          bank_protected_airspeed) -
+                 state_.airspeed) +
+            climb_rate_throttle_gain_ * desired_climb_rate +
+            turn_load_factor_throttle_gain_ *
+                (load_factor - 1.0),
         minimum_throttle_, maximum_throttle_);
 
     if (takeoff_active_) {
@@ -4373,6 +4984,27 @@ class ControllerNode {
       if (landing_touchdown_) {
         throttle = 0.0;
       }
+    }
+    if (fixedwing_underspeed_active_) {
+      throttle = maximum_throttle_;
+      desired_roll = clamp(
+          desired_roll, -underspeed_max_roll_,
+          underspeed_max_roll_);
+      // ROS FLU uses negative pitch for nose-up. Limit nose-up authority;
+      // below the configured minimum airspeed command a small positive
+      // (nose-down) attitude to make recovery decisive.
+      desired_pitch = std::max(
+          desired_pitch, -underspeed_max_nose_up_pitch_);
+      if (state_.airspeed < minimum_airspeed_) {
+        desired_pitch = std::max(
+            desired_pitch, underspeed_max_nose_up_pitch_);
+      }
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[xd_uav_controller] 固定翼低空速保护: "
+          "airspeed=%.2f protected=%.2f load_factor=%.2f",
+          state_.airspeed, bank_protected_airspeed,
+          load_factor);
     }
 
     result.body_rate.x() = clamp(
@@ -4528,11 +5160,14 @@ class ControllerNode {
     command.vehicle_type = vehicle_type_id_;
     command.controller =
         vehicle_type_ == "multirotor"
-            ? "finite_horizon_mpc_so3"
+            ? (path_active_ ? "path_finite_horizon_mpc_so3"
+                            : "finite_horizon_mpc_so3")
             : (landing_active_
                    ? "fixedwing_course_energy_landing"
                    : fixedwing_loiter_active_
                    ? "fixedwing_course_energy_loiter"
+                   : path_active_
+                   ? "fixedwing_path_course_energy"
                    : "fixedwing_course_energy");
     command.takeoff_active = takeoff_active_;
     command.landing_active = landing_active_;
@@ -4568,7 +5203,15 @@ class ControllerNode {
     } else if (idle_reference_active_) {
       reference = makeIdleReference();
     } else if (have_reference_) {
-      if (trajectory_active_) {
+      if (path_active_) {
+        std::string path_reason;
+        if (!resolvePathReference(
+                now, &reference, &path_reason)) {
+          command.rejection_reason = path_reason;
+          command_publisher_.publish(command);
+          return;
+        }
+      } else if (trajectory_active_) {
         std::string trajectory_reason;
         if (!resolveTrajectoryReference(
                 now, &reference, &trajectory_reason)) {
@@ -4664,10 +5307,12 @@ class ControllerNode {
   ros::Subscriber distance_sensor_subscriber_;
   ros::Subscriber reference_position_target_subscriber_;
   ros::Subscriber reference_trajectory_subscriber_;
+  ros::Subscriber reference_path_subscriber_;
   ros::Subscriber simple_goal_subscriber_;
   ros::Subscriber local_alignment_valid_subscriber_;
   ros::Publisher reference_position_target_publisher_;
   ros::Publisher reference_trajectory_path_publisher_;
+  ros::Publisher path_status_publisher_;
   ros::Publisher command_publisher_;
   ros::ServiceServer internal_command_server_;
   ros::Timer timer_;
@@ -4678,6 +5323,10 @@ class ControllerNode {
   Reference reference_source_;
   trajectory_msgs::MultiDOFJointTrajectory
       reference_trajectory_;
+  std::vector<Eigen::Vector3d> reference_path_source_points_;
+  std::vector<Eigen::Vector3d> reference_path_points_;
+  std::vector<double> reference_path_lengths_;
+  std::string reference_path_frame_;
   ros::Time last_state_receive_;
   ros::Time last_distance_sensor_receive_;
   ros::Time last_distance_sensor_sample_time_;
@@ -4685,6 +5334,7 @@ class ControllerNode {
   ros::Time reference_trajectory_start_;
   ros::Time last_local_alignment_valid_receive_;
   ros::Time active_reference_transform_failure_since_;
+  ros::Time last_path_status_publish_;
   bool have_state_{false};
   bool have_distance_sensor_{false};
   bool distance_sensor_velocity_valid_{false};
@@ -4694,8 +5344,16 @@ class ControllerNode {
   bool have_local_alignment_valid_{false};
   bool local_alignment_valid_{false};
   bool trajectory_active_{false};
+  bool path_active_{false};
   bool point_reference_latched_{false};
   uint32_t simple_goal_sequence_counter_{0};
+  uint32_t path_sequence_counter_{0};
+  uint32_t active_path_id_{0};
+  std::size_t path_current_segment_{0};
+  double path_progress_{0.0};
+  double path_total_length_{0.0};
+  double path_cross_track_error_{0.0};
+  bool path_progress_initialized_{false};
   bool internal_reference_active_{false};
   bool idle_reference_active_{false};
   bool takeoff_active_{false};
@@ -4755,6 +5413,8 @@ class ControllerNode {
   std::vector<std::string> allowed_reference_frames_;
   std::vector<std::string> global_alignment_frames_;
   bool simple_goal_use_message_z_{false};
+  double path_minimum_segment_length_{0.20};
+  double path_status_rate_{10.0};
   std::string reference_input_error_;
 
   FiniteHorizonAxisMpc mpc_;
@@ -4790,6 +5450,12 @@ class ControllerNode {
       acceleration_integral_acceleration_limit_{{
           1.0, 1.0, 1.0}};
   double multirotor_anti_windup_gain_{1.5};
+  double multirotor_path_nominal_speed_{3.0};
+  double multirotor_path_lookahead_distance_{2.0};
+  double multirotor_path_terminal_slowdown_distance_{4.0};
+  double multirotor_path_completion_position_tolerance_{0.5};
+  double multirotor_path_completion_speed_tolerance_{0.3};
+  double multirotor_path_reacquisition_distance_{4.0};
   ros::Time last_multirotor_control_time_;
 
   double cruise_airspeed_{15.0};
@@ -4826,7 +5492,14 @@ class ControllerNode {
   double climb_rate_pitch_gain_{0.06};
   double climb_rate_filter_time_constant_{0.50};
   double vertical_acceleration_pitch_rate_gain_{1.0};
+  double bank_load_factor_pitch_gain_{0.20};
   double climb_rate_throttle_gain_{0.03};
+  double turn_load_factor_throttle_gain_{0.16};
+  double bank_airspeed_margin_{0.5};
+  double underspeed_hysteresis_{0.7};
+  double underspeed_max_roll_{0.35};
+  double underspeed_max_nose_up_pitch_{0.05};
+  bool fixedwing_underspeed_active_{false};
   double fixedwing_altitude_integral_climb_rate_{0.0};
   double filtered_climb_rate_{0.0};
   bool filtered_climb_rate_initialized_{false};
@@ -4841,6 +5514,11 @@ class ControllerNode {
   int fixedwing_loiter_direction_{1};
   double fixedwing_loiter_radial_gain_{1.0};
   double fixedwing_loiter_max_course_correction_{0.70};
+  double fixedwing_path_curvature_distance_{10.0};
+  double fixedwing_path_curvature_preview_time_{0.30};
+  double fixedwing_path_completion_radius_{20.0};
+  double fixedwing_path_completion_altitude_tolerance_{5.0};
+  double fixedwing_path_reacquisition_distance_{50.0};
 
   double takeoff_default_altitude_{2.0};
   double takeoff_max_velocity_{0.8};

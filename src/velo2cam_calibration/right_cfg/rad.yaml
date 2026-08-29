@@ -1,0 +1,33 @@
+!!python/object/new:dynamic_reconfigure.encoding.Config
+dictitems:
+  angle_threshold: 0.55
+  centroid_distance_max: 0.8
+  centroid_distance_min: 0.15
+  circle_radius: 0.12
+  groups: !!python/object/new:dynamic_reconfigure.encoding.Config
+    dictitems:
+      angle_threshold: 0.55
+      centroid_distance_max: 0.8
+      centroid_distance_min: 0.15
+      circle_radius: 0.12
+      groups: !!python/object/new:dynamic_reconfigure.encoding.Config
+        state: []
+      id: 0
+      name: Default
+      parameters: !!python/object/new:dynamic_reconfigure.encoding.Config
+        state: []
+      parent: 0
+      passthrough_radius_max: 2.6
+      passthrough_radius_min: 1.0
+      state: true
+      type: ''
+      x: 0.0
+      y: 0.0
+      z: 1.0
+    state: []
+  passthrough_radius_max: 2.6
+  passthrough_radius_min: 1.0
+  x: 0.0
+  y: 0.0
+  z: 1.0
+state: []

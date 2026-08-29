@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="config" default="$(find xd_uav_sead)/config/sead_defaults.yaml"/>
+  <arg name="communication_mode" default="ros"/>
+  <arg name="sead_runtime_mode" default="simple_strike"/>
+  <arg name="respawn" default="false"/>
+
+  <!-- This launch file intentionally starts only SEAD. The xd estimator,
+       manager and controller remain owned by their respective packages. -->
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_sead"
+          type="sead_onboard_node.py"
+          name="sead_onboard"
+          output="screen"
+          respawn="$(arg respawn)"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="communication/mode" value="$(arg communication_mode)"/>
+      <param name="sead_runtime_mode" value="$(arg sead_runtime_mode)"/>
+      <param name="control/reference_frame" value="$(arg uav_name)/odom"/>
+    </node>
+  </group>
+</launch>

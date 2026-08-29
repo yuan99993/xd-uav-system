@@ -1,0 +1,44 @@
+<launch>
+  <arg name="config" default="$(find sar_yolo_detector)/config/detector.yaml" />
+  <arg name="model_path" default="" />
+  <arg name="input_image_topic" default="camera/image_raw" />
+  <arg name="detections_topic" default="sar_yolo_detector/detections" />
+  <arg name="publish_debug_image" default="false" />
+  <arg name="inference_backend" default="opencv_dnn" />
+  <arg name="opencv_target" default="opencv_cpu" />
+  <arg name="engine_path" default="" />
+  <arg name="network_config_path" default="" />
+  <arg name="roi_recheck_enabled" default="false" />
+  <arg name="roi_recheck_topic" default="tracker_node/roi_recheck_request" />
+  <arg name="roi_recheck_interval_sec" default="0.4" />
+  <!-- Must not exceed the Tracker OOSM history used by the composed launch. -->
+  <arg name="maximum_capture_age_sec" default="0.5" />
+  <arg name="mission_id" default="mission_unset" />
+  <arg name="uav_id" default="uav_unset" />
+  <arg name="session_uuid" default="$(anon perception_session)" />
+  <arg name="calibration_version" default="unversioned" />
+  <arg name="model_sha256" default="" />
+
+  <node pkg="sar_yolo_detector" type="sar_yolo_detector_node"
+        name="sar_yolo_detector" output="screen" required="true">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="model_path" value="$(arg model_path)" />
+    <param name="input_image_topic" value="$(arg input_image_topic)" />
+    <param name="detections_topic" value="$(arg detections_topic)" />
+    <param name="publish_debug_image" value="$(arg publish_debug_image)" />
+    <param name="inference_backend" value="$(arg inference_backend)" />
+    <param name="opencv_target" value="$(arg opencv_target)" />
+    <param name="engine_path" value="$(arg engine_path)" />
+    <param name="network_config_path" value="$(arg network_config_path)" />
+    <param name="roi_recheck_enabled" value="$(arg roi_recheck_enabled)" />
+    <param name="roi_recheck_topic" value="$(arg roi_recheck_topic)" />
+    <param name="roi_recheck_interval_sec" value="$(arg roi_recheck_interval_sec)" />
+    <param name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
+    <param name="mission_id" value="$(arg mission_id)" />
+    <param name="uav_id" value="$(arg uav_id)" />
+    <param name="session_uuid" value="$(arg session_uuid)" />
+    <param name="calibration_version" value="$(arg calibration_version)" />
+    <param if="$(eval arg('model_sha256') != '')"
+           name="model_sha256" value="$(arg model_sha256)" />
+  </node>
+</launch>

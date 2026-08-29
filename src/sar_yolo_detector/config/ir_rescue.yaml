@@ -1,0 +1,38 @@
+# Deployment template for the HIT-UAV thermal model. `dontcare` annotations
+# are intentionally excluded from training and are not an output class.
+
+input_image_topic: camera/ir/image_raw
+detections_topic: sar_yolo_detector/ir/detections
+vision_info_topic: sar_yolo_detector/ir/vision_info
+debug_image_topic: sar_yolo_detector/ir/debug_image
+image_source: ir
+sensor_id: ir_primary
+detector_name: sar_yolo_ir_opencv_dnn
+model_version: hit_uav_ir_pending_training
+
+inference_backend: opencv_dnn
+opencv_target: opencv_cpu
+engine_path: ""
+tensorrt_output_binding_names: []
+dnn_backend: opencv_cpu
+model_layout: auto
+input_width: 640
+input_height: 640
+swap_rb: true
+input_mode: thermal_auto
+confidence_threshold: 0.20
+nms_threshold: 0.45
+minimum_box_size_px: 2.0
+maximum_detections: 200
+class_agnostic_nms: false
+allowed_class_ids: [0]
+
+require_capture_timestamp: true
+reject_out_of_order: true
+future_timestamp_tolerance_sec: 0.02
+maximum_capture_age_sec: 0.50
+stale_input_warning_sec: 1.0
+publish_debug_image: false
+test_detections: [[320.0, 320.0, 100.0, 160.0, 0.95, 0]]
+
+class_names: [person, bicycle, car, other_vehicle]

@@ -1,0 +1,43 @@
+# Runtime profile: maritime person-overboard / life-saving target detection.
+input_image_topic: camera/eo/image_raw
+detections_topic: sar_yolo_detector/maritime_person/detections
+vision_info_topic: sar_yolo_detector/maritime_person/vision_info
+debug_image_topic: sar_yolo_detector/maritime_person/debug_image
+image_source: eo
+sensor_id: maritime_eo_primary
+rescue_profile: maritime_person
+detector_name: sar_yolo_maritime_person
+model_version: maritime_person_latest
+model_sha256: 10ed251565d6a1d5c11d14f90aaf607d6f4d0d963187ff488853f60e64c0a826
+require_model_sha256: true
+inference_backend: tensorrt
+opencv_target: opencv_cpu
+engine_path: ""
+tensorrt_output_binding_names: []
+dnn_backend: opencv_cpu
+model_layout: ultralytics
+input_width: 640
+input_height: 640
+swap_rb: true
+input_mode: color
+tiling_enabled: true
+tiling_policy: always
+tile_width_px: 640
+tile_height_px: 640
+tile_overlap_ratio: 0.25
+tile_include_full_frame: true
+tile_merge_overlap: 0.40
+confidence_threshold: 0.20
+nms_threshold: 0.45
+minimum_box_size_px: 2.0
+maximum_detections: 300
+class_agnostic_nms: false
+allowed_class_ids: [0, 1, 2, 3, 4]
+require_capture_timestamp: true
+reject_out_of_order: true
+future_timestamp_tolerance_sec: 0.02
+maximum_capture_age_sec: 0.50
+stale_input_warning_sec: 1.0
+publish_debug_image: false
+test_detections: [[320.0, 320.0, 100.0, 160.0, 0.95, 0]]
+class_names: [swimmer, boat, jetski, life_saving_appliances, buoy]

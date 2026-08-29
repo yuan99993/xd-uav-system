@@ -1,0 +1,127 @@
+# COCO smoke-test backend for ROS Noetic's OpenCV 4.2 DNN importer.
+# model_path is supplied at launch time and must point to yolov4-tiny.weights.
+# network_config_path must point to the paired yolov4-tiny.cfg.
+input_image_topic: sar_yolo_demo/camera/image_raw
+detections_topic: sar_yolo_detector/detections
+vision_info_topic: sar_yolo_detector/vision_info
+debug_image_topic: sar_yolo_detector/debug_image
+
+image_source: eo
+sensor_id: camera_primary
+detector_name: sar_yolo_yolov4_tiny_coco
+model_version: yolov4-tiny-coco
+database_version: 1
+
+inference_backend: opencv_darknet
+opencv_target: opencv_cpu
+network_config_path: ""
+darknet_coordinates_normalized: true
+model_layout: yolov5
+input_width: 416
+input_height: 416
+swap_rb: true
+
+# This tiny COCO model is a compatibility smoke-test model, not the final SAR
+# operating model; keep its admission threshold permissive enough to exercise
+# the complete ROS chain.  Mission profiles retain the stricter 0.25 default.
+confidence_threshold: 0.01
+nms_threshold: 0.45
+minimum_box_size_px: 2.0
+maximum_detections: 100
+class_agnostic_nms: false
+allowed_class_ids: [0]
+
+require_capture_timestamp: true
+reject_out_of_order: true
+future_timestamp_tolerance_sec: 0.02
+maximum_capture_age_sec: 0.50
+stale_input_warning_sec: 1.0
+publish_debug_image: true
+roi_recheck_enabled: false
+roi_recheck_topic: tracker_node/roi_recheck_request
+roi_recheck_interval_sec: 0.5
+roi_recheck_context_scale: 1.8
+roi_recheck_max_capture_delta_sec: 0.35
+roi_recheck_merge_iou: 0.55
+
+class_names:
+  - person
+  - bicycle
+  - car
+  - motorcycle
+  - airplane
+  - bus
+  - train
+  - truck
+  - boat
+  - traffic_light
+  - fire_hydrant
+  - stop_sign
+  - parking_meter
+  - bench
+  - bird
+  - cat
+  - dog
+  - horse
+  - sheep
+  - cow
+  - elephant
+  - bear
+  - zebra
+  - giraffe
+  - backpack
+  - umbrella
+  - handbag
+  - tie
+  - suitcase
+  - frisbee
+  - skis
+  - snowboard
+  - sports_ball
+  - kite
+  - baseball_bat
+  - baseball_glove
+  - skateboard
+  - surfboard
+  - tennis_racket
+  - bottle
+  - wine_glass
+  - cup
+  - fork
+  - knife
+  - spoon
+  - bowl
+  - banana
+  - apple
+  - sandwich
+  - orange
+  - broccoli
+  - carrot
+  - hot_dog
+  - pizza
+  - donut
+  - cake
+  - chair
+  - couch
+  - potted_plant
+  - bed
+  - dining_table
+  - toilet
+  - tv
+  - laptop
+  - mouse
+  - remote
+  - keyboard
+  - cell_phone
+  - microwave
+  - oven
+  - toaster
+  - sink
+  - refrigerator
+  - book
+  - clock
+  - vase
+  - scissors
+  - teddy_bear
+  - hair_drier
+  - toothbrush

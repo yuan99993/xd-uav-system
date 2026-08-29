@@ -10,6 +10,7 @@
 ```text
 /uavX/control_manager/state          xd_uav_controller/ControlState
 /uavX/control/reference/setpoint     mavros_msgs/PositionTarget
+/uavX/control/reference/path         nav_msgs/Path
 /uavX/control/reference/trajectory   trajectory_msgs/MultiDOFJointTrajectory
 /move_base_simple/goal               geometry_msgs/PoseStamped
 ```
@@ -18,6 +19,7 @@
 
 ```text
 /uavX/controller/command                    xd_uav_controller/ControlCommand
+/uavX/controller/path_status                xd_uav_controller/PathStatus
 /uavX/control/reference/trajectory_path      nav_msgs/Path
 ```
 
@@ -112,6 +114,17 @@
   每条通过校验并被控制器接受的轨迹还会原样转换为latched的`nav_msgs/Path`，发布到
   `/uavX/control/reference/trajectory_path`。这个话题只用于RViz显示，不参与控制，
   四旋翼和固定翼共用同一套可视化接口。
+- 几何路径使用`nav_msgs/Path`，不读取姿态，也不要求每个点附带时间。控制器把当前飞机位置
+  投影到路径并限制进度单调前进，因此转弯或爬升暂时跟不上时，参考不会继续按墙钟时间逃走。
+  `Path.poses`被解释为有序几何约束；只有飞机到达或越过当前线段的末端平面后才进入下一段，
+  不根据全局最近点跳段。该规则同样适用于直线、圆弧、样条采样、自交路径和其他路径形状，
+  不包含搜索任务或覆盖航线专用逻辑。
+  四旋翼适配器生成前视位置、末端降速速度和曲率加速度；固定翼适配器生成路径切线、巡航空速、
+  爬升率和曲率转弯前馈。固定翼横向位置制导锚定在当前投影点的局部切线，曲率则按
+  `curvature_preview_time`独立做短距离预判；这样可以提前建立滚转，又不会被下一弯道上的远前视点
+  拉离当前直线。协调转弯同时按载荷因子提供迎角和油门前馈，避免等到掉高、掉速后才由反馈环纠正。路径ID使用
+  `Path.header.seq`，接收、重捕获、实际进度和完成状态从
+  `/uavX/controller/path_status`发布。两种机型共用消息协议，但仍进入各自原有的控制律。
 - 固定翼进入近地滑跑阶段后，控制器使用当前地速与已有的进近空速自动连续衰减滚转、
   俯仰和偏航角速度指令；达到已有的触地速度条件时立即输出零角速度和零油门。该逻辑
   不引入额外滑跑参数，控制管理器仍独立执行持续触地确认后再上锁。
@@ -125,7 +138,7 @@
   frame，并以latched方式进入两种机型共用的
   `/uavX/control/reference/setpoint`单点路径。
 
-新到达的单点会取消当前外部轨迹，新到达的轨迹也会接管单点。起飞完成后，任一标准
+新到达的单点、路径或轨迹会相互接管；后到达者优先。起飞完成后，任一标准
 外部参考一旦到达都会接管内部悬停参考。降落期间外部参考会被忽略。
 
 新参考只有在消息、frame白名单、全局对齐和TF转换全部通过后才会替换当前目标。

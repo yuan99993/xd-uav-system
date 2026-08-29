@@ -1,0 +1,38 @@
+# Deployment template for SeaDronesSee v2. Keep the class order identical to
+# the training conversion; only human-related classes should be allowed to
+# auto-start Tracker in a mission-level selection policy.
+
+input_image_topic: camera/eo/image_raw
+detections_topic: sar_yolo_detector/maritime/detections
+vision_info_topic: sar_yolo_detector/maritime/vision_info
+debug_image_topic: sar_yolo_detector/maritime/debug_image
+image_source: eo
+sensor_id: eo_primary
+detector_name: sar_yolo_maritime_rescue
+model_version: maritime_person_latest
+
+inference_backend: opencv_dnn
+opencv_target: opencv_cpu
+engine_path: ""
+tensorrt_output_binding_names: []
+dnn_backend: opencv_cpu
+model_layout: auto
+input_width: 640
+input_height: 640
+swap_rb: true
+confidence_threshold: 0.15
+nms_threshold: 0.45
+minimum_box_size_px: 2.0
+maximum_detections: 300
+class_agnostic_nms: false
+allowed_class_ids: []
+
+require_capture_timestamp: true
+reject_out_of_order: true
+future_timestamp_tolerance_sec: 0.02
+maximum_capture_age_sec: 0.50
+stale_input_warning_sec: 1.0
+publish_debug_image: false
+test_detections: [[320.0, 320.0, 100.0, 160.0, 0.95, 2]]
+
+class_names: [swimmer, boat, jetski, life_saving_appliances, buoy]

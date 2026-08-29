@@ -2,7 +2,7 @@
 <package format="2">
   <name>xd_uav_detect</name>
   <version>1.0.0</version>
-  <description>External 2D detection and LiDAR-camera fusion for XD UAV tracking.</description>
+  <description>Metric target localization from LiDAR-camera fusion or a fixed-wing downward camera.</description>
 
   <maintainer email="kzy@example.com">kzy</maintainer>
   <license>BSD-3-Clause</license>

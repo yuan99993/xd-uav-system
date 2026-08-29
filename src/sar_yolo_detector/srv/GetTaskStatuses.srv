@@ -1,0 +1,8 @@
+# Empty assignment_uuid requests every status retained by the bridge.
+string assignment_uuid
+uint64 since_status_sequence
+uint32 limit
+---
+sar_yolo_detector/TaskExecutionStatus[] statuses
+uint64 next_status_sequence
+bool has_more

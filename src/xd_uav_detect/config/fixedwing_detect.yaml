@@ -1,0 +1,52 @@
+# 固定翼：下视相机二维框 + 像素射线/地面平面交点定位。
+# 需要在检测图像时间戳处存在 world <- camera 和 body <- camera 的 TF。
+
+localization:
+  enabled: true
+  method: "ground_plane"
+
+interfaces:
+  input:
+    detections_2d: "detect/input/detections_2d"
+    image: "down_camera/image_raw"
+    camera_info: "down_camera/camera_info"
+    # ground_plane 模式不订阅点云；保留此字段也不会使用。
+    point_cloud: "fastlio/points"
+  output:
+    # 与多旋翼完全相同，跟踪和任务分配无需区分机型。
+    detections_3d: "track/detections"
+    status: "detect/status"
+    debug_image: "detect/debug/image"
+
+frames:
+  # 必须是 z 轴向上的局部世界坐标系，ground_plane_z_m 在该坐标系中定义。
+  # 与 xd_uav_task_allocate/mission/shared_frame 保持一致，避免地面高程基准不同。
+  # detect.launch会按UAV_NAME覆盖为uavX/local_origin；单独运行节点时需显式设置。
+  world: "uav1/local_origin"
+  # 留空时自动使用 CameraInfo.header.frame_id（推荐使用相机 optical frame）。
+  camera: ""
+
+ground_projection:
+  ground_plane_z_m: 0.0
+  minimum_range_m: 1.0
+  maximum_range_m: 500.0
+  # 防止接近地平线时交点误差无限放大。
+  minimum_ray_plane_angle_deg: 5.0
+  # 0=框顶，0.5=框中心，1=框底。下视目标通常使用中心。
+  box_anchor_y_ratio: 0.5
+  pixel_stddev_px: 2.0
+  ground_height_stddev_m: 1.0
+  position_stddev_m: 0.25
+  tf_timeout_sec: 0.05
+  # false 保证使用拍摄时刻的姿态；只有 TF 历史不足时才建议设 true。
+  tf_use_latest_on_failure: false
+  # 固定翼姿态变化快，默认拒绝无拍摄时间或相机 frame 不一致的检测结果。
+  require_detection_timestamp: true
+  require_matching_camera_frame: true
+
+visualization:
+  enabled: true
+  point_stride: 1
+  point_radius_px: 1
+  minimum_depth_m: 0.30
+  maximum_depth_m: 30.0

@@ -37,6 +37,7 @@ include_directories(
 )
 
 add_library(xd_uav_detect_core
+  src/ground_plane_projection.cpp
   src/lidar_camera_fusion.cpp
 )
 target_compile_features(xd_uav_detect_core PUBLIC cxx_std_14)
@@ -51,11 +52,6 @@ target_link_libraries(xd_uav_detect_node
   xd_uav_detect_core
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
-)
-
-catkin_install_python(PROGRAMS
-  scripts/red_box_detector.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 install(TARGETS xd_uav_detect_core xd_uav_detect_node
@@ -83,6 +79,17 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET test_lidar_camera_fusion)
     target_compile_features(test_lidar_camera_fusion PRIVATE cxx_std_14)
     target_link_libraries(test_lidar_camera_fusion
+      xd_uav_detect_core
+      ${catkin_LIBRARIES}
+    )
+  endif()
+
+  catkin_add_gtest(test_ground_plane_projection
+    test/test_ground_plane_projection.cpp
+  )
+  if(TARGET test_ground_plane_projection)
+    target_compile_features(test_ground_plane_projection PRIVATE cxx_std_14)
+    target_link_libraries(test_ground_plane_projection
       xd_uav_detect_core
       ${catkin_LIBRARIES}
     )

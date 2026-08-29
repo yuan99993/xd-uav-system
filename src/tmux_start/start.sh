@@ -19,7 +19,7 @@ unset LIBGL_ALWAYS_SOFTWARE
 if tmux -L "$SOCKET_NAME" has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "tmux session '$SESSION_NAME' is already running; attaching to it."
 else
-  tmuxinator start -p ./session_three_uav_px4.yml
+  tmuxinator start -p ./session_four_multi_px4.yml
 fi
 
 if [[ -z "${TMUX:-}" ]]; then

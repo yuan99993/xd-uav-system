@@ -9,7 +9,7 @@ frame_lookup_timeout: 0.03
 
 # 主估计结果除标准odom坐标系外，还可重发布到以下坐标系。
 # 对应话题为state_estimator/main/frames/<坐标系>/odom。
-main_republish_in_frames: [local_origin]
+main_republish_in_frames: [local_origin, world]
 
 filter:
   initial_position_variance: 1.0

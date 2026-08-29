@@ -1,0 +1,83 @@
+<launch>
+  <!-- Include under a UAV namespace, or set ns when launching this file. -->
+  <arg name="mission_id" />
+  <arg name="uav_id" />
+  <arg name="session_uuid" />
+  <arg name="bridge_role" default="combined" />
+  <arg name="source_task_candidates_topic" default="" />
+  <arg name="source_flood_regions_topic" default="" />
+  <arg name="coordinate_contract" default="LOCAL_ENU:map" />
+  <arg name="required_target_frame" default="map" />
+  <arg name="require_operator_authorization" default="true" />
+  <arg name="require_known_observation" default="true" />
+  <arg name="geo_reference_validated" default="false" />
+  <arg name="geo_coordinate_type" default="LOCAL_ENU" />
+  <arg name="geo_epsg" default="" />
+  <arg name="geo_map_uuid" default="map_unset" />
+  <arg name="geo_origin_latitude_deg" default="nan" />
+  <arg name="geo_origin_longitude_deg" default="nan" />
+  <arg name="geo_origin_altitude_m" default="nan" />
+  <arg name="geo_vertical_datum" default="WGS84_ELLIPSOID" />
+  <arg name="geo_geoid_model" default="" />
+  <arg name="geo_transform_version" default="unversioned" />
+  <arg name="geo_valid_from_sec" default="0.0" />
+  <arg name="geo_valid_until_sec" default="0.0" />
+  <arg name="require_message_authentication" default="true" />
+  <arg name="authorization_key_id" default="decision_primary" />
+  <arg name="authorization_key_file" default="" />
+  <arg name="authorized_decision_id" default="decision_primary" />
+  <arg name="require_geofence_id" default="true" />
+  <arg name="require_geofence_version" default="true" />
+  <arg name="minimum_executor_battery_percent" default="20.0" />
+  <arg name="allow_topic_commands" default="false" />
+  <arg name="state_database_path" default="" />
+
+  <node pkg="sar_yolo_detector" type="sar_decision_bridge"
+        name="sar_decision_bridge" output="screen" required="true">
+    <rosparam command="load"
+              file="$(find sar_yolo_detector)/config/decision_bridge.yaml" />
+    <param name="mission_id" value="$(arg mission_id)" />
+    <param name="uav_id" value="$(arg uav_id)" />
+    <param name="session_uuid" value="$(arg session_uuid)" />
+    <param name="bridge_role" value="$(arg bridge_role)" />
+    <param name="source_task_candidates_topic"
+           value="$(arg source_task_candidates_topic)" />
+    <param name="source_flood_regions_topic"
+           value="$(arg source_flood_regions_topic)" />
+    <param name="coordinate_contract" value="$(arg coordinate_contract)" />
+    <param name="required_target_frame" value="$(arg required_target_frame)" />
+    <param name="require_operator_authorization"
+           value="$(arg require_operator_authorization)" />
+    <param name="require_known_observation"
+           value="$(arg require_known_observation)" />
+    <param name="geo_reference_validated" value="$(arg geo_reference_validated)" />
+    <param name="geo_coordinate_type" value="$(arg geo_coordinate_type)" />
+    <param name="geo_epsg" value="$(arg geo_epsg)" />
+    <param name="geo_map_uuid" value="$(arg geo_map_uuid)" />
+    <param name="geo_origin_latitude_deg" type="double"
+           value="$(arg geo_origin_latitude_deg)" />
+    <param name="geo_origin_longitude_deg" type="double"
+           value="$(arg geo_origin_longitude_deg)" />
+    <param name="geo_origin_altitude_m" type="double"
+           value="$(arg geo_origin_altitude_m)" />
+    <param name="geo_vertical_datum" value="$(arg geo_vertical_datum)" />
+    <param name="geo_geoid_model" value="$(arg geo_geoid_model)" />
+    <param name="geo_transform_version" value="$(arg geo_transform_version)" />
+    <param name="geo_valid_from_sec" type="double" value="$(arg geo_valid_from_sec)" />
+    <param name="geo_valid_until_sec" type="double" value="$(arg geo_valid_until_sec)" />
+    <param name="require_message_authentication"
+           value="$(arg require_message_authentication)" />
+    <rosparam if="$(eval arg('authorization_key_file') != '')" subst_value="true">
+      authorization_key_files:
+        $(arg authorization_key_id): $(arg authorization_key_file)
+      authorization_key_decision_ids:
+        $(arg authorization_key_id): $(arg authorized_decision_id)
+    </rosparam>
+    <param name="require_geofence_id" value="$(arg require_geofence_id)" />
+    <param name="require_geofence_version" value="$(arg require_geofence_version)" />
+    <param name="minimum_executor_battery_percent" type="double"
+           value="$(arg minimum_executor_battery_percent)" />
+    <param name="allow_topic_commands" value="$(arg allow_topic_commands)" />
+    <param name="state_database_path" value="$(arg state_database_path)" />
+  </node>
+</launch>

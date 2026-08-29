@@ -1,0 +1,18 @@
+{
+  "msg/AreaTaskAssignment": "a1fd8ab5dfd5f765156c61fd92b5f44d",
+  "msg/EvidenceReference": "9a8b4850a20b08a9e2193cb8e2d82916",
+  "msg/ExecutorCapabilities": "9db08e6295e2c36ebcb3298c50daa654",
+  "msg/ExecutorHeartbeat": "16d5f569644f531e2e995fe61e4049a8",
+  "msg/GeoReference": "e365f9816e409173a429f51fcbc40ef1",
+  "msg/MissionIdentity": "266d37e0763bb682b08253c2e5491469",
+  "msg/PerceptionCandidate": "7c74b85928a7d42af78aa617e9286bec",
+  "msg/PerceptionCandidateArray": "08c9f3c1af33231a975e290e2a9a7bbb",
+  "msg/TaskAssignment": "73be8e2cef12ff2d97d9e0699f11a65d",
+  "msg/TaskExecutionStatus": "8340c96ac127bcd44810f47c022bafd7",
+  "msg/UavDecisionHeartbeat": "000aa2ee2b1d30b9e96af9b0294a3134",
+  "srv/GetEvidenceCrop": "11edf03287fd2dac5c566041f915792b",
+  "srv/GetPerceptionSnapshot": "56245b09029e6c9ea62086f120227b2f",
+  "srv/GetTaskStatuses": "02d76a054311eddb1a4a37552d5cce06",
+  "srv/SubmitAreaTaskAssignment": "c6a2da344998555b756e90db15467ee0",
+  "srv/SubmitTaskAssignment": "1381d39bd6de9bd73f2c1054be33210e"
+}

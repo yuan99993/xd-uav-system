@@ -4,6 +4,16 @@ fixedwing:
   model:
     gravity: 9.80665
 
+  path_following:
+    # 路径不携带时间；速度由能量控制的cruise_airspeed决定。
+    curvature_estimation_distance: 20.0
+    # 只让曲率/滚转按飞行时间短暂预判；横向位置仍跟随当前航段，避免提前切弯。
+    # 15m/s时0.30s约为4.5m预判距离。
+    curvature_preview_time: 0.30
+    completion_radius: 20.0
+    completion_altitude_tolerance: 5.0
+    reacquisition_distance: 50.0
+
   # 输入适配层：仅在流式VXY没有AXY/yaw_rate时估计course-rate。
   # 完整P/V/A参考不会使用这组差分参数。
   reference_adapter:
@@ -24,7 +34,7 @@ fixedwing:
     lookahead_filter_time_constant: 0.55
 
   lateral_control:
-    course_time_constant: 0.8
+    course_time_constant: 0.9
     # 所有常规外部参考（轨迹或PositionTarget）共用course PI环；积分输出单位rad/s，
     # 用于消除风、舵效和模型偏差，限幅与滚转限幅共同防止wind-up。
     course_integral_gain: 0.08
@@ -32,7 +42,7 @@ fixedwing:
     roll_time_constant: 0.20
 
   vertical_control:
-    altitude_time_constant: 5.0
+    altitude_time_constant: 3.0
     # 高度P环输出爬升率修正；积分项用于消除持续高度偏差，输出单位m/s。
     altitude_integral_gain: 0.02
     altitude_integral_climb_rate_limit: 1.0
@@ -42,6 +52,9 @@ fixedwing:
     # AZ转换为俯仰角速度前馈。
     vertical_acceleration_pitch_rate_gain: 1.0
     pitch_time_constant: 0.45
+    # 协调转弯时按n=1/cos(bank)提前增加迎角，避免等掉高后才由高度环纠正。
+    # 单位为rad/(load_factor-1)，应与下方转弯补油增益配合标定。
+    bank_load_factor_pitch_gain: 0.25
 
   energy_control:
     cruise_airspeed: 15.0
@@ -51,14 +64,27 @@ fixedwing:
     airspeed_throttle_gain: 0.08
     # 爬升时同步补油以维持空速。
     climb_rate_throttle_gain: 0.03
+    # 2026-08-22固定翼SITL日志拟合得到约0.15；取0.16留少量模型余量。
+    # 补偿量为gain*(1/cos(bank)-1)，在空速实际下降前随目标滚转补油。
+    turn_load_factor_throttle_gain: 0.25
+    # 转弯保护空速=min_airspeed*sqrt(load_factor)+margin。
+    bank_airspeed_margin: 0.5
+    # 低于转弯保护空速进入恢复，高于保护空速+该值才退出，避免抖动。
+    underspeed_hysteresis: 0.7
+    # 恢复期间卸载滚转、限制抬头；弧度，分别约20度和3度。
+    underspeed_max_roll: 0.35
+    underspeed_max_nose_up_pitch: 0.05
 
   limits:
     minimum_throttle: 0.05
     maximum_throttle: 1.0
-    maximum_roll: 0.95
-    maximum_pitch: 0.35
-    maximum_climb_rate: 4.0
-    maximum_body_rate: [2.0, 1.5, 1.5]
+    # R=30 m at the observed 15--17.5 m/s requires roughly 0.65--0.81 rad.
+    # Do not let course-error feedback tighten the turn far below the planned
+    # Dubins radius (the previous 0.95 rad produced the measured inner loops).
+    maximum_roll: 0.9
+    maximum_pitch: 0.45
+    maximum_climb_rate: 5.0
+    maximum_body_rate: [2.5, 2.0, 2.0]
 
   modes:
     loiter:

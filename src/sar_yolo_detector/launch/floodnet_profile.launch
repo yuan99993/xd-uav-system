@@ -1,0 +1,14 @@
+<launch>
+  <!-- Unified sar_yolo_detector entry point for the FloodNet profile. -->
+  <arg name="flood_mask_topic" default="sar_yolo_detector/floodnet/class_mask" />
+  <arg name="flood_regions_topic" default="sar_yolo_detector/floodnet/regions" />
+  <arg name="mission_id" default="mission_unset" />
+  <arg name="uav_id" default="uav_01" />
+  <include file="$(find sar_yolo_detector)/launch/rescue_profile.launch">
+    <arg name="profile" value="floodnet" />
+    <arg name="flood_mask_topic" value="$(arg flood_mask_topic)" />
+    <arg name="flood_regions_topic" value="$(arg flood_regions_topic)" />
+    <arg name="mission_id" value="$(arg mission_id)" />
+    <arg name="uav_id" value="$(arg uav_id)" />
+  </include>
+</launch>

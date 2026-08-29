@@ -1,0 +1,20 @@
+%YAML:1.0
+
+# 单目前视相机。T_imu_cam 表示 camera_optical_frame 到 IMU(base_link) 的变换。
+# 该初值来自仿真 TF：base_link -> camera_link = [0.18, 0, 0]，
+# camera_link -> camera_optical_frame 是标准 ROS optical-frame 旋转。
+cam0:
+  T_imu_cam:
+    - [0.0, 0.0, 1.0, 0.18]
+    - [-1.0, 0.0, 0.0, 0.0]
+    - [0.0, -1.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: []
+  camera_model: pinhole
+  # sensor_msgs/CameraInfo 的 plumb_bob 在 OpenVINS 中对应 radtan。
+  distortion_model: radtan
+  distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  intrinsics: [554.254691191187, 554.254691191187, 320.5, 240.5]
+  resolution: [640, 480]
+  rostopic: /uav1/camera/image_raw
+  timeshift_cam_imu: 0.0

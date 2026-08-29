@@ -1,0 +1,74 @@
+# Offline training recipe; this package intentionally ships no claimed model
+# weights. It preserves FloodNet's official train/val/test scene split.
+profile_name: floodnet_segformer_b0
+dataset:
+  # Replace these paths on the training computer.
+  archive: /data/floodnet/raw/FloodNet.zip
+  extraction_root: /data/floodnet/extracted
+  official_split:
+    train_images: 1445
+    val_images: 450
+    test_images: 448
+  class_names:
+    - background
+    - building_flooded
+    - building_non_flooded
+    - road_flooded
+    - road_non_flooded
+    - water
+    - tree
+    - vehicle
+    - pool
+    - grass
+
+model:
+  family: SegFormer
+  backbone: mit_b0
+  pretrained_encoder: true
+  num_classes: 10
+  input_crop_px: [1024, 1024]
+  inference:
+    mode: sliding_window
+    tile_px: [1024, 1024]
+    stride_px: [768, 768]
+
+optimization:
+  amp: true
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  epochs: 120
+  early_stopping_patience: 25
+  optimizer: AdamW
+  backbone_learning_rate: 0.00006
+  decoder_learning_rate: 0.0006
+  weight_decay: 0.01
+  scheduler: poly
+  warmup_steps: 1500
+  loss:
+    weighted_cross_entropy: 1.0
+    dice: 0.5
+    class_weighting: median_frequency_balanced
+    class_weight_cap: 3.0
+
+sampling:
+  # Flood/water/vehicle crops occur more frequently without breaking the
+  # official scene partition.
+  rare_hazard_crop_probability: 0.65
+  rare_hazard_class_ids: [1, 3, 5, 7]
+  random_crop_probability: 0.35
+
+augmentation:
+  horizontal_flip_probability: 0.5
+  random_scale_range: [0.75, 1.5]
+  random_rotation_deg: 10
+  brightness_contrast: true
+  jpeg_compression: true
+  mosaic: false
+  mixup: false
+  mask_interpolation: nearest
+
+evaluation:
+  metrics: [mean_iou, class_iou, flood_water_iou, flood_region_recall]
+  region_area_threshold_px: 600
+  export_onnx: true
+  export_tensorrt: true

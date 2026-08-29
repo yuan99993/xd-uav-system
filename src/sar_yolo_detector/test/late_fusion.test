@@ -1,0 +1,26 @@
+<launch>
+  <!-- Synthetic co-registered test only. Real EO/IR deployment must use a
+       measured homography and independently verify registration. -->
+  <node pkg="sar_yolo_detector" type="sar_detection_late_fusion"
+        name="sar_late_fusion_test" output="screen" required="true">
+    <param name="primary_detections_topic" value="/sar_late_fusion_test/eo" />
+    <param name="secondary_detections_topic" value="/sar_late_fusion_test/ir" />
+    <param name="fused_detections_topic" value="/sar_late_fusion_test/fused" />
+    <param name="primary_frame_id" value="test_eo_optical" />
+    <param name="primary_width" value="640" />
+    <param name="primary_height" value="480" />
+    <param name="registration_verified" value="true" />
+    <param name="calibration_version" value="synthetic-test-v1" />
+    <param name="require_matching_frames" value="false" />
+    <param name="confidence_fusion_mode" value="independent" />
+    <rosparam param="secondary_to_primary_homography">[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]</rosparam>
+    <rosparam param="primary_human_class_ids">[0]</rosparam>
+    <rosparam param="secondary_human_class_ids">[0]</rosparam>
+    <param name="sync_tolerance_sec" value="0.08" />
+    <param name="late_fusion_hold_sec" value="0.10" />
+    <param name="matching_iou_threshold" value="0.30" />
+    <param name="fusion_queue_size" value="5" />
+  </node>
+  <test test-name="late_fusion" pkg="sar_yolo_detector"
+        type="test_late_fusion.py" time-limit="30" />
+</launch>

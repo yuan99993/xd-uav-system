@@ -1,0 +1,22 @@
+input_detections_topic: sar_yolo_detector/maritime_person/detections
+camera_info_topic: camera/eo/camera_info
+task_candidates_topic: sar_yolo_detector/maritime_person/task_candidates
+task_pose_topic: sar_yolo_detector/maritime_person/task_point
+sensor_id: maritime_eo_primary
+task_frame: map
+localization_mode: bearing_only
+ground_plane_z: 0.0
+# Swimmers and life-saving objects generate rescue task candidates.  Boats and
+# jetskis remain published detections for situational awareness but do not
+# independently create a person-overboard task.
+task_class_ids: [0, 3, 4]
+class_names: [swimmer, boat, jetski, life_saving_appliances, buoy]
+global_semantic_ids: [1, 8, 8, 7, 7]
+class_anchor_y_fractions: [0.90, 0.5, 0.5, 0.5, 0.5]
+task_generation_enabled: false
+model_validated: false
+allow_experimental_model: false
+profile: maritime_person
+model_version: maritime_person_latest
+model_sha256: 10ed251565d6a1d5c11d14f90aaf607d6f4d0d963187ff488853f60e64c0a826
+calibration_version: unversioned
