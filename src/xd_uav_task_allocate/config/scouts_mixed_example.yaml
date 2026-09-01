@@ -35,7 +35,7 @@ scouts:
       waypoint_altitude_tolerance_m: 10.0
       pass_cross_track_limit_m: 40.0
     topics:
-      detections: /uav1/track/detections
+      detections: /uav1/detect/detections
       planner_goal: /uav1/planning/goal
       controller_setpoint: /uav1/control/reference/setpoint
       controller_path: /uav1/control/reference/path
@@ -54,7 +54,7 @@ scouts:
     coverage:
       nominal_speed_mps: 4.0
     topics:
-      detections: /uav2/track/detections
+      detections: /uav2/detect/detections
       planner_goal: /uav2/planning/goal
       controller_setpoint: /uav2/control/reference/setpoint
       mission_path: /uav2/planning/mission_path

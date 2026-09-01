@@ -14,7 +14,7 @@ interfaces:
     point_cloud: "fastlio/points"
   output:
     # 与多旋翼完全相同，跟踪和任务分配无需区分机型。
-    detections_3d: "track/detections"
+    detections_3d: "detect/detections"
     status: "detect/status"
     debug_image: "detect/debug/image"
 
