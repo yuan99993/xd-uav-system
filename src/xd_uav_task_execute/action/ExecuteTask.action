@@ -1,0 +1,51 @@
+# One goal is the post-arrival action for one allocated worker task.
+uint8 ARRIVE=0
+uint8 TRACK=1
+uint8 OBSERVE=2
+uint8 INTERCEPT=3
+
+std_msgs/Header header
+uint32 task_id
+uint32 target_id
+uint8 task_type
+string worker_name
+int32 target_class_id
+geometry_msgs/PoseStamped target_pose
+
+# -1 lets xd_uav_track auto-select. A non-negative value is passed to
+# SelectTrack before tracking starts.
+int32 local_track_id
+
+# Empty/zero values use the executor YAML defaults.
+string follower_profile
+float32 required_execution_sec
+float32 maximum_duration_sec
+---
+uint16 OK=0
+uint16 INVALID_GOAL=1
+uint16 UNSUPPORTED_TASK=2
+uint16 DEPENDENCY_UNAVAILABLE=3
+uint16 START_REJECTED=4
+uint16 ACQUISITION_TIMEOUT=5
+uint16 TARGET_LOST=6
+uint16 STATUS_TIMEOUT=7
+uint16 EXECUTION_TIMEOUT=8
+uint16 STOP_FAILED=9
+uint16 PREEMPTED=10
+uint16 INTERNAL_ERROR=11
+
+bool success
+uint16 error_code
+string message
+duration execution_time
+---
+uint8 IDLE=0
+uint8 STARTING=1
+uint8 ACQUIRING=2
+uint8 RUNNING=3
+uint8 STOPPING=4
+
+uint8 phase
+float32 progress
+duration active_time
+string detail

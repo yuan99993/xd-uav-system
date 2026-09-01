@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.5)
 project(xd_uav_task_allocate)
 
 find_package(catkin REQUIRED COMPONENTS
+  actionlib
+  actionlib_msgs
   geometry_msgs
   mavros_msgs
   message_generation
@@ -12,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_ros
   visualization_msgs
   xd_uav_controller
+  xd_uav_task_execute
   xd_uav_track
 )
 
@@ -46,6 +49,8 @@ generate_messages(
 
 catkin_package(
   CATKIN_DEPENDS
+    actionlib
+    actionlib_msgs
     geometry_msgs
     mavros_msgs
     message_runtime
@@ -56,6 +61,7 @@ catkin_package(
     tf2_ros
     visualization_msgs
     xd_uav_controller
+    xd_uav_task_execute
     xd_uav_track
 )
 

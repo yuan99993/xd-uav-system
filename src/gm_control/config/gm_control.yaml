@@ -1,0 +1,101 @@
+image_topic: /typhoon_h480/cgo3_camera/image_raw
+initial_bbox_topic: /gm_control/initial_bbox #用来测试用的，在这里初始画个框会用CSTR获取框中特征持续更新框的位置
+bbox_topic: /gm_control/target_bbox #如果接入外部识别则直接向这个话题发
+command_topic: /gm_control/gimbal_cmd
+state_topic: /gm_control/gimbal_state
+error_topic: /gm_control/image_error
+debug_image_topic: /gm_control/debug_image
+
+publish_debug_image: true
+
+control_rate: 30.0
+
+# Gimbal command mode:
+#   rate  - output yaw_rate_deg_s / pitch_rate_deg_s 角速度控制
+#   angle - output yaw_deg / pitch_deg as image-error-based angle offsets 角度控制
+control_mode: rate # 图像误差输出角速度；由云台适配器积分成连续关节角
+
+# Image error -> gimbal command PID. Keep I at 0 first to avoid windup.
+#rate用：
+pid:
+  yaw:
+    p: 20.0
+    i: 0.05
+    d: 0.0
+    integral_limit: 1.0
+  pitch:
+    p: 20.0
+    i: 0.05
+    d: 0.0
+    integral_limit: 1.0
+#angle用：
+# pid:
+#   yaw:
+#     p: 15.0
+#     i: 0.01
+#     d: 0.5
+#     integral_limit: 1.0
+#   pitch:
+#     p: 15.0
+#     i: 0.01
+#     d: 0.5
+#     integral_limit: 1.0
+
+# Flip these if the gimbal moves in the opposite direction.
+yaw_sign: 1.0
+pitch_sign: 1.0
+
+max_yaw_rate_deg_s: 60.0
+max_pitch_rate_deg_s: 60.0
+max_yaw_angle_deg: 90.0
+max_pitch_angle_deg: 90.0
+
+# Target-lost behavior:
+#   stop      - publish invalid command after timeout
+#   hold_last - briefly keep the previous command
+#   search    - publish a constant search rate after target loss
+#   back_to_init - publish an angle command to return the gimbal to its initial pose
+target_lost:
+  timeout_s: 0.3
+  # 丢框时发布无效命令，后端保持当前角度，避免短暂漏检导致云台反复归零。
+  action: stop
+  hold_time_s: 0.2
+  search_yaw_rate_deg_s: 15.0
+  search_pitch_rate_deg_s: 0.0
+  back_to_init_yaw_deg: 0.0
+  back_to_init_pitch_deg: 0.0
+  back_to_init_roll_deg: 0.0
+
+# Smooth the output command to reduce jitter from bbox noise.
+smoothing:
+  enabled: true
+  alpha: 0.7
+  max_rate_change_deg_s2: 800.0
+
+deadzone_x: 0.02 #误差死区，如果误差在这个范围内则会认为目标已经在中间位置
+deadzone_y: 0.02
+min_confidence: 0.0 #最小置信度，如果检测目标置信度不够则不用这个框
+
+# Initial bbox -> continuous bbox tracking. The tracker publishes bbox_topic.
+tracker:
+  tracker_type: color_tracker
+  color_tracker:
+    color: red
+    min_area_px: 80.0
+    min_width_px: 4.0
+    min_height_px: 4.0
+    morph_kernel: 5
+    
+  feature_tracker:
+    tracker_algorithm: kcf    # auto / csrt / kcf / mil / template
+    template_match_threshold: 0.45
+
+    # Safety gate for image trackers. If the tracker drifts or loses the target,
+    # publish invalid bbox so the gimbal controller stops instead of chasing noise.
+    tracker_safety:
+      enabled: true
+      max_center_jump_norm: 0.5  # center jump as image-size fraction
+      min_area_ratio: 0.25        # current bbox area / previous bbox area
+      max_area_ratio: 5.0
+      edge_margin_px: 3.0
+      max_fail_frames: 3

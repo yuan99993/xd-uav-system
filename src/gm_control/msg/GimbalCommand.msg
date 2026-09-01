@@ -1,0 +1,11 @@
+std_msgs/Header header
+uint8 MODE_RATE=0
+uint8 MODE_ANGLE=1
+uint8 mode
+bool valid
+float32 yaw_rate_deg_s
+float32 pitch_rate_deg_s
+float32 roll_rate_deg_s
+float32 yaw_deg
+float32 pitch_deg
+float32 roll_deg

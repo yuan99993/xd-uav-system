@@ -1,0 +1,23 @@
+<launch>
+  <arg name="config" default="$(find gm_control)/config/gm_control.yaml" />
+  <arg name="image_topic" default="/camera/image_raw" />
+  <arg name="initial_bbox_topic" default="/gm_control/initial_bbox" />
+  <arg name="bbox_topic" default="/gm_control/target_bbox" />
+  <arg name="command_topic" default="/gm_control/gimbal_cmd" />
+  <arg name="state_topic" default="/gm_control/gimbal_state" />
+
+  <node pkg="gm_control" type="bbox_tracker_node.py" name="bbox_tracker" output="screen">
+    <rosparam file="$(arg config)" command="load" />
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="initial_bbox_topic" value="$(arg initial_bbox_topic)" />
+    <param name="output_bbox_topic" value="$(arg bbox_topic)" />
+  </node>
+
+  <node pkg="gm_control" type="gimbal_image_controller_node.py" name="gimbal_image_controller" output="screen">
+    <rosparam file="$(arg config)" command="load" />
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="bbox_topic" value="$(arg bbox_topic)" />
+    <param name="command_topic" value="$(arg command_topic)" />
+    <param name="state_topic" value="$(arg state_topic)" />
+  </node>
+</launch>

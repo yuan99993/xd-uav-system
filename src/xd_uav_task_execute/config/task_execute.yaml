@@ -1,0 +1,23 @@
+runtime:
+  feedback_rate_hz: 10.0
+
+# Names are relative to the UAV namespace created by task_execute.launch.
+interfaces:
+  action_server: "~execute"
+  status: "~status"
+  track:
+    status_topic: "track/status"
+    start_tracker_service: "track/start_tracker"
+    select_track_service: "track/select_track"
+    set_profile_service: "track/set_profile"
+
+track:
+  service_wait_timeout_sec: 2.0
+  acquisition_timeout_sec: 10.0
+  required_tracking_sec: 30.0
+  target_loss_timeout_sec: 3.0
+  status_timeout_sec: 1.0
+  maximum_duration_sec: 120.0
+  minimum_tracking_quality: 0.0
+  # false means Kalman-only prediction cannot contribute to task completion.
+  allow_predicted: false

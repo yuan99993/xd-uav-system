@@ -3,9 +3,11 @@
 import math
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import rospy
+from actionlib_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import PositionTarget
 from xd_uav_controller.msg import PathStatus
@@ -13,6 +15,7 @@ from xd_uav_controller.msg import PathStatus
 from xd_uav_task_allocate.core.allocation import (
     TASK_ASSIGNED,
     TASK_COMPLETED,
+    TASK_EXECUTING,
     TASK_FAILED,
     TASK_PENDING,
     RescueTaskAllocator,
@@ -55,6 +58,7 @@ from xd_uav_task_allocate.core.registry import (
     TargetObservation,
 )
 from xd_uav_task_allocate.msg import PlannerStatus
+from xd_uav_task_execute.msg import ExecuteTaskGoal
 from xd_uav_task_allocate.ros.coordinator import (
     MISSION_ACTIVE,
     MISSION_PAUSED,
@@ -69,6 +73,136 @@ class CoordinatorConfigurationTest(unittest.TestCase):
                 "auto", {"multirotor"}
             )
         )
+
+    @staticmethod
+    def _coordinator():
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator._lock = threading.RLock()
+        coordinator.shared_frame = "world"
+        coordinator.registry = GlobalTargetRegistry()
+        target = GlobalTargetRecord(
+            1,
+            0,
+            [10.0, 2.0, 0.5],
+            [0.0] * 9,
+            1.0,
+            1.0,
+            1.0,
+            status=TARGET_CONFIRMED,
+        )
+        coordinator.registry.targets = {1: target}
+        coordinator.allocator = RescueTaskAllocator()
+        coordinator.allocator.update_worker(
+            "uav3", (0.0, 0.0, 4.0), 1.0, True, vehicle_type="multirotor"
+        )
+        task = coordinator.allocator.ensure_task(target)
+        coordinator.allocator.assign_pending()
+        coordinator.vehicle_types = {"uav3": "multirotor"}
+        coordinator.vehicle_backends = {"uav3": "ego_swarm"}
+        coordinator.task_execute_defaults = {
+            "task_type": "track",
+            "local_track_id": -1,
+            "follower_profile": "",
+            "required_execution_sec": 5.0,
+            "maximum_duration_sec": 20.0,
+        }
+        coordinator.task_execute_vehicle_type_overrides = {
+            "multirotor": {"follower_profile": "gm_velocity_chase"}
+        }
+        coordinator.task_execute_class_overrides = {
+            "0": {"required_execution_sec": 8.0}
+        }
+        coordinator.task_execute_worker_overrides = {
+            "uav3": {"follower_profile": "gm_velocity_vector"}
+        }
+        coordinator.task_execute_failure_policy = "fail"
+        coordinator.task_execute_retry_delay = 5.0
+        coordinator.worker_retry_after = {}
+        coordinator.task_execute_server_wait_timeout = 0.1
+        coordinator.task_execute_action_name_template = (
+            "/{worker}/task_execute/execute"
+        )
+        coordinator.active_task_executions = {}
+        coordinator._next_task_execution_token = 1
+        coordinator._dispatch_assignments = lambda: None
+        coordinator._check_mission_completed = lambda _now: None
+        coordinator._publish_state = lambda: None
+        return coordinator, target, task
+
+    def test_goal_options_override_by_vehicle_class_then_worker(self):
+        coordinator, _target, task = self._coordinator()
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(1),
+        ):
+            goal = coordinator._build_task_execute_goal(task, "uav3")
+
+        self.assertEqual(goal.task_type, ExecuteTaskGoal.TRACK)
+        self.assertEqual(goal.follower_profile, "gm_velocity_vector")
+        self.assertEqual(goal.required_execution_sec, 8.0)
+        self.assertEqual(goal.maximum_duration_sec, 20.0)
+        self.assertEqual(goal.local_track_id, -1)
+        self.assertEqual(goal.target_pose.header.frame_id, "world")
+        self.assertEqual(goal.target_pose.pose.position.x, 10.0)
+
+    def test_task_stays_executing_until_action_succeeds(self):
+        coordinator, target, task = self._coordinator()
+
+        class FakeClient:
+            def __init__(self):
+                self.goal = None
+                self.done_cb = None
+
+            @staticmethod
+            def wait_for_server(_timeout):
+                return True
+
+            def send_goal(self, goal, done_cb, active_cb, feedback_cb):
+                self.goal = goal
+                self.done_cb = done_cb
+                active_cb()
+
+        client = FakeClient()
+        coordinator.task_execute_clients = {"uav3": client}
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(1),
+        ):
+            self.assertTrue(coordinator._start_task_execution(task, "uav3"))
+            self.assertEqual(task.status, TASK_EXECUTING)
+            self.assertNotEqual(target.status, TARGET_COMPLETED)
+            self.assertEqual(client.goal.task_type, ExecuteTaskGoal.TRACK)
+
+            client.done_cb(
+                GoalStatus.SUCCEEDED,
+                SimpleNamespace(success=True, error_code=0, message="tracked"),
+            )
+
+        self.assertEqual(task.status, TASK_COMPLETED)
+        self.assertEqual(target.status, TARGET_COMPLETED)
+        self.assertEqual(coordinator.active_task_executions, {})
+
+    def test_action_failure_does_not_complete_task(self):
+        coordinator, target, task = self._coordinator()
+        coordinator.active_task_executions = {"uav3": (task.task_id, 7)}
+        task.status = TASK_EXECUTING
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(1),
+        ):
+            coordinator._task_execution_done(
+                "uav3",
+                7,
+                GoalStatus.ABORTED,
+                SimpleNamespace(success=False, error_code=5, message="target lost"),
+            )
+
+        self.assertEqual(task.status, TASK_FAILED)
+        self.assertNotEqual(target.status, TARGET_COMPLETED)
+        self.assertIn("target lost", task.detail)
 
     def test_auto_mode_uses_hierarchy_for_mixed_scouts(self):
         self.assertTrue(

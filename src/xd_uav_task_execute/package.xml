@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>xd_uav_task_allocate</name>
+  <name>xd_uav_task_execute</name>
   <version>0.1.0</version>
-  <description>Emergency-response search, observation fusion and worker-UAV task allocation for the XD UAV stack.</description>
+  <description>Per-aircraft task execution layer for the XD UAV stack.</description>
 
   <maintainer email="kzy@example.com">kzy</maintainer>
   <license>BSD-3-Clause</license>
@@ -10,22 +10,14 @@
   <buildtool_depend>catkin</buildtool_depend>
   <build_depend>message_generation</build_depend>
 
-  <depend>geometry_msgs</depend>
   <depend>actionlib</depend>
   <depend>actionlib_msgs</depend>
-  <depend>mavros_msgs</depend>
-  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>rospy</depend>
   <depend>std_msgs</depend>
-  <depend>std_srvs</depend>
-  <depend>tf2_ros</depend>
-  <depend>visualization_msgs</depend>
-  <depend>xd_uav_controller</depend>
-  <depend>xd_uav_task_execute</depend>
   <depend>xd_uav_track</depend>
 
   <exec_depend>message_runtime</exec_depend>
-  <exec_depend>python3-numpy</exec_depend>
   <test_depend>python3-nose</test_depend>
 
   <export/>
