@@ -15,6 +15,12 @@ DetectionArray（0/1/多个候选）-> 关联、Kalman、目标选择 -> Followe
 这些职责分别留给上游检测器、`xd_uav_state_estimators`、`xd_uav_controller` 和
 `xd_uav_control_manager`。
 
+与仓库内 `gm_control` 联动时，使用
+`gm_control/launch/xd_track_gimbal_control.launch`。该适配把本包输出中
+`selected: true` 的 `TrackState` 转成云台控制框，同时把 `gm_control/GimbalState`
+的角度制反馈转换成本包所需的弧度制姿态。不要同时启动 `gm_control` 自带的
+`bbox_tracker_node.py`，否则两个节点会竞争同一个目标框话题。
+
 ## 输入和坐标
 
 ```text

@@ -75,7 +75,8 @@ EGO-Swarm 是旋翼规划器；固定翼若不使用测试后端，需要接入�
 
 - `config/mission.yaml`：共享坐标、目标去重、确认和分配参数；
 - `config/scouts.yaml`：侦察机成员、world Odometry、健康状态、检测和规划话题；
-- `config/workers.yaml`：作业机成员、world Odometry、健康状态和规划话题。
+- `config/workers.yaml`：作业机成员、world Odometry、健康状态和规划话题；
+- `config/task_execution.yaml`：工作机到达后的完成方式和 TaskExecute 参数。
 
 每架飞机可以明确配置：
 
@@ -86,6 +87,46 @@ vehicle_type: multirotor  # 或 fixedwing
 为兼容旧配置，缺省解释为 `multirotor`。节点还会检查 `ControlState.vehicle_type`；配置与
 控制管理器实际机型不一致时，该飞机会被判为不可参与任务，而不会用错误的路线或到点语义
 继续执行。
+
+## 到达后的任务执行
+
+`config/task_execution.yaml` 独立控制工作机到达后的完成语义。默认保持原行为，便于只验证
+目标确认和任务分配：
+
+```yaml
+post_arrival:
+  mode: arrive
+```
+
+此时工作机收到 `REACHED` 后立即完成任务，不要求启动 `xd_uav_task_execute`。需要验证
+“到达后跟踪”时切换为：
+
+```yaml
+post_arrival:
+  mode: task_execute
+  default_task:
+    task_type: track
+    local_track_id: -1
+    required_execution_sec: 10.0
+```
+
+协调器随后连接 `/<worker>/task_execute/execute`。工作机到达只表示进入
+`EXECUTING`，只有 Action 成功才把任务和目标标为 `COMPLETED` 并释放工作机。Action 失败
+默认把任务标为 `FAILED`，等待操作员调用 `retry_task`；也可将 `failure_policy` 设为
+`retry` 自动重新排队。
+
+任务参数按 `default_task → vehicle_type_overrides → class_overrides → worker_overrides`
+依次覆盖。例如四旋翼可使用 `gm_velocity_chase`，固定翼可使用
+`fw_velocity_vector`。`follower_profile: ""` 表示沿用 Track 自身配置，避免分配层强制切换。
+暂停、停止、禁用飞机、取消任务、拒绝目标或工作机掉线时，协调器会取消对应 Action；暂停
+会把未完成任务退回队列，恢复后重新分配。
+
+也可以在启动时替换整份独立配置，而不修改 `mission.yaml`：
+
+```bash
+roslaunch xd_uav_task_allocate task_allocate.launch \
+  post_arrival_config:=/absolute/path/to/task_execution.yaml
+```
 
 ## 混合固定翼/旋翼机队
 

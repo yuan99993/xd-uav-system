@@ -1,13 +1,14 @@
 # do not modify these
 root: ./
-name: three_uav_px4
+name: one_fixed_px4
 socket_name: mrs
 attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 
-# Three PX4 SITL vehicles: uav1, uav2 and uav3.
+# One namespaced PX4 fixed-wing SITL with a nadir camera and the complete
+# red-target -> 2D detection -> ground projection -> fixed-wing tracking loop.
 pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:$ROS_PACKAGE_PATH; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
-startup_window: estimator
+startup_window: observe
 
 windows:
   - roscore:
@@ -18,56 +19,58 @@ windows:
   - px4_sitl:
       layout: tiled
       panes:
-        - waitForRos; roslaunch px4 mavros_posix_sitl_3multi1fixed_ns.launch
+        - waitForRos; roslaunch px4 mavros_posix_sitl_fixedwing_ns.launch uav_name:=uav1 ID:=0
 
-  - estimator:
+  - vehicle_stack:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav3 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav4 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
-  - contoller:
-      layout: tiled
-      panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager fixedwing_system.launch UAV_NAME:=uav1
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav2
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav3
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav4
-  - world_tf_manager:
+
+  - target_and_detector:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch
-  - task_allocator:
+        # One large, deterministic ground target is easier than YOLO for the
+        # first closed-loop sign and interface test.
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/spawn_red_boxes.py --position=80,0,0.1 --size 10 10 0.2 --ground-z 0 --replace --prefix fixedwing_target
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/red_box_detector.py --uavs uav1 --image-topic uav1=/uav1/down_camera/image_raw
+
+  - detect_and_track:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_allocate task_allocate.launch scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_mixed_example.yaml
-  - detect:
+        - waitForTime; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
+        - >-
+          waitForTime;
+          rosparam load /home/kzy/xd-uavsystem-test/src/xd_uav_track/config/track.yaml /uav1/track;
+          rosparam set /uav1/track/follower/profile fw_velocity_vector;
+          rosparam set /uav1/track/follower/enable_vertical_control false;
+          rosparam set /uav1/track/frames/body uav1/base_link;
+          rosrun xd_uav_track xd_uav_track_node __ns:=/uav1 __name:=track
+
+  - observe:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav2 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/multirotor_detect.yaml
-        #- waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav1 use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python
-        #- waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav2 input_image_topic:=camera/image_raw camera_info_topic:=camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python
-  - rviz:
-      layout: tiled
-      panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; rosrun rviz rviz -d rviz_cfg/xd_uav.rviz
+        - waitForTime; rostopic echo /uav1/track/status
+        - waitForTime; rostopic echo /uav1/control/reference/setpoint
+        - waitForTime; rosrun rqt_image_view rqt_image_view /uav1/track/red_detector/debug_image
+        - waitForTime; rosrun rqt_image_view rqt_image_view /uav1/detect/debug/image
+
+  # Take off first and confirm the estimator/controller are healthy. Tracking
+  # remains stopped until the command in enable_tracking is run manually.
   - takeoff:
       layout: tiled
       panes:
         - >-
-          history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 40.0"; rosservice call /uav2/control_manager/takeoff "altitude: 4.0"; rosservice call /uav3/control_manager/takeoff "altitude: 4.0"; rosservice call /uav4/control_manager/takeoff "altitude: 4.0"'
-  - land_home:
+          history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 40.0"'
+
+  - enable_tracking:
       layout: tiled
       panes:
         - >-
-          history -s 'waitForTime; rosservice call /uav1/control_manager/land_home; rosservice call /uav2/control_manager/land_home; rosservice call /uav3/control_manager/land_home; rosservice call /uav4/control_manager/land_home'
+          history -s 'rosservice call /uav1/track/set_profile "profile: fw_velocity_vector"; rosservice call /uav1/track/start_tracker "start: true"'
 
-  # - fastlio:
-  #     layout: tiled
-  #     panes:
-  #       - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav1
-  #       - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav2
-  #       - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch fast_lio mapping_px4_gazebo.launch uav_name:=uav3
-  
+  - stop_and_land:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/track/start_tracker "start: false"; rosservice call /uav1/control_manager/land_home'

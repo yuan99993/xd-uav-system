@@ -1,0 +1,17 @@
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="config" default="$(find xd_uav_task_execute)/config/task_execute.yaml"/>
+  <arg name="respawn" default="false"/>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_task_execute"
+          type="task_execute_node.py"
+          name="task_execute"
+          output="screen"
+          respawn="$(arg respawn)"
+          clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="worker_name" value="$(arg UAV_NAME)"/>
+    </node>
+  </group>
+</launch>

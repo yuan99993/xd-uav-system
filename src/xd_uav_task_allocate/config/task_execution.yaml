@@ -1,0 +1,41 @@
+# Worker behavior after its approach planner reports REACHED. This file is
+# loaded separately so allocation-only tests can keep the original semantics.
+post_arrival:
+  # arrive: preserve the original behavior and complete immediately at REACHED.
+  # task_execute: send ExecuteTaskGoal and complete only after action success.
+  mode: arrive  # arrive | task_execute
+
+  action_name_template: /{worker}/task_execute/execute
+  server_wait_timeout_sec: 2.0
+
+  # fail: leave the task FAILED for operator retry.
+  # retry: return it to PENDING and temporarily exclude the failed worker.
+  failure_policy: fail  # fail | retry
+  retry_delay_sec: 5.0
+
+  default_task:
+    task_type: track
+    # -1 asks xd_uav_track to auto-select a local detection.
+    local_track_id: -1
+    # Empty uses the profile already configured in xd_uav_track.
+    follower_profile: ""
+    # Zero uses xd_uav_task_execute/config/task_execute.yaml defaults.
+    required_execution_sec: 0.0
+    maximum_duration_sec: 0.0
+
+  # Merge order is: default -> vehicle type -> target class -> worker.
+  # These examples are intentionally inactive while mode=arrive.
+  vehicle_type_overrides:
+    multirotor:
+      follower_profile: gm_velocity_chase
+    fixedwing:
+      follower_profile: fw_velocity_vector
+
+  class_overrides: {}
+    # "0":
+    #   task_type: track
+    #   required_execution_sec: 10.0
+
+  worker_overrides: {}
+    # uav3:
+    #   follower_profile: gm_velocity_vector

@@ -1,0 +1,19 @@
+# xd_uav_track <-> gm_control interface adaptation.
+# Topics remain relative so one launch can be reused under any UAV namespace.
+tracks_topic: "track/tracks"
+bbox_topic: "gm_control/target_bbox"
+gm_gimbal_state_topic: "gm_control/gimbal_state"
+track_gimbal_state_topic: "track/gimbal_state"
+
+# Invalidate the gimbal target when the track stream stops updating.
+track_timeout_s: 0.35
+allow_predicted: true
+minimum_confidence: 0.0
+
+# gm_control angles are degrees; xd_uav_track angles are radians. These signs
+# adapt a driver whose positive direction differs from PixEagle's convention
+# (+yaw right, +pitch down, +roll clockwise).
+gimbal_state:
+  yaw_sign: 1.0
+  pitch_sign: 1.0
+  roll_sign: 1.0

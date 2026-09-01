@@ -68,7 +68,7 @@ follower:
   # mc_velocity_ground | mc_velocity_position | mc_velocity_distance
   # mc_velocity_chase | gm_velocity_chase | gm_velocity_vector
   # fw_velocity_vector
-  profile: "mc_velocity_chase"
+  profile: "gm_velocity_vector"
   lateral_guidance_mode: "coordinated_turn"  # coordinated_turn | sideslip
   enable_vertical_control: true
   distance_enable_yaw: false
@@ -139,6 +139,9 @@ follower:
     pitch_offset: 0.0
     roll_offset: 0.0
     invert_yaw: false
+    # Typhoon adapter publishes gm_control's logical angle (+pitch points down).
+    # Its --pitch-sign only converts that logical angle to the Gazebo joint, so
+    # inverting again here would make gm_velocity_chase command an ascent.
     invert_pitch: false
     invert_roll: false
 
@@ -153,10 +156,13 @@ follower:
     maximum_vertical_angle: 1.57
 
   gm_velocity_vector:
-    lateral_guidance_mode: "sideslip"
+    lateral_guidance_mode: "coordinated_turn"
     velocity: 3.0
     ramp_acceleration: 0.25
-    enable_vertical_control: false
+    # gm_velocity_vector follows the complete gimbal optical-axis vector.
+    # With the Typhoon logical convention, +pitch points down and therefore
+    # produces negative ENU velocity.z (descent).
+    enable_vertical_control: true
     yaw_rate_gain: 0.5
 
   # 只生成速度向量；姿态、能量和油门全部由 xd_uav_controller 负责。

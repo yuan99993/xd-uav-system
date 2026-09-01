@@ -5,6 +5,8 @@
        default="$(find xd_uav_task_allocate)/config/scouts_mixed_example.yaml"/>
   <arg name="worker_config"
        default="$(find xd_uav_task_allocate)/config/workers.yaml"/>
+  <arg name="post_arrival_config"
+       default="$(find xd_uav_task_allocate)/config/task_execution.yaml"/>
   <arg name="respawn" default="false"/>
 
   <!-- This launch starts only mission allocation. Detection, estimators,
@@ -20,5 +22,6 @@
     <rosparam command="load" file="$(arg mission_config)"/>
     <rosparam command="load" file="$(arg scout_config)"/>
     <rosparam command="load" file="$(arg worker_config)"/>
+    <rosparam command="load" file="$(arg post_arrival_config)"/>
   </node>
 </launch>

@@ -4,8 +4,10 @@ import threading
 from math import atan2, cos, isfinite, sin, sqrt
 from typing import Dict, List, Set, Tuple
 
+import actionlib
 import rospy
 import tf2_ros
+from actionlib_msgs.msg import GoalStatus
 from geometry_msgs.msg import Point, Point32, PoseStamped
 from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Odometry, Path
@@ -77,6 +79,7 @@ from xd_uav_task_allocate.srv import (
     VehicleCommandResponse,
 )
 from xd_uav_track.msg import DetectionArray
+from xd_uav_task_execute.msg import ExecuteTaskAction, ExecuteTaskGoal
 
 
 MISSION_IDLE = "IDLE"
@@ -207,6 +210,43 @@ class TaskAllocateCoordinator:
                     "~allocation/task_deduplication_radius_m", 5.0
                 )
             ),
+        )
+
+        post_arrival = dict(rospy.get_param("~post_arrival", {}))
+        self.post_arrival_mode = str(
+            post_arrival.get("mode", "arrive")
+        ).strip().lower()
+        if self.post_arrival_mode not in ("arrive", "task_execute"):
+            raise ValueError("post_arrival/mode must be arrive or task_execute")
+        self.task_execute_action_name_template = str(
+            post_arrival.get(
+                "action_name_template", "/{worker}/task_execute/execute"
+            )
+        ).strip()
+        if "{worker}" not in self.task_execute_action_name_template:
+            raise ValueError(
+                "post_arrival/action_name_template must contain {worker}"
+            )
+        self.task_execute_server_wait_timeout = max(
+            0.1, float(post_arrival.get("server_wait_timeout_sec", 2.0))
+        )
+        self.task_execute_failure_policy = str(
+            post_arrival.get("failure_policy", "fail")
+        ).strip().lower()
+        if self.task_execute_failure_policy not in ("fail", "retry"):
+            raise ValueError("post_arrival/failure_policy must be fail or retry")
+        self.task_execute_retry_delay = max(
+            0.0, float(post_arrival.get("retry_delay_sec", 5.0))
+        )
+        self.task_execute_defaults = dict(post_arrival.get("default_task", {}))
+        self.task_execute_vehicle_type_overrides = dict(
+            post_arrival.get("vehicle_type_overrides", {})
+        )
+        self.task_execute_class_overrides = dict(
+            post_arrival.get("class_overrides", {})
+        )
+        self.task_execute_worker_overrides = dict(
+            post_arrival.get("worker_overrides", {})
         )
 
         self.scout_configs = dict(rospy.get_param("~scouts", {}))
@@ -420,6 +460,9 @@ class TaskAllocateCoordinator:
         self.verification_targets_by_region: Dict[int, Set[int]] = {}
         self.verification_region_states: Dict[int, str] = {}
         self.worker_retry_after: Dict[str, float] = {}
+        self.task_execute_clients: Dict[str, actionlib.SimpleActionClient] = {}
+        self.active_task_executions: Dict[str, Tuple[int, int]] = {}
+        self._next_task_execution_token = 1
         self.vehicle_operator_enabled = {
             str(name): True for name in all_configs
         }
@@ -549,6 +592,12 @@ class TaskAllocateCoordinator:
                 str(name), self.vehicle_types[str(name)]
             )
             self._configure_vehicle(str(name), dict(config), is_scout=False)
+        if self.post_arrival_mode == "task_execute":
+            for name in self.worker_configs:
+                worker = str(name)
+                self.task_execute_clients[worker] = actionlib.SimpleActionClient(
+                    self._task_execute_action_name(worker), ExecuteTaskAction
+                )
 
         update_rate = max(1.0, float(rospy.get_param("~runtime/update_rate_hz", 5.0)))
         self.timer = rospy.Timer(rospy.Duration(1.0 / update_rate), self._timer_callback)
@@ -557,7 +606,7 @@ class TaskAllocateCoordinator:
         rospy.loginfo(
             "[task_allocate] ready: scouts=%s workers=%s shared_frame=%s; "
             "position=main world Odometry; vehicles=%s; backends=%s; "
-            "hierarchical_search=%s(mode=%s)",
+            "hierarchical_search=%s(mode=%s); post_arrival=%s",
             sorted(self.scout_configs),
             sorted(self.worker_configs),
             self.shared_frame,
@@ -565,6 +614,7 @@ class TaskAllocateCoordinator:
             self.vehicle_backends,
             self.hierarchical_search_enabled,
             self.hierarchical_search_mode,
+            self.post_arrival_mode,
         )
         if self.direct_controller_test:
             rospy.logwarn(
@@ -626,6 +676,280 @@ class TaskAllocateCoordinator:
 
     def _uses_direct_controller(self, vehicle: str) -> bool:
         return self.vehicle_backends.get(str(vehicle)) == "direct_controller_test"
+
+    def _task_execute_action_name(self, worker: str) -> str:
+        name = self.task_execute_action_name_template.format(worker=str(worker))
+        if not str(name).strip():
+            raise ValueError("post-arrival task_execute action name must not be empty")
+        return str(name)
+
+    @staticmethod
+    def _task_execute_type(value) -> int:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            task_types = {
+                "arrive": ExecuteTaskGoal.ARRIVE,
+                "track": ExecuteTaskGoal.TRACK,
+                "observe": ExecuteTaskGoal.OBSERVE,
+                "intercept": ExecuteTaskGoal.INTERCEPT,
+            }
+            if normalized not in task_types:
+                raise ValueError(
+                    "post_arrival task_type must be arrive, track, observe or intercept"
+                )
+            return int(task_types[normalized])
+        task_type = int(value)
+        if task_type not in (
+            ExecuteTaskGoal.ARRIVE,
+            ExecuteTaskGoal.TRACK,
+            ExecuteTaskGoal.OBSERVE,
+            ExecuteTaskGoal.INTERCEPT,
+        ):
+            raise ValueError(f"unsupported post_arrival task_type: {task_type}")
+        return task_type
+
+    def _task_execute_options(self, task, worker: str) -> dict:
+        """Merge defaults with vehicle, class and worker-specific overrides."""
+
+        options = dict(self.task_execute_defaults)
+        options.update(
+            dict(
+                self.task_execute_vehicle_type_overrides.get(
+                    self.vehicle_types.get(str(worker), ""), {}
+                )
+            )
+        )
+        class_options = self.task_execute_class_overrides.get(
+            str(task.class_id),
+            self.task_execute_class_overrides.get(int(task.class_id), {}),
+        )
+        options.update(dict(class_options))
+        options.update(dict(self.task_execute_worker_overrides.get(str(worker), {})))
+        return options
+
+    def _build_task_execute_goal(self, task, worker: str) -> ExecuteTaskGoal:
+        options = self._task_execute_options(task, worker)
+        goal = ExecuteTaskGoal()
+        goal.header.stamp = rospy.Time.now()
+        goal.header.frame_id = self.shared_frame
+        goal.task_id = int(task.task_id)
+        goal.target_id = int(task.target_id)
+        goal.task_type = self._task_execute_type(options.get("task_type", "track"))
+        goal.worker_name = str(worker)
+        goal.target_class_id = int(task.class_id)
+        goal.target_pose.header = goal.header
+        goal.target_pose.pose.position.x = float(task.target_position[0])
+        goal.target_pose.pose.position.y = float(task.target_position[1])
+        goal.target_pose.pose.position.z = float(task.target_position[2])
+        goal.target_pose.pose.orientation.w = 1.0
+        goal.local_track_id = int(options.get("local_track_id", -1))
+        goal.follower_profile = str(options.get("follower_profile", "")).strip()
+        goal.required_execution_sec = max(
+            0.0, float(options.get("required_execution_sec", 0.0))
+        )
+        goal.maximum_duration_sec = max(
+            0.0, float(options.get("maximum_duration_sec", 0.0))
+        )
+        return goal
+
+    def _complete_worker_task(self, task, worker: str, detail: str) -> None:
+        completed = self.allocator.complete(task.task_id)
+        if completed is None:
+            return
+        completed.detail = str(detail)
+        self.registry.set_status(completed.target_id, TARGET_COMPLETED)
+        rospy.loginfo(
+            "[task_allocate] 任务完成: task=%d target=%d worker=%s "
+            "vehicle_type=%s reason=%s",
+            completed.task_id,
+            completed.target_id,
+            worker,
+            self.vehicle_types.get(worker, "unknown"),
+            detail,
+        )
+
+    def _handle_task_execute_failure(self, task, worker: str, detail: str) -> None:
+        message = f"post-arrival task failed: {detail}"
+        if self.task_execute_failure_policy == "retry":
+            released = self.allocator.release_worker(worker, message)
+            if released is not None:
+                registry_target = self.registry.targets.get(released.target_id)
+                if registry_target is not None:
+                    self.registry.set_status(released.target_id, TARGET_CONFIRMED)
+            worker_record = self.allocator.workers.get(worker)
+            if worker_record is not None:
+                worker_record.online = False
+            self.worker_retry_after[worker] = (
+                rospy.Time.now().to_sec() + self.task_execute_retry_delay
+            )
+        else:
+            failed = self.allocator.cancel_task(task.task_id, message)
+            if failed is not None and failed.target_id in self.registry.targets:
+                self.registry.set_status(failed.target_id, TARGET_CONFIRMED)
+        rospy.logerr(
+            "[task_allocate] task execution failed: task=%d target=%d worker=%s: %s",
+            task.task_id,
+            task.target_id,
+            worker,
+            detail,
+        )
+
+    def _task_execution_active(self, worker: str, token: int) -> None:
+        with self._lock:
+            active = self.active_task_executions.get(worker)
+            if active is None or active[1] != int(token):
+                return
+            task = self.allocator.tasks.get(active[0])
+            if task is not None:
+                task.detail = "post-arrival task_execute action is active"
+
+    def _task_execution_feedback(self, worker: str, token: int, feedback) -> None:
+        with self._lock:
+            active = self.active_task_executions.get(worker)
+            if active is None or active[1] != int(token):
+                return
+            task = self.allocator.tasks.get(active[0])
+            if task is not None:
+                task.detail = (
+                    f"task_execute phase={int(feedback.phase)} "
+                    f"progress={float(feedback.progress):.2f}: {feedback.detail}"
+                )
+
+    def _task_execution_done(self, worker: str, token: int, state: int, result) -> None:
+        with self._lock:
+            active = self.active_task_executions.get(worker)
+            if active is None or active[1] != int(token):
+                return
+            self.active_task_executions.pop(worker, None)
+            task = self.allocator.tasks.get(active[0])
+            if task is None or task.assigned_worker != worker:
+                return
+            if (
+                self._uses_direct_controller(worker)
+                and self.vehicle_types.get(worker) != "fixedwing"
+            ):
+                # Track may have overwritten the arrival hold. Re-issue it
+                # after the executor has stopped the tracking controller.
+                self._publish_direct_hold(worker)
+            result_message = (
+                str(result.message) if result is not None else "action returned no result"
+            )
+            succeeded = bool(
+                int(state) == GoalStatus.SUCCEEDED
+                and result is not None
+                and bool(result.success)
+            )
+            if succeeded:
+                self._complete_worker_task(
+                    task, worker, f"task_execute succeeded: {result_message}"
+                )
+            else:
+                error_code = (
+                    int(result.error_code) if result is not None else -1
+                )
+                self._handle_task_execute_failure(
+                    task,
+                    worker,
+                    f"action_state={int(state)} error_code={error_code}: "
+                    f"{result_message}",
+                )
+            self._dispatch_assignments()
+            self._check_mission_completed(rospy.Time.now().to_sec())
+            self._publish_state()
+
+    def _start_task_execution(self, task, worker: str) -> bool:
+        if self.allocator.mark_executing(task.task_id):
+            self.registry.set_status(task.target_id, TARGET_EXECUTING)
+        client = self.task_execute_clients.get(worker)
+        if client is None:
+            self._handle_task_execute_failure(
+                task, worker, "no task_execute action client is configured"
+            )
+            return False
+        task.detail = "waiting for task_execute action server"
+        try:
+            server_available = client.wait_for_server(
+                rospy.Duration(self.task_execute_server_wait_timeout)
+            )
+        except rospy.ROSException as error:
+            self._handle_task_execute_failure(task, worker, str(error))
+            return False
+        if not server_available:
+            self._handle_task_execute_failure(
+                task,
+                worker,
+                f"action server {self._task_execute_action_name(worker)} unavailable",
+            )
+            return False
+        try:
+            goal = self._build_task_execute_goal(task, worker)
+        except (TypeError, ValueError, KeyError) as error:
+            self._handle_task_execute_failure(task, worker, str(error))
+            return False
+        token = self._next_task_execution_token
+        self._next_task_execution_token += 1
+        self.active_task_executions[worker] = (task.task_id, token)
+        task.detail = (
+            f"task_execute goal sent: type={int(goal.task_type)} "
+            f"profile={goal.follower_profile or '<executor default>'}"
+        )
+        try:
+            client.send_goal(
+                goal,
+                done_cb=lambda state, result, vehicle=worker, value=token: (
+                    self._task_execution_done(vehicle, value, state, result)
+                ),
+                active_cb=lambda vehicle=worker, value=token: (
+                    self._task_execution_active(vehicle, value)
+                ),
+                feedback_cb=lambda feedback, vehicle=worker, value=token: (
+                    self._task_execution_feedback(vehicle, value, feedback)
+                ),
+            )
+        except (rospy.ROSException, RuntimeError) as error:
+            self.active_task_executions.pop(worker, None)
+            self._handle_task_execute_failure(task, worker, str(error))
+            return False
+        rospy.loginfo(
+            "[task_allocate] task=%d worker=%s reached approach goal; "
+            "task_execute type=%d started",
+            task.task_id,
+            worker,
+            int(goal.task_type),
+        )
+        return True
+
+    def _cancel_task_execution(self, worker: str, detail: str) -> int:
+        active = getattr(self, "active_task_executions", {}).pop(worker, None)
+        if active is None:
+            return 0
+        client = self.task_execute_clients.get(worker)
+        if client is not None:
+            client.cancel_goal()
+        if (
+            self._uses_direct_controller(worker)
+            and self.vehicle_types.get(worker) != "fixedwing"
+        ):
+            self._publish_direct_hold(worker)
+        task = self.allocator.tasks.get(active[0])
+        if task is not None:
+            task.detail = str(detail)
+        return int(active[0])
+
+    def _cancel_all_task_executions(self, detail: str, transition: str) -> None:
+        for worker in list(getattr(self, "active_task_executions", {})):
+            task_id = self._cancel_task_execution(worker, detail)
+            task = self.allocator.tasks.get(task_id)
+            if task is None:
+                continue
+            if transition == "release":
+                released = self.allocator.release_worker(worker, detail)
+                if released is not None and released.target_id in self.registry.targets:
+                    self.registry.set_status(released.target_id, TARGET_CONFIRMED)
+            elif transition == "fail":
+                failed = self.allocator.cancel_task(task_id, detail)
+                if failed is not None and failed.target_id in self.registry.targets:
+                    self.registry.set_status(failed.target_id, TARGET_CONFIRMED)
 
     def _fixedwing_setting(self, vehicle: str, key: str, default: float) -> float:
         config = dict(
@@ -1294,8 +1618,15 @@ class TaskAllocateCoordinator:
             success, detail = self._pause_active_vehicles()
             if not success:
                 return TriggerResponse(False, detail)
+            self._cancel_all_task_executions(
+                "mission paused; post-arrival task returned to allocation queue",
+                "release",
+            )
             self.mission_state = MISSION_PAUSED
-            self.mission_detail = "mission paused by operator; progress retained"
+            self.mission_detail = (
+                "mission paused by operator; route progress retained and active "
+                "post-arrival tasks returned to the allocation queue"
+            )
             self._publish_mission_state()
             return TriggerResponse(True, self.mission_detail)
 
@@ -1326,6 +1657,9 @@ class TaskAllocateCoordinator:
         success, detail = self._pause_active_vehicles()
         if not success:
             return False, detail
+        self._cancel_all_task_executions(
+            "mission stopped by operator", "fail"
+        )
         for vehicle, active in list(self.active_goals.items()):
             if active[1] == "rescue":
                 self.allocator.cancel_task(
@@ -1454,6 +1788,13 @@ class TaskAllocateCoordinator:
                     if active[1] == "rescue" and active[2] == task.task_id:
                         self._publish_direct_hold(vehicle)
                         self._clear_active_goal(vehicle)
+                for vehicle, active in list(
+                    getattr(self, "active_task_executions", {}).items()
+                ):
+                    if active[0] == task.task_id:
+                        self._cancel_task_execution(
+                            vehicle, "all rescue tasks cancelled by operator"
+                        )
                 if self.allocator.cancel_task(
                     task.task_id, "all rescue tasks cancelled by operator"
                 ) is not None:
@@ -1472,6 +1813,12 @@ class TaskAllocateCoordinator:
                 f"{vehicle}:goal={active[0]},kind={active[1]},object={active[2]}"
                 for vehicle, active in sorted(self.active_goals.items())
             ]
+            active_goals.extend(
+                f"{vehicle}:kind=task_execute,task={active[0]}"
+                for vehicle, active in sorted(
+                    getattr(self, "active_task_executions", {}).items()
+                )
+            )
             return GetMissionStateResponse(
                 success=True,
                 state=self.mission_state,
@@ -1525,6 +1872,7 @@ class TaskAllocateCoordinator:
                 return SetVehicleEnabledResponse(False, f"unknown vehicle: {vehicle}")
             enabled = bool(request.enabled)
             active = self.active_goals.get(vehicle)
+            executing_task = getattr(self, "active_task_executions", {}).get(vehicle)
             if (
                 not enabled
                 and active is not None
@@ -1534,6 +1882,15 @@ class TaskAllocateCoordinator:
                     False, f"{vehicle} planner has no cancel adapter"
                 )
             self.vehicle_operator_enabled[vehicle] = enabled
+            if not enabled and executing_task is not None:
+                self._cancel_task_execution(
+                    vehicle, "vehicle disabled by operator; task released"
+                )
+                task = self.allocator.release_worker(
+                    vehicle, "vehicle disabled by operator; task released"
+                )
+                if task is not None:
+                    self.registry.set_status(task.target_id, TARGET_CONFIRMED)
             if not enabled and active is not None:
                 self._publish_direct_hold(vehicle)
                 if active[1] == "rescue":
@@ -1578,6 +1935,13 @@ class TaskAllocateCoordinator:
                 if active[1] == "rescue" and active[2] == task.task_id:
                     self._publish_direct_hold(vehicle)
                     self._clear_active_goal(vehicle)
+            for vehicle, active in list(
+                getattr(self, "active_task_executions", {}).items()
+            ):
+                if active[0] == task.task_id:
+                    self._cancel_task_execution(
+                        vehicle, "rescue task cancelled by operator"
+                    )
             cancelled = self.allocator.cancel_task(
                 task.task_id, "rescue task cancelled by operator"
             )
@@ -1589,8 +1953,16 @@ class TaskAllocateCoordinator:
 
     def _retry_task_callback(self, request) -> TaskCommandResponse:
         with self._lock:
+            requested_task_id = int(request.task_id)
+            for vehicle, active in list(
+                getattr(self, "active_task_executions", {}).items()
+            ):
+                if active[0] == requested_task_id:
+                    self._cancel_task_execution(
+                        vehicle, "rescue task retry requested by operator"
+                    )
             task = self.allocator.retry_task(
-                int(request.task_id), "rescue task queued again by operator"
+                requested_task_id, "rescue task queued again by operator"
             )
             if task is None:
                 return TaskCommandResponse(
@@ -1627,6 +1999,14 @@ class TaskAllocateCoordinator:
                     "reject_target requires planner cancel adapters for: "
                     + ", ".join(sorted(unsupported)),
                 )
+            for vehicle, active in list(
+                getattr(self, "active_task_executions", {}).items()
+            ):
+                executing = self.allocator.tasks.get(active[0])
+                if executing is not None and executing.target_id == target_id:
+                    self._cancel_task_execution(
+                        vehicle, "target rejected by operator"
+                    )
             task = self.allocator.remove_target_task(target_id)
             if task is not None:
                 for vehicle, active in list(self.active_goals.items()):
@@ -2615,21 +2995,15 @@ class TaskAllocateCoordinator:
                 # already entered loiter, or will finish the short remaining
                 # path after the allocator's fly-through fallback fires.
                 self._publish_direct_hold(vehicle)
-            completed = self.allocator.complete(task.task_id)
-            if completed is not None:
-                self.registry.set_status(completed.target_id, TARGET_COMPLETED)
-                rospy.loginfo(
-                    "[task_allocate] 任务完成: task=%d target=%d worker=%s "
-                    "vehicle_type=%s reason=%s",
-                    completed.task_id,
-                    completed.target_id,
-                    vehicle,
-                    self.vehicle_types.get(vehicle, "unknown"),
-                    detail,
-                )
             self._clear_active_goal(vehicle)
-            self._dispatch_assignments()
-            self._check_mission_completed(rospy.Time.now().to_sec())
+            if getattr(self, "post_arrival_mode", "arrive") == "task_execute":
+                self._start_task_execution(task, vehicle)
+            else:
+                self._complete_worker_task(
+                    task, vehicle, f"worker reached the task goal: {detail}"
+                )
+                self._dispatch_assignments()
+                self._check_mission_completed(rospy.Time.now().to_sec())
         elif state in (PlannerStatus.BLOCKED, PlannerStatus.FAILED):
             self.allocator.release_worker(
                 vehicle,
@@ -2778,6 +3152,13 @@ class TaskAllocateCoordinator:
                 for vehicle, active in list(self.active_goals.items()):
                     if active[1] == "rescue" and active[2] == task.task_id:
                         self._clear_active_goal(vehicle)
+                for vehicle, active in list(
+                    getattr(self, "active_task_executions", {}).items()
+                ):
+                    if active[0] == task.task_id:
+                        self._cancel_task_execution(
+                            vehicle, "worker state timed out; task released"
+                        )
                 self.registry.set_status(task.target_id, TARGET_CONFIRMED)
             self._assign_pending_verifications()
             self._dispatch_assignments()
