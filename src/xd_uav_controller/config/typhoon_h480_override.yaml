@@ -1,0 +1,9 @@
+# Typhoon H480 SITL-specific multirotor model override.
+#
+# The Gazebo model has about 2.665 kg total link mass, six rotors with
+# motorConstant=8.54858e-06 and maxRotVelocity=1500 rad/s. Balancing gravity
+# therefore requires a normalized rotor command near 0.476. Keep this separate
+# from multirotor.yaml so the existing fourfixed/other vehicles are unaffected.
+multirotor:
+  model:
+    hover_throttle: 0.48

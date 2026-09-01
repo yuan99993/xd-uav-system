@@ -5,8 +5,9 @@ socket_name: mrs
 attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 
-# Three PX4 SITL vehicles: uav1, uav2 and uav3.
-pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:$ROS_PACKAGE_PATH; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
+# Four fixed-wing PX4 SITL vehicles. uav1/uav2 are scouts; uav3/uav4
+# are workers that fly to confirmed coarse target positions.
+pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2:$ROS_PACKAGE_PATH; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
 startup_window: estimator
 
 windows:
@@ -18,22 +19,21 @@ windows:
   - px4_sitl:
       layout: tiled
       panes:
-        - waitForRos; roslaunch px4 mavros_posix_sitl_3multi1fixed_ns.launch
-
+        - waitForRos; roslaunch px4 mavros_posix_sitl_4fixed_ns.launch
   - estimator:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav3 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav4 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
-  - contoller:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav3 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav4 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+  - controller:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager fixedwing_system.launch UAV_NAME:=uav1
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav2
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav3
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav4
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager fixedwing_system.launch UAV_NAME:=uav2
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager fixedwing_system.launch UAV_NAME:=uav3
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager fixedwing_system.launch UAV_NAME:=uav4
   - world_tf_manager:
       layout: tiled
       panes:
@@ -41,12 +41,12 @@ windows:
   - task_allocator:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_allocate task_allocate.launch scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_mixed_example.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_allocate task_allocate.launch scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_two_fixed.yaml worker_config:=$(rospack find xd_uav_task_allocate)/config/workers_two_fixed.yaml
   - detect:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav2 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/multirotor_detect.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav2 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
         #- waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav1 use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python
         #- waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav2 input_image_topic:=camera/image_raw camera_info_topic:=camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python
   - rviz:
@@ -57,7 +57,7 @@ windows:
       layout: tiled
       panes:
         - >-
-          history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 40.0"; rosservice call /uav2/control_manager/takeoff "altitude: 4.0"; rosservice call /uav3/control_manager/takeoff "altitude: 4.0"; rosservice call /uav4/control_manager/takeoff "altitude: 4.0"'
+          history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 40.0"; rosservice call /uav2/control_manager/takeoff "altitude: 40.0"; rosservice call /uav3/control_manager/takeoff "altitude: 40.0"; rosservice call /uav4/control_manager/takeoff "altitude: 40.0"'
   - land_home:
       layout: tiled
       panes:

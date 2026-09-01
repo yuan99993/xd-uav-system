@@ -4,7 +4,17 @@ set -euo pipefail
 
 SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-SESSION_NAME="three_uav_px4"
+SESSION_ARGUMENT="${1:-$SCRIPT_DIR/session_four_fixed_px4.yml}"
+SESSION_PATH="$(readlink -f "$SESSION_ARGUMENT")"
+if [[ ! -f "$SESSION_PATH" ]]; then
+  echo "tmux session file does not exist: $SESSION_ARGUMENT" >&2
+  exit 2
+fi
+SESSION_NAME="$(sed -n 's/^name:[[:space:]]*//p' "$SESSION_PATH" | head -n1)"
+if [[ -z "$SESSION_NAME" ]]; then
+  echo "tmux session file has no top-level name: $SESSION_PATH" >&2
+  exit 2
+fi
 SOCKET_NAME="mrs"
 
 cd "$SCRIPT_DIR"
@@ -19,7 +29,7 @@ unset LIBGL_ALWAYS_SOFTWARE
 if tmux -L "$SOCKET_NAME" has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "tmux session '$SESSION_NAME' is already running; attaching to it."
 else
-  tmuxinator start -p ./session_one_fixed_px4.yml
+  tmuxinator start -p "$SESSION_PATH"
 fi
 
 if [[ -z "${TMUX:-}" ]]; then

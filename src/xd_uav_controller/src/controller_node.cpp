@@ -2649,9 +2649,15 @@ class ControllerNode {
   }
 
   void referencePathCallback(const nav_msgs::Path::ConstPtr& message) {
-    const uint32_t requested_id = message->header.seq != 0U
-                                      ? message->header.seq
-                                      : ++path_sequence_counter_;
+    // rospy replaces a top-level Header.seq during serialization.  Prefer the
+    // independently stored ID in the first path pose so multiple per-vehicle
+    // publishers cannot accidentally collapse to path ID 1.
+    const uint32_t requested_id =
+        !message->poses.empty() && message->poses.front().header.seq != 0U
+            ? message->poses.front().header.seq
+            : message->header.seq != 0U
+                  ? message->header.seq
+                  : ++path_sequence_counter_;
     if (!externalReferenceAllowed() || !have_state_ ||
         !state_.state_valid) {
       rejectPath(requested_id, "当前状态不允许接受外部路径");
