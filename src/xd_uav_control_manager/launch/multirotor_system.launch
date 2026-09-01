@@ -5,6 +5,9 @@
        default="$(find xd_uav_controller)/config/common_config.yaml"/>
   <arg name="controller_config"
        default="$(find xd_uav_controller)/config/multirotor.yaml"/>
+  <arg name="use_controller_override_config" default="false"/>
+  <arg name="controller_override_config"
+       default="$(arg controller_config)"/>
   <arg name="offboard_config" default="$(find xd_uav_control_manager)/config/offboard.yaml"/>
   <arg name="safety_config" default="$(find xd_uav_control_manager)/config/safety.yaml"/>
   <arg name="simple_goal_topic"
@@ -22,6 +25,10 @@
     <arg name="common_config"
          value="$(arg controller_common_config)"/>
     <arg name="config" value="$(arg controller_config)"/>
+    <arg name="use_controller_override_config"
+         value="$(arg use_controller_override_config)"/>
+    <arg name="controller_override_config"
+         value="$(arg controller_override_config)"/>
     <arg name="simple_goal_topic"
          value="$(arg simple_goal_topic)"/>
   </include>

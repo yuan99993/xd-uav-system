@@ -115,7 +115,7 @@ target_registry:
 # multirotor verification. Legacy configurations containing only `enabled` are
 # still accepted.
 hierarchical_search:
-  mode: auto  # auto | single_stage | hierarchical
+  mode: single_stage  # auto | single_stage | hierarchical
   verification:
     # Publish and dispatch each local region as soon as fixed-wing evidence is
     # ready. `after_coarse_complete` is retained only as an optional policy.
@@ -148,9 +148,11 @@ allocation:
   task_deduplication_radius_m: 5.0
   # Rescue tasks are assigned to hover-capable aircraft unless a class-specific
   # rule explicitly allows fixed-wing workers.
-  default_worker_vehicle_types: [multirotor]
-  class_worker_vehicle_types:
-    "0": [multirotor]
+  default_worker_vehicle_types: [multirotor, fixedwing]
+  class_worker_vehicle_types: {}
+    # "0": [multirotor] 依据识别出来的classid确定哪个类型飞机接受任务
+    # "1": [fixedwing] 目标类别编号 → 允许执行这个任务的飞机类型
+    # "2": [multirotor, fixedwing]
   worker_approach:
     # Stop well before the detected object. The red box is 1 m wide and the
     # aircraft body plus braking error also need clearance; 2 m was too small.

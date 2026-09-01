@@ -248,6 +248,8 @@ python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2 uav3
 
 ```bash
 python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2 --image-topic uav1=/uav1/down_camera/image_raw
+
+python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2 --image-topic uav1=/uav1/down_camera/image_raw --image-topic uav2=/uav2/down_camera/image_raw 
 ```
 
 也可以统一修改话题模板，模板中必须保留 `{uav}`。在 Bash 中建议用单引号：
@@ -324,6 +326,8 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /ta
 
 
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: -75.0, y: -75.0, z: 0.0}, {x: 75.0, y: -75.0, z: 0.0}, {x: 75.0, y: 75.0, z: 0.0}, {x: -75.0, y: 75.0, z: 0.0}]}, altitude: 30.0, lane_spacing: 5.0, priority: 1}]}"
+
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 100.0, y: 0.0, z: 0.0}, {x: 100.0, y: 100.0, z: 0.0}, {x: 0.0, y: 100.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 6.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -160.0, y: -160.0, z: 0.0}, {x: 0.0, y: -160.0, z: 0.0}, {x: -60.0, y: -60.0, z: 0.0}, {x: -160.0, y: 0.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 5.0, priority: 1}]}"
 ### Gazebo 提示模型名称已存在
 
 再次生成时加 `--replace`，或者通过 `--prefix` 使用新的模型名前缀。
@@ -339,3 +343,20 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /ta
 很小，可适当降低 `~minimum_area_px`、`~minimum_width_px` 和
 `~minimum_height_px`；若光照导致颜色偏暗，可降低 `~saturation_min` 或
 `~value_min`。
+## Typhoon H480 云台闭环仿真
+
+`gm_control_to_gazebo_typhoon_gimbal.py` 是 Typhoon CGO3 的 Gazebo 后端：
+它订阅 `/uav1/gm_control/gimbal_cmd`，直接设置三个云台 joint，并把当前逻辑角度发布到
+`/uav1/gm_control/gimbal_state`。云台控制接口不使用 MAVROS mount-control。
+
+`gazebo_udp_video_to_ros_image.py` 监听 Typhoon CGO3 的 UDP 5600 RTP/H264 输出，
+并发布 `/uav1/cgo3_camera/image_raw`。完整单机闭环使用：
+
+```bash
+cd /home/kzy/xd-uavsystem-test
+./src/tmux_start/start.sh ./src/tmux_start/session_typhoon_gm_px4.yml
+```
+
+会话自动启动图像端口桥、红色目标、红框识别、`xd_uav_track`、`gm_control` 和 Gazebo
+云台适配器。`enable_tracking` 和 `takeoff` 窗口只预填命令，分别按 Enter 后才会启用飞机
+跟随和起飞。

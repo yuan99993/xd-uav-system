@@ -361,12 +361,16 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.assertGreater(completed_trajectory_loiter.body_rate.z, 0.0)
 
         geometric_path = Path()
-        geometric_path.header.seq = 52
+        # rospy rewrites this top-level sequence number.  The allocator keeps
+        # its stable path ID in an independent nested pose Header instead.
+        geometric_path.header.seq = 999
         geometric_path.header.stamp = rospy.Time.now()
         geometric_path.header.frame_id = "uav1/odom"
         for x, y in ((0.0, 0.0), (30.0, 0.0), (30.0, 30.0)):
             pose = PoseStamped()
-            pose.header = geometric_path.header
+            pose.header.seq = 52
+            pose.header.stamp = geometric_path.header.stamp
+            pose.header.frame_id = geometric_path.header.frame_id
             pose.pose.position.x = x
             pose.pose.position.y = y
             pose.pose.position.z = 100.0

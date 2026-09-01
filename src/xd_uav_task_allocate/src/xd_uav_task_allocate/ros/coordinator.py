@@ -2323,6 +2323,34 @@ class TaskAllocateCoordinator:
             goal.pose.orientation.w = 1.0
             self._publish_direct_controller_goal(vehicle, goal)
 
+    def _publish_direct_fixedwing_path(
+        self, vehicle: str, goal_id: int, points
+    ) -> None:
+        """Publish a geometric path with a ROS-serialization-safe goal ID."""
+
+        path_points = [tuple(float(value) for value in point) for point in points]
+        if len(path_points) < 2:
+            raise ValueError("fixed-wing path needs at least two points")
+        message = Path()
+        message.header.seq = int(goal_id)
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = self.shared_frame
+        for point in path_points:
+            pose = PoseStamped()
+            # rospy overwrites the top-level Header.seq while serializing a
+            # message.  A separate nested Header is left untouched and carries
+            # the allocator goal ID through to the controller status reply.
+            pose.header.seq = int(goal_id)
+            pose.header.stamp = message.header.stamp
+            pose.header.frame_id = message.header.frame_id
+            pose.pose.position.x = point[0]
+            pose.pose.position.y = point[1]
+            pose.pose.position.z = point[2]
+            pose.pose.orientation.w = 1.0
+            message.poses.append(pose)
+        self.active_controller_paths.add(vehicle)
+        self.direct_path_publishers[vehicle].publish(message)
+
     def _publish_fixedwing_route_path(
         self, vehicle: str, route, start_index: int, kind: str
     ) -> int:
@@ -2338,26 +2366,13 @@ class TaskAllocateCoordinator:
             + (float(first[2]) - current_point[2]) ** 2
         )
         goal_id = self._new_goal_id()
-        message = Path()
-        message.header.seq = goal_id
-        message.header.stamp = rospy.Time.now()
-        message.header.frame_id = self.shared_frame
         path_points = ([current_point] if separation > 1e-3 else []) + remaining
-        for point in path_points:
-            pose = PoseStamped()
-            pose.header = message.header
-            pose.pose.position.x = float(point[0])
-            pose.pose.position.y = float(point[1])
-            pose.pose.position.z = float(point[2])
-            pose.pose.orientation.w = 1.0
-            message.poses.append(pose)
 
         final_index = len(route) - 1
         self.active_goals[vehicle] = (goal_id, str(kind), final_index)
         self.active_goal_points[vehicle] = tuple(float(value) for value in route[-1])
         self.active_goal_origins[vehicle] = current_point
-        self.active_controller_paths.add(vehicle)
-        self.direct_path_publishers[vehicle].publish(message)
+        self._publish_direct_fixedwing_path(vehicle, goal_id, path_points)
         self._publish_direct_status(
             vehicle,
             goal_id,
@@ -2402,18 +2417,43 @@ class TaskAllocateCoordinator:
         self.arrival_tracker.reset(vehicle)
         self.worker_arrival_tracker.reset(vehicle)
         if self._uses_direct_controller(vehicle):
-            self._publish_direct_controller_goal(vehicle, goal)
+            fixedwing_worker_path = False
+            if self.vehicle_types[vehicle] == "fixedwing" and kind == "rescue":
+                current = self.vehicle_world_positions.get(vehicle)
+                if current is not None:
+                    current_point = tuple(float(value) for value in current[1])
+                    distance = sqrt(
+                        sum(
+                            (self.active_goal_points[vehicle][axis] - current_point[axis])
+                            ** 2
+                            for axis in range(3)
+                        )
+                    )
+                    if distance >= 1e-3:
+                        self._publish_direct_fixedwing_path(
+                            vehicle,
+                            goal_id,
+                            (current_point, self.active_goal_points[vehicle]),
+                        )
+                        fixedwing_worker_path = True
+            if not fixedwing_worker_path:
+                self._publish_direct_controller_goal(vehicle, goal)
+            detail = (
+                "fixed-wing worker geometric path active; no obstacle avoidance"
+                if fixedwing_worker_path
+                else "direct controller test goal active; no obstacle avoidance"
+            )
             self._publish_direct_status(
                 vehicle,
                 goal_id,
                 PlannerStatus.ACTIVE,
-                "direct controller test goal active; no obstacle avoidance",
+                detail,
             )
             self._handle_goal_status(
                 vehicle,
                 goal_id,
                 PlannerStatus.ACTIVE,
-                "direct controller test goal active; no obstacle avoidance",
+                detail,
             )
         else:
             self.goal_publishers[vehicle].publish(goal)
@@ -2566,14 +2606,27 @@ class TaskAllocateCoordinator:
             if self.allocator.mark_executing(task.task_id):
                 self.registry.set_status(task.target_id, TARGET_EXECUTING)
         elif state == PlannerStatus.REACHED:
-            if self._uses_direct_controller(vehicle):
-                # Freeze the worker at its measured completion pose instead of
-                # leaving a stale approach command active while task state is
-                # released or another task is allocated.
+            if (
+                self._uses_direct_controller(vehicle)
+                and self.vehicle_types.get(vehicle) != "fixedwing"
+            ):
+                # Hover-capable workers hold their measured completion pose.
+                # A fixed wing cannot hover: its geometric path controller has
+                # already entered loiter, or will finish the short remaining
+                # path after the allocator's fly-through fallback fires.
                 self._publish_direct_hold(vehicle)
             completed = self.allocator.complete(task.task_id)
             if completed is not None:
                 self.registry.set_status(completed.target_id, TARGET_COMPLETED)
+                rospy.loginfo(
+                    "[task_allocate] 任务完成: task=%d target=%d worker=%s "
+                    "vehicle_type=%s reason=%s",
+                    completed.task_id,
+                    completed.target_id,
+                    vehicle,
+                    self.vehicle_types.get(vehicle, "unknown"),
+                    detail,
+                )
             self._clear_active_goal(vehicle)
             self._dispatch_assignments()
             self._check_mission_completed(rospy.Time.now().to_sec())
@@ -2602,10 +2655,15 @@ class TaskAllocateCoordinator:
         for vehicle, active in list(self.active_goals.items()):
             if not self._uses_direct_controller(vehicle):
                 continue
-            # Fixed-wing path completion is reported by the controller from
-            # actual along-track progress and endpoint geometry. Do not race
-            # that feedback with the waypoint/dwell fallback below.
-            if vehicle in getattr(self, "active_controller_paths", set()):
+            # Complete scout paths only from the controller's ordered
+            # along-track report.  A worker path also keeps the geometric
+            # acceptance/fly-through fallback below: reaching one coarse task
+            # point must not depend on every intermediate path segment being
+            # reported complete.
+            if (
+                vehicle in getattr(self, "active_controller_paths", set())
+                and active[1] in ("search", "verification")
+            ):
                 continue
             progress = self.active_trajectory_route_progress.get(vehicle, [])
             for deadline, route_index in progress:

@@ -18,7 +18,7 @@ windows:
   - px4_sitl:
       layout: tiled
       panes:
-        - waitForRos; roslaunch px4 mavros_posix_sitl_4_ns.launch
+        - waitForRos; roslaunch px4 mavros_posix_sitl_4multi_ns.launch
 
   - estimator:
       layout: tiled

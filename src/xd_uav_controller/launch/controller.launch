@@ -7,6 +7,8 @@
        default="$(find xd_uav_controller)/config/common_config.yaml"/>
   <arg name="config"
        default="$(find xd_uav_controller)/config/$(arg vehicle_type).yaml"/>
+  <arg name="use_controller_override_config" default="false"/>
+  <arg name="controller_override_config" default="$(arg config)"/>
   <arg name="simple_goal_topic"
        default="/move_base_simple/goal"/>
 
@@ -18,6 +20,9 @@
           clear_params="true">
       <rosparam command="load" file="$(arg common_config)"/>
       <rosparam command="load" file="$(arg config)"/>
+      <rosparam command="load"
+                file="$(arg controller_override_config)"
+                if="$(arg use_controller_override_config)"/>
       <param name="vehicle_type" value="$(arg vehicle_type)"/>
       <remap from="state" to="control_manager/state"/>
       <remap from="distance_sensor"

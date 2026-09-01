@@ -1,0 +1,59 @@
+# Two fixed-wing reconnaissance aircraft.  With
+# hierarchical_search/mode=single_stage, both aircraft search the original
+# areas and a stable coarse detection may create a worker task directly.
+scouts:
+  uav1:
+    vehicle_type: fixedwing
+    localization:
+      world_odometry_topic: /uav1/state_estimator/main/frames/world/odom
+    health:
+      control_state_topic: /uav1/control_manager/state
+    execution:
+      backend: direct_controller_test
+    coverage:
+      nominal_speed_mps: 15.0
+    fixedwing:
+      coverage_altitude_m: 40.0
+      coverage_lane_spacing_m: 30.0
+      minimum_turn_radius_m: 30.0
+      turn_waypoint_spacing_m: 5.0
+      straight_lead_distance_m: 30.0
+      waypoint_acceptance_radius_m: 20.0
+      waypoint_altitude_tolerance_m: 10.0
+      pass_cross_track_limit_m: 40.0
+    topics:
+      detections: /uav1/track/detections
+      planner_goal: /uav1/planning/goal
+      controller_setpoint: /uav1/control/reference/setpoint
+      controller_path: /uav1/control/reference/path
+      controller_path_status: /uav1/controller/path_status
+      mission_path: /uav1/planning/mission_path
+      planner_status: /uav1/planning/status
+
+  uav2:
+    vehicle_type: fixedwing
+    localization:
+      world_odometry_topic: /uav2/state_estimator/main/frames/world/odom
+    health:
+      control_state_topic: /uav2/control_manager/state
+    execution:
+      backend: direct_controller_test
+    coverage:
+      nominal_speed_mps: 15.0
+    fixedwing:
+      coverage_altitude_m: 40.0
+      coverage_lane_spacing_m: 30.0
+      minimum_turn_radius_m: 30.0
+      turn_waypoint_spacing_m: 5.0
+      straight_lead_distance_m: 30.0
+      waypoint_acceptance_radius_m: 20.0
+      waypoint_altitude_tolerance_m: 10.0
+      pass_cross_track_limit_m: 40.0
+    topics:
+      detections: /uav2/track/detections
+      planner_goal: /uav2/planning/goal
+      controller_setpoint: /uav2/control/reference/setpoint
+      controller_path: /uav2/control/reference/path
+      controller_path_status: /uav2/controller/path_status
+      mission_path: /uav2/planning/mission_path
+      planner_status: /uav2/planning/status
