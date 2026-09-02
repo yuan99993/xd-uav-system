@@ -68,7 +68,7 @@ landing:
   # odom使用相对起飞/Home地面的Z，适用于没有下视测距的仿真；它不能识别
   # 高于起飞点的平台。distance_sensor仅把纵向降落切换为下视AGL，XY仍使用
   # 当前定位源；需要飞机模型和MAVROS distance_sensor插件提供Range话题。
-  height_source: odom
+  height_source: distance_sensor
 
   # land_home水平返航的速度上限。控制器会根据剩余距离和多旋翼最大加速度
   # 自动提前减速，不会把该速度保持到目标点。

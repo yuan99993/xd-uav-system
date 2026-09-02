@@ -13,7 +13,7 @@ interfaces:
     point_cloud: "fastlio/points"
   output:
     # xd_uav_track 和后续任务分配继续使用这一统一输出。
-    detections_3d: "track/detections"
+    detections_3d: "detect/detections"
     status: "detect/status"
     debug_image: "detect/debug/image"
 

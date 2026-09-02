@@ -37,7 +37,7 @@ windows:
       layout: tiled
       panes:
         # Red detector publishes directly to xd_uav_track's 2D input.
-        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/red_box_detector.py --uavs uav1 --image-topic uav1=/uav1/cgo3_camera/image_raw --detections-template '/{uav}/track/detections'
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/red_box_detector.py --uavs uav1 --image-topic uav1=/uav1/cgo3_camera/image_raw --detections-template '/{uav}/detect/detections'
         - waitForTime; roslaunch xd_uav_track track.launch UAV_NAME:=uav1
         - waitForTime; roslaunch gm_control xd_track_gimbal_control.launch UAV_NAME:=uav1 image_topic:=/uav1/cgo3_camera/image_raw
         - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gm_control_to_gazebo_typhoon_gimbal.py --command-topic /uav1/gm_control/gimbal_cmd --state-topic /uav1/gm_control/gimbal_state --model typhoon_h4800 --frame-id uav1/cgo3_gimbal --yaw-sign -1 --pitch-sign -1 --rate 50

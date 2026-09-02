@@ -15,7 +15,7 @@ runtime:
 interfaces:
   input:
     # 唯一感知输入：一个候选和多个候选使用同一种消息。
-    detections: "track/detections"
+    detections: "detect/detections"
     vehicle_state: "state_estimator/main/odom"
     gimbal_state: "track/gimbal_state"
   output:
@@ -68,7 +68,7 @@ follower:
   # mc_velocity_ground | mc_velocity_position | mc_velocity_distance
   # mc_velocity_chase | gm_velocity_chase | gm_velocity_vector
   # fw_velocity_vector
-  profile: "gm_velocity_vector"
+  profile: "mc_velocity_chase"
   lateral_guidance_mode: "coordinated_turn"  # coordinated_turn | sideslip
   enable_vertical_control: true
   distance_enable_yaw: false

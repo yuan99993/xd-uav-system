@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import cv2
@@ -15,7 +16,7 @@ import diagnostic_updater
 import numpy as np
 import rospkg
 import rospy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, RegionOfInterest
 from vision_msgs.msg import BoundingBox2D, Detection2D, ObjectHypothesisWithPose
 
 from sar_yolo_detector.msg import (
@@ -24,6 +25,7 @@ from sar_yolo_detector.msg import (
     TrackedDetection2D,
     TrackedDetection2DArray,
 )
+from sar_yolo_detector.manual_box_tracker import ManualBoxTracker, ManualTrackResult
 from sar_yolo_detector.pixeagle.parameters import Parameters
 from sar_yolo_detector.pixeagle.smart_tracker import SmartTracker
 from sar_yolo_detector.pixeagle.tracking_roi import (
@@ -36,6 +38,8 @@ from sar_yolo_detector.srv import (
     SelectSmartTrackResponse,
     SwitchSmartTrackerModel,
     SwitchSmartTrackerModelResponse,
+    SwitchTrackingMode,
+    SwitchTrackingModeResponse,
 )
 
 
@@ -178,6 +182,53 @@ class SmartTrackerNode:
             rospy.get_param("~reject_out_of_order", True)
         )
 
+        default_tracker = str(
+            rospy.get_param("~Default_Tracker", "SmartTracker")
+        ).strip().lower()
+        default_aliases = {
+            "smarttracker": "smart_tracker",
+            "smart_tracker": "smart_tracker",
+            "smart": "smart_tracker",
+            "yolo": "smart_tracker",
+            "featuretracker": "feature_tracker",
+            "feature_tracker": "feature_tracker",
+            "manualboxtracker": "feature_tracker",
+            "manual_box_tracker": "feature_tracker",
+            "manual": "feature_tracker",
+            "colortracker": "color_tracker",
+            "color_tracker": "color_tracker",
+            "colour_tracker": "color_tracker",
+        }
+        if default_tracker not in default_aliases:
+            raise RuntimeError(
+                "Default_Tracker must be SmartTracker, FeatureTracker, or ColorTracker"
+            )
+        self._tracking_mode = default_aliases[default_tracker]
+        manual_config = dict(rospy.get_param("~ManualBoxTracker", {}))
+        self._manual_enabled = bool(manual_config.get("enabled", True))
+        self._manual_trackers = {}
+        if self._manual_enabled:
+            for tracker_type in ("feature_tracker", "color_tracker"):
+                tracker_config = dict(manual_config)
+                tracker_config["tracker_type"] = tracker_type
+                self._manual_trackers[tracker_type] = ManualBoxTracker(
+                    tracker_config
+                )
+        elif self._tracking_mode != "smart_tracker":
+            raise RuntimeError("A manual Default_Tracker requires ManualBoxTracker/enabled")
+        self._manual_active = False
+        self._manual_pending_roi = None
+        self._manual_class_id = int(manual_config.get("class_id", 2))
+        self._manual_track_id = int(manual_config.get("track_id", 900000000))
+        self._manual_min_confidence = max(
+            0.0, min(1.0, float(manual_config.get("minimum_confidence", 0.0)))
+        )
+        self._manual_initial_roi_topic = str(
+            manual_config.get(
+                "initial_roi_topic", "sar_yolo_detector/manual/initial_roi"
+            )
+        )
+
         smart_config = dict(rospy.get_param("~SmartTracker", {}))
         if not smart_config.get("SMART_TRACKER_ENABLED", True):
             raise RuntimeError("SmartTracker is disabled by configuration")
@@ -234,6 +285,9 @@ class SmartTrackerNode:
         self._switch_service = rospy.Service(
             "~switch_model", SwitchSmartTrackerModel, self._switch_model
         )
+        self._tracking_mode_service = rospy.Service(
+            "~switch_tracking_mode", SwitchTrackingMode, self._switch_tracking_mode
+        )
         self._subscriber = rospy.Subscriber(
             self._input_topic,
             Image,
@@ -242,6 +296,14 @@ class SmartTrackerNode:
             buff_size=16 * 1024 * 1024,
             tcp_nodelay=True,
         )
+        self._manual_roi_subscriber = None
+        if self._manual_enabled:
+            self._manual_roi_subscriber = rospy.Subscriber(
+                self._manual_initial_roi_topic,
+                RegionOfInterest,
+                self._manual_roi_callback,
+                queue_size=1,
+            )
 
         self._updater = diagnostic_updater.Updater()
         self._updater.setHardwareID("sar_yolo_pixeagle_smart_tracker")
@@ -251,10 +313,12 @@ class SmartTrackerNode:
         )
         rospy.on_shutdown(self.close)
         rospy.loginfo(
-            "SmartTracker ready: model=%s device=%s topic=%s",
+            "SmartTracker ready: model=%s device=%s topic=%s default=%s manual_roi=%s",
             runtime.get("model_path"),
             runtime.get("effective_device"),
             self._input_topic,
+            self._tracking_mode,
+            self._manual_initial_roi_topic if self._manual_enabled else "disabled",
         )
 
     def close(self) -> None:
@@ -263,6 +327,54 @@ class SmartTrackerNode:
             if tracker is not None:
                 tracker.close()
                 self._tracker = None
+            for manual_tracker in self._manual_trackers.values():
+                manual_tracker.reset()
+
+    def _current_manual_tracker(self) -> Optional[ManualBoxTracker]:
+        return self._manual_trackers.get(self._tracking_mode)
+
+    def _manual_roi_callback(self, message: RegionOfInterest) -> None:
+        """Initialize the already-selected manual mode, or clear its target."""
+        with self._lock:
+            manual_tracker = self._current_manual_tracker()
+            if manual_tracker is None:
+                rospy.logwarn_throttle(
+                    2.0,
+                    "Initial ROI ignored while mode=%s; call ~switch_tracking_mode first",
+                    self._tracking_mode,
+                )
+                return
+            if not manual_tracker.requires_initial_roi:
+                rospy.logwarn_throttle(
+                    2.0,
+                    "Initial ROI ignored: %s detects configured colour '%s' in the full image",
+                    self._tracking_mode,
+                    manual_tracker.colour_name,
+                )
+                return
+            if int(message.width) == 0 or int(message.height) == 0:
+                manual_tracker.reset()
+                self._manual_pending_roi = None
+                self._manual_active = False
+                rospy.loginfo(
+                    "%s target cleared; waiting for a new initial ROI",
+                    self._tracking_mode,
+                )
+                return
+            self._manual_pending_roi = (
+                float(message.x_offset),
+                float(message.y_offset),
+                float(message.width),
+                float(message.height),
+            )
+            rospy.loginfo(
+                "%s ROI queued: x=%d y=%d width=%d height=%d",
+                self._tracking_mode,
+                message.x_offset,
+                message.y_offset,
+                message.width,
+                message.height,
+            )
 
     def _valid_timestamp(self, message: Image) -> Tuple[bool, str]:
         stamp = message.header.stamp
@@ -306,26 +418,144 @@ class SmartTrackerNode:
             self._controller.video_handler.height = int(frame.shape[0])
             self._controller.video_handler.width = int(frame.shape[1])
             started = time.perf_counter()
-            annotated = self._tracker.track_and_draw(frame.copy())
+            manual_handled = False
+            manual_tracker = self._current_manual_tracker()
+            if manual_tracker is not None:
+                pending_roi = self._manual_pending_roi
+                self._manual_pending_roi = None
+                result = (
+                    manual_tracker.initialize(frame, pending_roi)
+                    if pending_roi is not None
+                    else manual_tracker.update(frame)
+                )
+                self._manual_active = manual_tracker.active
+                manual_handled = True
+                annotated = self._annotate_manual(frame.copy(), result)
+                self._publish_manual_result(message, result)
+                self._last_error = (
+                    ""
+                    if result.valid or result.reason == "waiting_for_initial_roi"
+                    else result.reason
+                )
+
+            if not manual_handled:
+                annotated = self._tracker.track_and_draw(frame.copy())
+                output = self._tracker.get_output()
+                detections = tuple(self._tracker.last_detections)
+                frame_error_rate = _finite(
+                    output.quality_metrics.get("frame_error_rate")
+                )
+                self._last_error = (
+                    "inference failure"
+                    if frame_error_rate > 0 and not detections
+                    else ""
+                )
+                self._publish_detections(message, detections)
+                self._publish_state(message, output)
+
             self._last_processing_ms = (time.perf_counter() - started) * 1000.0
-            output = self._tracker.get_output()
-            detections = tuple(self._tracker.last_detections)
             self._last_header = message.header
             self._last_capture_stamp = message.header.stamp
             self._last_frame_wall = time.monotonic()
             self._processed_frames += 1
-            frame_error_rate = _finite(output.quality_metrics.get("frame_error_rate"))
-            self._last_error = (
-                "inference failure" if frame_error_rate > 0 and not detections else ""
-            )
-
-            self._publish_detections(message, detections)
-            self._publish_state(message, output)
             if self._publish_annotated and self._annotated_publisher.get_num_connections() > 0:
                 self._annotated_publisher.publish(
                     _bgr_to_image(annotated, message.header)
                 )
         self._updater.update()
+
+    def _publish_manual_result(
+        self, image: Image, result: ManualTrackResult
+    ) -> None:
+        measurement_valid = bool(
+            result.valid
+            and result.bbox is not None
+            and result.confidence >= self._manual_min_confidence
+        )
+        detections = ()
+        if measurement_valid:
+            x, y, width, height = result.bbox
+            detections = (
+                SimpleNamespace(
+                    aabb_xyxy=(x, y, x + width, y + height),
+                    class_id=self._manual_class_id,
+                    confidence=result.confidence,
+                    track_id=self._manual_track_id,
+                    track_id_is_stable=True,
+                    rotation_deg=0.0,
+                ),
+            )
+        self._publish_detections(image, detections)
+        self._publish_manual_state(image, result, measurement_valid)
+
+    def _publish_manual_state(
+        self,
+        image: Image,
+        result: ManualTrackResult,
+        measurement_valid: bool,
+    ) -> None:
+        state = SmartTrackerState()
+        state.header = image.header
+        state.tracking_active = self._tracking_mode != "smart_tracker"
+        state.has_selection = bool(self._manual_active and result.bbox is not None)
+        state.selected_track_id = self._manual_track_id if state.has_selection else -1
+        state.selected_class_id = self._manual_class_id
+        state.selected_class_name = "manual_roi"
+        state.confidence = _finite(result.confidence)
+        self._fill_bbox(state.selected_bbox, result.bbox)
+        state.geometry_type = "aabb"
+        state.has_oriented_bbox = False
+        state.measurement_current = measurement_valid
+        state.prediction_only = False
+        manual_tracker = self._current_manual_tracker()
+        state.tentative = bool(
+            not measurement_valid
+            and manual_tracker is not None
+            and manual_tracker.active
+        )
+        state.data_is_stale = False
+        state.control_measurement_ready = measurement_valid
+        state.frames_since_detection = max(0, result.consecutive_failures)
+        state.association_method = "manual_%s" % result.tracker_name
+        state.freshness_reason = result.reason
+        state.tracker_type = result.tracker_name
+        state.backend = "opencv"
+        state.device = "cpu"
+        state.model_path = ""
+        state.detection_count = 1 if measurement_valid else 0
+        state.frame_processing_ms = _finite(self._last_processing_ms)
+        self._state_publisher.publish(state)
+
+    @staticmethod
+    def _annotate_manual(frame: np.ndarray, result: ManualTrackResult) -> np.ndarray:
+        if result.bbox is not None:
+            x, y, width, height = result.bbox
+            start = (int(round(x)), int(round(y)))
+            end = (int(round(x + width)), int(round(y + height)))
+            colour = (0, 255, 100) if result.valid else (0, 165, 255)
+            cv2.rectangle(frame, start, end, colour, 2)
+            cv2.putText(
+                frame,
+                "manual %s %.2f" % (result.tracker_name, result.confidence),
+                (start[0], max(18, start[1] - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                colour,
+                1,
+                cv2.LINE_AA,
+            )
+        else:
+            cv2.putText(
+                frame,
+                "manual tracker: waiting for ROI",
+                (12, 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 165, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        return frame
 
     @staticmethod
     def _detection_message(header, detection) -> Detection2D:
@@ -433,6 +663,11 @@ class SmartTrackerNode:
                 response.message = "SmartTracker is shutting down"
                 return response
             if request.clear_selection:
+                manual_tracker = self._current_manual_tracker()
+                if manual_tracker is not None:
+                    manual_tracker.reset()
+                    self._manual_pending_roi = None
+                    self._manual_active = False
                 self._tracker.clear_selection()
                 response.success = True
                 response.message = "Selection cleared"
@@ -500,6 +735,80 @@ class SmartTrackerNode:
             response.message = "Target selected" if response.success else "Selection did not match uniquely"
             return response
 
+    @staticmethod
+    def _normalize_tracking_mode(value: str) -> Optional[str]:
+        aliases = {
+            "smarttracker": "smart_tracker",
+            "smart_tracker": "smart_tracker",
+            "smart": "smart_tracker",
+            "yolo": "smart_tracker",
+            "featuretracker": "feature_tracker",
+            "feature_tracker": "feature_tracker",
+            "feature": "feature_tracker",
+            "colortracker": "color_tracker",
+            "color_tracker": "color_tracker",
+            "colour_tracker": "color_tracker",
+            "color": "color_tracker",
+            "colour": "color_tracker",
+        }
+        return aliases.get(str(value or "").strip().lower())
+
+    def _switch_tracking_mode(self, request) -> SwitchTrackingModeResponse:
+        response = SwitchTrackingModeResponse()
+        requested_mode = self._normalize_tracking_mode(request.mode)
+        with self._lock:
+            if self._tracker is None:
+                response.message = "SmartTracker is shutting down"
+                return response
+            if requested_mode is None:
+                response.message = (
+                    "mode must be smart_tracker, feature_tracker, or color_tracker"
+                )
+                response.active_mode = self._tracking_mode
+                return response
+            if requested_mode != "smart_tracker" and not self._manual_enabled:
+                response.message = "ManualBoxTracker is disabled"
+                response.active_mode = self._tracking_mode
+                return response
+
+            color_tracker = self._manual_trackers.get("color_tracker")
+            if requested_mode == "color_tracker" and color_tracker is not None:
+                try:
+                    color_tracker.configure_colour(request.color_name)
+                except ValueError as exc:
+                    response.message = str(exc)
+                    response.active_mode = self._tracking_mode
+                    response.color_source = color_tracker.colour_source
+                    response.color_name = color_tracker.colour_name
+                    return response
+
+            for tracker in self._manual_trackers.values():
+                tracker.reset()
+            self._manual_pending_roi = None
+            self._manual_active = False
+            self._tracking_mode = requested_mode
+            self._last_error = ""
+            self._tracker.clear_selection()
+
+            response.success = True
+            response.active_mode = self._tracking_mode
+            selected_manual_tracker = self._manual_trackers.get(requested_mode)
+            response.waiting_for_initial_roi = bool(
+                selected_manual_tracker is not None
+                and selected_manual_tracker.requires_initial_roi
+            )
+            if color_tracker is not None:
+                response.color_source = color_tracker.colour_source
+                response.color_name = color_tracker.colour_name
+            if requested_mode == "smart_tracker":
+                response.message = "Switched to SmartTracker/YOLO"
+            elif response.waiting_for_initial_roi:
+                response.message = "Switched to %s; waiting for initial ROI" % requested_mode
+            else:
+                response.message = "Switched to color_tracker; detecting '%s' in the full image" % response.color_name
+            rospy.loginfo("%s", response.message)
+            return response
+
     def _switch_model(self, request) -> SwitchSmartTrackerModelResponse:
         response = SwitchSmartTrackerModelResponse()
         raw_path = Path(str(request.model_path or "")).expanduser()
@@ -558,9 +867,29 @@ class SmartTrackerNode:
             status.add("effective_device", runtime.get("effective_device", ""))
             status.add("backend", runtime.get("backend", ""))
             status.add("artifact_sha256", runtime.get("artifact_sha256", ""))
+            status.add("active_source", self._tracking_mode)
+            status.add("manual_enabled", self._manual_enabled)
+            status.add("manual_active", self._manual_active)
+            status.add("manual_initial_roi_topic", self._manual_initial_roi_topic)
+            manual_tracker = self._current_manual_tracker()
+            status.add(
+                "manual_tracker_type",
+                manual_tracker.tracker_type if manual_tracker is not None else "inactive",
+            )
+            color_tracker = self._manual_trackers.get("color_tracker")
+            status.add(
+                "color_source",
+                color_tracker.colour_source if color_tracker is not None else "disabled",
+            )
+            status.add(
+                "color_name",
+                color_tracker.colour_name if color_tracker is not None else "disabled",
+            )
             status.add(
                 "tracking_active",
-                bool(getattr(self._controller, "tracking_started", False)),
+                self._manual_active
+                if manual_tracker is not None
+                else bool(getattr(self._controller, "tracking_started", False)),
             )
             return status
 
