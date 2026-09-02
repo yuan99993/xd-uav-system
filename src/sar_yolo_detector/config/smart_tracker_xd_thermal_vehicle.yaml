@@ -1,0 +1,6 @@
+SmartTracker:
+  # thermal_uav.pt: person=0, bicycle=1, car=2, other_vehicle=3
+  SMART_TRACKER_ALLOWED_CLASS_IDS: [2, 3]
+  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.20
+  SMART_TRACKER_MAX_DETECTIONS: 30
+  TRACKER_TYPE: bytetrack

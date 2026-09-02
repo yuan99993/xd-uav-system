@@ -1,0 +1,47 @@
+<launch>
+  <!-- Start the standard YOLO detector and the XD message adapter together.
+       xd_uav_detect itself remains independently owned and is not started or
+       reconfigured here. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
+  <arg name="config"
+       default="$(find sar_yolo_detector)/config/detector.yaml" />
+  <arg name="model_path" default="" />
+  <arg name="engine_path" default="" />
+  <arg name="network_config_path" default="" />
+  <arg name="inference_backend" default="opencv_dnn" />
+  <arg name="opencv_target" default="opencv_cpu" />
+  <arg name="input_image_topic" default="down_camera/image_raw" />
+  <arg name="camera_info_topic" default="down_camera/camera_info" />
+  <arg name="detections_topic" default="sar_yolo_detector/detections" />
+  <arg name="output_detections_topic"
+       default="detect/input/detections_2d" />
+  <arg name="image_source" default="eo" />
+  <arg name="sensor_id" default="down_camera" />
+  <arg name="detector_name" default="sar_yolo_detector" />
+  <arg name="model_version" default="unknown" />
+
+  <group ns="$(arg UAV_NAME)">
+    <include file="$(find sar_yolo_detector)/launch/detector.launch">
+      <arg name="config" value="$(arg config)" />
+      <arg name="model_path" value="$(arg model_path)" />
+      <arg name="engine_path" value="$(arg engine_path)" />
+      <arg name="network_config_path" value="$(arg network_config_path)" />
+      <arg name="inference_backend" value="$(arg inference_backend)" />
+      <arg name="opencv_target" value="$(arg opencv_target)" />
+      <arg name="input_image_topic" value="$(arg input_image_topic)" />
+      <arg name="detections_topic" value="$(arg detections_topic)" />
+    </include>
+  </group>
+
+  <include file="$(find sar_yolo_detector)/launch/xd_detection_bridge.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="input_detections_topic" value="$(arg detections_topic)" />
+    <arg name="output_detections_topic"
+         value="$(arg output_detections_topic)" />
+    <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+    <arg name="image_source" value="$(arg image_source)" />
+    <arg name="sensor_id" value="$(arg sensor_id)" />
+    <arg name="detector_name" value="$(arg detector_name)" />
+    <arg name="model_version" value="$(arg model_version)" />
+  </include>
+</launch>

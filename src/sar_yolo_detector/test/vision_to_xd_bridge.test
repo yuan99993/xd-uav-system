@@ -1,0 +1,28 @@
+<launch>
+  <node pkg="sar_yolo_detector" type="sar_vision_to_xd_bridge"
+        name="vision_to_xd_bridge_test" output="screen" required="true">
+    <param name="input_detections_topic" value="/vision_to_xd_test/input" />
+    <param name="output_detections_topic" value="/vision_to_xd_test/output" />
+    <param name="camera_info_topic" value="/vision_to_xd_test/camera_info" />
+    <param name="image_source" value="eo" />
+    <param name="sensor_id" value="down_camera" />
+    <param name="detector_name" value="sar_yolo_test" />
+    <param name="model_version" value="test_v1" />
+  </node>
+  <node pkg="sar_yolo_detector" type="sar_vision_to_xd_bridge"
+        name="tracked_to_xd_bridge_test" output="screen" required="true">
+    <param name="input_detections_topic"
+           value="/vision_to_xd_test/tracked_input" />
+    <param name="input_type" value="tracked" />
+    <param name="output_detections_topic"
+           value="/vision_to_xd_test/tracked_output" />
+    <param name="camera_info_topic"
+           value="/vision_to_xd_test/camera_info" />
+    <param name="image_source" value="eo" />
+    <param name="sensor_id" value="fallback_camera" />
+    <param name="detector_name" value="sar_yolo_smart_tracker" />
+    <param name="model_version" value="fallback_model" />
+  </node>
+  <test test-name="vision_to_xd_bridge" pkg="sar_yolo_detector"
+        type="test_vision_to_xd_bridge.py" time-limit="30" />
+</launch>

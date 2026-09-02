@@ -138,6 +138,25 @@ class SmartTracker:
         self.conf_threshold = self.config.get('SMART_TRACKER_CONFIDENCE_THRESHOLD', 0.3)
         self.iou_threshold = self.config.get('SMART_TRACKER_IOU_THRESHOLD', 0.3)
         self.max_det = self.config.get('SMART_TRACKER_MAX_DETECTIONS', 20)
+        raw_allowed_class_ids = self.config.get('SMART_TRACKER_ALLOWED_CLASS_IDS')
+        if raw_allowed_class_ids is None:
+            self.allowed_class_ids = None
+        else:
+            if not isinstance(raw_allowed_class_ids, (list, tuple)):
+                raise ValueError(
+                    "SMART_TRACKER_ALLOWED_CLASS_IDS must be a list of class IDs"
+                )
+            self.allowed_class_ids = {
+                int(class_id) for class_id in raw_allowed_class_ids
+            }
+            if any(class_id < 0 for class_id in self.allowed_class_ids):
+                raise ValueError(
+                    "SMART_TRACKER_ALLOWED_CLASS_IDS cannot contain negative IDs"
+                )
+            logger.info(
+                "[SmartTracker] Publishing only class IDs: %s",
+                sorted(self.allowed_class_ids),
+            )
         self.show_fps = self.config.get('SMART_TRACKER_SHOW_FPS', False)
         self.active_hud_color = self._resolve_hud_color(
             self.config.get('SMART_TRACKER_ACTIVE_COLOR'),
@@ -899,6 +918,12 @@ class SmartTracker:
                     iou=self.iou_threshold,
                     max_det=self.max_det,
                 )
+            if self.allowed_class_ids is not None:
+                self.last_detections = [
+                    detection
+                    for detection in self.last_detections
+                    if int(detection.class_id) in self.allowed_class_ids
+                ]
         except Exception as exc:
             self._frame_errors += 1
             self._geometry_errors += 1

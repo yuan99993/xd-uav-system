@@ -52,7 +52,7 @@ class _FakeBackend:
         self.unloaded = True
 
     def get_model_labels(self):
-        return {0: "person"}
+        return {0: "person", 2: "car", 25: "umbrella"}
 
     def get_model_task(self):
         return "detect"
@@ -196,6 +196,55 @@ class PixEaglePortableTest(unittest.TestCase):
         finally:
             tracker.close()
         self.assertTrue(backend.unloaded)
+
+    def test_smart_tracker_filters_unapproved_classes_before_publication(self):
+        detections = [
+            NormalizedDetection(
+                track_id=2,
+                class_id=2,
+                confidence=0.8,
+                aabb_xyxy=(10, 10, 50, 40),
+                center_xy=(30, 25),
+                track_id_is_stable=True,
+            ),
+            NormalizedDetection(
+                track_id=25,
+                class_id=25,
+                confidence=0.9,
+                aabb_xyxy=(60, 20, 100, 70),
+                center_xy=(80, 45),
+                track_id_is_stable=True,
+            ),
+        ]
+        backend = _FakeBackend(detections)
+        Parameters.configure_smart_tracker(
+            {
+                "DETECTION_BACKEND": "ultralytics",
+                "SMART_TRACKER_USE_GPU": False,
+                "SMART_TRACKER_CPU_MODEL_PATH": "/trusted/fake.pt",
+                "SMART_TRACKER_ALLOWED_CLASS_IDS": [2, 3, 5, 7],
+                "SMART_TRACKER_SHOW_PASSIVE_LABELS": False,
+                "ENABLE_PREDICTION_BUFFER": False,
+                "ENABLE_KALMAN_FILTER": False,
+                "TRACKING_STRATEGY": "hybrid",
+            }
+        )
+        controller = _Controller()
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        controller.current_frame = frame
+
+        with mock.patch.object(
+            smart_tracker_module, "create_backend", return_value=backend
+        ):
+            tracker = SmartTracker(controller)
+        try:
+            tracker.track_and_draw(frame.copy())
+            self.assertEqual(
+                [detection.class_id for detection in tracker.last_detections],
+                [2],
+            )
+        finally:
+            tracker.close()
 
 
 if __name__ == "__main__":

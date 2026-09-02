@@ -16,6 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_geometry_msgs
   tf2_ros
   vision_msgs
+  xd_uav_track
 )
 find_package(OpenCV REQUIRED COMPONENTS core dnn imgcodecs imgproc)
 find_package(OpenSSL REQUIRED)
@@ -93,6 +94,7 @@ add_service_files(
   SubmitAreaTaskAssignment.srv
   SubmitTaskAssignment.srv
   SwitchSmartTrackerModel.srv
+  SwitchTrackingMode.srv
 )
 
 generate_messages(
@@ -101,6 +103,7 @@ generate_messages(
     sensor_msgs
     std_msgs
     vision_msgs
+    xd_uav_track
 )
 
 catkin_package(
@@ -121,6 +124,7 @@ catkin_package(
     tf2_geometry_msgs
     tf2_ros
     vision_msgs
+    xd_uav_track
 )
 
 include_directories(
@@ -273,7 +277,22 @@ target_link_libraries(sar_decision_bridge
   ${catkin_LIBRARIES}
 )
 
-install(TARGETS sar_yolo_postprocessor sar_yolo_inference_backend sar_model_integrity sar_mission_state_store sar_yolo_detector_node sar_task_point_generator sar_yolo_image_replay sar_detection_late_fusion sar_flood_region_extractor sar_segformer_inference sar_decision_bridge
+# Adapter at the boundary of the XD stack. The detector keeps publishing the
+# standard vision_msgs interface; this node translates it without coupling
+# xd_uav_detect itself to a particular recognition package.
+add_executable(sar_vision_to_xd_bridge
+  src/vision_to_xd_bridge_node.cpp
+)
+add_dependencies(sar_vision_to_xd_bridge
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+target_compile_features(sar_vision_to_xd_bridge PRIVATE cxx_std_14)
+target_link_libraries(sar_vision_to_xd_bridge
+  ${catkin_LIBRARIES}
+)
+
+install(TARGETS sar_yolo_postprocessor sar_yolo_inference_backend sar_model_integrity sar_mission_state_store sar_yolo_detector_node sar_task_point_generator sar_yolo_image_replay sar_detection_late_fusion sar_flood_region_extractor sar_segformer_inference sar_decision_bridge sar_vision_to_xd_bridge
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -308,6 +327,7 @@ catkin_install_python(PROGRAMS
   test/test_task_generation_gate.py
   test/test_task_point_generator.py
   test/test_thermal_input.py
+  test/test_vision_to_xd_bridge.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -315,6 +335,7 @@ if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   catkin_add_nosetests(test/test_pixeagle_portable.py)
   catkin_add_nosetests(test/test_smart_tracker_image_codec.py)
+  catkin_add_nosetests(test/test_manual_box_tracker.py)
   catkin_add_nosetests(test/test_interface_v1_md5.py)
   catkin_add_gtest(test_yolo_postprocessor
     test/test_yolo_postprocessor.cpp
@@ -352,4 +373,5 @@ if(CATKIN_ENABLE_TESTING)
   add_rostest(test/task_generation_gate.test)
   add_rostest(test/task_point_generator.test)
   add_rostest(test/thermal_input.test)
+  add_rostest(test/vision_to_xd_bridge.test)
 endif()

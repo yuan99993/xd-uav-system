@@ -202,6 +202,9 @@ AABB/OBB 几何、ROI/点选校验、运动预测、Kalman 框跟踪、外观重
 ```bash
 cd /path/to/catkin_ws
 python3 -m venv --system-site-packages .venv-sar-gpu
+.venv-sar-gpu/bin/pip install torch==2.4.1+cu121 \
+  torchvision==0.19.1+cu121 \
+  --index-url https://download.pytorch.org/whl/cu121
 .venv-sar-gpu/bin/pip install -r \
   src/sar_yolo_detector/requirements-smart-tracker.txt
 source /opt/ros/noetic/setup.bash
@@ -468,6 +471,123 @@ roslaunch sar_yolo_detector tracker_integration.launch \
 普通 `Detection2DArray` 不携带稳定 ID；任务节点也可订阅
 `TrackedDetection2DArray`，优先使用 Tracker 的稳定 ID。没有该适配输出时才由任务
 节点的速度/协方差关联维持局部轨迹。
+
+## 接入 XD 检测定位层
+
+`sar_vision_to_xd_bridge` 将本包的标准 `vision_msgs/Detection2DArray` 或带稳定 ID 的
+`TrackedDetection2DArray` 转为 `xd_uav_track/DetectionArray`，用于接入
+`xd_uav_detect`，不需要修改后者的订阅或定位代码。桥接器保留图像采集时间戳和相机
+frame，将中心点/宽高框转换为 `[x_min, y_min, x_max, y_max]`，并从 CameraInfo
+补充原图尺寸。二维检测进入 `xd_uav_detect` 前保持 `range_valid=false`，由地面投影或
+雷达相机融合成功后填写三维相对位置。
+
+固定翼 `uav1` 使用包内真实 `YOLO11n COCO` 权重和 SmartTracker，同时启动消息桥
+（原有 `xd_uav_detect` 继续独立运行）：
+
+```bash
+roslaunch sar_yolo_detector xd_smart_tracker_integration.launch \
+  UAV_NAME:=uav1 \
+  python_executable:=$PWD/.venv-sar-gpu/bin/python
+```
+
+该入口订阅 `/uav1/down_camera/image_raw`，用包内
+`models/aircraft_coco/yolo11n.pt` 在 CUDA GPU 上推理。XD 专用覆盖配置
+`config/smart_tracker_xd_vehicle.yaml` 只允许
+COCO `car(2)`、`motorcycle(3)`、`bus(5)` 和 `truck(7)`，置信度门限为 0.45，
+非车辆框在绘制和发布前都会被丢弃。随后节点把
+`TrackedDetection2DArray`（包括稳定跟踪 ID）转换成
+`/uav1/detect/input/detections_2d`。标注图发布到
+`/uav1/sar_yolo_detector/coco/annotated`。这条链路不使用颜色或红色方块阈值。
+
+### 手动初始框跟踪
+
+`config/smart_tracker_xd_vehicle.yaml` 还提供与 `gm_control` 初始框跟踪相同的
+图像级单目标入口。YOLO、特征跟踪和颜色跟踪是三个独立模式，必须先通过服务
+显式切换；发布 ROI 本身不会改变模式：
+
+```text
+/uavX/sar_yolo_smart_tracker/switch_tracking_mode
+sar_yolo_detector/SwitchTrackingMode
+```
+
+切换到特征跟踪：
+
+```bash
+rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
+  "{mode: 'feature_tracker', color_name: ''}"
+```
+
+然后向下面的话题发布一个像素 ROI：
+
+```text
+/uavX/sar_yolo_detector/manual/initial_roi  sensor_msgs/RegionOfInterest
+```
+
+例如初始化像素框 `[x=220, y=140, width=120, height=90]`：
+
+```bash
+rostopic pub -1 /uav1/sar_yolo_detector/manual/initial_roi \
+  sensor_msgs/RegionOfInterest \
+  '{x_offset: 220, y_offset: 140, height: 90, width: 120, do_rectify: false}'
+```
+
+发布宽或高为零的 ROI 只清除目标，仍停留在当前手动模式并等待新框：
+
+```bash
+rostopic pub -1 /uav1/sar_yolo_detector/manual/initial_roi \
+  sensor_msgs/RegionOfInterest \
+  '{x_offset: 0, y_offset: 0, height: 0, width: 0, do_rectify: false}'
+```
+
+切回 YOLO 必须调用模式服务：
+
+```bash
+rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
+  "{mode: 'smart_tracker', color_name: ''}"
+```
+
+颜色模式有两种颜色来源。根据初始框自动学习颜色：
+
+```bash
+rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
+  "{mode: 'color_tracker', color_name: ''}"
+```
+
+使用指定颜色（支持 `red/green/blue/white/black/custom`）：
+
+```bash
+rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
+  "{mode: 'color_tracker', color_name: 'red'}"
+```
+
+指定颜色后会直接在整幅图像中分割该颜色并输出面积最大的有效区域，不需要初始框；
+`color_name` 留空时才等待画框并从框内学习颜色。自定义 HSV 范围通过
+`ManualBoxTracker/color_tracker/custom_hsv_ranges` 配置。两种手动算法分别为：
+
+- `feature_tracker`：按 `tracker_algorithm` 使用 CSRT、KCF、MIL 或模板匹配；
+- `color_tracker`：未指定颜色时用 ROI 学习的 HSV 直方图和 CamShift；指定颜色时做全图颜色检测。
+
+两种模式都只接受一个初始框，并沿用同一个 `coco/state`、标注图和 bridge 输出。
+连续失败达到 `max_fail_frames` 后会停止当前目标并等待新 ROI，不会自动切回 YOLO。
+
+旧的 `xd_detector_integration.launch` 保留给兼容 OpenCV/TensorRT 的 ONNX/engine
+模型；当前 Ubuntu 20.04 自带 OpenCV 4.2 无法加载包内新式 Ultralytics ONNX，
+因此本机默认使用上面的 `.pt` + CUDA SmartTracker 入口。启动时禁用静默 CPU
+回退，CUDA 环境或显存不足会直接报错，避免误以为正在使用 GPU。
+
+只启动消息桥、复用已经运行的 YOLO 时：
+
+```bash
+roslaunch sar_yolo_detector xd_detection_bridge.launch UAV_NAME:=uav1 \
+  input_detections_topic:=sar_yolo_detector/detections \
+  camera_info_topic:=down_camera/camera_info
+```
+
+普通桥接模式默认订阅 `/uav1/sar_yolo_detector/detections`，发布
+`/uav1/detect/input/detections_2d`。`xd_uav_detect` 继续使用原有
+`fixedwing_detect.yaml`，其输出仍为 `/uav1/track/detections`。使用 rescue profile
+时，将 `input_detections_topic` 改为相应 profile 的相对检测话题，例如
+`sar_yolo_detector/thermal_uav/detections`。
 
 ## ROI 复检与 EO/IR 后融合
 

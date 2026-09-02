@@ -55,6 +55,12 @@ class UltralyticsBackend(DetectionBackend):
         )
         self._model = None
         self._runtime_info: Dict[str, Any] = {}
+        raw_allowed_class_ids = self._config.get("SMART_TRACKER_ALLOWED_CLASS_IDS")
+        self._allowed_class_ids = (
+            sorted({int(class_id) for class_id in raw_allowed_class_ids})
+            if raw_allowed_class_ids is not None
+            else None
+        )
         self.tracker_type_str, self.use_custom_reid = self._select_tracker_type()
         self.tracker_args = {"persist": True, "verbose": False}
 
@@ -307,8 +313,16 @@ class UltralyticsBackend(DetectionBackend):
     ) -> Tuple[str, List[NormalizedDetection]]:
         if self._model is None:
             raise RuntimeError("SmartTracker model is not loaded")
+        inference_args = {}
+        if self._allowed_class_ids is not None:
+            inference_args["classes"] = self._allowed_class_ids
         results = self._model.predict(
-            frame, conf=conf, iou=iou, max_det=max_det, verbose=False
+            frame,
+            conf=conf,
+            iou=iou,
+            max_det=max_det,
+            verbose=False,
+            **inference_args,
         )
         return self._normalize_results(results)
 
@@ -324,6 +338,8 @@ class UltralyticsBackend(DetectionBackend):
         if self._model is None:
             raise RuntimeError("SmartTracker model is not loaded")
         args = dict(tracker_args or self.tracker_args)
+        if self._allowed_class_ids is not None:
+            args["classes"] = self._allowed_class_ids
         results = self._model.track(
             frame,
             conf=conf,

@@ -1,5 +1,6 @@
 <launch>
   <arg name="config" default="$(find sar_yolo_detector)/config/smart_tracker.yaml" />
+  <arg name="overlay_config" default="" />
   <arg name="input_image_topic" default="camera/image_raw" />
   <arg name="tracked_detections_topic" default="sar_yolo_detector/smart/tracked_detections" />
   <arg name="state_topic" default="sar_yolo_detector/smart/state" />
@@ -7,6 +8,7 @@
   <arg name="model_path" default="" />
   <arg name="model_sha256" default="" />
   <arg name="use_gpu" default="true" />
+  <arg name="fallback_to_cpu" default="true" />
   <arg name="publish_annotated_image" default="true" />
   <!-- Leave empty to auto-discover .venv-sar-gpu in this catkin workspace. -->
   <arg name="python_executable" default="" />
@@ -23,6 +25,8 @@
         name="sar_yolo_smart_tracker" output="screen" required="true">
     <env name="SAR_YOLO_SMART_PYTHON" value="$(arg python_executable)" />
     <rosparam command="load" file="$(arg config)" />
+    <rosparam if="$(eval arg('overlay_config') != '')" command="load"
+              file="$(arg overlay_config)" />
     <param name="input_image_topic" value="$(arg input_image_topic)" />
     <param name="tracked_detections_topic" value="$(arg tracked_detections_topic)" />
     <param name="state_topic" value="$(arg state_topic)" />
@@ -37,6 +41,8 @@
     <param name="calibration_version" value="$(arg calibration_version)" />
     <param name="coordinate_contract" value="$(arg coordinate_contract)" />
     <param name="SmartTracker/SMART_TRACKER_USE_GPU" value="$(arg use_gpu)" />
+    <param name="SmartTracker/SMART_TRACKER_FALLBACK_TO_CPU"
+           value="$(arg fallback_to_cpu)" />
     <param if="$(eval arg('model_path') != '')"
            name="SmartTracker/SMART_TRACKER_GPU_MODEL_PATH" value="$(arg model_path)" />
     <param if="$(eval arg('model_path') != '')"
