@@ -1,0 +1,14 @@
+# Select the image tracking source. Supported modes are:
+# smart_tracker, feature_tracker, color_tracker.
+string mode
+
+# Used only by color_tracker. A non-empty value detects that configured colour
+# directly in the complete image. An empty value learns colour from an initial ROI.
+string color_name
+---
+bool success
+string message
+string active_mode
+string color_source
+string color_name
+bool waiting_for_initial_roi

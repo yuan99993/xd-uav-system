@@ -499,6 +499,77 @@ COCO `car(2)`、`motorcycle(3)`、`bus(5)` 和 `truck(7)`，置信度门限为 0
 `/uav1/detect/input/detections_2d`。标注图发布到
 `/uav1/sar_yolo_detector/coco/annotated`。这条链路不使用颜色或红色方块阈值。
 
+### 手动初始框跟踪
+
+`config/smart_tracker_xd_vehicle.yaml` 还提供与 `gm_control` 初始框跟踪相同的
+图像级单目标入口。YOLO、特征跟踪和颜色跟踪是三个独立模式，必须先通过服务
+显式切换；发布 ROI 本身不会改变模式：
+
+```text
+/uavX/sar_yolo_smart_tracker/switch_tracking_mode
+sar_yolo_detector/SwitchTrackingMode
+```
+
+切换到特征跟踪：
+
+```bash
+rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
+  "{mode: 'feature_tracker', color_name: ''}"
+```
+
+然后向下面的话题发布一个像素 ROI：
+
+```text
+/uavX/sar_yolo_detector/manual/initial_roi  sensor_msgs/RegionOfInterest
+```
+
+例如初始化像素框 `[x=220, y=140, width=120, height=90]`：
+
+```bash
+rostopic pub -1 /uav1/sar_yolo_detector/manual/initial_roi \
+  sensor_msgs/RegionOfInterest \
+  '{x_offset: 220, y_offset: 140, height: 90, width: 120, do_rectify: false}'
+```
+
+发布宽或高为零的 ROI 只清除目标，仍停留在当前手动模式并等待新框：
+
+```bash
+rostopic pub -1 /uav1/sar_yolo_detector/manual/initial_roi \
+  sensor_msgs/RegionOfInterest \
+  '{x_offset: 0, y_offset: 0, height: 0, width: 0, do_rectify: false}'
+```
+
+切回 YOLO 必须调用模式服务：
+
+```bash
+rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
+  "{mode: 'smart_tracker', color_name: ''}"
+```
+
+颜色模式有两种颜色来源。根据初始框自动学习颜色：
+
+```bash
+rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
+  "{mode: 'color_tracker', color_name: ''}"
+```
+
+使用指定颜色（支持 `red/green/blue/white/black/custom`）：
+
+```bash
+rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
+  "{mode: 'color_tracker', color_name: 'red'}"
+```
+
+指定颜色后会直接在整幅图像中分割该颜色并输出面积最大的有效区域，不需要初始框；
+`color_name` 留空时才等待画框并从框内学习颜色。自定义 HSV 范围通过
+`ManualBoxTracker/color_tracker/custom_hsv_ranges` 配置。两种手动算法分别为：
+
+- `feature_tracker`：按 `tracker_algorithm` 使用 CSRT、KCF、MIL 或模板匹配；
+- `color_tracker`：未指定颜色时用 ROI 学习的 HSV 直方图和 CamShift；指定颜色时做全图颜色检测。
+
+两种模式都只接受一个初始框，并沿用同一个 `coco/state`、标注图和 bridge 输出。
+连续失败达到 `max_fail_frames` 后会停止当前目标并等待新 ROI，不会自动切回 YOLO。
+
 旧的 `xd_detector_integration.launch` 保留给兼容 OpenCV/TensorRT 的 ONNX/engine
 模型；当前 Ubuntu 20.04 自带 OpenCV 4.2 无法加载包内新式 Ultralytics ONNX，
 因此本机默认使用上面的 `.pt` + CUDA SmartTracker 入口。启动时禁用静默 CPU
