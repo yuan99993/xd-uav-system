@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="vehicle_type" default="multirotor"/>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="common_frame" default="world"/>
+  <arg name="output_frame" default="$(arg common_frame)"/>
+  <arg name="ego_id" default="0"/>
+  <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
+  <arg name="goal_topic" default="/$(arg UAV_NAME)/planning/goal"/>
+  <!-- EGO manual-target mode is required for live task-layer goals. -->
+  <arg name="flight_type" default="1"/>
+  <arg name="goal_x" default="1.0"/>
+  <arg name="goal_y" default="0.0"/>
+  <arg name="goal_z" default="2.0"/>
+  <arg name="cloud_input_topic" default="/$(arg UAV_NAME)/os_cloud_nodelet/points"/>
+  <arg name="cloud_input_frame" default="$(arg UAV_NAME)/os_sensor"/>
+  <arg name="cloud_timeout" default="0.50"/>
+  <arg name="minimum_sensor_range" default="0.60"/>
+  <arg name="restamp_zero_timestamp" default="false"/>
+  <arg name="calibrated_body_transform" default="false"/>
+  <arg name="body_to_sensor_translation_m" default="[0.0, 0.0, 0.0]"/>
+
+  <group if="$(eval arg('vehicle_type') == 'multirotor')">
+    <include file="$(find xd_uav_planning)/launch/reference_integration.launch">
+      <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+      <arg name="common_frame" value="$(arg common_frame)"/>
+      <arg name="output_frame" value="$(arg output_frame)"/>
+      <arg name="initial_owner" value="none"/>
+    </include>
+    <include file="$(find xd_uav_planning)/launch/ego_pointcloud_adapter.launch">
+      <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+      <arg name="input_topic" value="$(arg cloud_input_topic)"/>
+      <arg name="input_frame" value="$(arg cloud_input_frame)"/>
+      <arg name="common_frame" value="$(arg common_frame)"/>
+      <arg name="output_topic" value="/drone_$(arg ego_id)_ego/cloud_world"/>
+      <arg name="cloud_timeout" value="$(arg cloud_timeout)"/>
+      <arg name="minimum_sensor_range" value="$(arg minimum_sensor_range)"/>
+      <arg name="restamp_zero_timestamp" value="$(arg restamp_zero_timestamp)"/>
+      <arg name="calibrated_body_transform" value="$(arg calibrated_body_transform)"/>
+      <arg name="body_frame" value="$(arg body_frame)"/>
+      <arg name="body_to_sensor_translation_m" value="$(arg body_to_sensor_translation_m)"/>
+    </include>
+    <include file="$(find xd_uav_planning)/launch/ego_px4_runtime.launch">
+      <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+      <arg name="common_frame" value="$(arg common_frame)"/>
+      <arg name="ego_id" value="$(arg ego_id)"/>
+      <arg name="body_frame" value="$(arg body_frame)"/>
+      <arg name="goal_topic" value="$(arg goal_topic)"/>
+      <arg name="flight_type" value="$(arg flight_type)"/>
+      <arg name="goal_x" value="$(arg goal_x)"/>
+      <arg name="goal_y" value="$(arg goal_y)"/>
+      <arg name="goal_z" value="$(arg goal_z)"/>
+    </include>
+    <node pkg="xd_uav_planning" type="select_owner_when_ready.py"
+          name="select_ego_owner_when_ready_$(arg ego_id)" output="screen">
+      <param name="health_topic" value="/$(arg UAV_NAME)/ego/system_healthy"/>
+      <param name="candidate_topic" value="/$(arg UAV_NAME)/ego/reference_candidate"/>
+      <param name="service" value="/$(arg UAV_NAME)/reference_mux/select_ego"/>
+      <param name="timeout" value="0.0"/>
+    </node>
+  </group>
+
+  <group if="$(eval arg('vehicle_type') == 'fixedwing')">
+    <include file="$(find xd_uav_planning)/launch/fixedwing_path_backend.launch">
+      <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+      <arg name="common_frame" value="$(arg common_frame)"/>
+    </include>
+  </group>
+</launch>

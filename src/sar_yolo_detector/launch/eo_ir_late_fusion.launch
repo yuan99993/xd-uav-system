@@ -1,0 +1,23 @@
+<launch>
+  <!--
+    Detection-level EO/IR fusion.  Start this only after measuring the IR to
+    EO homography, clock alignment and residual registration error.  The node
+    rejects missing/unverified calibration instead of assuming co-alignment.
+  -->
+  <arg name="config" default="$(find sar_yolo_detector)/config/eo_ir_late_fusion.yaml" />
+  <arg name="registration_verified" default="false" />
+  <arg name="primary_detections_topic" default="sar_yolo_detector/eo/detections" />
+  <arg name="secondary_detections_topic" default="sar_yolo_detector/ir/detections" />
+  <arg name="fused_detections_topic" default="sar_yolo_detector/fused/detections" />
+  <arg name="calibration_version" default="" />
+
+  <node pkg="sar_yolo_detector" type="sar_detection_late_fusion"
+        name="sar_detection_late_fusion" output="screen" required="true">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="registration_verified" value="$(arg registration_verified)" />
+    <param name="primary_detections_topic" value="$(arg primary_detections_topic)" />
+    <param name="secondary_detections_topic" value="$(arg secondary_detections_topic)" />
+    <param name="fused_detections_topic" value="$(arg fused_detections_topic)" />
+    <param name="calibration_version" value="$(arg calibration_version)" />
+  </node>
+</launch>

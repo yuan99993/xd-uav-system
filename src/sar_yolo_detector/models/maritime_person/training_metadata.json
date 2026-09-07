@@ -1,0 +1,22 @@
+{
+  "profile": "maritime_seadronessee",
+  "class_names": [
+    "swimmer",
+    "boat",
+    "jetski",
+    "life_saving_appliances",
+    "buoy"
+  ],
+  "updated_at_utc": "2026-08-14T16:47:57.907981+00:00",
+  "checkpoint": "runs/seadronessee_maritime_10ep/weights/best.pt",
+  "onnx": "runs/seadronessee_maritime_10ep/weights/best.onnx",
+  "engine_updated": true,
+  "engine": "runs/seadronessee_maritime_10ep/weights/best.engine",
+  "validation": {
+    "metrics/precision(B)": 0.8323922533143371,
+    "metrics/recall(B)": 0.5786599990530614,
+    "metrics/mAP50(B)": 0.6168336882025807,
+    "metrics/mAP50-95(B)": 0.32969629267375145,
+    "fitness": 0.32969629267375145
+  }
+}

@@ -1,0 +1,36 @@
+# Reconnaissance-aircraft configuration only. mission.yaml auto-selects
+# single-stage search because every configured scout below is a multirotor.
+scouts:
+  uav1:
+    vehicle_type: multirotor
+    localization:
+      world_odometry_topic: /uav1/state_estimator/main/frames/world/odom
+    health:
+      control_state_topic: /uav1/control_manager/state
+    execution:
+      backend: direct_controller_test
+    coverage:
+      nominal_speed_mps: 4.0
+    topics:
+      detections: /uav1/track/detections
+      planner_goal: /uav1/planning/goal
+      controller_setpoint: /uav1/control/reference/setpoint
+      mission_path: /uav1/planning/mission_path
+      planner_status: /uav1/planning/status
+
+  uav2:
+    vehicle_type: multirotor
+    localization:
+      world_odometry_topic: /uav2/state_estimator/main/frames/world/odom
+    health:
+      control_state_topic: /uav2/control_manager/state
+    execution:
+      backend: direct_controller_test
+    coverage:
+      nominal_speed_mps: 4.0
+    topics:
+      detections: /uav2/track/detections
+      planner_goal: /uav2/planning/goal
+      controller_setpoint: /uav2/control/reference/setpoint
+      mission_path: /uav2/planning/mission_path
+      planner_status: /uav2/planning/status

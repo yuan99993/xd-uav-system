@@ -1,0 +1,204 @@
+# Mission-wide parameters. Aircraft membership is intentionally kept in the
+# separate scouts.yaml and workers.yaml files.
+runtime:
+  update_rate_hz: 5.0
+
+mission:
+  # xd_uav_world_tf_manager owns this frame. The configured main republished
+  # Odometry for every aircraft must already use this header.frame_id.
+  shared_frame: world
+
+# ControlState is retained only as an availability/health gate. Its position and
+# orientation fields are deliberately not read by this package.
+vehicle_health:
+  timeout_sec: 0.50
+  require_state_valid: true
+  require_localization_valid: true
+  require_odometry_fresh: true
+
+interfaces:
+  input:
+    search_areas: /task_allocate/search_areas
+  output:
+    global_targets: /task_allocate/global_targets
+    rescue_tasks: /task_allocate/rescue_tasks
+    mission_state: /task_allocate/mission_state
+    verification_areas: /task_allocate/verification_areas
+    verification_markers: /task_allocate/verification_markers
+  services:
+    # Call only after the configured scout aircraft have taken off and their
+    # world Odometry plus ControlState health are valid.
+    start: /task_allocate/start
+    pause: /task_allocate/pause
+    resume: /task_allocate/resume
+    stop: /task_allocate/stop
+    reset: /task_allocate/reset
+    clear_all: /task_allocate/clear_all
+    restart: /task_allocate/restart
+    replan: /task_allocate/replan
+    clear_results: /task_allocate/clear_results
+    cancel_all_tasks: /task_allocate/cancel_all_tasks
+    load_search_areas: /task_allocate/load_search_areas
+    get_state: /task_allocate/get_state
+    skip_waypoint: /task_allocate/skip_waypoint
+    set_vehicle_enabled: /task_allocate/set_vehicle_enabled
+    cancel_task: /task_allocate/cancel_task
+    retry_task: /task_allocate/retry_task
+    reject_target: /task_allocate/reject_target
+    retry_verification: /task_allocate/retry_verification
+
+execution:
+  # true is the safe default: every configured scout must be healthy when the
+  # operator starts the mission. Set false to use minimum_ready_scouts instead.
+  require_all_scouts_ready: true
+  minimum_ready_scouts: 1
+  # Keep accepting final camera detections briefly after the last search waypoint.
+  completion_grace_sec: 2.0
+
+geolocation:
+  # World Odometry is buffered so detections use the aircraft world pose nearest
+  # to the image capture timestamp.
+  world_odometry_timeout_sec: 0.50
+  pose_history_sec: 5.0
+  maximum_pose_time_difference_sec: 0.15
+  tf_lookup_timeout_sec: 0.05
+
+search_area:
+  # SearchAreaArray.header.frame_id is mandatory. Regions in frames other than
+  # world are transformed into world before coverage generation. Coverage uses
+  # one constant world Z, so a strongly tilted source frame is rejected.
+  maximum_transformed_altitude_variation_m: 0.20
+
+search_allocation:
+  # Coverage is balanced by estimated flight time rather than raw distance.
+  # A vehicle may override this with coverage/nominal_speed_mps.
+  multirotor_nominal_speed_mps: 4.0
+  fixedwing_nominal_speed_mps: 15.0
+
+target_registry:
+  # Red-target testing starts with one event site per 4 m XY cluster.
+  association_radius_m: 4.0
+  # Fixed-wing ground-plane estimates can be much less accurate than 4 m.
+  # Association expands to 3 sigma from the reported XY covariance, but is
+  # capped to avoid merging unrelated nearby targets without limit.
+  association_covariance_sigma: 3.0
+  maximum_association_radius_m: 50.0
+  # A stable detector track is scoped by (uav, sensor, track_id).  It may
+  # survive moderate localization motion, but an implausibly large jump is
+  # treated as tracker ID reuse instead of dragging the world target with it.
+  stable_track_maximum_jump_m: 20.0
+  # Preserve every concrete class.  A tighter gate only allows a temporally
+  # alternating class label near an existing target to contribute evidence;
+  # different-class detections in the same source frame remain distinct.
+  cross_class_association_radius_m: 3.0
+  confirmation_hits: 5
+  confirmation_window_sec: 2.0
+  confirmation_minimum_span_sec: 1.0
+  # Independent scouts satisfy the source-diversity part of confirmation, but
+  # class and position stability below are still mandatory.
+  confirmation_distinct_uavs: 2
+  # Physical identity and semantic class are confirmed separately.  Keep the
+  # concrete winning class, but require repeated, consistent evidence before a
+  # worker task can be created.
+  class_confirmation_minimum_observations: 3
+  class_confirmation_minimum_ratio: 0.65
+  # Reject confirmation while recent world positions are still widely spread.
+  maximum_confirmation_position_spread_m: 3.0
+  position_history_size: 30
+  # Applies only to unconfirmed candidates. Confirmed/task-linked targets stay
+  # available for spatial deduplication while they wait for a worker.
+  stale_timeout_sec: 15.0
+
+# Reconnaissance flow selection. In auto mode a pure-multirotor scout fleet
+# performs single-stage area coverage, while a fleet containing both fixed-wing
+# and multirotor scouts performs fixed-wing coarse search followed by local
+# multirotor verification. Legacy configurations containing only `enabled` are
+# still accepted.
+hierarchical_search:
+  mode: single_stage  # auto | single_stage | hierarchical
+  verification:
+    # Publish and dispatch each local region as soon as fixed-wing evidence is
+    # ready. `after_coarse_complete` is retained only as an optional policy.
+    dispatch_policy: immediate  # immediate | after_coarse_complete
+    # Search regions are globally serialized by default, even when several
+    # multirotor scouts are idle. Increase only when parallel local search is desired.
+    maximum_concurrent_regions: 1
+    # Absolute world Z, matching the 4 m multirotor takeoff/search height in
+    # the current SITL sessions (not height above terrain).
+    altitude_m: 6.0
+    lane_spacing_m: 5.0
+    # covariance: radius = covariance_sigma * largest XY standard deviation,
+    # clamped by minimum/maximum. fixed: use fixed_radius_m directly.
+    radius_mode: covariance  # covariance | fixed
+    fixed_radius_m: 30.0
+    minimum_radius_m: 20.0
+    maximum_radius_m: 80.0
+    covariance_sigma: 3.0
+    # A complete local raster with no multirotor confirmation rejects the
+    # coarse candidate. Set false only if another retry policy is provided.
+    reject_after_route: true
+
+allocation:
+  worker_state_timeout_sec: 1.0
+  planner_failure_retry_sec: 5.0
+  # Final same-class dispatch guard.  Primary deduplication happens in the
+  # global target registry; this prevents a residual split from launching a
+  # second worker task.  Keep below the minimum expected spacing of real
+  # same-class targets, or set 0 to disable.
+  task_deduplication_radius_m: 5.0
+  # Rescue tasks are assigned to hover-capable aircraft unless a class-specific
+  # rule explicitly allows fixed-wing workers.
+  default_worker_vehicle_types: [multirotor, fixedwing]
+  class_worker_vehicle_types: {}
+    # "0": [multirotor] 依据识别出来的classid确定哪个类型飞机接受任务
+    # "1": [fixedwing] 目标类别编号 → 允许执行这个任务的飞机类型
+    # "2": [multirotor, fixedwing]
+  worker_approach:
+    # Stop well before the detected object. The red box is 1 m wide and the
+    # aircraft body plus braking error also need clearance; 2 m was too small.
+    horizontal_standoff_m: 5.0
+    # Completion is measured around the standoff goal, not around the object.
+    # Require the aircraft to settle so a fast fly-through cannot complete it.
+    goal_tolerance_m: 0.5
+    arrival_dwell_sec: 1.0
+    maximum_arrival_speed_mps: 0.35
+  # Larger value is dispatched first. class_id 0 is the red-marker test target.
+  class_priorities:
+    "0": 10
+
+planner:
+  # Temporary clear-area validation backend. Change back to ego_swarm after the
+  # EGO adapter is ready; there is never an automatic fallback between them.
+  backend: direct_controller_test
+  direct_controller_test:
+    # Mandatory acknowledgement: this backend sends multirotor mission points
+    # and complete fixed-wing geometric paths directly to the controller;
+    # it performs no point-cloud planning or obstacle avoidance.
+    acknowledge_no_obstacle_avoidance: true
+    goal_tolerance_m: 1.0
+    arrival_dwell_sec: 0.5
+    # Face the current waypoint in world ENU while flying each route segment.
+    face_goal: true
+    yaw_minimum_distance_m: 0.1
+
+  fixedwing:
+    # Used to replace instantaneous lawnmower reversals with sampled Dubins
+    # connectors before the full geometric path is sent to the controller.
+    # The turn may leave the search polygon, so mission planning must include
+    # a correspondingly clear boundary margin.
+    minimum_turn_radius_m: 30.0
+    turn_waypoint_spacing_m: 5.0
+    # 0 keeps SearchArea.altitude. Mixed fleets should normally set a separate
+    # fixed-wing coarse-search altitude per aircraft.
+    coverage_altitude_m: 0.0
+    # 0 keeps SearchArea.lane_spacing. Mixed fleets normally override this per
+    # fixed-wing scout using the sensor's coarse-search ground swath.
+    coverage_lane_spacing_m: 0.0
+    # Keep the banked connector outside the region and establish the straight
+    # scan heading before crossing its boundary.
+    straight_lead_distance_m: 30.0
+    # Fallback semantics for a fixed-wing direct point goal; normal fixed-wing
+    # area search uses the complete Path interface above.
+    waypoint_acceptance_radius_m: 20.0
+    waypoint_altitude_tolerance_m: 10.0
+    pass_cross_track_limit_m: 40.0

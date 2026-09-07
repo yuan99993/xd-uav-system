@@ -1,0 +1,26 @@
+# Fail-closed selected-target state produced by the PixEagle SmartTracker path.
+std_msgs/Header header
+bool tracking_active
+bool has_selection
+int64 selected_track_id
+int32 selected_class_id
+string selected_class_name
+float32 confidence
+vision_msgs/BoundingBox2D selected_bbox
+string geometry_type
+bool has_oriented_bbox
+float32[5] oriented_bbox
+bool measurement_current
+bool prediction_only
+bool tentative
+bool data_is_stale
+bool control_measurement_ready
+uint32 frames_since_detection
+string association_method
+string freshness_reason
+string tracker_type
+string backend
+string device
+string model_path
+uint32 detection_count
+float32 frame_processing_ms

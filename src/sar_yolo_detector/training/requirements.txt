@@ -1,0 +1,6 @@
+# Training/export only. The C++ ROS detector has no Python run-time dependency.
+ultralytics>=8.3,<9
+onnx>=1.15
+onnxruntime>=1.18,<2
+onnxslim>=0.1.31
+Pillow>=9

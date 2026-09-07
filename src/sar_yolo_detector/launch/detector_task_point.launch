@@ -1,0 +1,41 @@
+<launch>
+  <!-- Perception-to-task-candidate composition.  It intentionally stops at
+       /sar_yolo_detector/task_candidates and never writes flight setpoints. -->
+  <arg name="detector_config" default="$(find sar_yolo_detector)/config/detector.yaml" />
+  <arg name="task_config" default="$(find sar_yolo_detector)/config/task_point_generator.yaml" />
+  <arg name="model_path" default="" />
+  <arg name="engine_path" default="" />
+  <arg name="inference_backend" default="opencv_dnn" />
+  <arg name="input_image_topic" default="camera/image_raw" />
+  <arg name="camera_info_topic" default="camera/camera_info" />
+  <arg name="detections_topic" default="sar_yolo_detector/detections" />
+  <arg name="task_candidates_topic" default="sar_yolo_detector/task_candidates" />
+  <arg name="task_pose_topic" default="sar_yolo_detector/task_point" />
+  <arg name="task_frame" default="map" />
+  <arg name="ground_plane_z" default="0.0" />
+  <arg name="localization_mode" default="bearing_only" />
+  <arg name="task_generation_enabled" default="false" />
+  <arg name="model_validated" default="false" />
+
+  <include file="$(find sar_yolo_detector)/launch/detector.launch">
+    <arg name="config" value="$(arg detector_config)" />
+    <arg name="model_path" value="$(arg model_path)" />
+    <arg name="engine_path" value="$(arg engine_path)" />
+    <arg name="inference_backend" value="$(arg inference_backend)" />
+    <arg name="input_image_topic" value="$(arg input_image_topic)" />
+    <arg name="detections_topic" value="$(arg detections_topic)" />
+  </include>
+
+  <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+    <arg name="config" value="$(arg task_config)" />
+    <arg name="input_detections_topic" value="$(arg detections_topic)" />
+    <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+    <arg name="task_candidates_topic" value="$(arg task_candidates_topic)" />
+    <arg name="task_pose_topic" value="$(arg task_pose_topic)" />
+    <arg name="task_frame" value="$(arg task_frame)" />
+    <arg name="ground_plane_z" value="$(arg ground_plane_z)" />
+    <arg name="localization_mode" value="$(arg localization_mode)" />
+    <arg name="task_generation_enabled" value="$(arg task_generation_enabled)" />
+    <arg name="model_validated" value="$(arg model_validated)" />
+  </include>
+</launch>

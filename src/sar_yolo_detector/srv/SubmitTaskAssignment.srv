@@ -1,0 +1,6 @@
+sar_yolo_detector/TaskAssignment assignment
+---
+# accepted means the assignment passed bridge validation and was dispatched.
+# It does not mean the flight executor accepted or completed the task.
+bool accepted
+sar_yolo_detector/TaskExecutionStatus acknowledgment

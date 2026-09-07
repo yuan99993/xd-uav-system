@@ -1,0 +1,28 @@
+# EO/IR late fusion is disabled until a measured secondary(IR)->primary(EO)
+# pixel homography and timing calibration are supplied. Identity is NOT safe
+# for independent cameras unless they are physically co-registered.
+primary_detections_topic: sar_yolo_detector/eo/detections
+secondary_detections_topic: sar_yolo_detector/ir/detections
+fused_detections_topic: sar_yolo_detector/fused/detections
+fusion_provenance_topic: sar_yolo_detector/fused/detections/provenance
+primary_frame_id: eo_camera_optical
+secondary_frame_id: ir_camera_optical
+primary_width: 640
+primary_height: 480
+registration_verified: false
+registration_mode: homography
+calibration_version: ""
+require_versioned_calibration: true
+require_matching_frames: true
+secondary_to_primary_homography: []
+sync_tolerance_sec: 0.08
+late_fusion_hold_sec: 0.10
+matching_iou_threshold: 0.30
+secondary_only_confidence_scale: 0.80
+fusion_queue_size: 10
+# weighted_mean avoids treating correlated EO/IR scores as independent.
+confidence_fusion_mode: weighted_mean
+# VisDrone human classes are pedestrian/people (0/1); HIT-UAV person is 0.
+primary_human_class_ids: [0, 1]
+secondary_human_class_ids: [0]
+person_class_id: 0

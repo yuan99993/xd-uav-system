@@ -1,0 +1,16 @@
+{
+  "names": [
+    "swimmer",
+    "boat",
+    "jetski",
+    "life_saving_appliances",
+    "buoy"
+  ],
+  "categories": {
+    "swimmer": 0,
+    "boat": 1,
+    "jetski": 2,
+    "life_saving_appliances": 3,
+    "buoy": 4
+  }
+}

@@ -1,0 +1,40 @@
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="gm_config" default="$(find gm_control)/config/gm_control.yaml"/>
+  <arg name="bridge_config" default="$(find gm_control)/config/xd_track_bridge.yaml"/>
+
+  <arg name="image_topic" default="/$(arg UAV_NAME)/camera/image_raw"/>
+  <arg name="tracks_topic" default="track/tracks"/>
+  <arg name="bbox_topic" default="gm_control/target_bbox"/>
+  <arg name="command_topic" default="gm_control/gimbal_cmd"/>
+  <arg name="gm_state_topic" default="gm_control/gimbal_state"/>
+  <arg name="track_gimbal_state_topic" default="track/gimbal_state"/>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="gm_control"
+          type="xd_track_gimbal_bridge_node.py"
+          name="track_gimbal_bridge"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg bridge_config)"/>
+      <param name="tracks_topic" value="$(arg tracks_topic)"/>
+      <param name="bbox_topic" value="$(arg bbox_topic)"/>
+      <param name="gm_gimbal_state_topic" value="$(arg gm_state_topic)"/>
+      <param name="track_gimbal_state_topic" value="$(arg track_gimbal_state_topic)"/>
+    </node>
+
+    <node pkg="gm_control"
+          type="gimbal_image_controller_node.py"
+          name="gimbal_image_controller"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg gm_config)"/>
+      <param name="image_topic" value="$(arg image_topic)"/>
+      <param name="bbox_topic" value="$(arg bbox_topic)"/>
+      <param name="command_topic" value="$(arg command_topic)"/>
+      <param name="state_topic" value="$(arg gm_state_topic)"/>
+      <param name="error_topic" value="gm_control/image_error"/>
+      <param name="debug_image_topic" value="gm_control/debug_image"/>
+    </node>
+  </group>
+</launch>

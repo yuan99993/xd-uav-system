@@ -1,0 +1,20 @@
+<launch>
+  <group ns="uav1">
+    <node pkg="xd_uav_planning" type="ego_status_node.py"
+          name="ego_planner_status_tested" output="screen" required="true">
+      <param name="common_frame" value="world"/>
+      <param name="uav_name" value="uav1"/>
+      <param name="task_state_service" value=""/>
+      <param name="goal_topic" value="planning/goal"/>
+      <param name="ego_goal_topic" value="ego/validated_goal"/>
+      <param name="flight_type" value="1"/>
+      <param name="manual_target_altitude_m" value="1.0"/>
+      <param name="health_topic" value="ego/system_healthy"/>
+      <param name="odometry_topic" value="ego/odometry"/>
+      <param name="status_topic" value="planning/status"/>
+    </node>
+  </group>
+
+  <test test-name="ego_status_node" pkg="xd_uav_planning"
+        type="test_ego_status_node.py" time-limit="30"/>
+</launch>

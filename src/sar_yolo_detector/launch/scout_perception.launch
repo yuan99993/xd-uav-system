@@ -1,0 +1,128 @@
+<launch>
+  <!-- Primary scout-aircraft chain:
+       EO image -> PixEagle SmartTracker -> airplane bearing/task candidate
+       -> planner-facing PerceptionCandidateArray.
+       No executor/downlink is exposed on the scout. -->
+  <arg name="mission_id" default="mission_unset" />
+  <arg name="scout_uav_id" default="scout_01" />
+  <arg name="session_uuid" default="$(anon scout_perception_session)" />
+  <arg name="input_image_topic" default="camera/eo/image_raw" />
+  <arg name="camera_info_topic" default="camera/eo/camera_info" />
+  <arg name="terrain_grid_topic" default="terrain/elevation_grid" />
+  <arg name="task_frame" default="map" />
+  <!-- Monocular airborne-aircraft detections have no observable range.
+       Use terrain only for targets known to lie on the terrain surface. -->
+  <arg name="localization_mode" default="bearing_only" />
+  <arg name="ground_plane_z" default="0.0" />
+  <arg name="calibration_version" default="unversioned" />
+
+  <arg name="model_path"
+       default="$(find sar_yolo_detector)/models/aircraft_coco/yolo11n.pt" />
+  <arg name="model_sha256"
+       default="0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1" />
+  <arg name="use_gpu" default="true" />
+  <arg name="python_executable" default="" />
+  <arg name="publish_annotated_image" default="true" />
+
+  <!-- The chain is wired by default, but an unvalidated model cannot emit
+       actionable candidates. Set model_validated only after deployment tests. -->
+  <arg name="task_generation_enabled" default="true" />
+  <arg name="model_validated" default="false" />
+  <arg name="allow_experimental_model" default="false" />
+  <arg name="start_planner_uplink" default="true" />
+
+  <arg name="geo_reference_validated" default="false" />
+  <arg name="geo_coordinate_type" default="LOCAL_ENU" />
+  <arg name="geo_epsg" default="" />
+  <arg name="geo_map_uuid" default="map_unset" />
+  <arg name="geo_origin_latitude_deg" default="nan" />
+  <arg name="geo_origin_longitude_deg" default="nan" />
+  <arg name="geo_origin_altitude_m" default="nan" />
+  <arg name="geo_vertical_datum" default="WGS84_ELLIPSOID" />
+  <arg name="geo_geoid_model" default="" />
+  <arg name="geo_transform_version" default="unversioned" />
+  <arg name="state_database_path" default="" />
+
+  <group ns="$(arg scout_uav_id)">
+    <include file="$(find sar_yolo_detector)/launch/smart_tracker.launch">
+      <arg name="config"
+           value="$(find sar_yolo_detector)/config/smart_tracker_aircraft.yaml" />
+      <arg name="input_image_topic" value="$(arg input_image_topic)" />
+      <arg name="tracked_detections_topic"
+           value="sar_yolo_detector/aircraft/tracked_detections" />
+      <arg name="state_topic"
+           value="sar_yolo_detector/aircraft/tracker_state" />
+      <arg name="annotated_image_topic"
+           value="sar_yolo_detector/aircraft/annotated" />
+      <arg name="model_path" value="$(arg model_path)" />
+      <arg name="model_sha256" value="$(arg model_sha256)" />
+      <arg name="use_gpu" value="$(arg use_gpu)" />
+      <arg name="python_executable" value="$(arg python_executable)" />
+      <arg name="publish_annotated_image"
+           value="$(arg publish_annotated_image)" />
+      <arg name="mission_id" value="$(arg mission_id)" />
+      <arg name="uav_id" value="$(arg scout_uav_id)" />
+      <arg name="session_uuid" value="$(arg session_uuid)" />
+      <arg name="sensor_id" value="scout_eo_primary" />
+      <arg name="profile" value="aircraft_coco" />
+      <arg name="model_version" value="yolo11n_coco80_baseline" />
+      <arg name="calibration_version" value="$(arg calibration_version)" />
+      <arg name="coordinate_contract" value="CAMERA_RAY" />
+    </include>
+
+    <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+      <arg name="config"
+           value="$(find sar_yolo_detector)/config/task_profile_aircraft_coco.yaml" />
+      <arg name="use_tracked_detections" value="true" />
+      <arg name="tracked_detections_topic"
+           value="sar_yolo_detector/aircraft/tracked_detections" />
+      <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+      <arg name="terrain_grid_topic" value="$(arg terrain_grid_topic)" />
+      <arg name="task_candidates_topic"
+           value="sar_yolo_detector/aircraft/task_candidates" />
+      <arg name="task_pose_topic"
+           value="sar_yolo_detector/aircraft/task_point" />
+      <arg name="task_frame" value="$(arg task_frame)" />
+      <arg name="localization_mode" value="$(arg localization_mode)" />
+      <arg name="ground_plane_z" value="$(arg ground_plane_z)" />
+      <arg name="mission_id" value="$(arg mission_id)" />
+      <arg name="uav_id" value="$(arg scout_uav_id)" />
+      <arg name="session_uuid" value="$(arg session_uuid)" />
+      <arg name="calibration_version" value="$(arg calibration_version)" />
+      <arg name="task_generation_enabled"
+           value="$(arg task_generation_enabled)" />
+      <arg name="model_validated" value="$(arg model_validated)" />
+      <arg name="allow_experimental_model"
+           value="$(arg allow_experimental_model)" />
+      <arg name="model_sha256" value="$(arg model_sha256)" />
+    </include>
+
+    <include if="$(arg start_planner_uplink)"
+             file="$(find sar_yolo_detector)/launch/decision_bridge.launch">
+      <arg name="mission_id" value="$(arg mission_id)" />
+      <arg name="uav_id" value="$(arg scout_uav_id)" />
+      <arg name="session_uuid" value="$(arg session_uuid)" />
+      <arg name="bridge_role" value="scout" />
+      <arg name="source_task_candidates_topic"
+           value="sar_yolo_detector/aircraft/task_candidates" />
+      <arg name="coordinate_contract"
+           value="$(eval 'CAMERA_RAY' if arg('localization_mode') == 'bearing_only' else 'LOCAL_ENU:' + arg('task_frame'))" />
+      <arg name="required_target_frame" value="$(arg task_frame)" />
+      <arg name="geo_reference_validated"
+           value="$(arg geo_reference_validated)" />
+      <arg name="geo_coordinate_type" value="$(arg geo_coordinate_type)" />
+      <arg name="geo_epsg" value="$(arg geo_epsg)" />
+      <arg name="geo_map_uuid" value="$(arg geo_map_uuid)" />
+      <arg name="geo_origin_latitude_deg"
+           value="$(arg geo_origin_latitude_deg)" />
+      <arg name="geo_origin_longitude_deg"
+           value="$(arg geo_origin_longitude_deg)" />
+      <arg name="geo_origin_altitude_m"
+           value="$(arg geo_origin_altitude_m)" />
+      <arg name="geo_vertical_datum" value="$(arg geo_vertical_datum)" />
+      <arg name="geo_geoid_model" value="$(arg geo_geoid_model)" />
+      <arg name="geo_transform_version" value="$(arg geo_transform_version)" />
+      <arg name="state_database_path" value="$(arg state_database_path)" />
+    </include>
+  </group>
+</launch>

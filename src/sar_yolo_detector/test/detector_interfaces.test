@@ -1,0 +1,14 @@
+<launch>
+  <node pkg="sar_yolo_detector" type="sar_yolo_detector_node"
+        name="sar_yolo_detector_test" output="screen" required="true">
+    <rosparam command="load" file="$(find sar_yolo_detector)/config/detector.yaml" />
+    <param name="inference_backend" value="test" />
+    <param name="input_image_topic" value="/sar_yolo_detector_test/image" />
+    <param name="detections_topic" value="/sar_yolo_detector_test/detections" />
+    <param name="vision_info_topic" value="/sar_yolo_detector_test/vision_info" />
+    <param name="maximum_capture_age_sec" value="2.0" />
+    <rosparam param="test_detections">[[320.0, 320.0, 140.0, 220.0, 0.95, 0]]</rosparam>
+  </node>
+  <test test-name="detector_interfaces" pkg="sar_yolo_detector"
+        type="test_detector_interfaces.py" time-limit="30" />
+</launch>

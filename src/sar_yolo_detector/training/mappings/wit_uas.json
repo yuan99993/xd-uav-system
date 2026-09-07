@@ -1,0 +1,10 @@
+{
+  "names": ["person", "car", "bicycle", "other_vehicle"],
+  "categories": {
+    "person": 0,
+    "car": 1,
+    "bicycle": 2,
+    "othervehicle": 3,
+    "other_vehicle": 3
+  }
+}

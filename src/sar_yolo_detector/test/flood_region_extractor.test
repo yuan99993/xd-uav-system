@@ -1,0 +1,23 @@
+<launch>
+  <node pkg="sar_yolo_detector" type="sar_flood_region_extractor"
+        name="sar_flood_region_test" output="screen" required="true">
+    <param name="input_mask_topic" value="/sar_flood_test/mask" />
+    <param name="regions_topic" value="/sar_flood_test/regions" />
+    <param name="input_max_age_sec" value="5.0" />
+    <param name="minimum_region_area_px" value="20" />
+    <param name="morphology_kernel_px" value="0" />
+    <param name="min_confirmations" value="2" />
+    <param name="confirmation_window_sec" value="1.0" />
+    <param name="track_timeout_sec" value="0.30" />
+    <param name="expiration_check_period_sec" value="0.05" />
+    <param name="snapshot_period_sec" value="10.0" />
+    <rosparam param="hazard_class_ids">[1]</rosparam>
+    <rosparam param="class_names">[background, building_flooded]</rosparam>
+    <rosparam param="global_semantic_ids">[0, 4]</rosparam>
+    <param name="mission_id" value="test_mission" />
+    <param name="uav_id" value="uav_01" />
+    <param name="session_uuid" value="flood-test-session" />
+  </node>
+  <test test-name="flood_region_extractor" pkg="sar_yolo_detector"
+        type="test_flood_region_extractor.py" time-limit="30" />
+</launch>

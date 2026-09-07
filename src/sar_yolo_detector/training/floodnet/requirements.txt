@@ -1,0 +1,5 @@
+# CUDA-enabled torch is installed separately from the matching PyTorch index.
+transformers==4.45.2
+PyYAML>=6.0
+tqdm>=4.66
+safetensors>=0.4

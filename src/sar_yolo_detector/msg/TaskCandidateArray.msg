@@ -1,0 +1,5 @@
+std_msgs/Header header
+uint64 array_sequence
+bool full_snapshot
+sar_yolo_detector/PerceptionIdentity provenance
+sar_yolo_detector/TaskCandidate[] candidates

@@ -1,0 +1,282 @@
+<launch>
+  <!-- Include once per aircraft. Relative topics are isolated under uav_id. -->
+  <arg name="profile" default="thermal_uav" />
+  <arg name="mission_id" default="mission_unset" />
+  <arg name="uav_id" default="uav_01" />
+  <arg name="session_uuid" default="$(anon perception_session)" />
+  <arg name="calibration_version" default="unversioned" />
+  <arg name="model_path" default="" />
+  <arg name="engine_path" default="" />
+  <arg name="model_sha256" default="" />
+  <arg name="inference_backend" default="tensorrt" />
+  <arg name="localization_mode" default="bearing_only" />
+  <arg name="task_frame" default="map" />
+  <arg name="ground_plane_z" default="0.0" />
+  <arg name="terrain_grid_topic" default="terrain/grid" />
+
+  <!-- Lightweight interface to the remote decision layer and local executor. -->
+  <arg name="start_decision_bridge" default="true" />
+  <arg name="assignment_coordinate_contract"
+       default="$(eval 'LOCAL_ENU:' + arg('task_frame'))" />
+  <arg name="geo_reference_validated" default="false" />
+  <arg name="geo_coordinate_type" default="LOCAL_ENU" />
+  <arg name="geo_epsg" default="" />
+  <arg name="geo_map_uuid" default="map_unset" />
+  <arg name="geo_origin_latitude_deg" default="nan" />
+  <arg name="geo_origin_longitude_deg" default="nan" />
+  <arg name="geo_origin_altitude_m" default="nan" />
+  <arg name="geo_vertical_datum" default="WGS84_ELLIPSOID" />
+  <arg name="geo_geoid_model" default="" />
+  <arg name="geo_transform_version" default="unversioned" />
+  <arg name="geo_valid_from_sec" default="0.0" />
+  <arg name="geo_valid_until_sec" default="0.0" />
+  <arg name="require_message_authentication" default="true" />
+  <arg name="require_operator_authorization" default="true" />
+  <arg name="require_known_observation" default="true" />
+  <arg name="allow_topic_commands" default="false" />
+  <arg name="authorization_key_id" default="decision_primary" />
+  <arg name="authorization_key_file" default="" />
+  <arg name="authorized_decision_id" default="decision_primary" />
+  <arg name="require_geofence_id" default="true" />
+  <arg name="require_geofence_version" default="true" />
+  <arg name="minimum_executor_battery_percent" default="20.0" />
+  <arg name="state_database_path" default="" />
+
+  <!-- Fail-closed planning gate. Perception remains available to operators. -->
+  <arg name="task_generation_enabled" default="false" />
+  <arg name="model_validated" default="false" />
+  <arg name="allow_experimental_model" default="false" />
+
+  <arg name="wildfire_engine_path"
+       default="$(find sar_yolo_detector)/models/wildfire_ir/fireman_ir_fp16.engine" />
+  <arg name="wildfire_fire_smoke_engine_path"
+       default="$(find sar_yolo_detector)/models/wildfire_ir/fireman_ir_fs_fp16.engine" />
+  <arg name="maritime_engine_path"
+       default="$(find sar_yolo_detector)/models/maritime_person/maritime_person_fp16.engine" />
+  <arg name="thermal_engine_path"
+       default="$(find sar_yolo_detector)/models/thermal_uav/thermal_uav_fp16.engine" />
+  <arg name="flood_engine_path"
+       default="$(find sar_yolo_detector)/models/floodnet_segformer_b0/floodnet_segformer_b0_pilot_10e_fp16.engine" />
+
+  <arg name="ir_image_topic" default="camera/ir/image_raw" />
+  <arg name="eo_image_topic" default="camera/eo/image_raw" />
+  <arg name="ir_camera_info_topic" default="camera/ir/camera_info" />
+  <arg name="eo_camera_info_topic" default="camera/eo/camera_info" />
+  <arg name="flood_mask_topic" default="sar_yolo_detector/floodnet/class_mask" />
+  <arg name="flood_regions_topic" default="sar_yolo_detector/floodnet/regions" />
+
+  <!-- Unknown profiles fail during substitution rather than starting nothing. -->
+  <arg name="_profile_guard"
+       default="$(eval {'thermal_uav': 1, 'maritime_person': 1, 'wildfire_ir': 1, 'wildfire_ir_fire_smoke': 1, 'floodnet': 1}[arg('profile')])" />
+
+  <group ns="$(arg uav_id)">
+    <group if="$(eval arg('profile') == 'wildfire_ir')">
+      <include file="$(find sar_yolo_detector)/launch/detector.launch">
+        <arg name="config" value="$(find sar_yolo_detector)/config/profile_wildfire_ir.yaml" />
+        <arg name="model_path" value="$(arg model_path)" />
+        <arg name="engine_path" value="$(eval arg('engine_path') if arg('engine_path') else arg('wildfire_engine_path'))" />
+        <arg name="inference_backend" value="$(arg inference_backend)" />
+        <arg name="input_image_topic" value="$(arg ir_image_topic)" />
+        <arg name="detections_topic" value="sar_yolo_detector/wildfire_ir/detections" />
+        <arg name="mission_id" value="$(arg mission_id)" />
+        <arg name="uav_id" value="$(arg uav_id)" />
+        <arg name="session_uuid" value="$(arg session_uuid)" />
+        <arg name="calibration_version" value="$(arg calibration_version)" />
+        <arg name="model_sha256" value="$(arg model_sha256)" />
+      </include>
+      <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+        <arg name="config" value="$(find sar_yolo_detector)/config/task_profile_wildfire_ir.yaml" />
+        <arg name="input_detections_topic" value="sar_yolo_detector/wildfire_ir/detections" />
+        <arg name="camera_info_topic" value="$(arg ir_camera_info_topic)" />
+        <arg name="task_candidates_topic" value="sar_yolo_detector/wildfire_ir/task_candidates" />
+        <arg name="task_pose_topic" value="sar_yolo_detector/wildfire_ir/task_point" />
+        <arg name="task_frame" value="$(arg task_frame)" />
+        <arg name="localization_mode" value="$(arg localization_mode)" />
+        <arg name="ground_plane_z" value="$(arg ground_plane_z)" />
+        <arg name="mission_id" value="$(arg mission_id)" />
+        <arg name="uav_id" value="$(arg uav_id)" />
+        <arg name="session_uuid" value="$(arg session_uuid)" />
+        <arg name="calibration_version" value="$(arg calibration_version)" />
+        <arg name="model_sha256" value="$(arg model_sha256)" />
+        <!-- Smoke recall is zero in this legacy model: never emit tasks. -->
+        <arg name="task_generation_enabled" value="false" />
+        <arg name="model_validated" value="false" />
+        <arg name="allow_experimental_model" value="false" />
+      </include>
+    </group>
+
+    <group if="$(eval arg('profile') == 'wildfire_ir_fire_smoke')">
+      <include file="$(find sar_yolo_detector)/launch/detector.launch">
+        <arg name="config" value="$(find sar_yolo_detector)/config/profile_wildfire_ir_fire_smoke.yaml" />
+        <arg name="model_path" value="$(arg model_path)" />
+        <arg name="engine_path" value="$(eval arg('engine_path') if arg('engine_path') else arg('wildfire_fire_smoke_engine_path'))" />
+        <arg name="inference_backend" value="$(arg inference_backend)" />
+        <arg name="input_image_topic" value="$(arg ir_image_topic)" />
+        <arg name="detections_topic" value="sar_yolo_detector/wildfire_ir_fire_smoke/detections" />
+        <arg name="mission_id" value="$(arg mission_id)" />
+        <arg name="uav_id" value="$(arg uav_id)" />
+        <arg name="session_uuid" value="$(arg session_uuid)" />
+        <arg name="calibration_version" value="$(arg calibration_version)" />
+        <arg name="model_sha256" value="$(arg model_sha256)" />
+      </include>
+      <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+        <arg name="config" value="$(find sar_yolo_detector)/config/task_profile_wildfire_ir_fire_smoke.yaml" />
+        <arg name="input_detections_topic" value="sar_yolo_detector/wildfire_ir_fire_smoke/detections" />
+        <arg name="camera_info_topic" value="$(arg ir_camera_info_topic)" />
+        <arg name="task_candidates_topic" value="sar_yolo_detector/wildfire_ir_fire_smoke/task_candidates" />
+        <arg name="task_pose_topic" value="sar_yolo_detector/wildfire_ir_fire_smoke/task_point" />
+        <arg name="task_frame" value="$(arg task_frame)" />
+        <arg name="localization_mode" value="$(arg localization_mode)" />
+        <arg name="ground_plane_z" value="$(arg ground_plane_z)" />
+        <arg name="mission_id" value="$(arg mission_id)" />
+        <arg name="uav_id" value="$(arg uav_id)" />
+        <arg name="session_uuid" value="$(arg session_uuid)" />
+        <arg name="calibration_version" value="$(arg calibration_version)" />
+        <arg name="model_sha256" value="$(arg model_sha256)" />
+        <arg name="task_generation_enabled" value="$(arg task_generation_enabled)" />
+        <arg name="model_validated" value="$(arg model_validated)" />
+        <arg name="allow_experimental_model" value="$(arg allow_experimental_model)" />
+      </include>
+    </group>
+
+    <group if="$(eval arg('profile') == 'maritime_person')">
+      <include file="$(find sar_yolo_detector)/launch/detector.launch">
+        <arg name="config" value="$(find sar_yolo_detector)/config/profile_maritime_person.yaml" />
+        <arg name="model_path" value="$(arg model_path)" />
+        <arg name="engine_path" value="$(eval arg('engine_path') if arg('engine_path') else arg('maritime_engine_path'))" />
+        <arg name="inference_backend" value="$(arg inference_backend)" />
+        <arg name="input_image_topic" value="$(arg eo_image_topic)" />
+        <arg name="detections_topic" value="sar_yolo_detector/maritime_person/detections" />
+        <arg name="mission_id" value="$(arg mission_id)" />
+        <arg name="uav_id" value="$(arg uav_id)" />
+        <arg name="session_uuid" value="$(arg session_uuid)" />
+        <arg name="calibration_version" value="$(arg calibration_version)" />
+        <arg name="model_sha256" value="$(arg model_sha256)" />
+      </include>
+      <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+        <arg name="config" value="$(find sar_yolo_detector)/config/task_profile_maritime_person.yaml" />
+        <arg name="input_detections_topic" value="sar_yolo_detector/maritime_person/detections" />
+        <arg name="camera_info_topic" value="$(arg eo_camera_info_topic)" />
+        <arg name="task_candidates_topic" value="sar_yolo_detector/maritime_person/task_candidates" />
+        <arg name="task_pose_topic" value="sar_yolo_detector/maritime_person/task_point" />
+        <arg name="task_frame" value="$(arg task_frame)" />
+        <arg name="localization_mode" value="$(arg localization_mode)" />
+        <arg name="ground_plane_z" value="$(arg ground_plane_z)" />
+        <arg name="mission_id" value="$(arg mission_id)" />
+        <arg name="uav_id" value="$(arg uav_id)" />
+        <arg name="session_uuid" value="$(arg session_uuid)" />
+        <arg name="calibration_version" value="$(arg calibration_version)" />
+        <arg name="model_sha256" value="$(arg model_sha256)" />
+        <arg name="task_generation_enabled" value="$(arg task_generation_enabled)" />
+        <arg name="model_validated" value="$(arg model_validated)" />
+        <arg name="allow_experimental_model" value="$(arg allow_experimental_model)" />
+      </include>
+    </group>
+
+    <group if="$(eval arg('profile') == 'thermal_uav')">
+      <include file="$(find sar_yolo_detector)/launch/detector.launch">
+        <arg name="config" value="$(find sar_yolo_detector)/config/profile_thermal_uav.yaml" />
+        <arg name="model_path" value="$(arg model_path)" />
+        <arg name="engine_path" value="$(eval arg('engine_path') if arg('engine_path') else arg('thermal_engine_path'))" />
+        <arg name="inference_backend" value="$(arg inference_backend)" />
+        <arg name="input_image_topic" value="$(arg ir_image_topic)" />
+        <arg name="detections_topic" value="sar_yolo_detector/thermal_uav/detections" />
+        <arg name="mission_id" value="$(arg mission_id)" />
+        <arg name="uav_id" value="$(arg uav_id)" />
+        <arg name="session_uuid" value="$(arg session_uuid)" />
+        <arg name="calibration_version" value="$(arg calibration_version)" />
+        <arg name="model_sha256" value="$(arg model_sha256)" />
+      </include>
+      <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+        <arg name="config" value="$(find sar_yolo_detector)/config/task_profile_thermal_uav.yaml" />
+        <arg name="input_detections_topic" value="sar_yolo_detector/thermal_uav/detections" />
+        <arg name="camera_info_topic" value="$(arg ir_camera_info_topic)" />
+        <arg name="task_candidates_topic" value="sar_yolo_detector/thermal_uav/task_candidates" />
+        <arg name="task_pose_topic" value="sar_yolo_detector/thermal_uav/task_point" />
+        <arg name="task_frame" value="$(arg task_frame)" />
+        <arg name="localization_mode" value="$(arg localization_mode)" />
+        <arg name="ground_plane_z" value="$(arg ground_plane_z)" />
+        <arg name="mission_id" value="$(arg mission_id)" />
+        <arg name="uav_id" value="$(arg uav_id)" />
+        <arg name="session_uuid" value="$(arg session_uuid)" />
+        <arg name="calibration_version" value="$(arg calibration_version)" />
+        <arg name="model_sha256" value="$(arg model_sha256)" />
+        <arg name="task_generation_enabled" value="$(arg task_generation_enabled)" />
+        <arg name="model_validated" value="$(arg model_validated)" />
+        <arg name="allow_experimental_model" value="$(arg allow_experimental_model)" />
+      </include>
+    </group>
+
+    <group if="$(eval arg('profile') == 'floodnet')">
+      <node pkg="sar_yolo_detector" type="sar_segformer_inference"
+            name="sar_segformer_inference" output="screen" required="true">
+        <rosparam command="load" file="$(find sar_yolo_detector)/config/profile_floodnet.yaml" />
+        <param name="engine_path" value="$(eval arg('engine_path') if arg('engine_path') else arg('flood_engine_path'))" />
+        <param name="input_image_topic" value="$(arg eo_image_topic)" />
+        <param name="output_mask_topic" value="$(arg flood_mask_topic)" />
+        <param name="mission_id" value="$(arg mission_id)" />
+        <param name="uav_id" value="$(arg uav_id)" />
+        <param name="session_uuid" value="$(arg session_uuid)" />
+        <param name="calibration_version" value="$(arg calibration_version)" />
+        <param if="$(eval arg('model_sha256') != '')"
+               name="model_sha256" value="$(arg model_sha256)" />
+      </node>
+      <node pkg="sar_yolo_detector" type="sar_flood_region_extractor"
+            name="sar_flood_region_extractor" output="screen" required="true">
+        <rosparam command="load" file="$(find sar_yolo_detector)/config/profile_floodnet.yaml" />
+        <param name="input_mask_topic" value="$(arg flood_mask_topic)" />
+        <param name="regions_topic" value="$(arg flood_regions_topic)" />
+        <param name="mission_id" value="$(arg mission_id)" />
+        <param name="uav_id" value="$(arg uav_id)" />
+        <param name="session_uuid" value="$(arg session_uuid)" />
+        <param name="calibration_version" value="$(arg calibration_version)" />
+        <param name="camera_info_topic" value="$(arg eo_camera_info_topic)" />
+        <param name="terrain_grid_topic" value="$(arg terrain_grid_topic)" />
+        <param name="evidence_source_topic" value="$(arg eo_image_topic)" />
+        <param name="localization_mode" value="$(arg localization_mode)" />
+        <param name="ground_plane_z" value="$(arg ground_plane_z)" />
+      </node>
+    </group>
+
+    <include if="$(arg start_decision_bridge)"
+             file="$(find sar_yolo_detector)/launch/decision_bridge.launch">
+      <arg name="mission_id" value="$(arg mission_id)" />
+      <arg name="uav_id" value="$(arg uav_id)" />
+      <arg name="session_uuid" value="$(arg session_uuid)" />
+      <arg name="source_task_candidates_topic"
+           value="$(eval '' if arg('profile') == 'floodnet' else 'sar_yolo_detector/' + arg('profile') + '/task_candidates')" />
+      <arg name="source_flood_regions_topic"
+           value="$(eval arg('flood_regions_topic') if arg('profile') == 'floodnet' else '')" />
+      <arg name="coordinate_contract"
+           value="$(arg assignment_coordinate_contract)" />
+      <arg name="required_target_frame" value="$(arg task_frame)" />
+      <arg name="geo_reference_validated" value="$(arg geo_reference_validated)" />
+      <arg name="geo_coordinate_type" value="$(arg geo_coordinate_type)" />
+      <arg name="geo_epsg" value="$(arg geo_epsg)" />
+      <arg name="geo_map_uuid" value="$(arg geo_map_uuid)" />
+      <arg name="geo_origin_latitude_deg" value="$(arg geo_origin_latitude_deg)" />
+      <arg name="geo_origin_longitude_deg" value="$(arg geo_origin_longitude_deg)" />
+      <arg name="geo_origin_altitude_m" value="$(arg geo_origin_altitude_m)" />
+      <arg name="geo_vertical_datum" value="$(arg geo_vertical_datum)" />
+      <arg name="geo_geoid_model" value="$(arg geo_geoid_model)" />
+      <arg name="geo_transform_version" value="$(arg geo_transform_version)" />
+      <arg name="geo_valid_from_sec" value="$(arg geo_valid_from_sec)" />
+      <arg name="geo_valid_until_sec" value="$(arg geo_valid_until_sec)" />
+      <arg name="require_message_authentication"
+           value="$(arg require_message_authentication)" />
+      <arg name="require_operator_authorization"
+           value="$(arg require_operator_authorization)" />
+      <arg name="require_known_observation"
+           value="$(arg require_known_observation)" />
+      <arg name="allow_topic_commands" value="$(arg allow_topic_commands)" />
+      <arg name="authorization_key_id" value="$(arg authorization_key_id)" />
+      <arg name="authorization_key_file" value="$(arg authorization_key_file)" />
+      <arg name="authorized_decision_id" value="$(arg authorized_decision_id)" />
+      <arg name="require_geofence_id" value="$(arg require_geofence_id)" />
+      <arg name="require_geofence_version" value="$(arg require_geofence_version)" />
+      <arg name="minimum_executor_battery_percent"
+           value="$(arg minimum_executor_battery_percent)" />
+      <arg name="state_database_path" value="$(arg state_database_path)" />
+    </include>
+  </group>
+</launch>

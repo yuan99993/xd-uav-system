@@ -40,28 +40,20 @@ catkin_package(CATKIN_DEPENDS
 )
 
 catkin_install_python(PROGRAMS
-  scripts/reference_mux_node.py
-  scripts/health_gate_node.py
-  scripts/reference_health_node.py
   scripts/profile_loader.py
-  scripts/state_hold_baseline_node.py
   scripts/spawn_px4_vehicle_node.py
-  scripts/select_owner_when_ready.py
-  scripts/wait_ego_swarm_ready.py
   scripts/mavros_odom_recovery_gate.py
   scripts/auto_takeoff_when_ready.py
   scripts/deterministic_obstacle_cloud.py
   scripts/imu_frame_adapter.py
   scripts/rigid_body_imu_adapter.py
-  scripts/ego_command_frame_adapter.py
   scripts/fastlio_shadow_gate.py
   scripts/gazebo_fastlio_world_alignment.py
   scripts/navsat_origin_provider.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-install(PROGRAMS scripts/ego_obstacle_demo.sh scripts/ego_demo.sh
-  scripts/multi_odom_registration.py
+install(PROGRAMS scripts/multi_odom_registration.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -74,7 +66,6 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_integration_core.py)
   catkin_add_nosetests(test/test_profile.py)
   catkin_add_nosetests(test/test_portable_configuration.py)
-  add_rostest(test/integration_nodes.test)
   add_rostest(test/mavros_odom_recovery_gate.test)
   add_rostest(test/fastlio_shadow_gate.test)
 endif()

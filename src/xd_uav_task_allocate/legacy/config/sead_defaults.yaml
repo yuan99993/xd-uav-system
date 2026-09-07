@@ -1,0 +1,65 @@
+# xd_uav_sead runtime parameters only.
+# Loaded in the private namespace of /<uav>/sead_onboard.
+
+sead_runtime_mode: simple_strike  # simple_strike | dpga_sead
+
+communication:
+  # ros: JSON commands on /<uav>/sead/command, converted to the existing
+  #      binary PacketProtocol internally.
+  # udp: one unchanged PacketProtocol packet per UDP datagram.
+  # xbee: the original DigiMesh transport.
+  mode: ros
+  peer_ids: [1, 2, 3]
+
+  ros:
+    # Raw telemetry is always published. Keep the JSON mirror for mock_gcs and
+    # simple debugging; disable it when the GCS consumes only PacketProtocol.
+    publish_json_telemetry: true
+
+  xbee:
+    baud: 57600
+    scan_interval: 2.0
+    gcs_address: "0013A2004105EB61"
+    uav_addresses:
+      "1": "0013A2004126C97C"
+      "2": "0013A2004154C5D3"
+      "3": "0013A2004105EB5A"
+
+  udp:
+    bind_host: 0.0.0.0
+    bind_port: 15660
+    gcs_host: 127.0.0.1
+    gcs_port: 15660
+    max_datagram_size: 65507
+    allowed_senders: []
+    # Configure one endpoint per other aircraft. Each process on the same host
+    # must use a different bind_port through a per-aircraft override file.
+    peers: {}
+
+# SEAD publishes references only to /<uav>/control/reference/setpoint and calls
+# services exposed by xd_uav_control_manager. Estimator/controller gains do not belong
+# in this package.
+control:
+  vehicle_type: multirotor
+  reference_frame: uav1/odom  # overridden by launch from UAV_NAME
+  shared_frame:
+    enabled: false
+    offset_x: 0.0
+    offset_y: 0.0
+    offset_z: 0.0
+
+ga:
+  population_size: 100
+  time_interval: 0.5
+
+formation:
+  spacing: 220.0
+  standoff_distance: 5000.0
+  safe_separation: 140.0
+  altitude_step: 20.0
+  broadcast_interval: 0.2
+  minimum_altitude: 80.0
+  static_hold: false
+
+logging:
+  directory: ~/.ros/xd_uav_sead

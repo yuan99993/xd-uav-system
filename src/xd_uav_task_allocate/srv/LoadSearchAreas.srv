@@ -1,0 +1,5 @@
+xd_uav_task_allocate/SearchAreaArray search_areas
+---
+bool success
+string message
+uint32 loaded_area_count

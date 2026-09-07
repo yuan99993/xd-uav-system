@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="initial_owner" default="none"/>
+  <arg name="common_frame" default="world"/>
+  <arg name="output_frame" default="$(arg common_frame)"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_planning" type="state_hold_baseline_node.py"
+          name="state_hold_baseline" output="screen" required="true">
+      <param name="common_frame" value="$(arg common_frame)"/>
+      <param name="output_frame" value="$(arg output_frame)"/>
+    </node>
+    <node pkg="xd_uav_planning" type="health_gate_node.py"
+          name="ego_system_health" output="screen" clear_params="true">
+      <rosparam param="inputs">[ego/bridge/healthy, ego/sensing/healthy]</rosparam>
+      <param name="timeout" value="0.30"/>
+      <param name="output" value="ego/system_healthy"/>
+    </node>
+    <node pkg="xd_uav_planning" type="reference_mux_node.py"
+          name="reference_mux" output="screen" clear_params="true">
+      <param name="common_frame" value="$(arg common_frame)"/>
+      <param name="initial_owner" value="$(arg initial_owner)"/>
+      <param name="candidate_timeout" value="0.20"/>
+      <param name="health_timeout" value="0.30"/>
+      <param name="switch_position_jump" value="0.20"/>
+      <param name="switch_velocity_jump" value="0.30"/>
+      <param name="output_topic" value="control/reference/setpoint"/>
+    </node>
+  </group>
+</launch>

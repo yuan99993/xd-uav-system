@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="common_frame" default="world"/>
+  <arg name="mission_path_topic" default="planning/mission_path"/>
+  <arg name="planner_status_topic" default="planning/status"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_planning"
+          type="fixedwing_path_backend_node.py"
+          name="fixedwing_path_backend"
+          output="screen"
+          required="true">
+      <param name="common_frame" value="$(arg common_frame)"/>
+      <param name="mission_path_topic" value="$(arg mission_path_topic)"/>
+      <param name="planner_status_topic" value="$(arg planner_status_topic)"/>
+      <param name="state_topic" value="control_manager/state"/>
+      <param name="controller_path_topic" value="control/reference/path"/>
+      <param name="controller_path_status_topic" value="controller/path_status"/>
+      <param name="healthy_topic" value="planning/healthy"/>
+      <param name="state_timeout" value="0.30"/>
+      <param name="path_timeout" value="1.0"/>
+      <param name="minimum_segment_length" value="0.05"/>
+    </node>
+  </group>
+</launch>

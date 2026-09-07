@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="plane_sdf"
+       default="/home/promise/PX4-Autopilot/Tools/sitl_gazebo/models/plane/plane.sdf"/>
+  <arg name="world"
+       default="$(find mrs_gazebo_common_resources)/worlds/grass_plane.world"/>
+  <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
+  <arg name="gui" default="false"/>
+  <arg name="run_acceptance" default="true"/>
+  <!-- Automated acceptance must not couple PX4 lifetime to terminal stdin. -->
+  <arg name="interactive" default="false"/>
+
+  <include file="$(find px4)/launch/posix_sitl.launch">
+    <arg name="vehicle" value="plane"/>
+    <arg name="sdf" value="$(arg plane_sdf)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="interactive" value="$(arg interactive)"/>
+    <arg name="paused" value="false"/>
+  </include>
+  <group ns="$(arg UAV_NAME)">
+    <include file="$(find mavros)/launch/px4.launch">
+      <arg name="fcu_url" value="$(arg fcu_url)"/>
+      <arg name="gcs_url" value=""/>
+      <arg name="respawn_mavros" value="false"/>
+    </include>
+    <node pkg="xd_uav_system_integration" type="imu_frame_adapter.py"
+          name="planning_imu_frame_adapter" output="screen" required="true">
+      <param name="input_topic" value="mavros/imu/data"/>
+      <param name="output_topic" value="integration/imu_fcu"/>
+      <param name="frame_id" value="$(arg UAV_NAME)/fcu"/>
+    </node>
+  </group>
+  <include file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="sources_config"
+         value="$(find xd_uav_planning)/config/fixedwing_mavros_sources.yaml"/>
+  </include>
+  <include file="$(find xd_uav_state_estimators)/launch/estimator.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="sources_config"
+         value="$(find xd_uav_planning)/config/fixedwing_mavros_sources.yaml"/>
+    <arg name="body_frame" value="$(arg UAV_NAME)/fcu"/>
+  </include>
+  <include file="$(find xd_uav_control_manager)/launch/fixedwing_system.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="controller_common_config"
+         value="$(find xd_uav_controller)/config/common_config.yaml"/>
+    <arg name="controller_config"
+         value="$(find xd_uav_controller)/config/fixedwing.yaml"/>
+    <arg name="offboard_config"
+         value="$(find xd_uav_planning)/config/fixedwing_offboard.yaml"/>
+    <arg name="safety_config"
+         value="$(find xd_uav_planning)/config/fixedwing_sitl_safety.yaml"/>
+    <arg name="imu_topic" value="integration/imu_fcu"/>
+  </include>
+  <include file="$(find xd_uav_planning)/launch/planning_backend.launch">
+    <arg name="vehicle_type" value="fixedwing"/>
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="common_frame" value="$(arg UAV_NAME)/odom"/>
+  </include>
+  <node if="$(arg run_acceptance)" pkg="xd_uav_planning"
+        type="fixedwing_path_acceptance.py" name="fixedwing_path_acceptance"
+        output="screen" required="false">
+    <param name="uav_name" value="$(arg UAV_NAME)"/>
+  </node>
+</launch>

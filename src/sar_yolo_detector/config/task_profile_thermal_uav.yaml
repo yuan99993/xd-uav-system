@@ -1,0 +1,19 @@
+input_detections_topic: sar_yolo_detector/thermal_uav/detections
+camera_info_topic: camera/ir/camera_info
+task_candidates_topic: sar_yolo_detector/thermal_uav/task_candidates
+task_pose_topic: sar_yolo_detector/thermal_uav/task_point
+sensor_id: thermal_uav_primary
+task_frame: map
+localization_mode: bearing_only
+ground_plane_z: 0.0
+task_generation_enabled: false
+model_validated: false
+allow_experimental_model: false
+task_class_ids: [0]
+class_names: [person, bicycle, car, other_vehicle]
+global_semantic_ids: [1, 8, 8, 8]
+class_anchor_y_fractions: [0.95, 0.5, 0.5, 0.5]
+profile: thermal_uav
+model_version: thermal_uav_latest
+model_sha256: e35ef56cc9d01a8db6fd5f6a6c56626e73c40f932f645cc48ccf1bc4a723f7ea
+calibration_version: unversioned

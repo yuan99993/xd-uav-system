@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME"/>
+  <arg name="ego_id"/>
+  <arg name="goal_y"/>
+  <arg name="takeoff_altitude" default="1.5"/>
+  <arg name="common_frame" default="world"/>
+
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="x500_fcu_to_base_link_$(arg ego_id)"
+        args="0 0 0 0 0 0 1 $(arg UAV_NAME)/base_link $(arg UAV_NAME)/fcu"/>
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_system_integration" type="navsat_origin_provider.py"
+          name="navsat_origin_provider" output="screen" required="true">
+      <param name="input_topic" value="mavros/global_position/global"/>
+      <param name="output_topic" value="integration/geodetic_origin"/>
+      <param name="stable_samples" value="5"/>
+      <param name="horizontal_tolerance_m" value="1.0"/>
+      <param name="vertical_tolerance_m" value="1.0"/>
+    </node>
+  </group>
+  <include file="$(find xd_uav_system_integration)/launch/px4_control_stack_guarded.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="common_frame" value="$(arg common_frame)"/>
+    <arg name="gps_origin_topic" value="integration/geodetic_origin"/>
+    <arg name="launch_world_registration" value="false"/>
+  </include>
+  <include file="$(find xd_uav_planning)/launch/planning_backend.launch">
+    <arg name="vehicle_type" value="multirotor"/>
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="common_frame" value="$(arg common_frame)"/>
+    <arg name="output_frame" value="$(arg UAV_NAME)/odom"/>
+    <arg name="ego_id" value="$(arg ego_id)"/>
+    <arg name="goal_topic" value="/drone_$(arg ego_id)_planning/goal"/>
+    <!-- Keep the already validated sequential preset startup for this demo. -->
+    <arg name="flight_type" value="2"/>
+    <arg name="goal_x" value="12.0"/>
+    <arg name="goal_y" value="$(arg goal_y)"/>
+    <arg name="goal_z" value="$(arg takeoff_altitude)"/>
+    <arg name="cloud_input_topic" value="/$(arg UAV_NAME)/os_cloud_nodelet/points"/>
+    <arg name="cloud_input_frame" value="$(arg UAV_NAME)/os_sensor"/>
+    <arg name="cloud_timeout" value="0.50"/>
+    <arg name="calibrated_body_transform" value="true"/>
+    <arg name="body_frame" value="$(arg UAV_NAME)/base_link"/>
+    <arg name="body_to_sensor_translation_m" value="[0.0, 0.0, 0.107]"/>
+  </include>
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_system_integration" type="auto_takeoff_when_ready.py"
+          name="auto_takeoff_when_ready" output="screen">
+      <param name="altitude" value="$(arg takeoff_altitude)"/>
+    </node>
+  </group>
+</launch>
