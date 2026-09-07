@@ -33,9 +33,9 @@
 
   <!-- Optional at workspace-build time; required only when the node is run. -->
   <exec_depend>quadrotor_msgs</exec_depend>
+  <exec_depend>traj_utils</exec_depend>
   <test_depend>python3-nose</test_depend>
   <test_depend>rostest</test_depend>
-  <test_depend>traj_utils</test_depend>
 
   <export/>
 </package>

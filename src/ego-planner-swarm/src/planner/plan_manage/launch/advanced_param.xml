@@ -40,7 +40,6 @@
   <arg name="obj_num_set"/>
 
   <arg name="drone_id"/>
-  <arg name="frame_id" default="world"/>
 
 
   <!-- main node -->
@@ -122,7 +121,7 @@
     <param name="grid_map/visualization_truncate_height"   value="1.8"/>
     <param name="grid_map/show_occ_time"  value="false"/>
     <param name="grid_map/pose_type"     value="1"/>  
-    <param name="grid_map/frame_id"      value="$(arg frame_id)"/>
+    <param name="grid_map/frame_id"      value="world"/>
 
   <!-- planner manager -->
     <param name="manager/max_vel" value="$(arg max_vel)" type="double"/>

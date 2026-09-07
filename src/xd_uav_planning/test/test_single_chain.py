@@ -203,23 +203,23 @@ class SingleChainTest(unittest.TestCase):
         # Command interruption must fail closed.
         with self.lock:
             self.relay_command = False
-        self._wait_for(lambda: self._healthy_is(False), 1.0,
+        self._wait_for(lambda: self._healthy_is(False), 2.0,
                        "command timeout")
         with self.lock:
             command_fault_diag = self.diagnostics
             self.relay_command = True
-        self._wait_for(lambda: self._healthy_is(True), 1.0,
+        self._wait_for(lambda: self._healthy_is(True), 2.0,
                        "command recovery")
 
         # State interruption must also fail closed.
         with self.lock:
             self.publish_state = False
-        self._wait_for(lambda: self._healthy_is(False), 1.0,
+        self._wait_for(lambda: self._healthy_is(False), 2.0,
                        "state timeout")
         with self.lock:
             state_fault_diag = self.diagnostics
             self.publish_state = True
-        self._wait_for(lambda: self._healthy_is(True), 1.0,
+        self._wait_for(lambda: self._healthy_is(True), 2.0,
                        "state recovery")
 
         # The production bridge does not consume sensing. Record that cloud

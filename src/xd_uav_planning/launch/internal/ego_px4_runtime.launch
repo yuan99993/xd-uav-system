@@ -17,13 +17,17 @@
   <arg name="flight_type" default="1"/>
   <arg name="traj_command_topic" default="/$(arg uav_name)/ego/position_command"/>
   <arg name="bridge_command_topic" default="$(arg traj_command_topic)"/>
+  <arg name="swarm_raw_topic" default="/drone_$(arg ego_id)_planning/swarm_trajs_raw"/>
+  <arg name="swarm_topic" default="/drone_$(arg ego_id)_planning/swarm_trajs"/>
 
   <!-- Start only after manager takeoff and stable hold. -->
   <group>
     <remap from="/move_base_simple/goal" to="$(arg ego_goal_topic)"/>
+    <!-- Keep the third-party planner untouched. Its transient handoff output
+         is made reliable by the planning-layer relay below. -->
+    <remap from="/drone_$(arg ego_id)_planning/swarm_trajs" to="$(arg swarm_raw_topic)"/>
   <include file="$(find ego_planner)/launch/advanced_param.xml">
     <arg name="drone_id" value="$(arg ego_id)"/>
-    <arg name="frame_id" value="$(arg common_frame)"/>
     <arg name="map_size_x_" value="30.0"/>
     <arg name="map_size_y_" value="20.0"/>
     <arg name="map_size_z_" value="5.0"/>
@@ -55,7 +59,16 @@
     <remap from="position_cmd" to="$(arg traj_command_topic)"/>
     <remap from="~planning/bspline" to="/drone_$(arg ego_id)_planning/bspline"/>
     <param name="traj_server/time_forward" value="0.0"/>
-    <param name="traj_server/frame_id" value="$(arg common_frame)"/>
+  </node>
+
+  <node pkg="xd_uav_planning" type="swarm_handoff_relay.py"
+        name="drone_$(arg ego_id)_swarm_handoff_relay"
+        output="screen" required="true">
+    <param name="expected_drone_id" value="$(arg ego_id)"/>
+    <param name="input_topic" value="$(arg swarm_raw_topic)"/>
+    <param name="output_topic" value="$(arg swarm_topic)"/>
+    <param name="broadcast_topic" value="/broadcast_bspline"/>
+    <param name="replay_period" value="0.5"/>
   </node>
 
   <include file="$(find xd_uav_planning)/launch/internal/ego_bridge.launch">

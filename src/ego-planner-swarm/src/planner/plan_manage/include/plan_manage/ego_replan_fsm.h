@@ -65,8 +65,6 @@ namespace ego_planner
 
     /* planning data */
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;
-    bool pending_pre_agent_;
-    traj_utils::MultiBsplines pending_pre_agent_msg_;
     FSM_EXEC_STATE exec_state_;
     int continously_called_times_{0};
 

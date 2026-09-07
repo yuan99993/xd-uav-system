@@ -11,7 +11,6 @@ namespace ego_planner
     have_target_ = false;
     have_odom_ = false;
     have_recv_pre_agent_ = false;
-    pending_pre_agent_ = false;
 
     /*  fsm param  */
     nh.param("fsm/flight_type", target_type_, -1);
@@ -52,9 +51,7 @@ namespace ego_planner
       swarm_trajs_sub_ = nh.subscribe(sub_topic_name.c_str(), 10, &EGOReplanFSM::swarmTrajsCallback, this, ros::TransportHints().tcpNoDelay());
     }
     string pub_topic_name = string("/drone_") + std::to_string(planner_manager_->pp_.drone_id) + string("_planning/swarm_trajs");
-    // Startup trajectories are state, not transient events.  Latching lets a
-    // later agent subscribe after its predecessor has already planned.
-    swarm_trajs_pub_ = nh.advertise<traj_utils::MultiBsplines>(pub_topic_name.c_str(), 10, true);
+    swarm_trajs_pub_ = nh.advertise<traj_utils::MultiBsplines>(pub_topic_name.c_str(), 10);
 
     broadcast_bspline_pub_ = nh.advertise<traj_utils::Bspline>("planning/broadcast_bspline_from_planner", 10);
     broadcast_bspline_sub_ = nh.subscribe("planning/broadcast_bspline_to_planner", 100, &EGOReplanFSM::BroadcastBsplineCallback, this, ros::TransportHints().tcpNoDelay());
@@ -243,17 +240,6 @@ namespace ego_planner
     odom_orient_.z() = msg->pose.pose.orientation.z;
 
     have_odom_ = true;
-
-    // A predecessor can publish before this agent receives its first odom.
-    // Preserve that startup trajectory and validate it as soon as odom exists
-    // instead of waiting forever in SEQUENTIAL_START.
-    if (pending_pre_agent_)
-    {
-      pending_pre_agent_ = false;
-      traj_utils::MultiBsplinesPtr pending(
-          new traj_utils::MultiBsplines(pending_pre_agent_msg_));
-      swarmTrajsCallback(pending);
-    }
   }
 
   void EGOReplanFSM::BroadcastBsplineCallback(const traj_utils::BsplinePtr &msg)
@@ -344,9 +330,7 @@ namespace ego_planner
 
     if (!have_odom_)
     {
-      pending_pre_agent_msg_ = *msg;
-      pending_pre_agent_ = true;
-      ROS_WARN_THROTTLE(1.0, "swarm trajectory arrived before odom; deferring validation");
+      ROS_ERROR("swarmTrajsCallback(): no odom!, return.");
       return;
     }
 
@@ -416,7 +400,6 @@ namespace ego_planner
     }
 
     have_recv_pre_agent_ = true;
-    pending_pre_agent_ = false;
   }
 
   void EGOReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call)
@@ -534,7 +517,7 @@ namespace ego_planner
       {
         changeFSMExecState(EXEC_TRAJ, "FSM");
         flag_escape_emergency_ = true;
-        publishSwarmTrajs(true);
+        publishSwarmTrajs(false);
       }
       else
       {
@@ -549,7 +532,7 @@ namespace ego_planner
       if (planFromCurrentTraj(1))
       {
         changeFSMExecState(EXEC_TRAJ, "FSM");
-        publishSwarmTrajs(true);
+        publishSwarmTrajs(false);
       }
       else
       {
@@ -747,7 +730,7 @@ namespace ego_planner
         if (planFromCurrentTraj()) // Make a chance
         {
           changeFSMExecState(EXEC_TRAJ, "SAFETY");
-          publishSwarmTrajs(true);
+          publishSwarmTrajs(false);
           return;
         }
         else

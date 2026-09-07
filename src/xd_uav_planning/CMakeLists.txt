@@ -47,6 +47,7 @@ catkin_install_python(PROGRAMS
   scripts/reference_mux_node.py
   scripts/select_owner_when_ready.py
   scripts/state_hold_baseline_node.py
+  scripts/swarm_handoff_relay.py
   scripts/demo/wait_ego_swarm_ready.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
@@ -76,4 +77,5 @@ if(CATKIN_ENABLE_TESTING)
   add_rostest(test/single_chain.test)
   add_rostest(test/reference_integration.test)
   add_rostest(test/fixedwing_path_backend.test)
+  add_rostest(test/swarm_handoff_relay.test)
 endif()

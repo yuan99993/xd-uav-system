@@ -47,8 +47,13 @@ roslaunch xd_uav_planning planning.launch \
 `PlannerStatus`。EGO 私有 `PositionCommand` 只有在 frame、时间戳、载机状态和健康条件有效后
 才进入 controller。
 
-当前 EGO manual-target 只能执行 `world z=1.0 m` 的实时目标；其他高度会返回 `FAILED`，不会
-静默飞错。恢复官方 EGO、外置 swarm 适配和任意三维目标属于下一阶段。
+仓库中的 `ego-planner-swarm` 保持官方 `92fe9f7` 原样。官方 sequential swarm 的瞬时
+`MultiBsplines` 交接由本包 `swarm_handoff_relay.py` 外部增强：锁存并周期重发启动链，同时根据
+官方 `/broadcast_bspline` 更新完整前驱轨迹。这样后机即使晚订阅或首条消息早于 odometry，也
+不会永久卡在 `SEQUENTIAL_START`，无需修改第三方源码。
+
+官方 EGO 的内部 frame 固定为 `world`，manual-target 只能执行 `world z=1.0 m` 的实时目标；
+其他 frame 或高度会返回 `FAILED`，不会静默飞错。任意三维目标属于后续能力扩展。
 
 ### fixedwing / Path
 
@@ -117,5 +122,5 @@ docs/                    操作及上下层接入手册
 ```
 
 起降、OFFBOARD、状态估计和底层控制仍分别属于 control manager、estimator 和 controller。
-`xd_uav_task_allocate` 是只读上游，本轮没有修改；`ego-planner-swarm` 是第三方依赖，本轮也没有
-修改。
+`xd_uav_task_allocate` 是只读上游；`ego-planner-swarm` 是只读第三方依赖，项目适配全部位于
+本包。

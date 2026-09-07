@@ -4,6 +4,9 @@
 PX4/MAVROS、自研 estimator/manager/controller、EGO bridge 和 EGO-Planner。三机模式使用
 真实 Gazebo world 与各机 Ouster 点云，并启用 EGO-Swarm 轨迹交换和互避。
 
+第三方 `ego-planner-swarm` 保持官方 `92fe9f7` 原样。规划包通过外部轨迹交接中继处理后机
+晚订阅、消息早于 odometry 以及前驱重规划刷新，不依赖第三方源码补丁。
+
 ## 1. 启动前检查
 
 演示固定使用 `ROS_MASTER_URI=http://localhost:11311`，不能与 SEAD、MRS 或另一套 ROS
