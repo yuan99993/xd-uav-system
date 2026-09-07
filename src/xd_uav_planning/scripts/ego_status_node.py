@@ -53,7 +53,7 @@ class EgoStatus:
             rospy.get_param("~goal_topic", "planning/goal"),
             PoseStamped, self._goal_callback, queue_size=2)
         self._health_subscriber = rospy.Subscriber(
-            rospy.get_param("~health_topic", "ego/system_healthy"),
+            rospy.get_param("~health_topic", "planning/healthy"),
             Bool, self._health_callback, queue_size=1)
         self._odom_subscriber = rospy.Subscriber(
             rospy.get_param("~odometry_topic", "ego/odometry"),

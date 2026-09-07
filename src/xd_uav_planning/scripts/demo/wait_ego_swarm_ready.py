@@ -110,7 +110,7 @@ def main():
         subscribers.extend([
             rospy.Subscriber("/{}/mavros/state".format(name), State,
                              evidence.state_cb, queue_size=1),
-            rospy.Subscriber("/{}/ego/system_healthy".format(name), Bool,
+            rospy.Subscriber("/{}/planning/healthy".format(name), Bool,
                              evidence.health_cb, queue_size=1),
             rospy.Subscriber("/{}/integration/reference_owner".format(name),
                              String, evidence.owner_cb, queue_size=1),

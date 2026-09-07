@@ -21,7 +21,7 @@ class FixedwingPathBackendTest(unittest.TestCase):
         self.state_pub = rospy.Publisher(
             "/uav1/control_manager/state", ControlState, queue_size=10)
         self.path_pub = rospy.Publisher(
-            "/uav1/planning/mission_path", Path, queue_size=2)
+            "/uav1/planning/task_path", Path, queue_size=2)
         self.controller_status_pub = rospy.Publisher(
             "/uav1/controller/path_status", PathStatus, queue_size=10)
         self.forwarded_sub = rospy.Subscriber(

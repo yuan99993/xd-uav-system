@@ -44,7 +44,7 @@ class FixedwingPathAcceptance:
             self.namespace + "/planning/status", PlannerStatus,
             self.statuses.append)
         self.path_publisher = rospy.Publisher(
-            self.namespace + "/planning/mission_path", Path,
+            self.namespace + "/planning/task_path", Path,
             queue_size=1, latch=True)
         self.result_publisher = rospy.Publisher(
             self.namespace + "/planning/fixedwing_acceptance/result",
@@ -83,21 +83,27 @@ class FixedwingPathAcceptance:
         else:
             raise AcceptanceFailure(
                 "timeout waiting for PX4 parameter synchronization for " + name)
-        for _ in range(3):
-            request = ParamSetRequest()
-            request.param_id = name
-            if integer:
-                request.value.integer = int(value)
-            else:
-                request.value.real = float(value)
-            response = setter(request)
-            time.sleep(0.25)
-            actual = getter(param_id=name)
-            actual_value = (actual.value.integer if integer
-                            else actual.value.real)
-            if (response.success and actual.success and
-                    abs(float(actual_value) - float(value)) < 1e-3):
-                return
+        for _ in range(10):
+            try:
+                request = ParamSetRequest()
+                request.param_id = name
+                if integer:
+                    request.value.integer = int(value)
+                else:
+                    request.value.real = float(value)
+                response = setter(request)
+                time.sleep(0.25)
+                actual = getter(param_id=name)
+                actual_value = (actual.value.integer if integer
+                                else actual.value.real)
+                if (response.success and actual.success and
+                        abs(float(actual_value) - float(value)) < 1e-3):
+                    return
+            except rospy.ServiceException as error:
+                rospy.logwarn(
+                    "[FIXEDWING_PLANNING_ACCEPTANCE] PX4 parameter %s is "
+                    "not ready yet: %s", name, error)
+            time.sleep(0.75)
         raise AcceptanceFailure("failed to configure PX4 parameter " + name)
 
     def _configure_headless_px4(self):

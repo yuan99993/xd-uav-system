@@ -9,7 +9,7 @@
       <param name="ego_goal_topic" value="ego/validated_goal"/>
       <param name="flight_type" value="1"/>
       <param name="manual_target_altitude_m" value="1.0"/>
-      <param name="health_topic" value="ego/system_healthy"/>
+      <param name="health_topic" value="planning/healthy"/>
       <param name="odometry_topic" value="ego/odometry"/>
       <param name="status_topic" value="planning/status"/>
     </node>

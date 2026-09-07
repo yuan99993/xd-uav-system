@@ -8,7 +8,7 @@
           name="ego_system_health" required="true">
       <rosparam param="inputs">[ego/bridge/healthy, ego/sensing/healthy]</rosparam>
       <param name="timeout" value="0.15"/>
-      <param name="output" value="ego/system_healthy"/>
+      <param name="output" value="planning/healthy"/>
     </node>
     <node pkg="xd_uav_planning" type="reference_mux_node.py"
           name="reference_mux" required="true">
@@ -16,7 +16,7 @@
       <param name="common_frame" value="world"/>
       <param name="candidate_timeout" value="0.20"/>
       <param name="health_timeout" value="0.20"/>
-      <param name="ego_healthy_topic" value="ego/system_healthy"/>
+      <param name="ego_healthy_topic" value="planning/healthy"/>
       <param name="output_topic" value="control/reference/setpoint"/>
     </node>
   </group>

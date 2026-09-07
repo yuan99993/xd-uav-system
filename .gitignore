@@ -152,7 +152,9 @@ Thumbs.db
 /temp/
 **/docs/
 
-# Version the concise EGO operator runbook; keep other process documents ignored.
-!src/xd_uav_system_integration/docs/
-src/xd_uav_system_integration/docs/*
-!src/xd_uav_system_integration/docs/EGO_FULL_DEMO_RUNBOOK.md
+# Version the planning operator runbook and public integration guide; keep other
+# process documents ignored.
+!src/xd_uav_planning/docs/
+src/xd_uav_planning/docs/*
+!src/xd_uav_planning/docs/EGO_FULL_DEMO_RUNBOOK.md
+!src/xd_uav_planning/docs/TASK_PLANNING_INTEGRATION.md

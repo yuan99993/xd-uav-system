@@ -35,12 +35,12 @@
   <include file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="sources_config"
-         value="$(find xd_uav_planning)/config/fixedwing_mavros_sources.yaml"/>
+         value="$(find xd_uav_planning)/config/demo/fixedwing_mavros_sources.yaml"/>
   </include>
   <include file="$(find xd_uav_state_estimators)/launch/estimator.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="sources_config"
-         value="$(find xd_uav_planning)/config/fixedwing_mavros_sources.yaml"/>
+         value="$(find xd_uav_planning)/config/demo/fixedwing_mavros_sources.yaml"/>
     <arg name="body_frame" value="$(arg UAV_NAME)/fcu"/>
   </include>
   <include file="$(find xd_uav_control_manager)/launch/fixedwing_system.launch">
@@ -50,12 +50,12 @@
     <arg name="controller_config"
          value="$(find xd_uav_controller)/config/fixedwing.yaml"/>
     <arg name="offboard_config"
-         value="$(find xd_uav_planning)/config/fixedwing_offboard.yaml"/>
+         value="$(find xd_uav_planning)/config/demo/fixedwing_offboard.yaml"/>
     <arg name="safety_config"
-         value="$(find xd_uav_planning)/config/fixedwing_sitl_safety.yaml"/>
+         value="$(find xd_uav_planning)/config/demo/fixedwing_sitl_safety.yaml"/>
     <arg name="imu_topic" value="integration/imu_fcu"/>
   </include>
-  <include file="$(find xd_uav_planning)/launch/planning_backend.launch">
+  <include file="$(find xd_uav_planning)/launch/planning.launch">
     <arg name="vehicle_type" value="fixedwing"/>
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="common_frame" value="$(arg UAV_NAME)/odom"/>

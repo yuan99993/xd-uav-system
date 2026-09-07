@@ -53,7 +53,7 @@ class HealthGate:
         array.header.stamp = rospy.Time.now()
         status = DiagnosticStatus()
         status.name = rospy.get_name() + "/health_gate"
-        status.hardware_id = "system_integration"
+        status.hardware_id = "xd_uav_planning"
         status.level = DiagnosticStatus.OK if healthy else DiagnosticStatus.ERROR
         status.message = "healthy" if healthy else "fail_closed"
         status.values = [KeyValue(key="reason", value=reason)

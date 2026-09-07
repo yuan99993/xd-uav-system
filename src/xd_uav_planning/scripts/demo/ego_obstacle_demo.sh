@@ -2,16 +2,59 @@
 set -euo pipefail
 
 script_path="$(readlink -f "${BASH_SOURCE[0]}")"
-inferred_workspace="$(cd "$(dirname "${script_path}")/../../../../.." && pwd)"
-workspace="${XD_UAV_WS:-${inferred_workspace}}"
+script_dir="$(dirname "${script_path}")"
 runtime="${XD_UAV_DEMO_RUNTIME:-/tmp/xd_uav_ego_demo}"
 pid_file="${runtime}/roslaunch.pid"
 log_file="${runtime}/roslaunch.log"
 ready_timeout="${XD_UAV_DEMO_READY_TIMEOUT:-120}"
 
+resolve_setup() {
+  local directory candidate resolved=""
+  if [[ -n "${XD_UAV_WS:-}" ]]; then
+    for candidate in "${XD_UAV_WS}/devel/setup.bash" \
+                     "${XD_UAV_WS}/install/setup.bash"; do
+      [[ -r "${candidate}" ]] && { echo "${candidate}"; return 0; }
+    done
+    return 1
+  fi
+
+  # rosrun normally inherits the active Catkin overlay. Prefer that explicit
+  # environment over guessing from this script's (possibly installed) path.
+  if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
+    while IFS= read -r candidate; do
+      [[ "${candidate}" == /opt/ros/* ]] && continue
+      [[ -r "${candidate}/setup.bash" ]] && {
+        echo "${candidate}/setup.bash"
+        return 0
+      }
+    done < <(tr ':' '\n' <<<"${CMAKE_PREFIX_PATH}")
+  fi
+
+  # Direct execution may not have an overlay environment. Keep walking so an
+  # old nested repository devel space cannot hide the enclosing workspace.
+  directory="${script_dir}"
+  while [[ "${directory}" != / ]]; do
+    for candidate in "${directory}/devel/setup.bash" \
+                     "${directory}/install/setup.bash"; do
+      if [[ -d "${directory}/src" && -r "${candidate}" ]]; then
+        resolved="${candidate}"
+        break
+      fi
+    done
+    directory="$(dirname "${directory}")"
+  done
+  [[ -n "${resolved}" ]] && { echo "${resolved}"; return 0; }
+  return 1
+}
+
+if ! setup_file="$(resolve_setup)"; then
+  echo "cannot find devel/setup.bash or install/setup.bash; set XD_UAV_WS" >&2
+  exit 1
+fi
+
 setup_ros() {
   source /opt/ros/noetic/setup.bash
-  source "${workspace}/devel/setup.bash"
+  source "${setup_file}"
   export ROS_HOME="${runtime}/ros_home"
   export ROS_HOSTNAME=localhost
   export ROS_MASTER_URI=http://localhost:11311

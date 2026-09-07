@@ -15,7 +15,7 @@ def main():
     healthy = {"value": False, "wall_stamp": 0.0}
     candidate = {"wall_stamp": 0.0}
     rospy.Subscriber(
-        rospy.get_param("~health_topic", "/uav1/ego/system_healthy"),
+        rospy.get_param("~health_topic", "/uav1/planning/healthy"),
         Bool,
         lambda message: healthy.update(
             value=bool(message.data), wall_stamp=time.monotonic()),

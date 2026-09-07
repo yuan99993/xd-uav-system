@@ -4,7 +4,7 @@
   <arg name="rviz" default="true"/>
   <arg name="takeoff_altitude" default="1.5"/>
   <arg name="world_file" default="$(find xd_uav_planning)/worlds/ego_multi_obstacles.world"/>
-  <arg name="spawn_file" default="$(find xd_uav_planning)/config/ego_multi_spawn.yaml"/>
+  <arg name="spawn_file" default="$(find xd_uav_planning)/config/demo/ego_multi_spawn.yaml"/>
 
   <include file="$(find mrs_uav_gazebo_simulation)/launch/simulation.launch">
     <arg name="world_file" value="$(arg world_file)"/>
@@ -27,18 +27,18 @@
       - {child_frame: uav3/local_origin, translation_m: [0.0, 3.0, 0.0]}
     </rosparam>
   </node>
-  <include file="$(find xd_uav_planning)/launch/ego_multi_vehicle.launch">
+  <include file="$(find xd_uav_planning)/launch/demo/ego_multi_vehicle.launch">
     <arg name="UAV_NAME" value="uav1"/><arg name="ego_id" value="0"/><arg name="goal_y" value="-4.0"/>
     <arg name="takeoff_altitude" value="$(arg takeoff_altitude)"/>
   </include>
-  <include file="$(find xd_uav_planning)/launch/ego_multi_vehicle.launch">
+  <include file="$(find xd_uav_planning)/launch/demo/ego_multi_vehicle.launch">
     <arg name="UAV_NAME" value="uav2"/><arg name="ego_id" value="1"/><arg name="goal_y" value="0.0"/>
     <arg name="takeoff_altitude" value="$(arg takeoff_altitude)"/>
   </include>
-  <include file="$(find xd_uav_planning)/launch/ego_multi_vehicle.launch">
+  <include file="$(find xd_uav_planning)/launch/demo/ego_multi_vehicle.launch">
     <arg name="UAV_NAME" value="uav3"/><arg name="ego_id" value="2"/><arg name="goal_y" value="4.0"/>
     <arg name="takeoff_altitude" value="$(arg takeoff_altitude)"/>
   </include>
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="ego_multi_demo_rviz"
-        args="-d $(find xd_uav_planning)/config/ego_obstacle_demo.rviz" output="screen"/>
+        args="-d $(find xd_uav_planning)/config/demo/ego_obstacle_demo.rviz" output="screen"/>
 </launch>

@@ -3,8 +3,12 @@
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
   <arg name="uav_name" default="$(arg UAV_NAME)"/>
   <arg name="common_frame" default="world"/>
-  <arg name="mission_path_topic" default="planning/mission_path"/>
+  <arg name="config"
+       default="$(find xd_uav_planning)/config/fixedwing_path.yaml"/>
+  <arg name="task_path_topic" default="planning/task_path"/>
   <arg name="planner_status_topic" default="planning/status"/>
+  <arg name="healthy_topic" default="planning/healthy"/>
+  <arg name="diagnostics_topic" default="planning/diagnostics"/>
 
   <group ns="$(arg uav_name)">
     <node pkg="xd_uav_planning"
@@ -12,16 +16,15 @@
           name="fixedwing_path_backend"
           output="screen"
           required="true">
+      <rosparam command="load" file="$(arg config)"/>
       <param name="common_frame" value="$(arg common_frame)"/>
-      <param name="mission_path_topic" value="$(arg mission_path_topic)"/>
+      <param name="task_path_topic" value="$(arg task_path_topic)"/>
       <param name="planner_status_topic" value="$(arg planner_status_topic)"/>
       <param name="state_topic" value="control_manager/state"/>
       <param name="controller_path_topic" value="control/reference/path"/>
       <param name="controller_path_status_topic" value="controller/path_status"/>
-      <param name="healthy_topic" value="planning/healthy"/>
-      <param name="state_timeout" value="0.30"/>
-      <param name="path_timeout" value="1.0"/>
-      <param name="minimum_segment_length" value="0.05"/>
+      <param name="healthy_topic" value="$(arg healthy_topic)"/>
+      <param name="diagnostics_topic" value="$(arg diagnostics_topic)"/>
     </node>
   </group>
 </launch>

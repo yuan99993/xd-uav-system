@@ -42,19 +42,18 @@ catkin_install_python(PROGRAMS
   scripts/ego_pointcloud_adapter_node.py
   scripts/ego_status_node.py
   scripts/fixedwing_path_backend_node.py
-  scripts/fixedwing_path_acceptance.py
+  scripts/demo/fixedwing_path_acceptance.py
   scripts/health_gate_node.py
-  scripts/reference_health_node.py
   scripts/reference_mux_node.py
   scripts/select_owner_when_ready.py
   scripts/state_hold_baseline_node.py
-  scripts/wait_ego_swarm_ready.py
+  scripts/demo/wait_ego_swarm_ready.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 install(PROGRAMS
-  scripts/ego_demo.sh
-  scripts/ego_obstacle_demo.sh
+  scripts/demo/ego_demo.sh
+  scripts/demo/ego_obstacle_demo.sh
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

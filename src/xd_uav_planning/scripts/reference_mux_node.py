@@ -66,7 +66,7 @@ class ReferenceMux:
                              Bool, self._health_callback,
                              callback_args="sead", queue_size=1),
             rospy.Subscriber(rospy.get_param("~ego_healthy_topic",
-                                             "ego/system_healthy"),
+                                             "planning/healthy"),
                              Bool, self._health_callback,
                              callback_args="ego", queue_size=1),
             rospy.Subscriber(rospy.get_param("~switch_baseline_topic",
@@ -215,7 +215,7 @@ class ReferenceMux:
         array.header.stamp = rospy.Time.now()
         status = DiagnosticStatus()
         status.name = rospy.get_name() + "/reference_mux"
-        status.hardware_id = "system_integration"
+        status.hardware_id = "xd_uav_planning"
         status.level = (DiagnosticStatus.OK if self._reason == "ok"
                         else DiagnosticStatus.ERROR)
         status.message = "forwarding" if self._reason == "ok" else "fail_closed"

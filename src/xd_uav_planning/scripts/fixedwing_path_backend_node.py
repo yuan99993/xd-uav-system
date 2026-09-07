@@ -53,7 +53,7 @@ class FixedwingPathBackend:
             rospy.get_param("~state_topic", "control_manager/state"),
             ControlState, self._state_callback, queue_size=20)
         self._path_subscriber = rospy.Subscriber(
-            rospy.get_param("~mission_path_topic", "planning/mission_path"),
+            rospy.get_param("~task_path_topic", "planning/task_path"),
             Path, self._path_callback, queue_size=2)
         self._path_status_subscriber = rospy.Subscriber(
             rospy.get_param("~controller_path_status_topic",

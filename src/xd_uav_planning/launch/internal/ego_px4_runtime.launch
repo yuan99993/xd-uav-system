@@ -9,6 +9,8 @@
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>
   <arg name="goal_topic" default="/move_base_simple/goal"/>
+  <arg name="status_topic" default="planning/status"/>
+  <arg name="healthy_topic" default="planning/healthy"/>
   <arg name="ego_goal_topic" default="/drone_$(arg ego_id)_planning/validated_goal"/>
   <arg name="max_vel" default="0.30"/>
   <arg name="max_acc" default="0.30"/>
@@ -56,7 +58,7 @@
     <param name="traj_server/frame_id" value="$(arg common_frame)"/>
   </node>
 
-  <include file="$(find xd_uav_planning)/launch/ego_bridge.launch">
+  <include file="$(find xd_uav_planning)/launch/internal/ego_bridge.launch">
     <arg name="uav_name" value="$(arg uav_name)"/>
     <arg name="common_frame" value="$(arg common_frame)"/>
     <arg name="body_frame" value="$(arg body_frame)"/>
@@ -78,8 +80,8 @@
       <!-- Official EGO manual-target code executes live goals at z=1.0 m. -->
       <param name="manual_target_altitude_m" value="1.0"/>
       <param name="odometry_topic" value="/drone_$(arg ego_id)_ego/odometry"/>
-      <param name="health_topic" value="ego/system_healthy"/>
-      <param name="status_topic" value="planning/status"/>
+      <param name="health_topic" value="$(arg healthy_topic)"/>
+      <param name="status_topic" value="$(arg status_topic)"/>
     </node>
   </group>
 </launch>

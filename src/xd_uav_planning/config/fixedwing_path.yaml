@@ -1,0 +1,6 @@
+# Fixed-wing planning backend safety contract. Units are SI.
+state_timeout: 0.30
+path_timeout: 1.0
+future_tolerance: 0.02
+minimum_segment_length: 0.05
+maximum_points: 10000

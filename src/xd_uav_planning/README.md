@@ -1,79 +1,121 @@
 # xd_uav_planning
 
-XD-UAV 的统一 ROS1 规划层。任务层始终使用同一组接口，规划层按已配置机型选择且只选择一个
-执行后端：
+XD-UAV 的统一 ROS1 规划层。任务层只向本包发送目标或任务路径，本包按机型选择唯一后端，
+校验后再向 controller 输出执行参考。
 
 ```text
-/<uav>/planning/goal          geometry_msgs/PoseStamped
-/<uav>/planning/mission_path  nav_msgs/Path
-/<uav>/planning/status        xd_uav_task_allocate/PlannerStatus
+xd_uav_task_allocate -> xd_uav_planning -> xd_uav_controller
 ```
 
-## 后端
+## 正式入口
+
+`planning.launch` 只启动规划层，不启动仿真、PX4/MAVROS、状态估计、controller、自动起飞或
+任务发布器。
+
+```bash
+# 多旋翼：EGO-Swarm backend
+roslaunch xd_uav_planning planning.launch \
+  UAV_NAME:=uav1 vehicle_type:=multirotor \
+  common_frame:=world output_frame:=uav1/odom
+
+# 固定翼：Path backend，不启动任何 EGO 节点
+roslaunch xd_uav_planning planning.launch \
+  UAV_NAME:=uav1 vehicle_type:=fixedwing \
+  common_frame:=world
+```
+
+正式公共接口：
+
+```text
+/<uav>/planning/goal          geometry_msgs/PoseStamped（多旋翼输入）
+/<uav>/planning/task_path     nav_msgs/Path（固定翼执行输入）
+/<uav>/planning/status        xd_uav_task_allocate/PlannerStatus
+/<uav>/planning/healthy       std_msgs/Bool
+/<uav>/planning/diagnostics   diagnostic_msgs/DiagnosticArray
+```
+
+现有任务包的 `planning/mission_path` 是路线预览，不是固定翼执行输入。远端
+`xd_uav_task_allocate dev@e763836` 仍把固定翼路径直接发布给 controller，因此两个包原样共启
+尚未正式打通。任务层维护者需要修改的 publisher、状态入口、YAML 和验收步骤见
+[任务层接入手册](docs/TASK_PLANNING_INTEGRATION.md)。
+
+## 后端边界
 
 ### multirotor / EGO-Swarm
 
-EGO 后端包含原 `xd_uav_ego_bridge` 的状态、轨迹、点云与健康适配，以及原
-`xd_uav_system_integration` 中的 EGO 专属启动、健康合取和控制引用仲裁。EGO 的私有
-`quadrotor_msgs/PositionCommand` 只有在状态、frame、时间戳和健康门全部有效后，才转换成
-控制器候选。`ego_status_node.py` 把目标执行过程统一回报为 `PlannerStatus`；与任务分配器
-联机时从只读的 `GetMissionState` 服务恢复稳定 `goal_id`，不依赖会被 rospy 重写的顶层
-`PoseStamped.header.seq`。通用入口默认使用 EGO `flight_type=1`，因此任务层发布的实时目标
-会先经过规划层校验，再转发给 EGO；启动不再依赖“预设目标自动飞行”。当前官方 EGO 的
-manual-target 实现固定在 `world z=1.0 m`，规划层会立即拒绝其他高度而不是静默飞错高度。
-需要任意三维目标时，应在后续官方化阶段增加外部三维目标适配能力。
+规划包负责 EGO 的目标校验、状态/轨迹 bridge、点云适配、健康门、引用仲裁和
+`PlannerStatus`。EGO 私有 `PositionCommand` 只有在 frame、时间戳、载机状态和健康条件有效后
+才进入 controller。
 
-```bash
-roslaunch xd_uav_planning ego_bridge.launch uav_name:=uav1
-roslaunch xd_uav_planning ego_pointcloud_adapter.launch UAV_NAME:=uav1
-```
-
-完整仿真入口：
-
-```bash
-rosrun xd_uav_planning ego_demo.sh start single
-rosrun xd_uav_planning ego_demo.sh start swarm 3
-```
-
-通用启动入口按 `vehicle_type` 只实例化一个后端；固定翼分支不会启动任何 EGO 节点：
-
-```bash
-roslaunch xd_uav_planning planning_backend.launch vehicle_type:=multirotor UAV_NAME:=uav1
-roslaunch xd_uav_planning planning_backend.launch vehicle_type:=fixedwing UAV_NAME:=uav1
-```
+当前 EGO manual-target 只能执行 `world z=1.0 m` 的实时目标；其他高度会返回 `FAILED`，不会
+静默飞错。恢复官方 EGO、外置 swarm 适配和任意三维目标属于下一阶段。
 
 ### fixedwing / Path
 
-固定翼后端不启动 EGO，也不读取点云。它严格校验任务层给出的 world 几何 Path、固定翼
-`ControlState` 和时间新鲜度，再转发到控制器已有的 Path 接口，并把 `PathStatus` 映射回统一
-规划状态。任务 ID 从各 `PoseStamped` 的嵌套 Header 读取，避免 rospy 重写顶层
-`Path.header.seq`；控制器内部路径 ID 在 ACCEPTED 后单独绑定，再映射回稳定任务 ID：
-
-```bash
-roslaunch xd_uav_planning fixedwing_path_backend.launch UAV_NAME:=uav1
-```
-
-不经过 SEAD 运行时的 PX4 plane 端到端验收入口：
-
-```bash
-roslaunch xd_uav_planning fixedwing_sitl_demo.launch gui:=false
-```
-
-验收节点完成 OFFBOARD 起飞、规划 Path 转发、真实位移与 REACHED 校验，最后向 control manager
-提交受控降落请求；结果锁存在 `/uav1/planning/fixedwing_acceptance/result`。
+固定翼后端不启动 EGO，也不读取点云：
 
 ```text
-planning/mission_path -> control/reference/path
+planning/task_path -> control/reference/path
 controller/path_status -> planning/status
 ```
 
-无效机型、无效定位、错误 frame、过期/非有限路径、退化线段或控制器拒绝都会 fail-closed，
-不会用错误输入替换控制器当前有效参考。
+后端校验固定翼 `ControlState`、frame、时间戳、有限数值、路径点数和最小线段长度，并把
+controller 私有 path ID 映射回任务 goal ID。它执行任务层提供的几何 Path，不宣称提供 EGO
+避障或 SEAD 动态禁飞区重规划。
 
-## 边界
+固定翼可在发 Path 前等待 `planning/healthy`；多旋翼的首个 EGO command 由首目标触发，因此
+不能用该健康话题阻止多旋翼首目标发布。完整时序见接入手册。
 
-- `xd_uav_task_allocate` 是只读参考/上游任务包；本包兼容其现有接口，不修改其实现。
-- `ego-planner-swarm` 是第三方规划器；当前第一阶段保留已验证本地版本，后续将在独立提交中
-  恢复官方源码并把 swarm 启动可靠性适配外置。
-- 固定翼第一版只执行任务层几何 Path，不宣称提供 EGO 点云避障或 SEAD 动态禁飞区重规划。
-- 起降、OFFBOARD、状态估计和底层控制仍分别属于 control manager、estimator 和 controller。
+## 演示
+
+单机 EGO：
+
+```bash
+rosrun xd_uav_planning ego_demo.sh start single
+rosrun xd_uav_planning ego_obstacle_demo.sh goal 6 0 1
+rosrun xd_uav_planning ego_demo.sh status
+rosrun xd_uav_planning ego_demo.sh land
+rosrun xd_uav_planning ego_demo.sh stop
+```
+
+三机 EGO-Swarm：
+
+```bash
+rosrun xd_uav_planning ego_demo.sh start swarm 3
+rosrun xd_uav_planning ego_demo.sh status
+rosrun xd_uav_planning ego_demo.sh land all
+rosrun xd_uav_planning ego_demo.sh stop
+```
+
+三机 launch 使用已经验证的 preset 目标。`land all` 只负责降落，必须继续执行 `stop` 才会
+关闭 ROS、PX4 和 Gazebo。完整操作见 [EGO 演示手册](docs/EGO_FULL_DEMO_RUNBOOK.md)。
+
+固定翼 SITL：
+
+```bash
+# 带 Gazebo GUI
+roslaunch xd_uav_planning fixedwing_sitl_demo.launch gui:=true
+
+# 无 GUI 自动验收
+roslaunch xd_uav_planning fixedwing_sitl_demo.launch gui:=false
+```
+
+验收完成后会请求受控降落，结果锁存在
+`/uav1/planning/fixedwing_acceptance/result`。
+
+## 目录
+
+```text
+launch/planning.launch   唯一正式产品入口
+launch/internal/         只供 planning.launch 组合的内部组件
+launch/demo/             SITL 和演示组合
+config/                  正式后端配置
+config/demo/             仿真、RViz 和演示专用配置
+scripts/                 正式运行节点
+scripts/demo/            演示管理和验收脚本
+docs/                    操作及上下层接入手册
+```
+
+起降、OFFBOARD、状态估计和底层控制仍分别属于 control manager、estimator 和 controller。
+`xd_uav_task_allocate` 是只读上游，本轮没有修改；`ego-planner-swarm` 是第三方依赖，本轮也没有
+修改。
