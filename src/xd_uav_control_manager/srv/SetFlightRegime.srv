@@ -1,0 +1,7 @@
+uint8 TARGET_HOVER=0
+uint8 TARGET_FORWARD_FLIGHT=1
+
+uint8 target_regime
+---
+bool accepted
+string message

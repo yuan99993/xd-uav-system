@@ -96,36 +96,36 @@ fixedwing:
       radial_gain: 1.0
       max_course_correction: 0.70
 
-takeoff:
-  default_altitude: 30.0
-  takeoff_throttle: 0.90
-  rotate_airspeed: 12.0
-  climb_airspeed: 15.0
-  # 正数表示抬头角的绝对值；控制器会转换成ROS FLU机体系的负pitch。
-  climb_pitch: 0.21
-  altitude_tolerance: 3.0
-
-landing:
-  # 接地点上游的进近点。进入捕获半径后先连续切入最终进近直线并保持高度，
-  # 航向与高度满足容差后只开启下滑，避免横向参考在切换瞬间跳变。
-  approach_distance: 400.0
-  approach_height: 30.0
-  approach_airspeed: 15.0
-  approach_acceptance_radius: 50.0
-  approach_altitude_tolerance: 5.0
-  approach_course_tolerance: 0.55
-  # 实际捕获半径还会取“着陆速度对应转弯半径×该系数”的较大值，
-  # 避免固定翼因无法精确飞过静止进近点而一直绕圈。
-  approach_capture_turn_radius_factor: 2.0
-  # 捕获后沿完整着陆直线消除横向偏差。
-  line_lookahead_distance: 80.0
-  max_course_correction: 0.70
-  # 弧度，约4.6度。高度参考由距接地点的沿航向距离实时生成。
-  glide_slope_angle: 0.08
-  rollout_distance: 200.0
-  max_roll: 0.35
-  touchdown_height_tolerance: 1.0
-  touchdown_groundspeed: 2.0
-  touchdown_vertical_speed: 2.0
-  # land没有固定接地点时，在当前航向前方建立临时接地点。
-  local_touchdown_ahead: 400.0
+  takeoff:
+    default_altitude: 30.0
+    takeoff_throttle: 0.90
+    rotate_airspeed: 12.0
+    climb_airspeed: 15.0
+    # 正数表示抬头角的绝对值；控制器会转换成ROS FLU机体系的负pitch。
+    climb_pitch: 0.21
+    altitude_tolerance: 3.0
+  
+  landing:
+    # 接地点上游的进近点。进入捕获半径后先连续切入最终进近直线并保持高度，
+    # 航向与高度满足容差后只开启下滑，避免横向参考在切换瞬间跳变。
+    approach_distance: 400.0
+    approach_height: 30.0
+    approach_airspeed: 15.0
+    approach_acceptance_radius: 50.0
+    approach_altitude_tolerance: 5.0
+    approach_course_tolerance: 0.55
+    # 实际捕获半径还会取“着陆速度对应转弯半径×该系数”的较大值，
+    # 避免固定翼因无法精确飞过静止进近点而一直绕圈。
+    approach_capture_turn_radius_factor: 2.0
+    # 捕获后沿完整着陆直线消除横向偏差。
+    line_lookahead_distance: 80.0
+    max_course_correction: 0.70
+    # 弧度，约4.6度。高度参考由距接地点的沿航向距离实时生成。
+    glide_slope_angle: 0.08
+    rollout_distance: 200.0
+    max_roll: 0.35
+    touchdown_height_tolerance: 1.0
+    touchdown_groundspeed: 2.0
+    touchdown_vertical_speed: 2.0
+    # land没有固定接地点时，在当前航向前方建立临时接地点。
+    local_touchdown_ahead: 400.0

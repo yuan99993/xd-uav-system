@@ -1,0 +1,59 @@
+# do not modify these
+root: ./
+name: one_vtol_px4
+socket_name: mrs
+attach: false
+tmux_options: -f /etc/ctu-mrs/tmux.conf
+
+# One namespaced PX4 Standard VTOL SITL and the VTOL-aware control stack.
+pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:$ROS_PACKAGE_PATH; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
+startup_window: observe
+
+windows:
+  - roscore:
+      layout: tiled
+      panes:
+        - roscore
+
+  - px4_sitl:
+      layout: tiled
+      panes:
+        - waitForRos; roslaunch px4 mavros_posix_sitl_vtol_ns.launch uav_name:=uav1 ID:=0
+
+  - vehicle_stack:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav1
+
+  - observe:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo /uav1/control_manager/state
+        - waitForTime; rostopic echo /uav1/mavros/extended_state
+        - waitForTime; rostopic echo /uav1/controller/command
+
+  # 先在多旋翼阶段起飞，确认state中的flight_regime为HOVER后再切换。
+  - takeoff:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 20.0"'
+
+  - transition_to_fw:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/control_manager/set_flight_regime "target_regime: 1"'
+
+  - transition_to_mr:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/control_manager/set_flight_regime "target_regime: 0"'
+
+  - stop_and_land:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/control_manager/land_home'

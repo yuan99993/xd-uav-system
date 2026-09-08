@@ -1,0 +1,14 @@
+airframe_type: vtol
+
+vtol:
+  transition:
+    # 请求被飞控接受后，必须等待扩展状态确认目标阶段；超时立即切入failsafe。
+    timeout: 20.0
+    require_offboard: true
+    require_armed: true
+    require_extended_state: true
+    # Standard VTOL从悬停开始转换时空速为0；设为0交给PX4完成加速与保护。
+    minimum_forward_airspeed: 0.0
+
+mavros:
+  vtol_transition_service: mavros/cmd/vtol_transition

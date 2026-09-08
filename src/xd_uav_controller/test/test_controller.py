@@ -747,7 +747,7 @@ class ControllerInterfaceTest(unittest.TestCase):
             "controller/internal/command", InternalCommand
         )
         response = internal_command(
-            InternalCommandRequest.TAKEOFF, 1.5
+            InternalCommandRequest.TAKEOFF, 1.5, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         takeoff_command = self._wait_for_command(
@@ -802,7 +802,7 @@ class ControllerInterfaceTest(unittest.TestCase):
 
         self._position_z = 1.5
         response = internal_command(
-            InternalCommandRequest.LAND, 0.0
+            InternalCommandRequest.LAND, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         landing_command = self._wait_for_command(
@@ -811,7 +811,7 @@ class ControllerInterfaceTest(unittest.TestCase):
         self.assertTrue(landing_command.landing_active)
 
         response = internal_command(
-            InternalCommandRequest.CANCEL_LANDING, 0.0
+            InternalCommandRequest.CANCEL_LANDING, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         cancelled_command = self._wait_for_command(
@@ -824,7 +824,7 @@ class ControllerInterfaceTest(unittest.TestCase):
         self.assertFalse(cancelled_command.landing_active)
 
         response = internal_command(
-            InternalCommandRequest.LAND, 0.0
+            InternalCommandRequest.LAND, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         self._wait_for_command(
@@ -851,12 +851,12 @@ class ControllerInterfaceTest(unittest.TestCase):
         self._velocity_z = 0.0
 
         response = internal_command(
-            InternalCommandRequest.RESET, 0.0
+            InternalCommandRequest.RESET, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
 
         response = internal_command(
-            InternalCommandRequest.TAKEOFF, 1.5
+            InternalCommandRequest.TAKEOFF, 1.5, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         self._wait_for_command(
@@ -865,7 +865,7 @@ class ControllerInterfaceTest(unittest.TestCase):
         self._position_x = 1.0
         self._position_z = 1.5
         response = internal_command(
-            InternalCommandRequest.LAND_HOME, 0.0
+            InternalCommandRequest.LAND_HOME, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         home_command = self._wait_for_command(

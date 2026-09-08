@@ -7,8 +7,8 @@
 本文件同时作为 Phase 0/1 审计结果和 Phase 2~9 的实施设计。后续改动严格限制在：
 
 ```text
-/home/kzy/xd-uavsystem-test/src/xd_uav_controller_new
-/home/kzy/xd-uavsystem-test/src/xd_uav_control_manager_new
+/home/kzy/xd-uavsystem-test/src/xd_uav_controller
+/home/kzy/xd-uavsystem-test/src/xd_uav_control_manager
 ```
 
 旧 `xd_uav_controller`、`xd_uav_control_manager` 和其余业务包保持只读。
@@ -28,8 +28,8 @@ upstream relation: origin/dev ahead 19
 
 ```text
 src/tmux_start/session_one_vtol_px4.yml
-src/xd_uav_control_manager_new/
-src/xd_uav_controller_new/
+src/xd_uav_control_manager/
+src/xd_uav_controller/
 ```
 
 其中 `tmux_start` 文件不属于本轮范围，不读取、不修改。两个 `_new` 目录是本次唯一实施基线，不使用旧包或历史版本覆盖。
@@ -45,8 +45,8 @@ src/xd_uav_controller_new/
 source space 只链接：
 
 ```text
-xd_uav_controller_new
-xd_uav_control_manager_new
+xd_uav_controller
+xd_uav_control_manager
 xd_uav_state_estimators    # manager 的直接消息依赖
 ```
 
@@ -56,7 +56,7 @@ xd_uav_state_estimators    # manager 的直接消息依赖
 source /opt/ros/noetic/setup.bash
 cd /tmp/xd-uav-baseline-fKwev9
 catkin_make -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCATKIN_ENABLE_TESTING=ON
-catkin_make run_tests_xd_uav_controller_new run_tests_xd_uav_control_manager_new
+catkin_make run_tests_xd_uav_controller run_tests_xd_uav_control_manager
 catkin_test_results --all build/test_results
 ```
 
@@ -98,7 +98,7 @@ catkin_test_results --all build/test_results
 忽略 Python 解释器生成的 `__pycache__/*.pyc` 后，审计开始时两个包共有 46 个文件；加入本审计文件后为 47 个。
 
 ```text
-xd_uav_controller_new/
+xd_uav_controller/
 ├── CMakeLists.txt
 ├── README.md
 ├── config/
@@ -109,7 +109,7 @@ xd_uav_controller_new/
 │   └── vtol.yaml
 ├── docs/
 │   └── control_base_refactor_audit.md
-├── include/xd_uav_controller_new/
+├── include/xd_uav_controller/
 │   └── control_types.h
 ├── launch/
 │   └── controller.launch
@@ -136,14 +136,14 @@ xd_uav_controller_new/
     ├── test_multirotor_anti_windup.py
     └── test_odom_landing.py
 
-xd_uav_control_manager_new/
+xd_uav_control_manager/
 ├── CMakeLists.txt
 ├── README.md
 ├── config/
 │   ├── offboard.yaml
 │   ├── safety.yaml
 │   └── vtol.yaml
-├── include/xd_uav_control_manager_new/
+├── include/xd_uav_control_manager/
 │   └── vtol_vehicle_adapter.h
 ├── launch/
 │   ├── control_manager.launch
@@ -539,7 +539,7 @@ optional vehicle override
 
 ### Phase 2：公共类型和 baseline 修复
 
-- 修改 `include/xd_uav_controller_new/control_types.h`：补全 resolver 输入/结果、capability 和 action phase/result 类型。
+- 修改 `include/xd_uav_controller/control_types.h`：补全 resolver 输入/结果、capability 和 action phase/result 类型。
 - 修改 `msg/ControlState.msg`、`msg/ControlCommand.msg`：保留全部当前字段并锁定常量。
 - 修改 `srv/InternalCommand.srv`：加入 action/phase/generation，保留旧字段。
 - 修改两个包的 CMake/test：增加公共协议单测。
@@ -547,7 +547,7 @@ optional vehicle override
 
 ### Phase 3：UnifiedReference 和 ReferenceAdapter
 
-- 新增 `include/xd_uav_controller_new/unified_reference.h`。
+- 新增 `include/xd_uav_controller/unified_reference.h`。
 - 新增公共 reference capability/validation 单元。
 - 抽离 PositionTarget、trajectory、path、simple-goal 和 internal-source metadata；TF Buffer 的所有权仍在 Node，Node 查询并校验刚体变换后把变换值传给纯 adapter，adapter 不自行访问 ROS TF 服务。
 - 为矩阵中每类输入增加真实行为回归。
@@ -633,3 +633,28 @@ tmux_start
 `xd_uav_state_estimators` 仅作为隔离构建依赖，不产生改动。
 
 不实现自动任务距离选 regime、自定义气动 transition、倾转舵机直控、ArduPilot、ROS 2、pluginlib 或 VTOL runway landing。
+
+## 13. 本轮实施结果
+
+审计后已在两个 `_new` 包内完成以下后端扩展，未修改生产 YAML：
+
+- 公共类型及线上数值测试，并增加集中、可单测的 `BackendResolver`；
+- 保留全部真实字段和 mask/source 元数据的 `UnifiedReference`；
+- `ControllerBackend` 接口及 multirotor/fixed-wing 两个运行时 backend，
+  切换时执行 `onDeactivate -> onActivate(reset)`；
+- `VehicleAdapter` capability 接口及 multirotor/fixed-wing/VTOL 实现；
+- `InternalCommand` 的 action、phase、generation、return-home 协议，controller
+  拒绝旧代次或非法 action/phase 组合；
+- manager 对 controller 输出的 airframe、regime、regime generation、action
+  generation 和 active backend 进行统一合同校验；
+- VTOL transition transport failure、ACK reject、accepted、completed、timeout
+  分层结果，原始 ACK 和诊断信息不丢失；
+- VTOL 降落子阶段：FW 收到 land 时只请求 MC，PX4 确认 HOVER 且 controller
+  回报 multirotor backend 已接管后，才允许启动垂直降落 reference；
+- 全部 reference 继续走原数值路径，同时回报准确的 `reference_type` 和
+  `reference_source`；simple goal 在本地直接完成适配，消除 latched topic
+  旧消息竞态。
+
+隔离 Catkin 工作区已完成两个包的编译及 21 项新增/扩展 C++ 单元测试。
+完整 rostest 的执行需要允许 ROS 读取网络接口并启动本地 roscore；本轮环境的
+提权审批服务返回 404，因此不能把 rostest 或 PX4/Gazebo SITL 标记为已完成。

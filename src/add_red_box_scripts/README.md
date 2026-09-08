@@ -152,7 +152,7 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red
 
 ```bash
 # 只使用六种小汽车，不生成公交车
-python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --replace --models car_beetle car_golf car_lexus car_opel car_polo car_volvo --min-gap 5
+python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --replace --models car_beetle car_golf car_lexus car_opel car_polo car_volvo --min-gap 8
 
 # 固定随机结果，方便重复测试
 python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --ground-z 0 --replace --seed 7
@@ -322,7 +322,7 @@ rqt_image_view /uav1/track/red_detector/debug_image
 
 `rostopic pub -1` 只发布一次。请先运行生成脚本，看到它开始等待区域消息后，
 再发布搜索区域；或者让区域发布者使用 latched topic。
-cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 30.0, y: 0.0, z: 0.0}, {x: 30.0, y: 30.0, z: 0.0}, {x: 0.0, y: 30.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 6.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -30.0, y: -30.0, z: 0.0}, {x: 0.0, y: -30.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -30.0, y: 0.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 5.0, priority: 1}]}"
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 50.0, y: 0.0, z: 0.0}, {x: 50.0, y: 50.0, z: 0.0}, {x: 0.0, y: 50.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 8.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -50.0, y: -30.0, z: 0.0}, {x: 0.0, y: -50.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -50.0, y: 0.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 8.0, priority: 1}]}"
 
 
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: -75.0, y: -75.0, z: 0.0}, {x: 75.0, y: -75.0, z: 0.0}, {x: 75.0, y: 75.0, z: 0.0}, {x: -75.0, y: 75.0, z: 0.0}]}, altitude: 30.0, lane_spacing: 5.0, priority: 1}]}"
