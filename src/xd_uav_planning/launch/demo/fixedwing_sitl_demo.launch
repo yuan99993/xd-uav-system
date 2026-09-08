@@ -25,7 +25,7 @@
       <arg name="gcs_url" value=""/>
       <arg name="respawn_mavros" value="false"/>
     </include>
-    <node pkg="xd_uav_system_integration" type="imu_frame_adapter.py"
+    <node pkg="xd_uav_planning" type="imu_frame_adapter.py"
           name="planning_imu_frame_adapter" output="screen" required="true">
       <param name="input_topic" value="mavros/imu/data"/>
       <param name="output_topic" value="integration/imu_fcu"/>

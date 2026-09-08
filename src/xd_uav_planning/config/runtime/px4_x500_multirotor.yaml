@@ -1,0 +1,48 @@
+# Controller instance parameters for the MRS x500 PX4/Gazebo backend.
+# The simulator hovers near 0.50 throttle; using the controller package's
+# generic 0.70 value makes its -2 m/s^2 vertical limit still exceed hover.
+control_rate: 100.0
+
+multirotor:
+  gravity: 9.80665
+  hover_throttle: 0.50
+  min_throttle: 0.05
+  max_throttle: 0.90
+  max_tilt: 0.61
+  max_body_rate: [3.0, 3.0, 2.0]
+  attitude_gain: [5.0, 5.0, 2.0]
+
+  mpc:
+    horizon: 26
+    q: [500.0, 100.0]
+    terminal_q: [1000.0, 300.0]
+    r: 20.0
+    max_velocity_xy: 15.0
+    max_velocity_z: 5.0
+    max_acceleration_xy: 2.5
+    max_acceleration_z: 2.0
+    max_jerk_xy: 3.0
+    max_jerk_z: 3.0
+    velocity_integral_gain: [1.0, 1.0, 2.0]
+    velocity_integral_acceleration_limit: [1.0, 1.0, 1.0]
+    acceleration_feedback_gain: [0.25, 0.25, 0.35]
+    acceleration_integral_gain: [0.20, 0.20, 0.40]
+    acceleration_integral_acceleration_limit: [1.0, 1.0, 1.0]
+
+takeoff:
+  default_altitude: 3.0
+  max_velocity: 0.8
+  max_acceleration: 0.6
+  position_tolerance: 0.15
+  velocity_tolerance: 0.15
+
+landing:
+  descent_velocity: 0.35
+  final_descent_velocity: 0.15
+  slow_height: 0.7
+  return_velocity: 1.0
+  position_tolerance: 0.10
+  velocity_tolerance: 0.10
+  touchdown_offset: 0.15
+  touchdown_height_tolerance: 0.10
+  touchdown_velocity_tolerance: 0.20

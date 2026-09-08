@@ -14,7 +14,10 @@ safety:
     airspeed_negative_tolerance: 3.0
   controller_command:
     timeout: 0.20
-    invalid_grace_duration: 0.5
+    # PX4 plane SITL may briefly report a negative pitot value immediately
+    # after launch, before the model has accelerated. Keep this tolerance in
+    # the demo only; production safety settings remain unchanged.
+    invalid_grace_duration: 3.0
   activation:
     stable_duration: 1.5
   touchdown:

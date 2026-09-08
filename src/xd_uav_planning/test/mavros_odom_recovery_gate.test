@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="fcu_to_base_link"
+        args="0 0 0 0 0 0 1 uav1/base_link uav1/fcu"/>
+  <include file="$(find xd_uav_planning)/launch/internal/runtime/mavros_odom_recovery_gate.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+    <arg name="stable_time" value="0.20"/>
+    <arg name="minimum_dropout" value="0.40"/>
+  </include>
+  <include file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+    <arg name="sources_config" value="$(find xd_uav_planning)/config/runtime/px4_mavros_sources_guarded.yaml"/>
+  </include>
+  <include file="$(find xd_uav_state_estimators)/launch/estimator.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+    <arg name="body_frame" value="uav1/base_link"/>
+    <arg name="sources_config" value="$(find xd_uav_planning)/config/runtime/px4_mavros_sources_guarded.yaml"/>
+  </include>
+  <test test-name="mavros_odom_recovery_gate"
+        pkg="xd_uav_planning"
+        type="test_mavros_odom_recovery_gate.py"
+        time-limit="25"/>
+</launch>

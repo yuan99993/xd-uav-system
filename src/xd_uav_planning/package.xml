@@ -10,8 +10,10 @@
   <buildtool_depend>catkin</buildtool_depend>
 
   <depend>diagnostic_msgs</depend>
+  <depend>geographic_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>mavros_msgs</depend>
+  <depend>mrs_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
@@ -29,7 +31,9 @@
   <exec_depend>px4</exec_depend>
   <exec_depend>xd_uav_control_manager</exec_depend>
   <exec_depend>xd_uav_state_estimators</exec_depend>
-  <exec_depend>xd_uav_system_integration</exec_depend>
+  <exec_depend>mrs_uav_gazebo_simulation</exec_depend>
+  <exec_depend>xd_uav_single_tf_manager</exec_depend>
+  <exec_depend>xd_uav_world_tf_manager</exec_depend>
 
   <!-- Optional at workspace-build time; required only when the node is run. -->
   <exec_depend>quadrotor_msgs</exec_depend>

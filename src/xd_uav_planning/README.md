@@ -1,7 +1,8 @@
 # xd_uav_planning
 
 XD-UAV 的统一 ROS1 规划层。任务层只向本包发送目标或任务路径，本包按机型选择唯一后端，
-校验后再向 controller 输出执行参考。
+校验后再向 controller 输出执行参考。本包已经自包含其演示所需的 PX4/Gazebo、状态估计和
+控制栈组合资源，不依赖旧 `xd_uav_system_integration` 或 `xd_uav_sead`。
 
 ```text
 xd_uav_task_allocate -> xd_uav_planning -> xd_uav_controller
@@ -113,14 +114,18 @@ roslaunch xd_uav_planning fixedwing_sitl_demo.launch gui:=false
 ```text
 launch/planning.launch   唯一正式产品入口
 launch/internal/         只供 planning.launch 组合的内部组件
+launch/internal/runtime/ planning 演示使用的 PX4、估计器与控制栈组合
 launch/demo/             SITL 和演示组合
 config/                  正式后端配置
 config/demo/             仿真、RViz 和演示专用配置
+config/runtime/          planning 演示使用的底层接线配置
 scripts/                 正式运行节点
 scripts/demo/            演示管理和验收脚本
+scripts/runtime/         planning 演示使用的运行辅助节点
 docs/                    操作及上下层接入手册
 ```
 
 起降、OFFBOARD、状态估计和底层控制仍分别属于 control manager、estimator 和 controller。
 `xd_uav_task_allocate` 是只读上游；`ego-planner-swarm` 是只读第三方依赖，项目适配全部位于
-本包。
+本包。旧 `xd_uav_system_integration` 与 `xd_uav_sead` 仅作为 legacy 源码保留，不属于正式
+`task_allocate -> planning -> controller` 链路。

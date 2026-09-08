@@ -50,4 +50,9 @@
     <arg name="simple_goal_topic" value="$(arg simple_goal_topic)"/>
   </include>
 
+  <include file="$(find xd_uav_system_integration)/launch/reference_integration.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="common_frame" value="$(arg common_frame)"/>
+    <arg name="initial_owner" value="none"/>
+  </include>
 </launch>

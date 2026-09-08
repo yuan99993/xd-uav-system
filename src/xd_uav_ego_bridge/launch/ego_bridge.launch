@@ -1,0 +1,29 @@
+<launch>
+  <arg name="uav_name" default="uav1" />
+  <arg name="config" default="$(find xd_uav_ego_bridge)/config/ego_bridge_defaults.yaml" />
+  <arg name="common_frame" default="world" />
+  <arg name="body_frame" default="$(arg uav_name)/fcu" />
+  <arg name="transform_state_to_common" default="false" />
+  <arg name="odometry_topic" default="ego/odometry" />
+  <arg name="position_command_topic" default="ego/position_command" />
+  <arg name="allow_nonfinite_yaw_rate" default="false" />
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_ego_bridge"
+          type="ego_bridge_node.py"
+          name="ego_bridge"
+          output="screen"
+          required="true">
+      <rosparam command="load" file="$(arg config)" />
+      <param name="common_frame" value="$(arg common_frame)" />
+      <param name="body_frame" value="$(arg body_frame)" />
+      <param name="transform_state_to_common"
+             value="$(arg transform_state_to_common)" />
+      <param name="odometry_topic" value="$(arg odometry_topic)" />
+      <param name="position_command_topic"
+             value="$(arg position_command_topic)" />
+      <param name="allow_nonfinite_yaw_rate"
+             value="$(arg allow_nonfinite_yaw_rate)" />
+    </node>
+  </group>
+</launch>

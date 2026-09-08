@@ -60,6 +60,38 @@ setup_ros() {
   export ROS_MASTER_URI=http://localhost:11311
 }
 
+gazebo_master_in_use() {
+  local uri="${GAZEBO_MASTER_URI:-http://localhost:11345}"
+  python3 - "${uri}" <<'PY'
+import socket
+import sys
+from urllib.parse import urlparse
+
+target = urlparse(sys.argv[1])
+host = target.hostname or "localhost"
+port = target.port or 11345
+try:
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+except socket.gaierror:
+    sys.exit(1)
+for family, socktype, protocol, _, address in addresses:
+    try:
+        sock = socket.socket(family, socktype, protocol)
+    except OSError:
+        continue
+    sock.settimeout(0.25)
+    try:
+        try:
+            if sock.connect_ex(address) == 0:
+                sys.exit(0)
+        except OSError:
+            pass
+    finally:
+        sock.close()
+sys.exit(1)
+PY
+}
+
 is_multi_running() {
   [[ -f "${pid_file}" ]] || return 1
   local pid args stat
@@ -72,11 +104,33 @@ is_multi_running() {
 }
 
 wait_multi_ready() {
-  local pid="$1" checker
+  local pid="$1" checker checker_pid
   echo "waiting for three closed-loop PX4/EGO chains (owner, forwarding, valid command and motion)..."
   checker="${script_dir}/wait_ego_swarm_ready.py"
-  if timeout -k 2 "$((ready_timeout + 5))" "${checker}" \
-      --timeout "${ready_timeout}" --minimum-horizontal-motion 2.00; then
+  timeout -k 2 "$((ready_timeout + 5))" "${checker}" \
+    --timeout "${ready_timeout}" --minimum-horizontal-motion 2.00 &
+  checker_pid="$!"
+  while kill -0 "${checker_pid}" 2>/dev/null; do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      kill -TERM "${checker_pid}" 2>/dev/null || true
+      wait "${checker_pid}" 2>/dev/null || true
+      echo "multi demo exited during startup; log: ${log_file}" >&2
+      tail -n 100 "${log_file}" >&2 || true
+      return 1
+    fi
+    if [[ -r "${log_file}" ]] && grep -Eq \
+        'Unable to start server\[bind: Address already in use\]|PX4 vehicle spawn rejected: Gazebo model state topic not found' \
+        "${log_file}"; then
+      kill -TERM "${checker_pid}" 2>/dev/null || true
+      wait "${checker_pid}" 2>/dev/null || true
+      echo "multi demo startup failed: Gazebo did not start (its master port may be occupied)" >&2
+      echo "log: ${log_file}" >&2
+      tail -n 100 "${log_file}" >&2 || true
+      return 1
+    fi
+    sleep 0.5
+  done
+  if wait "${checker_pid}"; then
     kill -0 "${pid}" 2>/dev/null || {
       echo "multi demo exited immediately after readiness; log: ${log_file}" >&2
       return 1
@@ -87,6 +141,14 @@ wait_multi_ready() {
   echo "multi readiness failed; log: ${log_file}" >&2
   tail -n 100 "${log_file}" >&2 || true
   return 1
+}
+
+cleanup_failed_multi_start() {
+  local result="$?"
+  trap - EXIT INT TERM
+  echo "cleaning up failed multi-demo startup..." >&2
+  multi_stop
+  exit "${result}"
 }
 
 multi_stop() {
@@ -121,13 +183,19 @@ case "${1:-}" in
           echo "an existing ROS graph is using ${ROS_MASTER_URI}; stop it before multi start" >&2
           exit 1
         fi
+        if gazebo_master_in_use; then
+          echo "Gazebo master ${GAZEBO_MASTER_URI:-http://localhost:11345} is already in use; stop the existing Gazebo simulation before multi start" >&2
+          exit 1
+        fi
         setsid roslaunch xd_uav_planning ego_multi_obstacle_demo.launch \
           gui:="${GUI:-true}" rviz:="${RVIZ:-true}" \
           </dev/null >"${log_file}" 2>&1 &
         echo "$!" >"${pid_file}"
         echo "three-UAV EGO demo starting in the Gazebo obstacle world"
         echo "log: ${log_file}"
+        trap cleanup_failed_multi_start EXIT INT TERM
         wait_multi_ready "$!"
+        trap - EXIT INT TERM
         ;;
       *) echo "usage: $0 start {single|swarm 3}" >&2; exit 2 ;;
     esac

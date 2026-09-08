@@ -10,7 +10,7 @@
     <arg name="world_file" value="$(arg world_file)"/>
     <arg name="gui" value="$(arg gui)"/>
   </include>
-  <node pkg="xd_uav_system_integration" type="spawn_px4_vehicle_node.py"
+  <node pkg="xd_uav_planning" type="spawn_px4_vehicle_node.py"
         name="spawn_px4_ego_multi" output="screen">
     <param name="service" value="/mrs_drone_spawner/spawn"/>
     <param name="request" value="1 2 3 --x500 --enable-rangefinder --enable-ouster model:=OS0-128 use_gpu:=True horizontal_samples:=64 update_rate:=5 --pos-file $(arg spawn_file)"/>
@@ -18,7 +18,7 @@
   </node>
   <!-- Spawn poses are the measured Gazebo/world registration for each PX4
        local odom origin; keep these values synchronized with the YAML above. -->
-  <node pkg="xd_uav_system_integration" type="multi_odom_registration.py"
+  <node pkg="xd_uav_planning" type="multi_odom_registration.py"
         name="multi_odom_registration" output="screen" required="true">
     <param name="parent_frame" value="world"/>
     <rosparam param="registrations">

@@ -9,7 +9,7 @@
        default="$(find xd_uav_planning)/config/demo/ego_obstacle_demo.rviz"/>
   <arg name="takeoff_altitude" default="1.0"/>
 
-  <include file="$(find xd_uav_system_integration)/launch/px4_gazebo_single.launch">
+  <include file="$(find xd_uav_planning)/launch/internal/runtime/px4_gazebo_single.launch">
     <arg name="gui" value="$(arg gui)"/>
   </include>
   <!-- MRS x500 MAVROS labels its rigid-body reference as fcu.  The software
@@ -18,7 +18,7 @@
         name="x500_fcu_to_base_link"
         args="0 0 0 0 0 0 1 $(arg UAV_NAME)/base_link $(arg UAV_NAME)/fcu"/>
   <group ns="$(arg UAV_NAME)">
-    <node pkg="xd_uav_system_integration" type="navsat_origin_provider.py"
+    <node pkg="xd_uav_planning" type="navsat_origin_provider.py"
           name="navsat_origin_provider" output="screen" required="true">
       <param name="input_topic" value="mavros/global_position/global"/>
       <param name="output_topic" value="integration/geodetic_origin"/>
@@ -27,12 +27,12 @@
       <param name="vertical_tolerance_m" value="1.0"/>
     </node>
   </group>
-  <include file="$(find xd_uav_system_integration)/launch/px4_control_stack_guarded.launch">
+  <include file="$(find xd_uav_planning)/launch/internal/runtime/px4_control_stack_guarded.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="common_frame" value="$(arg common_frame)"/>
     <arg name="gps_origin_topic" value="integration/geodetic_origin"/>
   </include>
-  <node pkg="xd_uav_system_integration" type="deterministic_obstacle_cloud.py"
+  <node pkg="xd_uav_planning" type="deterministic_obstacle_cloud.py"
         name="deterministic_obstacle_cloud" output="screen" required="true">
     <param name="frame_id" value="$(arg common_frame)"/>
     <param name="output_topic" value="/map_generator/global_cloud"/>
@@ -56,7 +56,7 @@
   </include>
 
   <group ns="$(arg UAV_NAME)">
-    <node pkg="xd_uav_system_integration" type="auto_takeoff_when_ready.py"
+    <node pkg="xd_uav_planning" type="auto_takeoff_when_ready.py"
           name="auto_takeoff_when_ready" output="screen">
       <param name="altitude" value="$(arg takeoff_altitude)"/>
     </node>

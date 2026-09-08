@@ -147,6 +147,14 @@ ps -eo pid,ppid,stat,cmd | rg '[r]oslaunch|[r]osmaster|[g]zserver|[g]zclient|[p]
 说明 `localhost:11311` 已被 SEAD、MRS 或另一套演示占用。先用对应脚本正常停止原仿真，
 不要在同一 ROS master 上叠加启动。
 
+### 一直显示 `state_stale`、`mavros_disconnected`
+
+这表示 PX4/MAVROS 链路没有建立，不是正常的 EGO 等待状态。若日志同时包含
+`Address already in use` 或 `Gazebo model state topic not found`，说明已有程序占用了
+Gazebo master（默认 `http://localhost:11345`），导致本次 Gazebo 和 PX4 均未启动。新版脚本
+会在启动前检查该端口，并在启动日志出现上述致命错误时立即报错、自动清理本次后台进程，
+不再等待完整的 readiness 超时。先正常关闭此前的 Gazebo/MRS/SEAD 仿真，再重新执行启动命令。
+
 ### 提示找不到 `devel/setup.bash`
 
 先确认工作区已经完成编译且 `/home/promise/catkin_ws/devel/setup.bash` 存在。默认目录不是

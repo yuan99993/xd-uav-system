@@ -124,7 +124,6 @@ def main():
         ])
     deadline = time.monotonic() + args.timeout
     next_report = 0.0
-    rate = rospy.Rate(20)
     while not rospy.is_shutdown() and time.monotonic() < deadline:
         now = time.monotonic()
         failures = {
@@ -142,7 +141,9 @@ def main():
                 "{} [{}]".format(name, ",".join(missing) or "ok")
                 for name, missing in failures.items()), flush=True)
             next_report = now + 5.0
-        rate.sleep()
+        # Wall time is intentional. rospy.Rate.sleep() waits for /clock when
+        # use_sim_time is enabled and would freeze this timeout if Gazebo dies.
+        time.sleep(0.05)
     print("swarm readiness timeout: " + "; ".join(
         "{} [{}]".format(name, ",".join(evidence.missing(
             time.monotonic(), args.freshness,

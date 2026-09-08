@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="input_topic" default="/$(arg uav_name)/os_cloud_nodelet/points"/>
+  <arg name="input_frame" default="$(arg uav_name)/os_sensor"/>
+  <arg name="common_frame" default="world"/>
+  <arg name="output_topic" default="ego/cloud_world"/>
+  <arg name="cloud_timeout" default="0.30"/>
+  <arg name="minimum_sensor_range" default="0.60"/>
+  <arg name="restamp_zero_timestamp" default="false"/>
+  <arg name="calibrated_body_transform" default="false"/>
+  <arg name="body_frame" default="$(arg uav_name)/base_link"/>
+  <arg name="state_topic" default="control_manager/state"/>
+  <arg name="body_to_sensor_translation_m" default="[0.0, 0.0, 0.0]"/>
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_ego_bridge"
+          type="ego_pointcloud_adapter_node.py"
+          name="ego_pointcloud_adapter"
+          output="screen"
+          clear_params="true">
+      <param name="input_topic" value="$(arg input_topic)"/>
+      <param name="expected_input_frame" value="$(arg input_frame)"/>
+      <param name="common_frame" value="$(arg common_frame)"/>
+      <param name="output_topic" value="$(arg output_topic)"/>
+      <param name="healthy_topic" value="ego/sensing/healthy"/>
+      <param name="cloud_timeout" value="$(arg cloud_timeout)"/>
+      <param name="transform_timeout" value="0.05"/>
+      <param name="minimum_sensor_range" value="$(arg minimum_sensor_range)"/>
+      <param name="restamp_zero_timestamp"
+             value="$(arg restamp_zero_timestamp)"/>
+      <param name="calibrated_body_transform"
+             value="$(arg calibrated_body_transform)"/>
+      <param name="body_frame" value="$(arg body_frame)"/>
+      <param name="state_topic" value="$(arg state_topic)"/>
+      <rosparam param="body_to_sensor_translation_m"
+                subst_value="true">$(arg body_to_sensor_translation_m)</rosparam>
+    </node>
+  </group>
+</launch>

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="jump_threshold" default="3.5"/>
+  <arg name="candidate_radius" default="0.5"/>
+  <arg name="stable_time" default="0.30"/>
+  <arg name="minimum_dropout" default="0.40"/>
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_planning" type="mavros_odom_recovery_gate.py"
+          name="mavros_odom_recovery_gate" output="screen" required="true">
+      <param name="jump_threshold" value="$(arg jump_threshold)"/>
+      <param name="candidate_radius" value="$(arg candidate_radius)"/>
+      <param name="stable_time" value="$(arg stable_time)"/>
+      <param name="minimum_dropout" value="$(arg minimum_dropout)"/>
+    </node>
+  </group>
+</launch>

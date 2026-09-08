@@ -1,0 +1,22 @@
+<launch>
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="cloud_test_tf"
+        args="1 2 3 0 0 0 world uav1/os"/>
+  <group ns="uav1">
+    <node pkg="xd_uav_ego_bridge"
+          type="ego_pointcloud_adapter_node.py"
+          name="ego_pointcloud_adapter" required="true">
+      <param name="input_topic" value="sensor/cloud"/>
+      <param name="output_topic" value="ego/cloud_world"/>
+      <param name="healthy_topic" value="ego/sensing/healthy"/>
+      <param name="expected_input_frame" value="uav1/os"/>
+      <param name="common_frame" value="world"/>
+      <param name="cloud_timeout" value="0.20"/>
+      <param name="transform_timeout" value="0.10"/>
+    </node>
+  </group>
+  <test test-name="ego_pointcloud_adapter"
+        pkg="xd_uav_ego_bridge"
+        type="test_pointcloud_node.py"
+        time-limit="20"/>
+</launch>
