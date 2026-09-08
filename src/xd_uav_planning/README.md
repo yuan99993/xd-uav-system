@@ -129,3 +129,13 @@ docs/                    操作及上下层接入手册
 `xd_uav_task_allocate` 是只读上游；`ego-planner-swarm` 是只读第三方依赖，项目适配全部位于
 本包。旧 `xd_uav_system_integration` 与 `xd_uav_sead` 仅作为 legacy 源码保留，不属于正式
 `task_allocate -> planning -> controller` 链路。
+
+## 旧 EGO bridge 恢复
+
+独立的旧 `xd_uav_ego_bridge` 已由本包取代，不再保留在当前源码树中。需要查看或恢复旧包时，
+使用兼容提交 `6c50f8eb3726f765b0162c2e7477c2adda1311f1`；该提交同时包含旧 bridge、
+原样保留的 `xd_uav_system_integration` 以及已经完成移植的 `xd_uav_planning`。例如只查看旧包：
+
+```bash
+git show 6c50f8eb3726f765b0162c2e7477c2adda1311f1:src/xd_uav_ego_bridge/package.xml
+```
