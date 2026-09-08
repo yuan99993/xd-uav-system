@@ -1,7 +1,7 @@
 <launch>
   <group ns="controller_test">
     <node pkg="xd_uav_controller"
-          type="controller_node"
+        type="controller_node"
           name="controller"
           output="screen"
           clear_params="true">
@@ -13,13 +13,13 @@
       <!-- This test verifies that a takeoff-recorded semantic home
            follows later local_origin -> odom alignment updates. -->
       <param name="home/mode" value="takeoff"/>
-      <param name="landing/height_source"
+      <param name="multirotor/landing/height_source"
              value="distance_sensor"/>
-      <param name="landing/distance_sensor_cfg/descent_velocity"
+      <param name="multirotor/landing/distance_sensor_cfg/descent_velocity"
              value="2.0"/>
-      <param name="landing/distance_sensor_cfg/final_descent_velocity"
+      <param name="multirotor/landing/distance_sensor_cfg/final_descent_velocity"
              value="2.0"/>
-      <param name="landing/distance_sensor_cfg/touchdown_offset"
+      <param name="multirotor/landing/distance_sensor_cfg/touchdown_offset"
              value="0.15"/>
     </node>
     <test test-name="controller_interface"

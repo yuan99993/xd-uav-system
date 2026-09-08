@@ -1,0 +1,244 @@
+# Standard VTOL 的完整控制参数：悬停和前飞阶段均从此文件读取。
+control_rate: 100.0
+
+vtol:
+  backend:
+    # 过渡阶段沿用起始飞行阶段的控制后端：悬停转前飞用多旋翼，反向用固定翼。
+    transition_policy: source_backend
+
+fixedwing:
+  model:
+    gravity: 9.80665
+
+  path_following:
+    # 路径不携带时间；速度由能量控制的cruise_airspeed决定。
+    curvature_estimation_distance: 20.0
+    # 只让曲率/滚转按飞行时间短暂预判；横向位置仍跟随当前航段，避免提前切弯。
+    # 15m/s时0.30s约为4.5m预判距离。
+    curvature_preview_time: 0.30
+    completion_radius: 20.0
+    completion_altitude_tolerance: 5.0
+    reacquisition_distance: 50.0
+
+  # 输入适配层：仅在流式VXY没有AXY/yaw_rate时估计course-rate。
+  # 完整P/V/A参考不会使用这组差分参数。
+  reference_adapter:
+    streaming_course_rate_feedforward: true
+    course_rate_filter_time_constant: 0.25
+    minimum_course_rate_speed: 2.0
+
+  path_guidance:
+    # 对“位置+速度”轨迹，在速度切线前方构造几何前视点，
+    # 使固定翼既跟随切线方向，也闭环修正水平位置偏差。
+    # 这不是PID增益；过小会频繁修正，过大会收敛较慢。
+    lookahead_distance: 40.0
+    # 任意PXY+VXY参考存在曲率前馈时按L=turn_radius_gain*R调整前视距离。
+    adaptive_lookahead: true
+    minimum_lookahead_distance: 15.0
+    maximum_lookahead_distance: 70.0
+    turn_radius_gain: 1.15
+    lookahead_filter_time_constant: 0.55
+
+  lateral_control:
+    course_time_constant: 0.9
+    # 所有常规外部参考（轨迹或PositionTarget）共用course PI环；积分输出单位rad/s，
+    # 用于消除风、舵效和模型偏差，限幅与滚转限幅共同防止wind-up。
+    course_integral_gain: 0.08
+    course_integral_rate_limit: 0.25
+    roll_time_constant: 0.20
+
+  vertical_control:
+    altitude_time_constant: 3.0
+    # 高度P环输出爬升率修正；积分项用于消除持续高度偏差，输出单位m/s。
+    altitude_integral_gain: 0.02
+    altitude_integral_climb_rate_limit: 1.0
+    # 爬升率闭环直接修正俯仰角，单位rad/(m/s)；测量先低通滤波。
+    climb_rate_pitch_gain: 0.06
+    climb_rate_filter_time_constant: 0.50
+    # AZ转换为俯仰角速度前馈。
+    vertical_acceleration_pitch_rate_gain: 1.0
+    pitch_time_constant: 0.45
+    # 协调转弯时按n=1/cos(bank)提前增加迎角，避免等掉高后才由高度环纠正。
+    # 单位为rad/(load_factor-1)，应与下方转弯补油增益配合标定。
+    bank_load_factor_pitch_gain: 0.25
+
+  energy_control:
+    cruise_airspeed: 15.0
+    minimum_airspeed: 11.0
+    maximum_airspeed: 24.0
+    trim_throttle: 0.25
+    airspeed_throttle_gain: 0.08
+    # 爬升时同步补油以维持空速。
+    climb_rate_throttle_gain: 0.03
+    # 2026-08-22固定翼SITL日志拟合得到约0.15；取0.16留少量模型余量。
+    # 补偿量为gain*(1/cos(bank)-1)，在空速实际下降前随目标滚转补油。
+    turn_load_factor_throttle_gain: 0.25
+    # 转弯保护空速=min_airspeed*sqrt(load_factor)+margin。
+    bank_airspeed_margin: 0.5
+    # 低于转弯保护空速进入恢复，高于保护空速+该值才退出，避免抖动。
+    underspeed_hysteresis: 0.7
+    # 恢复期间卸载滚转、限制抬头；弧度，分别约20度和3度。
+    underspeed_max_roll: 0.35
+    underspeed_max_nose_up_pitch: 0.05
+
+  limits:
+    minimum_throttle: 0.05
+    maximum_throttle: 1.0
+    # R=30 m at the observed 15--17.5 m/s requires roughly 0.65--0.81 rad.
+    # Do not let course-error feedback tighten the turn far below the planned
+    # Dubins radius (the previous 0.95 rad produced the measured inner loops).
+    maximum_roll: 0.9
+    maximum_pitch: 0.45
+    maximum_climb_rate: 5.0
+    maximum_body_rate: [2.5, 2.0, 2.0]
+
+  modes:
+    loiter:
+      # 起飞达到目标高度后，固定翼以当前位置和航向切入圆的切点，
+      # 在该圆上等待外部参考。+1为逆时针，-1为顺时针。
+      radius: 80.0
+      airspeed: 15.0
+      direction: 1
+      radial_gain: 1.0
+      max_course_correction: 0.70
+
+  takeoff:
+    default_altitude: 30.0
+    takeoff_throttle: 0.90
+    rotate_airspeed: 12.0
+    climb_airspeed: 15.0
+    # 正数表示抬头角的绝对值；控制器会转换成ROS FLU机体系的负pitch。
+    climb_pitch: 0.21
+    altitude_tolerance: 3.0
+
+  landing:
+    # 接地点上游的进近点。进入捕获半径后先连续切入最终进近直线并保持高度，
+    # 航向与高度满足容差后只开启下滑，避免横向参考在切换瞬间跳变。
+    approach_distance: 400.0
+    approach_height: 30.0
+    approach_airspeed: 15.0
+    approach_acceptance_radius: 50.0
+    approach_altitude_tolerance: 5.0
+    approach_course_tolerance: 0.55
+    # 实际捕获半径还会取“着陆速度对应转弯半径×该系数”的较大值，
+    # 避免固定翼因无法精确飞过静止进近点而一直绕圈。
+    approach_capture_turn_radius_factor: 2.0
+    # 捕获后沿完整着陆直线消除横向偏差。
+    line_lookahead_distance: 80.0
+    max_course_correction: 0.70
+    # 弧度，约4.6度。高度参考由距接地点的沿航向距离实时生成。
+    glide_slope_angle: 0.08
+    rollout_distance: 200.0
+    max_roll: 0.35
+    touchdown_height_tolerance: 1.0
+    touchdown_groundspeed: 2.0
+    touchdown_vertical_speed: 2.0
+    # land没有固定接地点时，在当前航向前方建立临时接地点。
+    local_touchdown_ahead: 400.0
+
+multirotor:
+  # 机体模型与悬停工作点。
+  model:
+    gravity: 9.80665
+    hover_throttle: 0.57
+
+  path_following:
+    nominal_speed: 3.0
+    lookahead_distance: 2.0
+    terminal_slowdown_distance: 4.0
+    completion_position_tolerance: 0.50
+    completion_speed_tolerance: 0.30
+    reacquisition_distance: 4.0
+
+  # 期望姿态到body-rate的内环增益。
+  attitude_control:
+    gain: [4.0, 4.0, 1.5]
+
+  position_control:
+    # 状态为[position, velocity]，MPC直接输出期望加速度。
+    mpc:
+      horizon: 40
+      q: [500.0, 250.0]
+      terminal_q: [1000.0, 500.0]
+      # 当前组合对应的水平反馈约为Kp=0.59、Kv=1.52；相比r=30时的
+      # Kp=1.04、Kv=2.57，减少速度噪声和jerk限幅共同引起的0.7~0.8Hz摆动。
+      r: 60.0
+
+    # Z轴保留较慢的独立预测器，避免20m起飞高度阶跃与速度/加速度前馈叠加后
+    # 使用水平轴的高增益，造成推力饱和和持续上下振荡。
+    mpc_z:
+      horizon: 26
+      q: [250.0, 220.0]
+      terminal_q: [400.0, 350.0]
+      r: 70.0
+
+    # 对位置、速度和纯加速度控制模式分别补偿低频扰动。
+    # 积分状态直接表示附加加速度；专用起飞/降落阶段自动停用。
+    disturbance_rejection:
+      position_integral_gain: [0.02, 0.02, 0.08]
+      position_integral_acceleration_limit: [0.25, 0.25, 0.50]
+
+      velocity_integral_gain: [0.20, 0.20, 0.80]
+      velocity_integral_acceleration_limit: [0.30, 0.30, 0.60]
+
+      # 纯加速度模式使用去重力后的acceleration_odom形成PI闭环。
+      acceleration_feedback_gain: [0.25, 0.25, 0.35]
+      acceleration_integral_gain: [0.20, 0.20, 0.40]
+      acceleration_integral_acceleration_limit: [1.0, 1.0, 1.0]
+
+      # 根据最终可实现加速度冻结或释放积分，防止执行器饱和后wind-up。
+      anti_windup_gain: 1.5
+
+  # 控制器最终输出的统一安全限制，不属于MPC代价参数。
+  limits:
+    minimum_throttle: 0.05
+    maximum_throttle: 0.90
+    maximum_tilt: 0.45
+    maximum_body_rate: [2.0, 2.0, 1.5]
+    maximum_velocity_xy: 5.0
+    maximum_velocity_z: 5.0
+    maximum_acceleration_xy: 2.5
+    maximum_acceleration_z: 1.2
+    maximum_jerk_xy: 4
+    maximum_jerk_z: 1
+
+  takeoff:
+    default_altitude: 3.0
+    max_velocity: 0.8
+    max_acceleration: 0.6
+    position_tolerance: 0.15
+    velocity_tolerance: 0.15
+
+  landing:
+    # VTOL 悬停降落使用相对起飞/Home地面的 Z，避免依赖固定翼配置。
+    height_source: odom
+
+    # land_home水平返航的速度上限。控制器会根据剩余距离和多旋翼最大加速度
+    # 自动提前减速，不会把该速度保持到目标点。
+    return_max_velocity: 5
+    # 5m/s返航需要更早交给固定Home位置控制制动；进入后保持锁存，避免
+    # 越过原点时速度方向反复翻转。
+    capture_radius: 5.0
+    position_tolerance: 0.20
+    velocity_tolerance: 0.15
+
+    distance_sensor_cfg:
+      timeout: 0.5
+      descent_velocity: 0.35
+      final_descent_velocity: 0.15
+      slow_height: 0.7
+      # 触地时下视传感器到平台的预期距离；应按安装高度和最小量程设置。
+      touchdown_offset: 0.15
+      touchdown_height_tolerance: 0.10
+      # 使用滤波后的AGL变化率，不依赖当前定位源的odom.vz。
+      touchdown_velocity_tolerance: 0.20
+      velocity_filter_time_constant: 0.30
+
+    # 没有下视测距时保留原有的相对Home/起飞点高度降落逻辑。
+    odom_cfg:
+      descent_velocity: 0.35
+      final_descent_velocity: 0.15
+      slow_height: 0.7
+      touchdown_offset: 0.10
+      touchdown_height_tolerance: 0.05
+      touchdown_velocity_tolerance: 0.20

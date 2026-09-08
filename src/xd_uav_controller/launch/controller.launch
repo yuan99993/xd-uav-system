@@ -3,10 +3,11 @@
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
   <arg name="uav_name" default="$(arg UAV_NAME)"/>
   <arg name="vehicle_type" default="multirotor"/>
+  <arg name="airframe_type" default="$(arg vehicle_type)"/>
   <arg name="common_config"
        default="$(find xd_uav_controller)/config/common_config.yaml"/>
   <arg name="config"
-       default="$(find xd_uav_controller)/config/$(arg vehicle_type).yaml"/>
+       default="$(find xd_uav_controller)/config/$(arg airframe_type).yaml"/>
   <arg name="use_controller_override_config" default="false"/>
   <arg name="controller_override_config" default="$(arg config)"/>
   <arg name="simple_goal_topic"
@@ -23,7 +24,7 @@
       <rosparam command="load"
                 file="$(arg controller_override_config)"
                 if="$(arg use_controller_override_config)"/>
-      <param name="vehicle_type" value="$(arg vehicle_type)"/>
+      <param name="airframe_type" value="$(arg airframe_type)"/>
       <remap from="state" to="control_manager/state"/>
       <remap from="distance_sensor"
              to="mavros/distance_sensor/hrlv_ez4_pub"/>

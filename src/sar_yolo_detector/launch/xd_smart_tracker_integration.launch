@@ -4,13 +4,13 @@
        independently configured and running. -->
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
   <arg name="config"
-       default="$(find sar_yolo_detector)/config/smart_tracker_aircraft.yaml" />
+       default="$(find sar_yolo_detector)/config/smart_tracker.yaml" />
   <arg name="vehicle_config"
        default="$(find sar_yolo_detector)/config/smart_tracker_xd_vehicle.yaml" />
   <arg name="model_path"
-       default="$(find sar_yolo_detector)/models/aircraft_coco/yolo11n.pt" />
+       default="$(find sar_yolo_detector)/models/xd_vehicle_latest/xd_vehicle_latest.pt" />
   <arg name="model_sha256"
-       default="0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1" />
+       default="932c04d47e426143e9fa5084a4ca6a6ff49c1a3aff70fa2b44c643b165e5151f" />
   <arg name="python_executable" default="" />
   <arg name="use_gpu" default="true" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
@@ -41,8 +41,8 @@
            value="$(arg publish_annotated_image)" />
       <arg name="uav_id" value="$(arg UAV_NAME)" />
       <arg name="sensor_id" value="down_camera" />
-      <arg name="profile" value="coco80" />
-      <arg name="model_version" value="yolo11n_coco80" />
+      <arg name="profile" value="xd_vehicle_car_ar_car_tank" />
+      <arg name="model_version" value="xd_vehicle_train2_best" />
     </include>
   </group>
 
@@ -57,6 +57,6 @@
     <arg name="image_source" value="down_rgb" />
     <arg name="sensor_id" value="down_camera" />
     <arg name="detector_name" value="sar_yolo_smart_tracker" />
-    <arg name="model_version" value="yolo11n_coco80" />
+    <arg name="model_version" value="xd_vehicle_train2_best" />
   </include>
 </launch>

@@ -1,7 +1,7 @@
 <launch>
   <group ns="multirotor_anti_windup_test">
     <node pkg="xd_uav_controller"
-          type="controller_node"
+        type="controller_node"
           name="controller"
           output="screen"
           clear_params="true">

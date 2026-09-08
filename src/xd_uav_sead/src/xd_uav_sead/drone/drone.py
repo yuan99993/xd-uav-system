@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""SEAD adapter for the existing xd_uav manager/controller stack.
+"""SEAD adapter for the current xd_uav manager/controller stack.
 
 This module deliberately has no direct MAVROS command publisher or service
 client.  MAVROS state is read only because the current manager state message

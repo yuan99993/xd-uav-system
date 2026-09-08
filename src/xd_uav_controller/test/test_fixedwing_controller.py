@@ -730,7 +730,7 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             "controller/internal/command", InternalCommand
         )
         response = internal_command(
-            InternalCommandRequest.TAKEOFF, 30.0
+            InternalCommandRequest.TAKEOFF, 30.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         takeoff_command = self._wait_for_command(
@@ -814,7 +814,7 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         # home configuration and switch to the fixed-wing landing
         # controller without dropping the body-rate/throttle output.
         land_home_response = internal_command(
-            InternalCommandRequest.LAND_HOME, 0.0
+            InternalCommandRequest.LAND_HOME, 0.0, 0, 0, 0, False
         )
         self.assertTrue(
             land_home_response.success,
@@ -860,7 +860,7 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.assertGreater(line_capture_command.body_rate.z, 0.10)
 
         cancel_land_response = internal_command(
-            InternalCommandRequest.CANCEL_LANDING, 0.0
+            InternalCommandRequest.CANCEL_LANDING, 0.0, 0, 0, 0, False
         )
         self.assertTrue(
             cancel_land_response.success,
@@ -879,7 +879,7 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.assertFalse(cancel_loiter_command.landing_active)
 
         restart_land_response = internal_command(
-            InternalCommandRequest.LAND_HOME, 0.0
+            InternalCommandRequest.LAND_HOME, 0.0, 0, 0, 0, False
         )
         self.assertTrue(
             restart_land_response.success,
@@ -917,7 +917,7 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         self.assertGreater(aligned_glide_command.body_rate.y, 0.02)
 
         reset_response = internal_command(
-            InternalCommandRequest.RESET, 0.0
+            InternalCommandRequest.RESET, 0.0, 0, 0, 0, False
         )
         self.assertTrue(reset_response.success, reset_response.message)
 
@@ -929,7 +929,7 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
             state=base_state,
         )
         second_takeoff_response = internal_command(
-            InternalCommandRequest.TAKEOFF, 30.0
+            InternalCommandRequest.TAKEOFF, 30.0, 0, 0, 0, False
         )
         self.assertTrue(
             second_takeoff_response.success,
@@ -955,7 +955,7 @@ class FixedwingControllerInterfaceTest(unittest.TestCase):
         # 400 m ahead. With course=0 the aircraft is already at the
         # generated approach point, so it should enter the glideslope.
         land_response = internal_command(
-            InternalCommandRequest.LAND, 0.0
+            InternalCommandRequest.LAND, 0.0, 0, 0, 0, False
         )
         self.assertTrue(land_response.success, land_response.message)
         glide_command = self._wait_for_command(

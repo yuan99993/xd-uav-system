@@ -112,7 +112,9 @@ class MultirotorAntiWindupTest(unittest.TestCase):
         reset = rospy.ServiceProxy(
             "controller/internal/command", InternalCommand
         )
-        response = reset(InternalCommandRequest.RESET, 0.0)
+        response = reset(
+            InternalCommandRequest.RESET, 0.0, 0, 0, 0, False
+        )
         self.assertTrue(response.success, response.message)
 
         # A deliberately unreachable position saturates acceleration. The

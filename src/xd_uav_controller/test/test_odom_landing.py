@@ -66,7 +66,7 @@ class OdomLandingTest(unittest.TestCase):
         )
 
         response = internal_command(
-            InternalCommandRequest.TAKEOFF, 1.0
+            InternalCommandRequest.TAKEOFF, 1.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         self._wait_for_command(
@@ -79,7 +79,7 @@ class OdomLandingTest(unittest.TestCase):
         )
         self._x = 3.0
         response = internal_command(
-            InternalCommandRequest.LAND_HOME, 0.0
+            InternalCommandRequest.LAND_HOME, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
 
