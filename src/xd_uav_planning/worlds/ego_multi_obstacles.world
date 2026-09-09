@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="ego_multi_obstacles">
+    <include><uri>model://sun</uri></include>
+    <include><uri>model://ground_plane</uri></include>
+
+    <physics name="default_physics" type="ode">
+      <real_time_update_rate>250</real_time_update_rate>
+      <max_step_size>0.004</max_step_size>
+    </physics>
+
+    <!-- A sparse, deterministic corridor. Every obstacle is both visual and
+         collision geometry, so onboard Gazebo lidars observe what is shown. -->
+    <model name="wall_left">
+      <static>true</static><pose>6 3 2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1 1.5 4</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1 1.5 4</size></box></geometry><material><ambient>0.65 0.25 0.2 1</ambient></material></visual>
+      </link>
+    </model>
+    <model name="wall_right">
+      <static>true</static><pose>6 -3 2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1 1.5 4</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1 1.5 4</size></box></geometry><material><ambient>0.65 0.25 0.2 1</ambient></material></visual>
+      </link>
+    </model>
+    <model name="pillar_center">
+      <static>true</static><pose>6 0 2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>1.2</radius><length>4</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>1.2</radius><length>4</length></cylinder></geometry><material><ambient>0.2 0.35 0.75 1</ambient></material></visual>
+      </link>
+    </model>
+    <model name="pillar_upper">
+      <static>true</static><pose>9 1.5 2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>1</radius><length>4</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>1</radius><length>4</length></cylinder></geometry><material><ambient>0.2 0.6 0.3 1</ambient></material></visual>
+      </link>
+    </model>
+    <model name="pillar_lower">
+      <static>true</static><pose>9 -1.5 2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><cylinder><radius>1</radius><length>4</length></cylinder></geometry></collision>
+        <visual name="visual"><geometry><cylinder><radius>1</radius><length>4</length></cylinder></geometry><material><ambient>0.2 0.6 0.3 1</ambient></material></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

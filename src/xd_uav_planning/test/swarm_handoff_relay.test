@@ -1,0 +1,12 @@
+<launch>
+  <node pkg="xd_uav_planning" type="swarm_handoff_relay.py"
+        name="swarm_handoff_relay_test_node" output="screen" required="true">
+    <param name="expected_drone_id" value="1"/>
+    <param name="input_topic" value="/test/swarm_raw"/>
+    <param name="output_topic" value="/test/swarm_reliable"/>
+    <param name="broadcast_topic" value="/test/broadcast"/>
+    <param name="replay_period" value="0.10"/>
+  </node>
+  <test test-name="swarm_handoff_relay" pkg="xd_uav_planning"
+        type="test_swarm_handoff_relay.py" time-limit="20"/>
+</launch>

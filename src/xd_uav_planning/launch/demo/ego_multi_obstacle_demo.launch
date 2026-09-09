@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="gui" default="true"/>
+  <arg name="rviz" default="true"/>
+  <arg name="takeoff_altitude" default="1.5"/>
+  <arg name="world_file" default="$(find xd_uav_planning)/worlds/ego_multi_obstacles.world"/>
+  <arg name="spawn_file" default="$(find xd_uav_planning)/config/demo/ego_multi_spawn.yaml"/>
+
+  <include file="$(find mrs_uav_gazebo_simulation)/launch/simulation.launch">
+    <arg name="world_file" value="$(arg world_file)"/>
+    <arg name="gui" value="$(arg gui)"/>
+  </include>
+  <node pkg="xd_uav_planning" type="spawn_px4_vehicle_node.py"
+        name="spawn_px4_ego_multi" output="screen">
+    <param name="service" value="/mrs_drone_spawner/spawn"/>
+    <param name="request" value="1 2 3 --x500 --enable-rangefinder --enable-ouster model:=OS0-128 use_gpu:=True horizontal_samples:=64 update_rate:=5 --pos-file $(arg spawn_file)"/>
+    <param name="timeout" value="45.0"/>
+  </node>
+  <!-- Spawn poses are the measured Gazebo/world registration for each PX4
+       local odom origin; keep these values synchronized with the YAML above. -->
+  <node pkg="xd_uav_planning" type="multi_odom_registration.py"
+        name="multi_odom_registration" output="screen" required="true">
+    <param name="parent_frame" value="world"/>
+    <rosparam param="registrations">
+      - {child_frame: uav1/local_origin, translation_m: [0.0, -3.0, 0.0]}
+      - {child_frame: uav2/local_origin, translation_m: [0.0, 0.0, 0.0]}
+      - {child_frame: uav3/local_origin, translation_m: [0.0, 3.0, 0.0]}
+    </rosparam>
+  </node>
+  <include file="$(find xd_uav_planning)/launch/demo/ego_multi_vehicle.launch">
+    <arg name="UAV_NAME" value="uav1"/><arg name="ego_id" value="0"/><arg name="goal_y" value="-4.0"/>
+    <arg name="takeoff_altitude" value="$(arg takeoff_altitude)"/>
+  </include>
+  <include file="$(find xd_uav_planning)/launch/demo/ego_multi_vehicle.launch">
+    <arg name="UAV_NAME" value="uav2"/><arg name="ego_id" value="1"/><arg name="goal_y" value="0.0"/>
+    <arg name="takeoff_altitude" value="$(arg takeoff_altitude)"/>
+  </include>
+  <include file="$(find xd_uav_planning)/launch/demo/ego_multi_vehicle.launch">
+    <arg name="UAV_NAME" value="uav3"/><arg name="ego_id" value="2"/><arg name="goal_y" value="4.0"/>
+    <arg name="takeoff_altitude" value="$(arg takeoff_altitude)"/>
+  </include>
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="ego_multi_demo_rviz"
+        args="-d $(find xd_uav_planning)/config/demo/ego_obstacle_demo.rviz" output="screen"/>
+</launch>

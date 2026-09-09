@@ -38,6 +38,13 @@ windows:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch
+  - planning:
+      layout: tiled
+      panes:
+        - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav1 vehicle_type:=fixedwing common_frame:=world
+        - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav2 vehicle_type:=multirotor common_frame:=world output_frame:=uav2/odom ego_id:=0
+        - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav3 vehicle_type:=multirotor common_frame:=world output_frame:=uav3/odom ego_id:=1
+        - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav4 vehicle_type:=multirotor common_frame:=world output_frame:=uav4/odom ego_id:=2
   - task_allocator:
       layout: tiled
       panes:

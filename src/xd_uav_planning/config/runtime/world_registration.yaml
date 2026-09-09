@@ -1,0 +1,14 @@
+world:
+  frame_id: world
+  datum: {latitude: 47.397743, longitude: 8.545594, altitude: 0.0}
+  position: [0.0, 0.0, 0.0]
+  enu_to_world_yaw: 0.0
+
+vehicles: [uav1]
+vehicle_configs:
+  uav1:
+    enabled: true
+    mode: fixed
+    local_origin_frame: uav1/local_origin
+    fixed_position: [0.0, 0.0, 0.0]
+    fixed_yaw: 0.0
