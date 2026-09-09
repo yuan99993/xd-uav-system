@@ -1,0 +1,29 @@
+safety:
+  inputs:
+    odometry_timeout: 0.50
+    imu_timeout: 1.0
+    acceleration_timeout: 0.20
+    airspeed_timeout: 0.30
+    estimator_status_timeout: 0.30
+    mavros_state_timeout: 2.0
+    extended_state_timeout: 2.0
+    future_stamp_tolerance: 0.05
+    require_acceleration: true
+    require_localization: false
+    minimum_groundspeed_for_course: 0.5
+    airspeed_negative_tolerance: 3.0
+  controller_command:
+    timeout: 0.20
+    # PX4 plane SITL may briefly report a negative pitot value immediately
+    # after launch, before the model has accelerated. Keep this tolerance in
+    # the demo only; production safety settings remain unchanged.
+    invalid_grace_duration: 3.0
+  activation:
+    stable_duration: 1.5
+  touchdown:
+    confirm_duration: 0.5
+    zero_thrust_duration: 0.75
+    fixedwing_max_groundspeed: 2.0
+    force_disarm:
+      enabled: true
+      timeout: 2.0

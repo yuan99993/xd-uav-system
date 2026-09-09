@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="world_config"
+       default="$(find xd_uav_planning)/config/runtime/world_registration.yaml"/>
+  <include file="$(find xd_uav_world_tf_manager)/launch/world_tf.launch">
+    <arg name="config" value="$(arg world_config)"/>
+  </include>
+</launch>

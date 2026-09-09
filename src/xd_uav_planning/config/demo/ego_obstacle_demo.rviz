@@ -1,0 +1,111 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 32; 34; 38
+    Fixed Frame: world
+    Frame Rate: 30
+  Displays:
+    - Class: rviz/Grid
+      Name: Ground grid
+      Enabled: true
+      Plane: XY
+      Cell Size: 1
+      Plane Cell Count: 30
+      Color: 120; 120; 120
+      Alpha: 0.5
+    - Class: rviz/TF
+      Name: Vehicle TF
+      Enabled: true
+      Frame Timeout: 15
+      Marker Scale: 0.5
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+    - Class: rviz/Odometry
+      Name: UAV odometry
+      Enabled: true
+      Topic: /drone_0_ego/odometry
+      Keep: 200
+      Position Tolerance: 0.02
+      Angle Tolerance: 0.05
+      Shape:
+        Alpha: 1
+        Axes Length: 0.5
+        Axes Radius: 0.05
+        Color: 255; 170; 0
+        Head Length: 0.2
+        Head Radius: 0.1
+        Shaft Length: 0.5
+        Shaft Radius: 0.05
+        Value: Arrow
+    - Class: rviz/PointCloud2
+      Name: Demo obstacles
+      Enabled: true
+      Topic: /drone_0_ego/cloud_world
+      Queue Size: 10
+      Style: Spheres
+      Size (m): 0.12
+      Color Transformer: FlatColor
+      Color: 230; 70; 70
+      Alpha: 0.9
+    - Class: rviz/PointCloud2
+      Name: EGO inflated map
+      Enabled: true
+      Topic: /drone_0_ego_planner_node/grid_map/occupancy_inflate
+      Queue Size: 10
+      Style: Flat Squares
+      Size (Pixels): 3
+      Color Transformer: FlatColor
+      Color: 255; 210; 0
+      Alpha: 0.6
+    - Class: rviz/Marker
+      Name: Goal
+      Enabled: true
+      Marker Topic: /drone_0_ego_planner_node/goal_point
+      Queue Size: 20
+    - Class: rviz/Marker
+      Name: Global path
+      Enabled: true
+      Marker Topic: /drone_0_ego_planner_node/global_list
+      Queue Size: 20
+    - Class: rviz/Marker
+      Name: Initial trajectory
+      Enabled: true
+      Marker Topic: /drone_0_ego_planner_node/init_list
+      Queue Size: 20
+    - Class: rviz/Marker
+      Name: Optimized trajectory
+      Enabled: true
+      Marker Topic: /drone_0_ego_planner_node/optimal_list
+      Queue Size: 20
+    - Class: rviz/Marker
+      Name: A-star path
+      Enabled: true
+      Marker Topic: /drone_0_ego_planner_node/a_star_list
+      Queue Size: 20
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+    - Class: rviz/Measure
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 14
+      Focal Point:
+        X: 3
+        Y: 0
+        Z: 1
+      Pitch: 0.65
+      Yaw: 3.9
+Window Geometry:
+  Height: 850
+  Width: 1400

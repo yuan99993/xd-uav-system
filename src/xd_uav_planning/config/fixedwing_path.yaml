@@ -1,0 +1,10 @@
+# Fixed-wing planning backend safety contract. Units are SI.
+state_timeout: 0.30
+path_timeout: 1.0
+future_tolerance: 0.02
+minimum_segment_length: 0.05
+maximum_points: 10000
+# Used only if cancellation happens while measured horizontal speed and
+# airspeed are unavailable.  The one-shot release reference is then replaced
+# by tracking input or expires into the controller's configured loiter mode.
+cancel_cruise_airspeed: 15.0
