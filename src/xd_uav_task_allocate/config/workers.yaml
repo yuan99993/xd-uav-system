@@ -10,6 +10,8 @@ workers:
       world_odometry_topic: /uav3/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav3/control_manager/state
+    multirotor:
+      waypoint_gap: 10.0
     topics:
       detections: /uav3/detect/detections
       planner_goal: /uav3/planning/goal
@@ -23,6 +25,8 @@ workers:
       world_odometry_topic: /uav4/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav4/control_manager/state
+    multirotor:
+      waypoint_gap: 10.0
     topics:
       detections: /uav4/detect/detections
       planner_goal: /uav4/planning/goal

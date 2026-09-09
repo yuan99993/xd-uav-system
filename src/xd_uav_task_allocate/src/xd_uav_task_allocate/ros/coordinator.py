@@ -1,7 +1,7 @@
 """Central ROS coordinator for scout coverage and worker rescue tasks."""
 
 import threading
-from math import atan2, cos, isfinite, sin, sqrt
+from math import atan2, ceil, cos, isfinite, sin, sqrt
 from typing import Dict, List, Set, Tuple
 
 import actionlib
@@ -424,6 +424,8 @@ class TaskAllocateCoordinator:
         self.active_goals: Dict[str, Tuple[int, str, int]] = {}
         self.active_goal_points: Dict[str, Tuple[float, float, float]] = {}
         self.active_goal_origins: Dict[str, Tuple[float, float, float]] = {}
+        self.rescue_routes: Dict[str, List[Tuple[float, float, float]]] = {}
+        self.rescue_route_indices: Dict[str, int] = {}
         self.active_trajectory_end_times: Dict[str, float] = {}
         self.active_trajectory_route_progress: Dict[
             str, List[Tuple[float, int]]
@@ -970,6 +972,56 @@ class TaskAllocateCoordinator:
             )
         )
 
+    def _multirotor_setting(self, vehicle: str, key: str, default: float) -> float:
+        """Read a per-vehicle multirotor planning setting."""
+        configs = getattr(self, "scout_configs", {})
+        config = dict(
+            dict(configs).get(
+                str(vehicle),
+                dict(getattr(self, "worker_configs", {})).get(str(vehicle), {}),
+            )
+        )
+        multirotor = dict(config.get("multirotor", {}))
+        if key in multirotor:
+            return float(multirotor[key])
+        try:
+            return float(rospy.get_param(f"~planner/multirotor/{key}", default))
+        except Exception:
+            # Unit tests and offline route generation may not have a ROS
+            # parameter server; the per-vehicle/default value remains valid.
+            return float(default)
+
+    def _densify_multirotor_route(self, vehicle: str, route, start_position=None):
+        """Split long hover waypoints into EGO-sized local waypoints.
+
+        EGO's occupancy map is local. Generated points are actual route entries,
+        so the existing REACHED handling advances only after each local point.
+        """
+        points = [tuple(float(value) for value in point) for point in route]
+        if not points:
+            return []
+        gap = max(0.1, self._multirotor_setting(vehicle, "waypoint_gap", 10.0))
+        previous = (
+            tuple(float(value) for value in start_position)
+            if start_position is not None
+            else points[0]
+        )
+        result = []
+        for target in points:
+            delta = tuple(target[axis] - previous[axis] for axis in range(3))
+            distance = sqrt(sum(value * value for value in delta))
+            if distance <= 1e-6:
+                previous = target
+                continue
+            steps = max(1, int(ceil(distance / gap)))
+            for step in range(1, steps + 1):
+                ratio = float(step) / float(steps)
+                result.append(
+                    tuple(previous[axis] + ratio * delta[axis] for axis in range(3))
+                )
+            previous = target
+        return result
+
     def _coverage_speed(self, vehicle: str) -> float:
         config = dict(
             dict(self.scout_configs).get(
@@ -1457,6 +1509,9 @@ class TaskAllocateCoordinator:
                     )
             else:
                 route = [point for area in areas for point in area.path]
+                route = self._densify_multirotor_route(
+                    scout, route, scout_positions.get(scout)
+                )
             self.routes[scout] = route
             self._publish_path(scout, route, self.loaded_area_stamp)
             rospy.loginfo(
@@ -1510,6 +1565,8 @@ class TaskAllocateCoordinator:
         getattr(self, "worker_visual_handoff_waiting", {}).clear()
         self.active_goal_points.clear()
         self.active_goal_origins.clear()
+        self.rescue_routes.clear()
+        self.rescue_route_indices.clear()
         self.active_trajectory_end_times.clear()
         self.active_trajectory_route_progress.clear()
         self.active_controller_paths.clear()
@@ -2355,9 +2412,14 @@ class TaskAllocateCoordinator:
             self.verification_target_by_scout[scout] = region_id
             self.verification_scout_by_target[region_id] = scout
             self.verification_region_states[region_id] = "active"
-            self.routes[scout] = planned.path
+            current = self.vehicle_world_positions.get(scout)
+            self.routes[scout] = self._densify_multirotor_route(
+                scout,
+                planned.path,
+                current[1] if current is not None else None,
+            )
             self.route_indices[scout] = 0
-            self._publish_path(scout, planned.path, rospy.Time.now())
+            self._publish_path(scout, self.routes[scout], rospy.Time.now())
             rospy.loginfo(
                 "[task_allocate] verification region %d -> %s, radius=%.1f m, "
                 "altitude=%.1f m, waypoints=%d",
@@ -2367,7 +2429,7 @@ class TaskAllocateCoordinator:
                     planned.area.boundary[1][0] - planned.area.boundary[0][0]
                 ),
                 planned.area.altitude,
-                len(planned.path),
+                len(self.routes[scout]),
             )
             self._publish_next_scout_goal(scout)
             available.remove(scout)
@@ -3002,6 +3064,28 @@ class TaskAllocateCoordinator:
             self.goal_publishers[vehicle].publish(goal)
         return goal_id
 
+    def _publish_rescue_goal(self, vehicle: str, task_id: int, target) -> int:
+        """Publish the next local waypoint for a worker rescue task."""
+        rescue_routes = getattr(self, "rescue_routes", {})
+        rescue_route_indices = getattr(self, "rescue_route_indices", {})
+        self.rescue_routes = rescue_routes
+        self.rescue_route_indices = rescue_route_indices
+        route = rescue_routes.get(vehicle, [])
+        if not route:
+            current = self.vehicle_world_positions.get(vehicle)
+            start = current[1] if current is not None else None
+            if self._mobility_profile(vehicle) == "hover":
+                route = self._densify_multirotor_route(vehicle, [target], start)
+            else:
+                route = [tuple(float(value) for value in target)]
+            self.rescue_routes[vehicle] = route
+            self.rescue_route_indices[vehicle] = 0
+        index = rescue_route_indices.get(vehicle, 0)
+        if index >= len(route):
+            index = len(route) - 1
+            self.rescue_route_indices[vehicle] = index
+        return self._publish_goal(vehicle, route[index], "rescue", task_id)
+
     def _publish_next_scout_goal(self, scout: str) -> None:
         if self.mission_state != MISSION_ACTIVE:
             return
@@ -3049,7 +3133,11 @@ class TaskAllocateCoordinator:
                 float(task.target_position[1]),
                 float(worker.position[2]),
             ]
-            goal_id = self._publish_goal(worker.name, task.goal, "rescue", task.task_id)
+            getattr(self, "rescue_routes", {}).pop(worker.name, None)
+            getattr(self, "rescue_route_indices", {}).pop(worker.name, None)
+            goal_id = self._publish_rescue_goal(
+                worker.name, task.task_id, task.goal
+            )
             backend = self.vehicle_backends[worker.name]
             task.detail = f"{backend} goal {goal_id} published"
             rospy.loginfo(
@@ -3140,6 +3228,28 @@ class TaskAllocateCoordinator:
                 )
             return
 
+        if kind == "rescue" and state == PlannerStatus.REACHED:
+            rescue_routes = getattr(self, "rescue_routes", {})
+            rescue_route_indices = getattr(self, "rescue_route_indices", {})
+            rescue_route = rescue_routes.get(vehicle, [])
+            rescue_index = rescue_route_indices.get(vehicle, 0)
+            if rescue_index + 1 < len(rescue_route):
+                # Reached a transit point, not the actual task target. Keep the
+                # task assigned and send the next local EGO goal.
+                rescue_route_indices[vehicle] = rescue_index + 1
+                self.rescue_route_indices = rescue_route_indices
+                self._clear_active_goal(vehicle)
+                self._publish_rescue_goal(vehicle, object_id, rescue_route[-1])
+                task = self.allocator.tasks.get(object_id)
+                if task is not None:
+                    task.detail = (
+                        "rescue transit waypoint {}/{} reached"
+                        .format(rescue_index + 1, len(rescue_route) - 1)
+                    )
+                return
+            rescue_routes.pop(vehicle, None)
+            rescue_route_indices.pop(vehicle, None)
+
         task = self.allocator.tasks.get(object_id)
         if task is None:
             return
@@ -3191,6 +3301,8 @@ class TaskAllocateCoordinator:
                 self._dispatch_assignments()
                 self._check_mission_completed(rospy.Time.now().to_sec())
         elif state in (PlannerStatus.BLOCKED, PlannerStatus.FAILED):
+            getattr(self, "rescue_routes", {}).pop(vehicle, None)
+            getattr(self, "rescue_route_indices", {}).pop(vehicle, None)
             self.allocator.release_worker(
                 vehicle,
                 f"execution backend failed: {detail}",
@@ -3305,6 +3417,56 @@ class TaskAllocateCoordinator:
                 vehicle, goal_id, PlannerStatus.REACHED, detail
             )
 
+    def _check_planning_multirotor_waypoint_arrivals(self, now: float) -> None:
+        """Advance planning-backed hover routes on acceptance-radius entry."""
+        if self.mission_state != MISSION_ACTIVE:
+            return
+        reached = []
+        for vehicle, active in list(self.active_goals.items()):
+            goal_id, kind, _object_id = active
+            if (
+                not self._uses_planning(vehicle)
+                or self._mobility_profile(vehicle) != "hover"
+                or kind not in ("search", "verification", "rescue")
+            ):
+                continue
+            if kind == "rescue":
+                route = getattr(self, "rescue_routes", {}).get(vehicle, [])
+                index = getattr(self, "rescue_route_indices", {}).get(vehicle, 0)
+                # The final rescue target keeps its normal planner/task handoff
+                # semantics; this proximity shortcut is only for split transit
+                # waypoints.
+                if index + 1 >= len(route):
+                    continue
+            position = self.vehicle_world_positions.get(vehicle)
+            goal = self.active_goal_points.get(vehicle)
+            if (
+                position is None
+                or goal is None
+                or not self._vehicle_ready(vehicle, now)
+            ):
+                continue
+            radius = max(
+                0.0,
+                self._multirotor_setting(
+                    vehicle, "waypoint_acceptance_radius_m", 1.0
+                ),
+            )
+            distance = sqrt(sum(
+                (float(position[1][axis]) - float(goal[axis])) ** 2
+                for axis in range(3)
+            ))
+            if distance <= radius:
+                reached.append((vehicle, int(goal_id), radius))
+        for vehicle, goal_id, radius in reached:
+            self._handle_goal_status(
+                vehicle,
+                goal_id,
+                PlannerStatus.REACHED,
+                "world position entered multirotor waypoint acceptance "
+                "radius ({:.2f} m)".format(radius),
+            )
+
     def _timer_callback(self, _event) -> None:
         with self._lock:
             now = rospy.Time.now().to_sec()
@@ -3332,6 +3494,7 @@ class TaskAllocateCoordinator:
             self._dispatch_assignments()
             self._refresh_fixedwing_direct_goals()
             self._check_direct_goal_arrivals(now)
+            self._check_planning_multirotor_waypoint_arrivals(now)
             self._check_mission_completed(now)
             self._publish_state()
 

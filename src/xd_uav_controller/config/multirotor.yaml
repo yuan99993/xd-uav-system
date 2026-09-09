@@ -49,12 +49,12 @@ multirotor:
     maximum_throttle: 0.90
     maximum_tilt: 0.61
     maximum_body_rate: [3.0, 3.0, 2.0]
-    maximum_velocity_xy: 5.0
-    maximum_velocity_z: 5.0
-    maximum_acceleration_xy: 5
-    maximum_acceleration_z: 4
-    maximum_jerk_xy: 6
-    maximum_jerk_z: 5
+    maximum_velocity_xy: 10.0
+    maximum_velocity_z: 8.0
+    maximum_acceleration_xy: 8
+    maximum_acceleration_z: 7
+    maximum_jerk_xy: 8
+    maximum_jerk_z: 7
 
   # 起飞与降落保持为两种机型一致的顶层业务阶段；具体参数由当前机型文件定义。
   takeoff:

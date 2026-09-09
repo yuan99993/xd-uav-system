@@ -172,6 +172,15 @@ planner:
     face_goal: true
     yaw_minimum_distance_m: 0.1
 
+  multirotor:
+    # Split long world-frame hover routes into local EGO goals.
+    waypoint_gap: 10.0
+    # A planning-backed multirotor advances to the next split waypoint as soon
+    # as its world position enters this 3-D radius. No speed or dwell gate is
+    # applied to these route waypoints. May be overridden per vehicle under
+    # scouts/workers.<name>.multirotor.
+    waypoint_acceptance_radius_m: 1.0
+
   fixedwing:
     # Used to replace instantaneous lawnmower reversals with sampled Dubins
     # connectors before the full geometric path is sent to the controller.

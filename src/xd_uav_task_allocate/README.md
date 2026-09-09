@@ -50,8 +50,27 @@ EGO-Swarm 生成避障轨迹；固定翼 planning 后端校验 Path 并转交固
 使机头沿当前航段方向转动；水平距离过小时保持已有航向。旋翼根据新鲜有效的 world
 Odometry，在目标容差内持续指定时间后判定 `REACHED`。固定翼整段搜索只有收到与当前
 `goal_id`一致的控制器 `PathStatus.COMPLETED` 才推进到完成；不再用名义飞行时长判定。
+
+旋翼的 EGO 地图是局部地图。若搜索区域距离起飞点较远，可在对应飞机配置中设置
+`multirotor/waypoint_gap`，任务层会把长航段拆成不超过该距离的局部航点，再逐点发送给规划器：
+
+```yaml
+scouts:
+  uav2:
+    mobility_profile: hover
+    multirotor:
+      waypoint_gap: 10.0
+      # 到此三维半径即推进下一个分段点；不要求停稳。
+      waypoint_acceptance_radius_m: 1.0
+```
+
+这两个值只影响旋翼航点分段，不改变固定翼的完整 `task_path`。前者为最大分段长度，后者为
+每个中间航点的三维到达半径；可在 `mission.yaml/planner/multirotor` 统一设置，也可按飞机覆盖。
 工作机使用独立的到达条件：在 0.5 m 的停距目标容差内持续 1 s，且三维速度不超过
 0.35 m/s，随后立即锁存当前位置保持，避免高速掠过停距点后继续撞向目标。
+
+旋翼工作机前往远距离救援目标时也使用同一 `multirotor/waypoint_gap` 分段参数；中间航点
+只保持任务执行状态，只有最后一个目标航点到达后才释放规划控制权并进入视觉交接。
 
 `ego_swarm` 仅保留为旧配置的 planning 别名；新配置统一写 `planning`。路线可视化单独发布到
 `/<uav>/planning/route_preview`，绝不能把预览 Path 当作固定翼执行输入。
