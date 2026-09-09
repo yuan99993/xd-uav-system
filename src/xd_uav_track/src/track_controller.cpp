@@ -653,7 +653,10 @@ TrackVelocity TrackController::compute(const double now) {
         ground_y *= 1.0 + config_.ground_base_adjustment_y /
             (1.0 + config_.ground_altitude_factor * altitude);
       }
-      desired_forward = ground_forward_pid_.update(ground_y, dt);
+      // For the downward optical frame, image +Y points toward body -X.
+      // Therefore a target below the image centre requires negative body-FLU
+      // forward velocity; using +ground_y makes the error diverge.
+      desired_forward = ground_forward_pid_.update(-ground_y, dt);
       desired_left = lateral_pid_.update(-ground_x, dt);
       if (config_.ground_descend_to_target && vehicle_state_.valid &&
           vehicle_state_.altitude > config_.ground_target_altitude) {

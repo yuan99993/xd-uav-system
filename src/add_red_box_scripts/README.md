@@ -316,6 +316,10 @@ rqt_image_view /uav1/track/red_detector/debug_image
 如果实际使用的是下视相机，第一条检查命令也应改为
 `/uav1/down_camera/image_raw`，并确保启动检测器时使用了相同的输入话题。
 
+## 5. 生成红色方块和障碍物，用于检验规划算法是否可用
+
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red_box_scripts/spawn_red_boxesandblocks.py --count 5 --search-area-topic /task_allocate/search_areas --size 2 2 2 --ground-z 0 --min-spacing 30 --obstacle-count 12 --obstacle-height 25 --wall-size 12 1.5 --pillar-size 3 3 --obstacle-min-spacing 3 --obstacle-red-spacing 3 --replace
+
 ## 常见问题
 
 ### 发布了搜索区域，但脚本仍然超时
@@ -328,6 +332,8 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /ta
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: -75.0, y: -75.0, z: 0.0}, {x: 75.0, y: -75.0, z: 0.0}, {x: 75.0, y: 75.0, z: 0.0}, {x: -75.0, y: 75.0, z: 0.0}]}, altitude: 30.0, lane_spacing: 5.0, priority: 1}]}"
 
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 100.0, y: 0.0, z: 0.0}, {x: 100.0, y: 100.0, z: 0.0}, {x: 0.0, y: 100.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 6.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -160.0, y: -160.0, z: 0.0}, {x: 0.0, y: -160.0, z: 0.0}, {x: -60.0, y: -60.0, z: 0.0}, {x: -160.0, y: 0.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 5.0, priority: 1}]}"
+
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 150.0, y: 0.0, z: 0.0}, {x: 150.0, y: 120.0, z: 0.0}, {x: 0.0, y: 120.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 8.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -70.0, y: -60.0, z: 0.0}, {x: 0.0, y: -60.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -70.0, y: 0.0, z: 0.0}]}, altitude: 8.0, lane_spacing: 8.0, priority: 1}]}"
 ### Gazebo 提示模型名称已存在
 
 再次生成时加 `--replace`，或者通过 `--prefix` 使用新的模型名前缀。

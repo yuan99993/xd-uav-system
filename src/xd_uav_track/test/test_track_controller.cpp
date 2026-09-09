@@ -102,7 +102,8 @@ TEST(TrackController, GroundProfileUsesImageAxesAndOptionalDescent) {
   ASSERT_TRUE(controller.updateMeasurement(box(400, 300, 500, 380)));
   const auto output = controller.compute(10.01);
   EXPECT_EQ(output.profile, "mc_velocity_ground");
-  EXPECT_GT(output.forward, 0.0);
+  // Image +Y maps to body -X for the downward optical frame.
+  EXPECT_LT(output.forward, 0.0);
   EXPECT_LT(output.left, 0.0);
   EXPECT_NEAR(output.up, -0.4, 1e-9);
   EXPECT_DOUBLE_EQ(output.yaw_rate, 0.0);

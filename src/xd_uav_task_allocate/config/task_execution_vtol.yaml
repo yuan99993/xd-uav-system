@@ -1,0 +1,34 @@
+# Four-VTOL end-to-end validation overrides. This file is loaded after
+# mission.yaml, scouts.yaml and workers.yaml by task_allocate.launch.
+
+target_registry:
+  # During the first end-to-end run, a target seen by either search aircraft
+  # may enter allocation. Raise this to 2 after camera overlap is verified.
+  confirmation_distinct_uavs: 1
+
+post_arrival:
+  mode: task_execute
+  action_name_template: /{worker}/task_execute/execute
+  server_wait_timeout_sec: 2.0
+
+  failure_policy: fail
+  retry_delay_sec: 5.0
+
+  default_task:
+    task_type: track
+    local_track_id: -1
+    follower_profile: ""
+    required_execution_sec: 10.0
+    maximum_duration_sec: 60.0
+
+  mobility_profile_overrides:
+    # All four VTOLs stay in multicopter mode for this initial task-flow test.
+    # The detector uses the downward camera, so use the matching ground-target
+    # follower instead of the front-camera/gimbal chase profile.
+    hover:
+      follower_profile: mc_velocity_ground
+    fixedwing:
+      follower_profile: fw_velocity_vector
+
+  class_overrides: {}
+  worker_overrides: {}

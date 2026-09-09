@@ -112,6 +112,20 @@ class ReferenceIntegrationTest(unittest.TestCase):
         rospy.sleep(0.10)
         self.assertEqual(len(self._canonical), count)
 
+        rospy.wait_for_service("/uav1/reference_mux/set_enabled", timeout=3.0)
+        set_enabled = rospy.ServiceProxy(
+            "/uav1/reference_mux/set_enabled", SetBool)
+        self.assertTrue(set_enabled(False).success)
+        self._bridge_health.publish(Bool(data=True))
+        self._sensing_health.publish(Bool(data=True))
+        rospy.sleep(0.05)
+        count = len(self._canonical)
+        for _ in range(4):
+            self._candidate.publish(self._message())
+            rospy.sleep(0.03)
+        rospy.sleep(0.10)
+        self.assertEqual(len(self._canonical), count)
+
 
 if __name__ == "__main__":
     rospy.init_node("test_reference_integration")

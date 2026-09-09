@@ -54,7 +54,8 @@ roslaunch xd_uav_planning planning.launch \
 不会永久卡在 `SEQUENTIAL_START`，无需修改第三方源码。
 
 EGO 的内部 frame 固定为 `world`；规划层仍严格拒绝错误 frame 或非有限坐标，但允许地图范围内
-的任意三维目标高度。
+的任意三维目标高度。默认地图高度范围约为 `-0.01~10 m`；更高任务在
+`planning.launch` 中同步增大 `map_size_z` 和 `virtual_ceil_height`。
 
 ### fixedwing / Path
 

@@ -25,10 +25,10 @@ windows:
   - estimator:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav3 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav4 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav3 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav4 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
 
   - controller:
       layout: tiled
@@ -64,7 +64,7 @@ windows:
         - >-
           waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
           roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav2 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
-          detector_pid=$!;
+          detector_pid
           until rosservice info /uav2/sar_yolo_smart_tracker/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
           rosservice call /uav2/sar_yolo_smart_tracker/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
           wait "$detector_pid"
