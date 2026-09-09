@@ -118,27 +118,6 @@ def goal_heading(
     return atan2(dy, dx)
 
 
-def worker_approach_goal(
-    current: Sequence[float],
-    target: Sequence[float],
-    horizontal_standoff_m: float,
-) -> tuple:
-    """Approach in XY while retaining the worker's current world altitude."""
-
-    dx = float(target[0]) - float(current[0])
-    dy = float(target[1]) - float(current[1])
-    distance = hypot(dx, dy)
-    standoff = max(0.0, float(horizontal_standoff_m))
-    if distance <= standoff or distance <= 1e-9:
-        x = float(current[0])
-        y = float(current[1])
-    else:
-        travel = distance - standoff
-        x = float(current[0]) + dx * travel / distance
-        y = float(current[1]) + dy * travel / distance
-    return (x, y, float(current[2]))
-
-
 def fixedwing_waypoint_reached(
     current: Sequence[float],
     segment_start: Sequence[float],

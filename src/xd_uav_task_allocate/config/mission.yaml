@@ -72,7 +72,7 @@ search_area:
 search_allocation:
   # Coverage is balanced by estimated flight time rather than raw distance.
   # A vehicle may override this with coverage/nominal_speed_mps.
-  multirotor_nominal_speed_mps: 4.0
+  hover_nominal_speed_mps: 4.0
   fixedwing_nominal_speed_mps: 15.0
 
 target_registry:
@@ -146,30 +146,21 @@ allocation:
   # second worker task.  Keep below the minimum expected spacing of real
   # same-class targets, or set 0 to disable.
   task_deduplication_radius_m: 5.0
-  # Rescue tasks are assigned to hover-capable aircraft unless a class-specific
-  # rule explicitly allows fixed-wing workers.
-  default_worker_vehicle_types: [multirotor, fixedwing]
-  class_worker_vehicle_types: {}
-    # "0": [multirotor] 依据识别出来的classid确定哪个类型飞机接受任务
-    # "1": [fixedwing] 目标类别编号 → 允许执行这个任务的飞机类型
-    # "2": [multirotor, fixedwing]
-  worker_approach:
-    # Stop well before the detected object. The red box is 1 m wide and the
-    # aircraft body plus braking error also need clearance; 2 m was too small.
-    horizontal_standoff_m: 5.0
-    # Completion is measured around the standoff goal, not around the object.
-    # Require the aircraft to settle so a fast fly-through cannot complete it.
-    goal_tolerance_m: 0.5
-    arrival_dwell_sec: 1.0
-    maximum_arrival_speed_mps: 0.35
+  # Allocation is intentionally independent of airframe type. Every healthy,
+  # idle configured worker is eligible; route semantics are configured on the
+  # vehicle with mobility_profile instead of being used as an eligibility gate.
+  worker_execution:
+    # task_execute has exactly two gates: the worker is horizontally within
+    # this radius of its assigned target, and its camera reports that class.
+    target_radius_m: 10.0
   # Larger value is dispatched first. class_id 0 is the red-marker test target.
   class_priorities:
     "0": 10
 
 planner:
-  # Temporary clear-area validation backend. Change back to ego_swarm after the
-  # EGO adapter is ready; there is never an automatic fallback between them.
-  backend: direct_controller_test
+  # Production navigation always enters xd_uav_planning. The direct controller
+  # backend remains below only as an explicit clear-area test fallback.
+  backend: planning
   direct_controller_test:
     # Mandatory acknowledgement: this backend sends multirotor mission points
     # and complete fixed-wing geometric paths directly to the controller;

@@ -159,6 +159,9 @@ string detail
 | `common_frame` | `world` | 输入目标/路径的公共坐标系 |
 | `output_frame` | `common_frame` | 多旋翼控制参考输出坐标系 |
 | `ego_id` | `0` | EGO 实例编号，多机必须唯一 |
+| `map_size_z` | `12.0` | EGO 栅格地图垂直尺寸 |
+| `ground_height` | `-0.01` | EGO 地图下边界 |
+| `virtual_ceil_height` | `10.0` | EGO 可飞上边界；高空任务需连同 map size 调大 |
 | `goal_topic` | `/<uav>/planning/goal` | 多旋翼点目标输入 |
 | `task_path_topic` | `/<uav>/planning/task_path` | 固定翼执行路径输入 |
 | `status_topic` | `/<uav>/planning/status` | 统一任务状态输出 |

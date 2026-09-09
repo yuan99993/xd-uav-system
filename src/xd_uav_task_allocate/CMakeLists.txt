@@ -31,6 +31,7 @@ add_message_files(
 
 add_service_files(
   FILES
+  CancelPlanning.srv
   GetMissionState.srv
   LoadSearchAreas.srv
   SetVehicleEnabled.srv

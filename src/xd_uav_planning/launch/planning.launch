@@ -18,6 +18,13 @@
   <arg name="goal_x" default="1.0"/>
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>
+  <!-- Arbitrary altitude means arbitrary within these configured map bounds. -->
+  <arg name="map_size_x" default="30.0"/>
+  <arg name="map_size_y" default="20.0"/>
+  <arg name="map_size_z" default="12.0"/>
+  <arg name="ground_height" default="-0.01"/>
+  <arg name="virtual_ceil_height" default="10.0"/>
+  <arg name="visualization_truncate_height" default="10.0"/>
   <arg name="cloud_input_topic" default="/$(arg UAV_NAME)/os_cloud_nodelet/points"/>
   <arg name="cloud_input_frame" default="$(arg UAV_NAME)/os_sensor"/>
   <arg name="cloud_timeout" default="0.50"/>
@@ -60,6 +67,12 @@
       <arg name="goal_x" value="$(arg goal_x)"/>
       <arg name="goal_y" value="$(arg goal_y)"/>
       <arg name="goal_z" value="$(arg goal_z)"/>
+      <arg name="map_size_x" value="$(arg map_size_x)"/>
+      <arg name="map_size_y" value="$(arg map_size_y)"/>
+      <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="ground_height" value="$(arg ground_height)"/>
+      <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
+      <arg name="visualization_truncate_height" value="$(arg visualization_truncate_height)"/>
     </include>
     <node pkg="xd_uav_planning" type="select_owner_when_ready.py"
           name="select_ego_owner_when_ready_$(arg ego_id)" output="screen">

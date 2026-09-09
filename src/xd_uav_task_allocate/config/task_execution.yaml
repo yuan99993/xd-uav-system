@@ -1,9 +1,9 @@
-# Worker behavior after its approach planner reports REACHED. This file is
-# loaded separately so allocation-only tests can keep the original semantics.
+# Worker behavior after camera detection triggers execution inside the target
+# radius. This file is loaded separately from the allocation policy.
 post_arrival:
   # arrive: preserve the original behavior and complete immediately at REACHED.
   # task_execute: send ExecuteTaskGoal and complete only after action success.
-  mode: arrive  # arrive | task_execute
+  mode: task_execute  # arrive | task_execute
 
   action_name_template: /{worker}/task_execute/execute
   server_wait_timeout_sec: 2.0
@@ -23,10 +23,10 @@ post_arrival:
     required_execution_sec: 0.0
     maximum_duration_sec: 0.0
 
-  # Merge order is: default -> vehicle type -> target class -> worker.
+  # Merge order is: default -> mobility profile -> target class -> worker.
   # These examples are intentionally inactive while mode=arrive.
-  vehicle_type_overrides:
-    multirotor:
+  mobility_profile_overrides:
+    hover:
       follower_profile: gm_velocity_chase
     fixedwing:
       follower_profile: fw_velocity_vector

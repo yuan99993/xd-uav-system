@@ -1,27 +1,31 @@
-# Rescue/working-aircraft configuration only. These aircraft do not subscribe
-# to detector output; they receive confirmed world-frame task goals.
+# Rescue/working-aircraft configuration. Detector input is used for the
+# sensor-independent visual handoff near an assigned task; global task creation
+# still belongs to scouts. "detections" may be a YAML list for multiple camera
+# pipelines publishing the same DetectionArray contract.
 workers:
   uav3:
-    vehicle_type: multirotor
+    mobility_profile: hover
     localization:
       # Selected main estimator state, already expressed in world.
       world_odometry_topic: /uav3/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav3/control_manager/state
     topics:
+      detections: /uav3/detect/detections
       planner_goal: /uav3/planning/goal
-      controller_setpoint: /uav3/control/reference/setpoint
-      mission_path: /uav3/planning/mission_path
+      planner_cancel: /uav3/planning/cancel
+      route_preview: /uav3/planning/route_preview
       planner_status: /uav3/planning/status
 
   uav4:
-    vehicle_type: multirotor
+    mobility_profile: hover
     localization:
       world_odometry_topic: /uav4/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav4/control_manager/state
     topics:
+      detections: /uav4/detect/detections
       planner_goal: /uav4/planning/goal
-      controller_setpoint: /uav4/control/reference/setpoint
-      mission_path: /uav4/planning/mission_path
+      planner_cancel: /uav4/planning/cancel
+      route_preview: /uav4/planning/route_preview
       planner_status: /uav4/planning/status

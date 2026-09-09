@@ -3,14 +3,14 @@
 # mission.yaml auto-selects hierarchical search from these two vehicle types.
 scouts:
   uav1:
-    vehicle_type: fixedwing
+    mobility_profile: fixedwing
     localization:
       world_odometry_topic: /uav1/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav1/control_manager/state
     execution:
       # May override the mission-wide planner/backend independently per vehicle.
-      backend: direct_controller_test
+      backend: planning
     coverage:
       nominal_speed_mps: 15.0
     fixedwing:
@@ -36,26 +36,24 @@ scouts:
       pass_cross_track_limit_m: 40.0
     topics:
       detections: /uav1/detect/detections
-      planner_goal: /uav1/planning/goal
-      controller_setpoint: /uav1/control/reference/setpoint
-      controller_path: /uav1/control/reference/path
-      controller_path_status: /uav1/controller/path_status
-      mission_path: /uav1/planning/mission_path
+      planner_task_path: /uav1/planning/task_path
+      planner_cancel: /uav1/planning/cancel
+      route_preview: /uav1/planning/route_preview
       planner_status: /uav1/planning/status
 
   uav2:
-    vehicle_type: multirotor
+    mobility_profile: hover
     localization:
       world_odometry_topic: /uav2/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav2/control_manager/state
     execution:
-      backend: direct_controller_test
+      backend: planning
     coverage:
       nominal_speed_mps: 4.0
     topics:
       detections: /uav2/detect/detections
       planner_goal: /uav2/planning/goal
-      controller_setpoint: /uav2/control/reference/setpoint
-      mission_path: /uav2/planning/mission_path
+      planner_cancel: /uav2/planning/cancel
+      route_preview: /uav2/planning/route_preview
       planner_status: /uav2/planning/status

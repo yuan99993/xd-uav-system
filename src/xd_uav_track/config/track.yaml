@@ -32,8 +32,8 @@ tracker:
   # false 时必须调用 ~start_tracker，避免检测器一启动飞机立即跟随。
   enabled_at_startup: false
   input_timeout_sec: 0.25
-  minimum_confidence: 0.50
-  confidence_hysteresis: 0.08
+  minimum_confidence: 0.10
+  confidence_hysteresis: 0.05
 
   # 选中轨迹进入 follower 前的轻量平滑。
   position_filter_alpha: 0.40

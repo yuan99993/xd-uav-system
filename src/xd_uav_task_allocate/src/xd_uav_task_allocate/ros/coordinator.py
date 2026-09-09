@@ -35,7 +35,6 @@ from xd_uav_task_allocate.core.execution import (
     ArrivalDwellTracker,
     fixedwing_waypoint_reached,
     goal_heading,
-    worker_approach_goal,
 )
 from xd_uav_task_allocate.core.geometry import (
     PoseHistory,
@@ -65,6 +64,7 @@ from xd_uav_task_allocate.msg import (
     SearchAreaArray,
 )
 from xd_uav_task_allocate.srv import (
+    CancelPlanning,
     GetMissionState,
     GetMissionStateResponse,
     LoadSearchAreas,
@@ -132,11 +132,14 @@ class TaskAllocateCoordinator:
             0.0, float(rospy.get_param("~execution/completion_grace_sec", 2.0))
         )
         self.planner_backend = str(
-            rospy.get_param("~planner/backend", "ego_swarm")
+            rospy.get_param("~planner/backend", "planning")
         ).strip()
-        if self.planner_backend not in ("ego_swarm", "direct_controller_test"):
+        if self.planner_backend not in (
+            "planning", "ego_swarm", "direct_controller_test"
+        ):
             raise ValueError(
-                "planner/backend must be ego_swarm or direct_controller_test"
+                "planner/backend must be planning, ego_swarm, or "
+                "direct_controller_test"
             )
         self.direct_face_goal = bool(
             rospy.get_param("~planner/direct_controller_test/face_goal", True)
@@ -157,31 +160,14 @@ class TaskAllocateCoordinator:
                 "~planner/direct_controller_test/arrival_dwell_sec", 0.5
             ),
         )
-        self.worker_arrival_tracker = ArrivalDwellTracker(
-            tolerance_m=rospy.get_param(
-                "~allocation/worker_approach/goal_tolerance_m", 0.5
-            ),
-            dwell_sec=rospy.get_param(
-                "~allocation/worker_approach/arrival_dwell_sec", 1.0
-            ),
-        )
-        self.worker_maximum_arrival_speed = max(
-            0.0,
-            float(
-                rospy.get_param(
-                    "~allocation/worker_approach/maximum_arrival_speed_mps",
-                    0.35,
-                )
-            ),
-        )
         self.worker_state_timeout = float(
             rospy.get_param("~allocation/worker_state_timeout_sec", 1.0)
         )
-        self.worker_horizontal_standoff = max(
+        self.worker_execution_target_radius = max(
             0.0,
             float(
                 rospy.get_param(
-                    "~allocation/worker_approach/horizontal_standoff_m", 5.0
+                    "~allocation/worker_execution/target_radius_m", 10.0
                 )
             ),
         )
@@ -191,17 +177,6 @@ class TaskAllocateCoordinator:
         self.class_priorities = {
             int(key): int(value)
             for key, value in dict(rospy.get_param("~allocation/class_priorities", {})).items()
-        }
-        self.default_worker_vehicle_types = self._vehicle_type_list(
-            rospy.get_param(
-                "~allocation/default_worker_vehicle_types", ["multirotor"]
-            )
-        )
-        self.class_worker_vehicle_types = {
-            int(key): self._vehicle_type_list(value)
-            for key, value in dict(
-                rospy.get_param("~allocation/class_worker_vehicle_types", {})
-            ).items()
         }
         self.task_duplicate_radius = max(
             0.0,
@@ -239,8 +214,8 @@ class TaskAllocateCoordinator:
             0.0, float(post_arrival.get("retry_delay_sec", 5.0))
         )
         self.task_execute_defaults = dict(post_arrival.get("default_task", {}))
-        self.task_execute_vehicle_type_overrides = dict(
-            post_arrival.get("vehicle_type_overrides", {})
+        self.task_execute_mobility_profile_overrides = dict(
+            post_arrival.get("mobility_profile_overrides", {})
         )
         self.task_execute_class_overrides = dict(
             post_arrival.get("class_overrides", {})
@@ -251,8 +226,8 @@ class TaskAllocateCoordinator:
 
         self.scout_configs = dict(rospy.get_param("~scouts", {}))
         self.worker_configs = dict(rospy.get_param("~workers", {}))
-        configured_scout_types = {
-            self._configured_vehicle_type(dict(config))
+        configured_scout_mobility = {
+            self._configured_mobility_profile(dict(config))
             for config in self.scout_configs.values()
         }
         hierarchical_mode = str(
@@ -263,7 +238,7 @@ class TaskAllocateCoordinator:
         )
         self.hierarchical_search_enabled = self._resolve_hierarchical_search_mode(
             hierarchical_mode,
-            configured_scout_types,
+            configured_scout_mobility,
             legacy_hierarchical_enabled,
         )
         self.hierarchical_search_mode = (
@@ -365,10 +340,10 @@ class TaskAllocateCoordinator:
                 "~target_registry/confirmation_distinct_uavs", 2
             ),
             stale_timeout_sec=rospy.get_param("~target_registry/stale_timeout_sec", 15.0),
-            confirmation_vehicle_types=(
-                ("multirotor",)
+            confirmation_mobility_profiles=(
+                ("hover",)
                 if self.hierarchical_search_enabled
-                else ("multirotor", "fixedwing")
+                else ("hover", "fixedwing")
             ),
             association_covariance_sigma=rospy.get_param(
                 "~target_registry/association_covariance_sigma", 3.0
@@ -406,8 +381,8 @@ class TaskAllocateCoordinator:
 
         all_configs = dict(self.scout_configs)
         all_configs.update(self.worker_configs)
-        self.vehicle_types = {
-            str(name): self._configured_vehicle_type(dict(config))
+        self.mobility_profiles = {
+            str(name): self._configured_mobility_profile(dict(config))
             for name, config in all_configs.items()
         }
         self.vehicle_backends = {
@@ -438,6 +413,8 @@ class TaskAllocateCoordinator:
         self.vehicle_world_speeds: Dict[str, Tuple[float, float]] = {}
         self.vehicle_health: Dict[str, Tuple[float, bool]] = {}
         self.goal_publishers: Dict[str, rospy.Publisher] = {}
+        self.planning_path_publishers: Dict[str, rospy.Publisher] = {}
+        self.planning_cancel_clients = {}
         self.direct_goal_publishers: Dict[str, rospy.Publisher] = {}
         self.direct_path_publishers: Dict[str, rospy.Publisher] = {}
         self.direct_status_publishers: Dict[str, rospy.Publisher] = {}
@@ -462,6 +439,7 @@ class TaskAllocateCoordinator:
         self.worker_retry_after: Dict[str, float] = {}
         self.task_execute_clients: Dict[str, actionlib.SimpleActionClient] = {}
         self.active_task_executions: Dict[str, Tuple[int, int]] = {}
+        self.worker_visual_handoff_waiting: Dict[str, int] = {}
         self._next_task_execution_token = 1
         self.vehicle_operator_enabled = {
             str(name): True for name in all_configs
@@ -588,9 +566,7 @@ class TaskAllocateCoordinator:
         for name, config in self.scout_configs.items():
             self._configure_vehicle(str(name), dict(config), is_scout=True)
         for name, config in self.worker_configs.items():
-            self.allocator.register_worker(
-                str(name), self.vehicle_types[str(name)]
-            )
+            self.allocator.register_worker(str(name))
             self._configure_vehicle(str(name), dict(config), is_scout=False)
         if self.post_arrival_mode == "task_execute":
             for name in self.worker_configs:
@@ -605,12 +581,12 @@ class TaskAllocateCoordinator:
         self._publish_mission_state()
         rospy.loginfo(
             "[task_allocate] ready: scouts=%s workers=%s shared_frame=%s; "
-            "position=main world Odometry; vehicles=%s; backends=%s; "
+            "position=main world Odometry; mobility=%s; backends=%s; "
             "hierarchical_search=%s(mode=%s); post_arrival=%s",
             sorted(self.scout_configs),
             sorted(self.worker_configs),
             self.shared_frame,
-            self.vehicle_types,
+            self.mobility_profiles,
             self.vehicle_backends,
             self.hierarchical_search_enabled,
             self.hierarchical_search_mode,
@@ -627,27 +603,34 @@ class TaskAllocateCoordinator:
         return str(dict(config.get("topics", {})).get(key, fallback))
 
     @staticmethod
-    def _vehicle_type_list(value) -> Tuple[str, ...]:
-        values = [value] if isinstance(value, str) else list(value)
-        normalized = tuple(sorted({str(item).strip().lower() for item in values}))
-        if not normalized or any(
-            item not in ("multirotor", "fixedwing") for item in normalized
-        ):
-            raise ValueError(
-                "worker vehicle type lists must contain multirotor and/or fixedwing"
-            )
-        return normalized
+    def _topics(config: dict, key: str, fallback: str) -> List[str]:
+        """Accept one topic or a list, keeping camera selection out of here."""
+
+        value = dict(config.get("topics", {})).get(key, fallback)
+        values = value if isinstance(value, (list, tuple)) else [value]
+        topics = [str(item).strip() for item in values if str(item).strip()]
+        if not topics:
+            raise ValueError(f"topics/{key} must contain at least one topic")
+        return topics
 
     @staticmethod
-    def _configured_vehicle_type(config: dict) -> str:
-        vehicle_type = str(config.get("vehicle_type", "multirotor")).strip().lower()
-        if vehicle_type not in ("multirotor", "fixedwing"):
-            raise ValueError("vehicle_type must be multirotor or fixedwing")
-        return vehicle_type
+    def _configured_mobility_profile(config: dict) -> str:
+        """Resolve only the navigation semantics needed by route execution."""
+
+        profile = str(config.get("mobility_profile", "hover")).strip().lower()
+        if profile not in ("hover", "fixedwing"):
+            raise ValueError("mobility_profile must be hover or fixedwing")
+        return profile
+
+    def _mobility_profile(self, vehicle: str) -> str:
+        """Return configured route and arrival semantics."""
+
+        profiles = getattr(self, "mobility_profiles", {})
+        return profiles.get(str(vehicle), "hover")
 
     @staticmethod
     def _resolve_hierarchical_search_mode(
-        mode: str, scout_vehicle_types, legacy_enabled: bool = False
+        mode: str, scout_mobility_profiles, legacy_enabled: bool = False
     ) -> bool:
         """Select reconnaissance flow from policy and configured scout types."""
 
@@ -655,8 +638,10 @@ class TaskAllocateCoordinator:
         if not normalized:
             return bool(legacy_enabled)
         if normalized == "auto":
-            types = {str(value).strip().lower() for value in scout_vehicle_types}
-            return "fixedwing" in types and "multirotor" in types
+            profiles = {
+                str(value).strip().lower() for value in scout_mobility_profiles
+            }
+            return "fixedwing" in profiles and "hover" in profiles
         if normalized == "hierarchical":
             return True
         if normalized == "single_stage":
@@ -668,14 +653,18 @@ class TaskAllocateCoordinator:
     def _configured_backend(self, config: dict) -> str:
         execution = dict(config.get("execution", {}))
         backend = str(execution.get("backend", self.planner_backend)).strip()
-        if backend not in ("ego_swarm", "direct_controller_test"):
+        if backend not in ("planning", "ego_swarm", "direct_controller_test"):
             raise ValueError(
-                "vehicle execution/backend must be ego_swarm or direct_controller_test"
+                "vehicle execution/backend must be planning, ego_swarm, or "
+                "direct_controller_test"
             )
         return backend
 
     def _uses_direct_controller(self, vehicle: str) -> bool:
         return self.vehicle_backends.get(str(vehicle)) == "direct_controller_test"
+
+    def _uses_planning(self, vehicle: str) -> bool:
+        return self.vehicle_backends.get(str(vehicle)) in ("planning", "ego_swarm")
 
     def _task_execute_action_name(self, worker: str) -> str:
         name = self.task_execute_action_name_template.format(worker=str(worker))
@@ -714,8 +703,8 @@ class TaskAllocateCoordinator:
         options = dict(self.task_execute_defaults)
         options.update(
             dict(
-                self.task_execute_vehicle_type_overrides.get(
-                    self.vehicle_types.get(str(worker), ""), {}
+                self.task_execute_mobility_profile_overrides.get(
+                    self._mobility_profile(worker), {}
                 )
             )
         )
@@ -727,7 +716,9 @@ class TaskAllocateCoordinator:
         options.update(dict(self.task_execute_worker_overrides.get(str(worker), {})))
         return options
 
-    def _build_task_execute_goal(self, task, worker: str) -> ExecuteTaskGoal:
+    def _build_task_execute_goal(
+        self, task, worker: str, local_track_id=None
+    ) -> ExecuteTaskGoal:
         options = self._task_execute_options(task, worker)
         goal = ExecuteTaskGoal()
         goal.header.stamp = rospy.Time.now()
@@ -742,7 +733,11 @@ class TaskAllocateCoordinator:
         goal.target_pose.pose.position.y = float(task.target_position[1])
         goal.target_pose.pose.position.z = float(task.target_position[2])
         goal.target_pose.pose.orientation.w = 1.0
-        goal.local_track_id = int(options.get("local_track_id", -1))
+        goal.local_track_id = int(
+            options.get("local_track_id", -1)
+            if local_track_id is None
+            else local_track_id
+        )
         goal.follower_profile = str(options.get("follower_profile", "")).strip()
         goal.required_execution_sec = max(
             0.0, float(options.get("required_execution_sec", 0.0))
@@ -760,11 +755,11 @@ class TaskAllocateCoordinator:
         self.registry.set_status(completed.target_id, TARGET_COMPLETED)
         rospy.loginfo(
             "[task_allocate] 任务完成: task=%d target=%d worker=%s "
-            "vehicle_type=%s reason=%s",
+            "mobility_profile=%s reason=%s",
             completed.task_id,
             completed.target_id,
             worker,
-            self.vehicle_types.get(worker, "unknown"),
+            self._mobility_profile(worker),
             detail,
         )
 
@@ -826,7 +821,7 @@ class TaskAllocateCoordinator:
                 return
             if (
                 self._uses_direct_controller(worker)
-                and self.vehicle_types.get(worker) != "fixedwing"
+                and self._mobility_profile(worker) != "fixedwing"
             ):
                 # Track may have overwritten the arrival hold. Re-issue it
                 # after the executor has stopped the tracking controller.
@@ -857,7 +852,13 @@ class TaskAllocateCoordinator:
             self._check_mission_completed(rospy.Time.now().to_sec())
             self._publish_state()
 
-    def _start_task_execution(self, task, worker: str) -> bool:
+    def _start_task_execution(
+        self,
+        task,
+        worker: str,
+        local_track_id=None,
+        handoff_detail: str = "camera detection inside target radius",
+    ) -> bool:
         if self.allocator.mark_executing(task.task_id):
             self.registry.set_status(task.target_id, TARGET_EXECUTING)
         client = self.task_execute_clients.get(worker)
@@ -882,7 +883,9 @@ class TaskAllocateCoordinator:
             )
             return False
         try:
-            goal = self._build_task_execute_goal(task, worker)
+            goal = self._build_task_execute_goal(
+                task, worker, local_track_id=local_track_id
+            )
         except (TypeError, ValueError, KeyError) as error:
             self._handle_task_execute_failure(task, worker, str(error))
             return False
@@ -911,11 +914,13 @@ class TaskAllocateCoordinator:
             self._handle_task_execute_failure(task, worker, str(error))
             return False
         rospy.loginfo(
-            "[task_allocate] task=%d worker=%s reached approach goal; "
-            "task_execute type=%d started",
+            "[task_allocate] task=%d worker=%s handoff=%s; "
+            "task_execute type=%d local_track_id=%d started",
             task.task_id,
             worker,
+            handoff_detail,
             int(goal.task_type),
+            int(goal.local_track_id),
         )
         return True
 
@@ -928,7 +933,7 @@ class TaskAllocateCoordinator:
             client.cancel_goal()
         if (
             self._uses_direct_controller(worker)
-            and self.vehicle_types.get(worker) != "fixedwing"
+            and self._mobility_profile(worker) != "fixedwing"
         ):
             self._publish_direct_hold(worker)
         task = self.allocator.tasks.get(active[0])
@@ -972,15 +977,15 @@ class TaskAllocateCoordinator:
             )
         )
         coverage = dict(config.get("coverage", {}))
-        vehicle_type = self.vehicle_types[str(vehicle)]
-        default = 15.0 if vehicle_type == "fixedwing" else 4.0
+        mobility_profile = self._mobility_profile(vehicle)
+        default = 15.0 if mobility_profile == "fixedwing" else 4.0
         return max(
             0.1,
             float(
                 coverage.get(
                     "nominal_speed_mps",
                     rospy.get_param(
-                        f"~search_allocation/{vehicle_type}_nominal_speed_mps",
+                        f"~search_allocation/{mobility_profile}_nominal_speed_mps",
                         default,
                     ),
                 )
@@ -1073,7 +1078,7 @@ class TaskAllocateCoordinator:
                 queue_size=5,
                 latch=True,
             )
-            if self.vehicle_types[name] == "fixedwing":
+            if self._mobility_profile(name) == "fixedwing":
                 self.direct_path_publishers[name] = rospy.Publisher(
                     self._topic(
                         config,
@@ -1099,14 +1104,34 @@ class TaskAllocateCoordinator:
                     )
                 )
         else:
-            self.goal_publishers[name] = rospy.Publisher(
-                self._topic(config, "planner_goal", f"/{name}/planning/goal"),
-                PoseStamped,
-                queue_size=2,
-                latch=True,
+            if self._mobility_profile(name) == "fixedwing":
+                self.planning_path_publishers[name] = rospy.Publisher(
+                    self._topic(
+                        config,
+                        "planner_task_path",
+                        f"/{name}/planning/task_path",
+                    ),
+                    Path,
+                    queue_size=1,
+                    latch=False,
+                )
+            else:
+                self.goal_publishers[name] = rospy.Publisher(
+                    self._topic(
+                        config, "planner_goal", f"/{name}/planning/goal"
+                    ),
+                    PoseStamped,
+                    queue_size=2,
+                    latch=True,
+                )
+            self.planning_cancel_clients[name] = rospy.ServiceProxy(
+                self._topic(
+                    config, "planner_cancel", f"/{name}/planning/cancel"
+                ),
+                CancelPlanning,
             )
         self.path_publishers[name] = rospy.Publisher(
-            self._topic(config, "mission_path", f"/{name}/planning/mission_path"),
+            self._topic(config, "route_preview", f"/{name}/planning/route_preview"),
             Path,
             queue_size=1,
             latch=True,
@@ -1145,15 +1170,27 @@ class TaskAllocateCoordinator:
                     queue_size=10,
                 )
             )
-        if is_scout:
-            self._subscribers.append(
-                rospy.Subscriber(
-                    self._topic(config, "detections", f"/{name}/track/detections"),
-                    DetectionArray,
-                    lambda message, vehicle=name: self._detection_callback(vehicle, message),
-                    queue_size=10,
+        if is_scout or self.post_arrival_mode == "task_execute":
+            for detection_topic in self._topics(
+                config, "detections", f"/{name}/track/detections"
+            ):
+                callback = (
+                    (lambda message, vehicle=name: self._detection_callback(vehicle, message))
+                    if is_scout
+                    else (
+                        lambda message, vehicle=name: self._worker_detection_callback(
+                            vehicle, message
+                        )
+                    )
                 )
-            )
+                self._subscribers.append(
+                    rospy.Subscriber(
+                        detection_topic,
+                        DetectionArray,
+                        callback,
+                        queue_size=10,
+                    )
+                )
 
     def _vehicle_ready(self, name: str, now: float) -> bool:
         position = self.vehicle_world_positions.get(name)
@@ -1164,7 +1201,7 @@ class TaskAllocateCoordinator:
                 name in self.direct_goal_publishers
                 and self.direct_goal_publishers[name].get_num_connections() > 0
             )
-            if self.vehicle_types.get(name) == "fixedwing":
+            if self._mobility_profile(name) == "fixedwing":
                 execution_connected = bool(
                     execution_connected
                     and name in self.direct_path_publishers
@@ -1272,23 +1309,8 @@ class TaskAllocateCoordinator:
                 2.0, "[task_allocate] %s control state has zero timestamp", name
             )
             return
-        expected_type = (
-            ControlState.VEHICLE_FIXEDWING
-            if self.vehicle_types[name] == "fixedwing"
-            else ControlState.VEHICLE_MULTIROTOR
-        )
-        type_matches = int(message.vehicle_type) == int(expected_type)
-        if not type_matches:
-            rospy.logerr_throttle(
-                2.0,
-                "[task_allocate] %s ControlState vehicle_type=%d conflicts with configured %s",
-                name,
-                int(message.vehicle_type),
-                self.vehicle_types[name],
-            )
         healthy = bool(
-            type_matches
-            and (message.state_valid or not self.require_state_valid)
+            (message.state_valid or not self.require_state_valid)
             and (message.localization_valid or not self.require_localization_valid)
             and (message.odometry_fresh or not self.require_odometry_fresh)
         )
@@ -1321,24 +1343,24 @@ class TaskAllocateCoordinator:
             coverage_positions = {
                 name: position
                 for name, position in scout_positions.items()
-                if self.vehicle_types[name] == "fixedwing"
+                if self._mobility_profile(name) == "fixedwing"
             }
             if not coverage_positions:
                 raise ValueError(
                     "hierarchical search requires at least one ready fixed-wing scout"
                 )
             if not any(
-                self.vehicle_types[name] == "multirotor"
+                self._mobility_profile(name) == "hover"
                 for name in scout_positions
             ):
                 raise ValueError(
-                    "hierarchical search requires at least one ready multirotor scout"
+                    "hierarchical search requires at least one ready hover-profile scout"
                 )
         fixedwing_area_paths = {}
         vehicle_area_lengths = {}
         fixedwing_parameters = {}
         for scout in coverage_positions:
-            if self.vehicle_types[scout] != "fixedwing":
+            if self._mobility_profile(scout) != "fixedwing":
                 continue
             turn_radius = max(
                 1.0,
@@ -1371,7 +1393,7 @@ class TaskAllocateCoordinator:
                 fixedwing_area = planned.area
                 if coarse_lane_spacing > 0.0 or coarse_altitude > 0.0:
                     # A mixed fleet must not force the fixed-wing coarse scan
-                    # to use the multirotor verification swath.  The override
+                    # to use the hover-profile verification swath. The override
                     # is the sensor's effective ground footprint at the
                     # fixed-wing search altitude. Zero keeps the area value.
                     fixedwing_area = SearchAreaDefinition(
@@ -1412,7 +1434,7 @@ class TaskAllocateCoordinator:
             self.routes[scout] = []
             self.route_indices[scout] = 0
         for scout, areas in assignments.items():
-            if self.vehicle_types[scout] == "fixedwing":
+            if self._mobility_profile(scout) == "fixedwing":
                 turn_radius, waypoint_spacing, _ = fixedwing_parameters[scout]
                 route = connect_fixedwing_paths(
                     [
@@ -1485,6 +1507,7 @@ class TaskAllocateCoordinator:
         self.routes.clear()
         self.route_indices.clear()
         self.active_goals.clear()
+        getattr(self, "worker_visual_handoff_waiting", {}).clear()
         self.active_goal_points.clear()
         self.active_goal_origins.clear()
         self.active_trajectory_end_times.clear()
@@ -1499,7 +1522,6 @@ class TaskAllocateCoordinator:
         self.verification_region_states.clear()
         self._publish_verification_areas()
         self.arrival_tracker.reset_all()
-        self.worker_arrival_tracker.reset_all()
         self.search_completed_at = 0.0
 
     def _clear_results_data(self) -> None:
@@ -1529,7 +1551,7 @@ class TaskAllocateCoordinator:
         position = self.vehicle_world_positions.get(vehicle)
         if position is None or not self._uses_direct_controller(vehicle):
             return False
-        if self.vehicle_types[vehicle] == "fixedwing":
+        if self._mobility_profile(vehicle) == "fixedwing":
             latest_pose = self.pose_histories[vehicle].latest()
             if latest_pose is None:
                 return False
@@ -1568,19 +1590,15 @@ class TaskAllocateCoordinator:
         return True
 
     def _pause_active_vehicles(self) -> Tuple[bool, str]:
-        unsupported = [
-            vehicle
-            for vehicle in self.active_goals
-            if not self._uses_direct_controller(vehicle)
-        ]
-        if unsupported:
-            return (
-                False,
-                "pause/stop requires a planner cancel adapter for: "
-                + ", ".join(sorted(unsupported)),
+        for vehicle, active in list(self.active_goals.items()):
+            if self._uses_direct_controller(vehicle):
+                self._publish_direct_hold(vehicle)
+                continue
+            cancelled, detail = self._cancel_planning(
+                vehicle, active[0], "mission pause/stop"
             )
-        for vehicle in list(self.active_goals):
-            self._publish_direct_hold(vehicle)
+            if not cancelled:
+                return False, "cannot cancel {}: {}".format(vehicle, detail)
         return True, ""
 
     def _republish_active_goal(self, vehicle: str) -> None:
@@ -1589,8 +1607,7 @@ class TaskAllocateCoordinator:
         if active is None or point is None:
             return
         if (
-            self._uses_direct_controller(vehicle)
-            and self.vehicle_types.get(vehicle) == "fixedwing"
+            self._mobility_profile(vehicle) == "fixedwing"
             and active[1] in ("search", "verification")
         ):
             self._clear_active_goal(vehicle)
@@ -1606,6 +1623,12 @@ class TaskAllocateCoordinator:
         goal.pose.orientation.w = 1.0
         if self._uses_direct_controller(vehicle):
             self._publish_direct_controller_goal(vehicle, goal)
+        elif self._mobility_profile(vehicle) == "fixedwing":
+            current = self.vehicle_world_positions.get(vehicle)
+            if current is not None:
+                self._publish_fixedwing_path(
+                    vehicle, active[0], (current[1], point)
+                )
         else:
             self.goal_publishers[vehicle].publish(goal)
 
@@ -1666,6 +1689,11 @@ class TaskAllocateCoordinator:
                     active[2], "mission stopped by operator"
                 )
             self._clear_active_goal(vehicle)
+        for vehicle, task_id in list(
+            getattr(self, "worker_visual_handoff_waiting", {}).items()
+        ):
+            self.allocator.cancel_task(task_id, "mission stopped by operator")
+            self.worker_visual_handoff_waiting.pop(vehicle, None)
         self.mission_state = MISSION_ABORTED
         self.mission_detail = "mission stopped by operator; areas and results retained"
         self._publish_mission_state()
@@ -1850,11 +1878,14 @@ class TaskAllocateCoordinator:
             active = self.active_goals.get(vehicle)
             if active is not None and active[1] not in ("search", "verification"):
                 return VehicleCommandResponse(False, f"{vehicle} is executing rescue work")
-            if active is not None and not self._uses_direct_controller(vehicle):
-                return VehicleCommandResponse(
-                    False, f"{vehicle} planner has no cancel/skip adapter"
+            if active is not None and self._uses_planning(vehicle):
+                cancelled, detail = self._cancel_planning(
+                    vehicle, active[0], "route waypoint skipped by operator"
                 )
-            self._publish_direct_hold(vehicle)
+                if not cancelled:
+                    return VehicleCommandResponse(False, detail)
+            else:
+                self._publish_direct_hold(vehicle)
             self._clear_active_goal(vehicle)
             self.route_indices[vehicle] = index + 1
             if self.mission_state == MISSION_ACTIVE:
@@ -1868,19 +1899,20 @@ class TaskAllocateCoordinator:
     ) -> SetVehicleEnabledResponse:
         with self._lock:
             vehicle = str(request.vehicle_name).strip()
-            if vehicle not in self.vehicle_types:
+            if vehicle not in self.mobility_profiles:
                 return SetVehicleEnabledResponse(False, f"unknown vehicle: {vehicle}")
             enabled = bool(request.enabled)
             active = self.active_goals.get(vehicle)
             executing_task = getattr(self, "active_task_executions", {}).get(vehicle)
-            if (
-                not enabled
-                and active is not None
-                and not self._uses_direct_controller(vehicle)
-            ):
-                return SetVehicleEnabledResponse(
-                    False, f"{vehicle} planner has no cancel adapter"
+            waiting_task = getattr(
+                self, "worker_visual_handoff_waiting", {}
+            ).get(vehicle)
+            if not enabled and active is not None and self._uses_planning(vehicle):
+                cancelled, detail = self._cancel_planning(
+                    vehicle, active[0], "vehicle disabled by operator"
                 )
+                if not cancelled:
+                    return SetVehicleEnabledResponse(False, detail)
             self.vehicle_operator_enabled[vehicle] = enabled
             if not enabled and executing_task is not None:
                 self._cancel_task_execution(
@@ -1892,7 +1924,8 @@ class TaskAllocateCoordinator:
                 if task is not None:
                     self.registry.set_status(task.target_id, TARGET_CONFIRMED)
             if not enabled and active is not None:
-                self._publish_direct_hold(vehicle)
+                if self._uses_direct_controller(vehicle):
+                    self._publish_direct_hold(vehicle)
                 if active[1] == "rescue":
                     task = self.allocator.release_worker(
                         vehicle, "vehicle disabled by operator; task released"
@@ -1900,6 +1933,13 @@ class TaskAllocateCoordinator:
                     if task is not None:
                         self.registry.set_status(task.target_id, TARGET_CONFIRMED)
                 self._clear_active_goal(vehicle)
+            if not enabled and waiting_task is not None:
+                self.worker_visual_handoff_waiting.pop(vehicle, None)
+                task = self.allocator.release_worker(
+                    vehicle, "vehicle disabled while waiting for visual handoff"
+                )
+                if task is not None:
+                    self.registry.set_status(task.target_id, TARGET_CONFIRMED)
             worker = self.allocator.workers.get(vehicle)
             if worker is not None and not enabled:
                 worker.online = False
@@ -1920,20 +1960,16 @@ class TaskAllocateCoordinator:
             task = self.allocator.tasks.get(int(request.task_id))
             if task is None:
                 return TaskCommandResponse(False, f"unknown task: {request.task_id}")
-            unsupported = [
-                vehicle
-                for vehicle, active in self.active_goals.items()
-                if active[1] == "rescue"
-                and active[2] == task.task_id
-                and not self._uses_direct_controller(vehicle)
-            ]
-            if unsupported:
-                return TaskCommandResponse(
-                    False, f"{unsupported[0]} planner has no cancel adapter"
-                )
             for vehicle, active in list(self.active_goals.items()):
                 if active[1] == "rescue" and active[2] == task.task_id:
-                    self._publish_direct_hold(vehicle)
+                    if self._uses_planning(vehicle):
+                        cancelled, detail = self._cancel_planning(
+                            vehicle, active[0], "rescue task cancelled by operator"
+                        )
+                        if not cancelled:
+                            return TaskCommandResponse(False, detail)
+                    else:
+                        self._publish_direct_hold(vehicle)
                     self._clear_active_goal(vehicle)
             for vehicle, active in list(
                 getattr(self, "active_task_executions", {}).items()
@@ -1942,6 +1978,11 @@ class TaskAllocateCoordinator:
                     self._cancel_task_execution(
                         vehicle, "rescue task cancelled by operator"
                     )
+            for vehicle, task_id in list(
+                getattr(self, "worker_visual_handoff_waiting", {}).items()
+            ):
+                if task_id == task.task_id:
+                    self.worker_visual_handoff_waiting.pop(vehicle, None)
             cancelled = self.allocator.cancel_task(
                 task.task_id, "rescue task cancelled by operator"
             )
@@ -1954,6 +1995,11 @@ class TaskAllocateCoordinator:
     def _retry_task_callback(self, request) -> TaskCommandResponse:
         with self._lock:
             requested_task_id = int(request.task_id)
+            for vehicle, task_id in list(
+                getattr(self, "worker_visual_handoff_waiting", {}).items()
+            ):
+                if task_id == requested_task_id:
+                    self.worker_visual_handoff_waiting.pop(vehicle, None)
             for vehicle, active in list(
                 getattr(self, "active_task_executions", {}).items()
             ):
@@ -2076,7 +2122,7 @@ class TaskAllocateCoordinator:
         fixedwing_scouts = [
             name
             for name in self.scout_configs
-            if self.vehicle_types.get(name) == "fixedwing"
+            if self._mobility_profile(name) == "fixedwing"
         ]
         return bool(fixedwing_scouts) and all(
             self.route_indices.get(name, 0) >= len(self.routes.get(name, []))
@@ -2269,7 +2315,7 @@ class TaskAllocateCoordinator:
         available = [
             name
             for name in self.scout_configs
-            if self.vehicle_types[name] == "multirotor"
+            if self._mobility_profile(name) == "hover"
             and name not in self.verification_target_by_scout
             and self._vehicle_ready(name, now)
             and self.route_indices.get(name, 0) >= len(self.routes.get(name, []))
@@ -2331,7 +2377,7 @@ class TaskAllocateCoordinator:
             rospy.logwarn_throttle(
                 5.0,
                 "[task_allocate] %d target verification request(s) waiting for "
-                "an idle healthy multirotor scout",
+                "an idle healthy hover-profile scout",
                 len(self.verification_pending),
             )
 
@@ -2368,7 +2414,7 @@ class TaskAllocateCoordinator:
             "completed" if found else "missed"
         )
         rospy.loginfo(
-            "[task_allocate] multirotor completed the full route for verification "
+            "[task_allocate] hover-profile scout completed the full route for verification "
             "region %d; members=%s",
             region_id,
             sorted(self.verification_targets_by_region.get(region_id, set())),
@@ -2376,6 +2422,100 @@ class TaskAllocateCoordinator:
         self._publish_verification_areas()
         self._assign_pending_verifications()
         self._mark_search_complete_if_ready()
+
+    def _worker_detection_callback(
+        self, worker: str, message: DetectionArray
+    ) -> None:
+        """Start execution only when the worker is in radius and sees the target."""
+
+        with self._lock:
+            if (
+                self.mission_state != MISSION_ACTIVE
+                or self.post_arrival_mode != "task_execute"
+            ):
+                return
+            active = self.active_goals.get(worker)
+            active_task_id = (
+                active[2]
+                if active is not None and active[1] == "rescue"
+                else getattr(self, "worker_visual_handoff_waiting", {}).get(worker)
+            )
+            if active_task_id is None:
+                return
+            task = self.allocator.tasks.get(active_task_id)
+            if task is None or task.assigned_worker != worker:
+                return
+            worker_state = self.vehicle_world_positions.get(worker)
+            if worker_state is None:
+                return
+            worker_position = worker_state[1]
+            worker_target_distance = sqrt(
+                (worker_position[0] - task.target_position[0]) ** 2
+                + (worker_position[1] - task.target_position[1]) ** 2
+            )
+            if worker_target_distance > self.worker_execution_target_radius:
+                return
+
+            matching = [
+                candidate
+                for candidate in message.candidates
+                if int(candidate.class_id) == int(task.class_id)
+            ]
+            if not matching:
+                return
+
+            candidate = max(matching, key=lambda item: float(item.confidence))
+            # Stable detector IDs are preserved by xd_uav_track and can select
+            # the exact local track. With an unstable ID the executor performs
+            # its normal automatic selection instead.
+            local_track_id = (
+                int(candidate.track_id)
+                if bool(candidate.track_id_is_stable)
+                and int(candidate.track_id) >= 0
+                else -1
+            )
+            if active is not None and self._uses_planning(worker):
+                cancelled, cancel_detail = self._cancel_planning(
+                    worker,
+                    active[0],
+                    "visual handoff to task execution",
+                )
+                if not cancelled:
+                    task.detail = "waiting for planning release: " + cancel_detail
+                    rospy.logerr(
+                        "[task_allocate] refusing task execution handoff for %s: %s",
+                        worker,
+                        cancel_detail,
+                    )
+                    self._publish_state()
+                    return
+            if (
+                self._uses_direct_controller(worker)
+                and self._mobility_profile(worker) != "fixedwing"
+            ):
+                self._publish_direct_hold(worker)
+            self._clear_active_goal(worker)
+            getattr(self, "worker_visual_handoff_waiting", {}).pop(worker, None)
+            detail = (
+                f"visual detection from {getattr(message, 'sensor_id', '') or 'unspecified sensor'} "
+                f"inside {worker_target_distance:.2f} m target radius"
+            )
+            rospy.loginfo(
+                "[task_allocate] visual handoff: task=%d worker=%s "
+                "worker_target_xy=%.2fm sensor=%s track_id=%d",
+                task.task_id,
+                worker,
+                worker_target_distance,
+                getattr(message, "sensor_id", ""),
+                local_track_id,
+            )
+            self._start_task_execution(
+                task,
+                worker,
+                local_track_id=local_track_id,
+                handoff_detail=detail,
+            )
+            self._publish_state()
 
     def _detection_callback(self, scout: str, message: DetectionArray) -> None:
         stamp = message.header.stamp.to_sec()
@@ -2415,7 +2555,7 @@ class TaskAllocateCoordinator:
                         candidate.position_covariance,
                         pose.orientation_reference_body,
                     ),
-                    source_vehicle_type=self.vehicle_types[scout],
+                    source_mobility_profile=self._mobility_profile(scout),
                     track_id=int(candidate.track_id),
                     track_id_is_stable=bool(candidate.track_id_is_stable),
                     sensor_id=str(message.sensor_id),
@@ -2424,7 +2564,7 @@ class TaskAllocateCoordinator:
                 changed = True
                 if (
                     self.hierarchical_search_enabled
-                    and self.vehicle_types[scout] == "multirotor"
+                    and self._mobility_profile(scout) == "hover"
                 ):
                     region_id = self._containing_verification_region(
                         update.target.position
@@ -2435,14 +2575,9 @@ class TaskAllocateCoordinator:
                         )
                 if update.newly_confirmed:
                     priority = self.class_priorities.get(update.target.class_id, 0)
-                    allowed_types = self.class_worker_vehicle_types.get(
-                        update.target.class_id,
-                        self.default_worker_vehicle_types,
-                    )
                     task = self.allocator.ensure_task(
                         update.target,
                         priority=priority,
-                        allowed_vehicle_types=allowed_types,
                         duplicate_radius_m=self.task_duplicate_radius,
                     )
                     if task.target_id != update.target.target_id:
@@ -2464,7 +2599,7 @@ class TaskAllocateCoordinator:
                         )
                 elif (
                     self.hierarchical_search_enabled
-                    and self.vehicle_types[scout] == "fixedwing"
+                    and self._mobility_profile(scout) == "fixedwing"
                     and update.newly_evidence_ready
                 ):
                     self._queue_target_verification(update.target)
@@ -2590,7 +2725,6 @@ class TaskAllocateCoordinator:
         self.active_trajectory_route_progress.pop(vehicle, None)
         self.active_controller_paths.discard(vehicle)
         self.arrival_tracker.reset(vehicle)
-        self.worker_arrival_tracker.reset(vehicle)
 
     def _publish_direct_status(
         self, vehicle: str, goal_id: int, state: int, detail: str
@@ -2645,7 +2779,7 @@ class TaskAllocateCoordinator:
             | PositionTarget.IGNORE_YAW_RATE
         )
         # PZ always remains enabled. Worker goals have already captured a safe
-        # approach altitude; ignoring PZ would disable vertical closed-loop
+        # navigation altitude; ignoring PZ would disable vertical closed-loop
         # control rather than hold the current altitude.
         setpoint.position.x = goal.pose.position.x
         setpoint.position.y = goal.pose.position.y
@@ -2655,7 +2789,7 @@ class TaskAllocateCoordinator:
         # point along the planned Dubins path instead of orbiting the point.
         route_velocity = (
             self._fixedwing_route_velocity(vehicle)
-            if self.vehicle_types[vehicle] == "fixedwing"
+            if self._mobility_profile(vehicle) == "fixedwing"
             else None
         )
         if route_velocity is not None:
@@ -2666,7 +2800,7 @@ class TaskAllocateCoordinator:
         position = self.vehicle_world_positions.get(vehicle)
         if (
             self.direct_face_goal
-            and self.vehicle_types[vehicle] == "multirotor"
+            and self._mobility_profile(vehicle) == "hover"
             and position is not None
         ):
             yaw = goal_heading(
@@ -2684,7 +2818,7 @@ class TaskAllocateCoordinator:
 
         for vehicle, active in list(self.active_goals.items()):
             if (
-                self.vehicle_types.get(vehicle) != "fixedwing"
+                self._mobility_profile(vehicle) != "fixedwing"
                 or not self._uses_direct_controller(vehicle)
                 or active[1] not in ("search", "verification")
                 or vehicle in self.active_controller_paths
@@ -2703,10 +2837,10 @@ class TaskAllocateCoordinator:
             goal.pose.orientation.w = 1.0
             self._publish_direct_controller_goal(vehicle, goal)
 
-    def _publish_direct_fixedwing_path(
+    def _publish_fixedwing_path(
         self, vehicle: str, goal_id: int, points
     ) -> None:
-        """Publish a geometric path with a ROS-serialization-safe goal ID."""
+        """Publish a geometric path through the selected execution backend."""
 
         path_points = [tuple(float(value) for value in point) for point in points]
         if len(path_points) < 2:
@@ -2728,8 +2862,27 @@ class TaskAllocateCoordinator:
             pose.pose.position.z = point[2]
             pose.pose.orientation.w = 1.0
             message.poses.append(pose)
-        self.active_controller_paths.add(vehicle)
-        self.direct_path_publishers[vehicle].publish(message)
+        if self._uses_direct_controller(vehicle):
+            self.active_controller_paths.add(vehicle)
+            self.direct_path_publishers[vehicle].publish(message)
+        else:
+            self.planning_path_publishers[vehicle].publish(message)
+
+    # Kept as a compatibility shim for focused legacy unit tests.
+    def _publish_direct_fixedwing_path(self, vehicle, goal_id, points):
+        self._publish_fixedwing_path(vehicle, goal_id, points)
+
+    def _cancel_planning(self, vehicle: str, goal_id: int, reason: str):
+        if not self._uses_planning(vehicle):
+            return True, "not a planning backend"
+        client = self.planning_cancel_clients.get(vehicle)
+        if client is None:
+            return False, "planning cancel client is not configured"
+        try:
+            response = client(goal_id=int(goal_id), reason=str(reason))
+        except rospy.ServiceException as error:
+            return False, "planning cancel service failed: {}".format(error)
+        return bool(response.success), str(response.message)
 
     def _publish_fixedwing_route_path(
         self, vehicle: str, route, start_index: int, kind: str
@@ -2752,19 +2905,20 @@ class TaskAllocateCoordinator:
         self.active_goals[vehicle] = (goal_id, str(kind), final_index)
         self.active_goal_points[vehicle] = tuple(float(value) for value in route[-1])
         self.active_goal_origins[vehicle] = current_point
-        self._publish_direct_fixedwing_path(vehicle, goal_id, path_points)
-        self._publish_direct_status(
-            vehicle,
-            goal_id,
-            PlannerStatus.ACTIVE,
-            "complete fixed-wing geometric path active; no obstacle avoidance",
-        )
-        self._handle_goal_status(
-            vehicle,
-            goal_id,
-            PlannerStatus.ACTIVE,
-            "complete fixed-wing geometric path active; no obstacle avoidance",
-        )
+        self._publish_fixedwing_path(vehicle, goal_id, path_points)
+        if self._uses_direct_controller(vehicle):
+            self._publish_direct_status(
+                vehicle,
+                goal_id,
+                PlannerStatus.ACTIVE,
+                "complete fixed-wing geometric path active; no obstacle avoidance",
+            )
+            self._handle_goal_status(
+                vehicle,
+                goal_id,
+                PlannerStatus.ACTIVE,
+                "complete fixed-wing geometric path active; no obstacle avoidance",
+            )
         rospy.loginfo(
             "[task_allocate] fixed-wing %s published complete path: "
             "route_points=%d nominal_speed=%.1fm/s",
@@ -2785,6 +2939,7 @@ class TaskAllocateCoordinator:
         goal.pose.position.z = float(point[2])
         goal.pose.orientation.w = 1.0
         self.active_goals[vehicle] = (goal_id, kind, int(object_id))
+        getattr(self, "worker_visual_handoff_waiting", {}).pop(vehicle, None)
         self.active_goal_points[vehicle] = (
             float(point[0]),
             float(point[1]),
@@ -2795,10 +2950,9 @@ class TaskAllocateCoordinator:
             current[1] if current is not None else self.active_goal_points[vehicle]
         )
         self.arrival_tracker.reset(vehicle)
-        self.worker_arrival_tracker.reset(vehicle)
         if self._uses_direct_controller(vehicle):
             fixedwing_worker_path = False
-            if self.vehicle_types[vehicle] == "fixedwing" and kind == "rescue":
+            if self._mobility_profile(vehicle) == "fixedwing" and kind == "rescue":
                 current = self.vehicle_world_positions.get(vehicle)
                 if current is not None:
                     current_point = tuple(float(value) for value in current[1])
@@ -2810,7 +2964,7 @@ class TaskAllocateCoordinator:
                         )
                     )
                     if distance >= 1e-3:
-                        self._publish_direct_fixedwing_path(
+                        self._publish_fixedwing_path(
                             vehicle,
                             goal_id,
                             (current_point, self.active_goal_points[vehicle]),
@@ -2835,6 +2989,15 @@ class TaskAllocateCoordinator:
                 PlannerStatus.ACTIVE,
                 detail,
             )
+        elif self._mobility_profile(vehicle) == "fixedwing":
+            if current is None:
+                raise ValueError("fixed-wing planning goal needs current position")
+            current_point = tuple(float(value) for value in current[1])
+            self._publish_fixedwing_path(
+                vehicle,
+                goal_id,
+                (current_point, self.active_goal_points[vehicle]),
+            )
         else:
             self.goal_publishers[vehicle].publish(goal)
         return goal_id
@@ -2853,16 +3016,13 @@ class TaskAllocateCoordinator:
             rospy.loginfo("[task_allocate] scout %s completed its coarse search route", scout)
             if (
                 self.hierarchical_search_enabled
-                and self.vehicle_types.get(scout) == "fixedwing"
+                and self._mobility_profile(scout) == "fixedwing"
             ):
                 self._assign_pending_verifications()
             self._mark_search_complete_if_ready()
             return
         kind = "verification" if scout in self.verification_target_by_scout else "search"
-        if (
-            self._uses_direct_controller(scout)
-            and self.vehicle_types.get(scout) == "fixedwing"
-        ):
+        if self._mobility_profile(scout) == "fixedwing":
             try:
                 self._publish_fixedwing_route_path(
                     scout, route, index, kind
@@ -2881,19 +3041,20 @@ class TaskAllocateCoordinator:
             return
         for task, worker in self.allocator.assign_pending():
             self.registry.set_status(task.target_id, TARGET_ASSIGNED)
-            task.goal = list(
-                worker_approach_goal(
-                    worker.position,
-                    task.target_position,
-                    self.worker_horizontal_standoff,
-                )
-            )
+            # Navigate toward the target XY at the worker's current altitude.
+            # Task execution is not tied to reaching this point: the detection
+            # callback is the sole handoff gate inside target_radius_m.
+            task.goal = [
+                float(task.target_position[0]),
+                float(task.target_position[1]),
+                float(worker.position[2]),
+            ]
             goal_id = self._publish_goal(worker.name, task.goal, "rescue", task.task_id)
             backend = self.vehicle_backends[worker.name]
             task.detail = f"{backend} goal {goal_id} published"
             rospy.loginfo(
                 "[task_allocate] task %d target %d -> %s, backend=%s goal=%d "
-                "approach=(%.2f, %.2f, %.2f)",
+                "navigation_target=(%.2f, %.2f, %.2f)",
                 task.task_id,
                 task.target_id,
                 worker.name,
@@ -2986,9 +3147,24 @@ class TaskAllocateCoordinator:
             if self.allocator.mark_executing(task.task_id):
                 self.registry.set_status(task.target_id, TARGET_EXECUTING)
         elif state == PlannerStatus.REACHED:
+            if self._uses_planning(vehicle):
+                cancelled, cancel_detail = self._cancel_planning(
+                    vehicle,
+                    goal_id,
+                    "navigation reached; release control before task execution",
+                )
+                if not cancelled:
+                    task.detail = "waiting for planning release: " + cancel_detail
+                    rospy.logerr(
+                        "[task_allocate] cannot release planning for %s: %s",
+                        vehicle,
+                        cancel_detail,
+                    )
+                    self._publish_state()
+                    return
             if (
                 self._uses_direct_controller(vehicle)
-                and self.vehicle_types.get(vehicle) != "fixedwing"
+                and self._mobility_profile(vehicle) != "fixedwing"
             ):
                 # Hover-capable workers hold their measured completion pose.
                 # A fixed wing cannot hover: its geometric path controller has
@@ -2997,7 +3173,17 @@ class TaskAllocateCoordinator:
                 self._publish_direct_hold(vehicle)
             self._clear_active_goal(vehicle)
             if getattr(self, "post_arrival_mode", "arrive") == "task_execute":
-                self._start_task_execution(task, vehicle)
+                self.worker_visual_handoff_waiting[vehicle] = task.task_id
+                task.detail = (
+                    "worker reached target navigation point; waiting for "
+                    "a matching local camera detection"
+                )
+                rospy.loginfo(
+                    "[task_allocate] task=%d worker=%s reached target navigation "
+                    "point; holding for camera detection",
+                    task.task_id,
+                    vehicle,
+                )
             else:
                 self._complete_worker_task(
                     task, vehicle, f"worker reached the task goal: {detail}"
@@ -3053,13 +3239,12 @@ class TaskAllocateCoordinator:
                 or not self._vehicle_ready(vehicle, now)
             ):
                 self.arrival_tracker.reset(vehicle)
-                self.worker_arrival_tracker.reset(vehicle)
                 continue
             goal_id, kind, _ = active
             trajectory_end = self.active_trajectory_end_times.get(vehicle)
             if trajectory_end is not None:
                 arrived = now >= trajectory_end
-                if arrived and self.vehicle_types[vehicle] == "fixedwing":
+                if arrived and self._mobility_profile(vehicle) == "fixedwing":
                     route = self.routes.get(vehicle, [])
                     final_origin = (
                         route[-2]
@@ -3083,7 +3268,7 @@ class TaskAllocateCoordinator:
                             vehicle, "pass_cross_track_limit_m", 40.0
                         ),
                     )
-            elif self.vehicle_types[vehicle] == "fixedwing":
+            elif self._mobility_profile(vehicle) == "fixedwing":
                 origin = self.active_goal_origins.get(vehicle, position[1])
                 arrived = fixedwing_waypoint_reached(
                     position[1],
@@ -3100,26 +3285,9 @@ class TaskAllocateCoordinator:
                     ),
                 )
             else:
-                tracker = (
-                    self.worker_arrival_tracker
-                    if kind == "rescue"
-                    else self.arrival_tracker
+                arrived = self.arrival_tracker.update(
+                    vehicle, position[1], goal, now, use_z=True
                 )
-                speed = self.vehicle_world_speeds.get(vehicle)
-                if (
-                    kind == "rescue"
-                    and (
-                        speed is None
-                        or now - speed[0] > self.odometry_timeout
-                        or speed[1] > self.worker_maximum_arrival_speed
-                    )
-                ):
-                    tracker.reset(vehicle)
-                    arrived = False
-                else:
-                    arrived = tracker.update(
-                        vehicle, position[1], goal, now, use_z=True
-                    )
             if arrived:
                 reached.append((vehicle, goal_id))
         for vehicle, goal_id in reached:
@@ -3127,7 +3295,7 @@ class TaskAllocateCoordinator:
                 "fixed-wing trajectory duration and final fly-through satisfied"
                 if vehicle in self.active_trajectory_end_times
                 else "fixed-wing waypoint acceptance or bounded fly-through satisfied"
-                if self.vehicle_types[vehicle] == "fixedwing"
+                if self._mobility_profile(vehicle) == "fixedwing"
                 else "world odometry remained inside direct-goal tolerance"
             )
             self._publish_direct_status(
@@ -3196,7 +3364,6 @@ class TaskAllocateCoordinator:
             message.class_id = record.class_id
             message.goal.x, message.goal.y, message.goal.z = record.goal
             message.priority = record.priority
-            message.allowed_vehicle_types = list(record.allowed_vehicle_types)
             message.assigned_worker = record.assigned_worker
             message.status = record.status
             message.detail = record.detail

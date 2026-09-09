@@ -6,8 +6,8 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /Odometry1
         - /Axes4
+        - /FrontPath1
       Splitter Ratio: 0.5
     Tree Height: 549
   - Class: rviz/Selection
@@ -92,9 +92,15 @@ Visualization Manager:
           Value: true
         uav2/camera_optical_frame:
           Value: true
+        uav2/distance_sensor_link:
+          Value: true
         uav2/down_camera_link:
           Value: true
         uav2/down_camera_optical_frame:
+          Value: true
+        uav2/lidar_imu_link:
+          Value: true
+        uav2/lidar_link:
           Value: true
         uav2/local_origin:
           Value: true
@@ -116,9 +122,15 @@ Visualization Manager:
           Value: true
         uav3/camera_optical_frame:
           Value: true
+        uav3/distance_sensor_link:
+          Value: true
         uav3/down_camera_link:
           Value: true
         uav3/down_camera_optical_frame:
+          Value: true
+        uav3/lidar_imu_link:
+          Value: true
+        uav3/lidar_link:
           Value: true
         uav3/local_origin:
           Value: true
@@ -140,9 +152,15 @@ Visualization Manager:
           Value: true
         uav4/camera_optical_frame:
           Value: true
+        uav4/distance_sensor_link:
+          Value: true
         uav4/down_camera_link:
           Value: true
         uav4/down_camera_optical_frame:
+          Value: true
+        uav4/lidar_imu_link:
+          Value: true
+        uav4/lidar_link:
           Value: true
         uav4/local_origin:
           Value: true
@@ -194,8 +212,13 @@ Visualization Manager:
                 uav2/camera_link:
                   uav2/camera_optical_frame:
                     {}
+                uav2/distance_sensor_link:
+                  {}
                 uav2/down_camera_link:
                   uav2/down_camera_optical_frame:
+                    {}
+                uav2/lidar_link:
+                  uav2/lidar_imu_link:
                     {}
               uav2/mavros_origin:
                 uav2/mavros_estimated_base_link:
@@ -212,8 +235,13 @@ Visualization Manager:
                 uav3/camera_link:
                   uav3/camera_optical_frame:
                     {}
+                uav3/distance_sensor_link:
+                  {}
                 uav3/down_camera_link:
                   uav3/down_camera_optical_frame:
+                    {}
+                uav3/lidar_link:
+                  uav3/lidar_imu_link:
                     {}
               uav3/mavros_origin:
                 uav3/mavros_estimated_base_link:
@@ -230,8 +258,13 @@ Visualization Manager:
                 uav4/camera_link:
                   uav4/camera_optical_frame:
                     {}
+                uav4/distance_sensor_link:
+                  {}
                 uav4/down_camera_link:
                   uav4/down_camera_optical_frame:
+                    {}
+                uav4/lidar_link:
+                  uav4/lidar_imu_link:
                     {}
               uav4/mavros_origin:
                 uav4/mavros_estimated_base_link:
@@ -367,6 +400,54 @@ Visualization Manager:
       Reference Frame: uav4/base_link
       Show Trail: false
       Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: FrontPath
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Queue Size: 10
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic: /uav2/planning/route_preview
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: FrontPath
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Queue Size: 10
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic: /uav1/planning/route_preview
+      Unreliable: false
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -395,7 +476,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 660.6407470703125
+      Distance: 884.6798095703125
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -403,25 +484,25 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 1.4622420072555542
-        Y: -0.7205778956413269
-        Z: 7.304288864135742
+        X: -530.6785278320312
+        Y: -51.04161834716797
+        Z: 62.49836349487305
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.6797967553138733
+      Pitch: -0.02020326256752014
       Target Frame: <Fixed Frame>
-      Yaw: 0.4122284948825836
+      Yaw: 0.19223061203956604
     Saved: ~
 Window Geometry:
   Displays:
-    collapsed: true
+    collapsed: false
   Height: 846
-  Hide Left Dock: true
+  Hide Left Dock: false
   Hide Right Dock: true
-  QMainWindow State: 000000ff00000000fd000000040000000000000156000002b0fc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073000000003d000002b0000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000010f000002b0fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d000002b0000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000004b00000003efc0100000002fb0000000800540069006d00650100000000000004b0000003bc00fffffffb0000000800540069006d00650100000000000004500000000000000000000004b0000002b000000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd000000040000000000000156000002b0fc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d000002b0000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000010f000002b0fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d000002b0000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000004b00000003efc0100000002fb0000000800540069006d00650100000000000004b0000003bc00fffffffb0000000800540069006d0065010000000000000450000000000000000000000354000002b000000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
     collapsed: false
   Time:
@@ -431,5 +512,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 1200
-  X: 305
-  Y: 197
+  X: 415
+  Y: 126

@@ -40,27 +40,27 @@ local_alignment:
 
 # 物理安装TF。实际安装位置变化时只修改这里。
 static_transforms:
-  - name: base_to_distance_sensor
-    enabled: true
-    parent_frame: base_link
-    child_frame: distance_sensor_link
-    # iris_fastlio/model.sdf mounts lidar0 5 cm below base_link.  A ROS
-    # Range sensor measures along its +X axis, so +90 deg pitch maps +X to
-    # the multirotor base_link -Z direction (downward).
-    translation: [0.0, 0.0, -0.05]
-    rotation_rpy: [0.0, 1.57079632679, 0.0]
-  - name: base_to_lidar
-    enabled: true
-    parent_frame: base_link
-    child_frame: lidar_link
-    translation: [0.0, 0.0, 0.10]
-    rotation_rpy: [0.0, 0.0, 0.0]
-  - name: lidar_to_lidar_imu
-    enabled: true
-    parent_frame: lidar_link
-    child_frame: lidar_imu_link
-    translation: [0.0, 0.0, 0.0]
-    rotation_rpy: [0.0, 0.0, 0.0]
+  # - name: base_to_distance_sensor
+  #   enabled: true
+  #   parent_frame: base_link
+  #   child_frame: distance_sensor_link
+  #   # iris_fastlio/model.sdf mounts lidar0 5 cm below base_link.  A ROS
+  #   # Range sensor measures along its +X axis, so +90 deg pitch maps +X to
+  #   # the multirotor base_link -Z direction (downward).
+  #   translation: [0.0, 0.0, -0.05]
+  #   rotation_rpy: [0.0, 1.57079632679, 0.0]
+  # - name: base_to_lidar
+  #   enabled: true
+  #   parent_frame: base_link
+  #   child_frame: lidar_link
+  #   translation: [0.0, 0.0, 0.10]
+  #   rotation_rpy: [0.0, 0.0, 0.0]
+  # - name: lidar_to_lidar_imu
+  #   enabled: true
+  #   parent_frame: lidar_link
+  #   child_frame: lidar_imu_link
+  #   translation: [0.0, 0.0, 0.0]
+  #   rotation_rpy: [0.0, 0.0, 0.0]
   - name: base_to_camera
     enabled: true
     parent_frame: base_link
@@ -71,18 +71,6 @@ static_transforms:
     enabled: true
     parent_frame: camera_link
     child_frame: camera_optical_frame
-    translation: [0.0, 0.0, 0.0]
-    rotation_rpy: [-1.57079632679, 0.0, -1.57079632679]
-  - name: base_to_down_camera
-    enabled: true
-    parent_frame: base_link
-    child_frame: down_camera_link
-    translation: [0.10, 0.0, -0.13]
-    rotation_rpy: [0.0, 1.57079632679, 0.0]
-  - name: down_camera_to_down_camera_optical
-    enabled: true
-    parent_frame: down_camera_link
-    child_frame: down_camera_optical_frame
     translation: [0.0, 0.0, 0.0]
     rotation_rpy: [-1.57079632679, 0.0, -1.57079632679]
 

@@ -17,30 +17,31 @@
 每架飞机可用成员配置中的 `execution/backend` 覆盖，因此固定翼侦察机和旋翼工作机可以
 连接不同适配器。同一架飞机仍然只启用一个后端，不会自动回退或重复下发。
 
-当前为了先验证搜索、目标去重和任务分配，配置为：
+正式配置为：
 
 ```yaml
 planner:
-  backend: direct_controller_test
+  backend: planning
 ```
 
-该测试后端对旋翼机把 world 航点转换成控制器的一次性位置
-`mavros_msgs/PositionTarget`（由控制器内部锁存），发布到：
+此时旋翼点目标和固定翼完整几何路径分别发布到：
 
 ```text
-/<uav>/control/reference/setpoint
+/<uav>/planning/goal       geometry_msgs/PoseStamped
+/<uav>/planning/task_path  nav_msgs/Path
 ```
 
-固定翼搜索把“当前位置 + 尚未完成的整段覆盖路线”作为不带时间约束的
-`nav_msgs/Path`，一次发布到：
+两类飞机统一从 planning 接收状态，并通过取消服务完成 pause/stop、到达以及视觉跟踪前的
+控制权交接：
 
 ```text
-/<uav>/control/reference/path
+/<uav>/planning/status  xd_uav_task_allocate/PlannerStatus
+/<uav>/planning/cancel  xd_uav_task_allocate/CancelPlanning
 ```
 
-控制器按飞机的实际路径投影进度推进，而不是按预计时间把参考点向前拉走；到达末端后通过
-`/<uav>/controller/path_status` 回报完成并进入 Loiter。这个测试后端不读取点云、不规划绕障路径，只允许在已确认净空的仿真或
-测试场使用；固定翼路线中的 Dubins 转弯只满足最小转弯半径，并不负责绕开禁飞区。
+任务层在该后端不创建 controller publisher，也不消费 controller 的 `PathStatus`。旋翼由
+EGO-Swarm 生成避障轨迹；固定翼 planning 后端校验 Path 并转交固定翼 controller，当前仍不提供
+固定翼点云避障或动态禁飞区重规划。
 
 旋翼侦察机执行搜索航点 XYZ；工作机默认停在目标前 5 m，并把分配时的 world 高度写入 PZ，
 保持明确的
@@ -52,24 +53,9 @@ Odometry，在目标容差内持续指定时间后判定 `REACHED`。固定翼�
 工作机使用独立的到达条件：在 0.5 m 的停距目标容差内持续 1 s，且三维速度不超过
 0.35 m/s，随后立即锁存当前位置保持，避免高速掠过停距点后继续撞向目标。
 
-后续接入 EGO-Swarm 时，把 backend 改回 `ego_swarm`。该模式为每架飞机发布：
-
-```text
-/<uav>/planning/goal          geometry_msgs/PoseStamped
-/<uav>/planning/mission_path  nav_msgs/Path（名义搜索路线/可视化）
-```
-
-`PoseStamped.header.seq` 是本包分配的 `goal_id`。预留的 EGO-Swarm 适配器完成局部规划和避障，
-并回传：
-
-```text
-/<uav>/planning/status        xd_uav_task_allocate/PlannerStatus
-```
-
-届时只有 EGO-Swarm/轨迹适配器向 controller 发布最终安全轨迹，任务包不自动绕过
-规划器。`direct_controller_test` 是显式选择的阶段性验证模式，不是规划失败回退。
-EGO-Swarm 是旋翼规划器；固定翼若不使用测试后端，需要接入能处理最小转弯半径和持续
-前飞约束的固定翼适配器，并按同一个 `PlannerStatus` 协议回报状态。
+`ego_swarm` 仅保留为旧配置的 planning 别名；新配置统一写 `planning`。路线可视化单独发布到
+`/<uav>/planning/route_preview`，绝不能把预览 Path 当作固定翼执行输入。
+`direct_controller_test` 仍保留作显式的无规划器测试后端；它会直发 controller，正式任务不要使用。
 
 ## 配置分层
 
@@ -78,15 +64,14 @@ EGO-Swarm 是旋翼规划器；固定翼若不使用测试后端，需要接入�
 - `config/workers.yaml`：作业机成员、world Odometry、健康状态和规划话题；
 - `config/task_execution.yaml`：工作机到达后的完成方式和 TaskExecute 参数。
 
-每架飞机可以明确配置：
+本包不配置或判断飞机类型，只用 `mobility_profile` 描述生成搜索路径和判断到达所需的运动语义：
 
 ```yaml
-vehicle_type: multirotor  # 或 fixedwing
+mobility_profile: hover     # hover 或 fixedwing
 ```
 
-为兼容旧配置，缺省解释为 `multirotor`。节点还会检查 `ControlState.vehicle_type`；配置与
-控制管理器实际机型不一致时，该飞机会被判为不可参与任务，而不会用错误的路线或到点语义
-继续执行。
+缺省值为 `hover`。VTOL 在当前任务中采用悬停导航时配置 `hover`，采用持续前飞、Dubins
+航线和飞越到达语义时配置 `fixedwing`。协调器不读取 `ControlState` 的机型字段。
 
 ## 到达后的任务执行
 
@@ -115,7 +100,7 @@ post_arrival:
 默认把任务标为 `FAILED`，等待操作员调用 `retry_task`；也可将 `failure_policy` 设为
 `retry` 自动重新排队。
 
-任务参数按 `default_task → vehicle_type_overrides → class_overrides → worker_overrides`
+任务参数按 `default_task → mobility_profile_overrides → class_overrides → worker_overrides`
 依次覆盖。例如四旋翼可使用 `gm_velocity_chase`，固定翼可使用
 `fw_velocity_vector`。`follower_profile: ""` 表示沿用 Track 自身配置，避免分配层强制切换。
 暂停、停止、禁用飞机、取消任务、拒绝目标或工作机掉线时，协调器会取消对应 Action；暂停
@@ -179,7 +164,7 @@ roslaunch xd_uav_task_allocate task_allocate.launch \
 
 为了让粗定位有意义，固定翼的 `xd_uav_detect` 必须使用 `ground_plane` 模式并输出
 `range_valid=true`、`has_relative_position_body=true` 和可信的 `position_covariance`；任务包
-通过统一的 `DetectionArray` 接口自动识别侦察机机型，不需要新的检测消息。
+通过统一的 `DetectionArray` 接口接收观测；粗搜或精搜语义由侦察机的 `mobility_profile` 决定。
 
 固定翼参数可以在 `mission.yaml/planner/fixedwing` 中统一设置，也可以在单机
 `fixedwing` 段覆盖：
@@ -187,9 +172,9 @@ roslaunch xd_uav_task_allocate task_allocate.launch \
 ```yaml
 scouts:
   fw1:
-    vehicle_type: fixedwing
+    mobility_profile: fixedwing
     execution:
-      backend: direct_controller_test
+      backend: planning
     coverage:
       nominal_speed_mps: 15.0
     fixedwing:
@@ -213,29 +198,26 @@ scouts:
 转弯通常会离开搜索多边形，任务区域外必须预留至少与 `minimum_turn_radius_m` 和直线引导段
 同量级的已确认净空；该几何约束不等于障碍物规划。`turn_waypoint_spacing_m` 只改变同一条
 Dubins 曲线的离散密度，不会显著改变曲线长度或执行时间。
-混合机队的区域负载按“机型对应路线长度 ÷ `coverage/nominal_speed_mps`”估算，因而不会
+混合机队的区域负载按“运动语义对应路线长度 ÷ `coverage/nominal_speed_mps`”估算，因而不会
 把同样长度机械地视为固定翼和旋翼具有相同完成时间。
 
-救援任务支持按目标类别限制工作机机型。默认配置为：
+救援任务分配与飞机类型及 `mobility_profile` 均无关。所有健康、在线且空闲的工作机都参与
+距离分配。若以后确实需要表达载荷或任务能力，应增加独立的 capability 标签。
 
 ```yaml
-allocation:
-  default_worker_vehicle_types: [multirotor]
-  class_worker_vehicle_types:
-    "0": [multirotor]
+workers:
+  vtol1:
+    mobility_profile: hover
 ```
-
-因此固定翼可以注册为系统成员，但不会仅因距离近而接到要求悬停或近地作业的救援任务。
-确有固定翼可执行的任务类别时，再为对应 `class_id` 显式加入 `fixedwing`。
 
 每架飞机在 `localization/world_odometry_topic` 中指定估计器主状态重发布话题，例如
 `/uav1/state_estimator/main/frames/world/odom`。该接口固定为 `nav_msgs/Odometry`，节点直接读取
 `pose.pose.position`、`pose.pose.orientation` 和原始估计时间戳，并严格要求
 `header.frame_id == world`。
 
-`health/control_state_topic` 仍订阅 `xd_uav_controller/ControlState`，使用 `vehicle_type`、
+`health/control_state_topic` 仍订阅 `xd_uav_controller/ControlState`，使用
 `state_valid/localization_valid/odometry_fresh` 判断飞机是否允许参与分配，不读取其中的
-位置与姿态。只有机型匹配、world Odometry 和健康状态都新鲜有效，飞机才可参与新任务。单次状态
+位置与姿态，也不使用机型作为准入条件。只有 world Odometry 和健康状态都新鲜有效，飞机才可参与新任务。单次状态
 抖动只暂时禁止新分配；连续超过 `allocation/worker_state_timeout_sec` 才释放正在执行的任务。
 
 飞机位置链为：
@@ -323,11 +305,10 @@ rosservice call /task_allocate/restart "{}"
 rosservice call /task_allocate/replan "{}"
 ```
 
-在当前 `direct_controller_test` 后端中，暂停时四旋翼会收到当前位置保持目标；固定翼会收到
-一次当前位置/当前航向的过渡参考，使路径退出并由 `xd_uav_controller` 进入安全前飞。恢复时
-旋翼重新发布保存的活动航点，固定翼从保存的路线索引重新发布剩余整段路径。若某架活动飞机
-使用 `ego_swarm`，在规划器尚未提供明确的
-cancel/pause 适配前，`pause` 和 `stop` 会返回失败，避免任务状态已经暂停而飞机仍继续执行。
+`planning` 后端暂停、停止、跳点、禁用飞机或切入视觉任务时，任务层先调用该机
+`planning/cancel`。旋翼关闭 reference mux 并停发 EGO 参考，控制器进入自身超时保持；固定翼用
+一次保持当前高度和飞行方向的参考立即替换活动 Path，随后进入控制器的 Loiter 保护。只有取消
+成功，任务层才清理活动 goal 或把控制权交给 `xd_uav_task_execute`；恢复时重新发布保存目标/路径。
 
 ### 带参数的任务恢复服务
 
@@ -374,7 +355,8 @@ rosservice call /task_allocate/retry_verification "{target_id: 3}"
 
 ## 不驱动飞机的任务层测试
 
-如需只验证ROS任务消息而完全不驱动飞机，应临时把 backend 改为 `ego_swarm`，并启动
+如需只验证ROS任务消息而完全不驱动飞机，应保持 backend 为 `planning`，但不要启动真实
+planning，而是启动
 `mock_ego_swarm.py`。它只模拟 `PLANNING/ACTIVE/REACHED` 状态，不读取点云、不生成轨迹、
 不向 controller 发布任何内容，禁止把它用于真实飞行。可以为每架飞机启动一份：
 
@@ -398,13 +380,12 @@ rosservice call /task_allocate/start
 
 ## EGO-Swarm 接入约定
 
-当前工作空间已有 EGO-Swarm 源码，但尚未启用适配。后续适配器需要：
+当前工作空间已由 `xd_uav_planning` 完成 EGO-Swarm 适配：
 
-1. 订阅 `planning/goal`，把共享 frame 的目标交给 EGO-Swarm；
-2. 将 EGO-Swarm 的规划/执行状态映射成 `PlannerStatus`；
-3. 将安全 B-spline/轨迹适配为当前 `xd_uav_controller` 接受的
-   `trajectory_msgs/MultiDOFJointTrajectory` 或流式 `PositionTarget`；
-4. 对状态超时、规划失败和碰撞风险执行悬停/盘旋，不允许自动回退到任务点控制。
+1. 订阅 `planning/goal`，把共享 frame 的三维目标交给 EGO-Swarm；
+2. 将规划/执行状态映射成 `PlannerStatus`；
+3. 将安全轨迹通过 reference mux 转成当前 controller 的流式 `PositionTarget`；
+4. `planning/cancel` 关闭输出门并清空活动目标，交接成功后任务层才启动跟踪控制。
 
 复制来的旧 SEAD 实现保存在 `legacy/`，不参与安装、启动和测试，也不会与原
 `xd_uav_sead` Python 模块发生冲突。

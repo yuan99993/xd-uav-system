@@ -18,7 +18,6 @@ TASK_FAILED = 4
 class WorkerRecord:
     name: str
     position: List[float]
-    vehicle_type: str = "multirotor"
     online: bool = False
     last_update: float = 0.0
     assigned_task: Optional[int] = None
@@ -32,7 +31,6 @@ class RescueTaskRecord:
     target_position: List[float]
     goal: List[float]
     priority: int = 0
-    allowed_vehicle_types: Tuple[str, ...] = ()
     assigned_worker: str = ""
     status: int = TASK_PENDING
     detail: str = "waiting for an available worker"
@@ -45,18 +43,10 @@ class RescueTaskAllocator:
         self._target_to_task: Dict[int, int] = {}
         self._next_task_id = 1
 
-    def register_worker(self, name: str, vehicle_type: str = "multirotor") -> None:
-        normalized_type = str(vehicle_type).strip().lower()
-        if normalized_type not in ("multirotor", "fixedwing"):
-            raise ValueError("vehicle_type must be multirotor or fixedwing")
-        worker = self.workers.setdefault(
-            str(name),
-            WorkerRecord(str(name), [0.0, 0.0, 0.0], normalized_type),
-        )
-        if worker.vehicle_type != normalized_type:
-            raise ValueError(
-                f"worker {name} is already registered as {worker.vehicle_type}"
-            )
+    def register_worker(self, name: str) -> None:
+        """Register an allocation resource without encoding its airframe type."""
+
+        self.workers.setdefault(str(name), WorkerRecord(str(name), [0.0, 0.0, 0.0]))
 
     def update_worker(
         self,
@@ -64,15 +54,8 @@ class RescueTaskAllocator:
         position: Sequence[float],
         stamp: float,
         online: bool = True,
-        vehicle_type: Optional[str] = None,
     ) -> None:
-        existing = self.workers.get(str(name))
-        resolved_type = (
-            vehicle_type
-            if vehicle_type is not None
-            else existing.vehicle_type if existing is not None else "multirotor"
-        )
-        self.register_worker(name, resolved_type)
+        self.register_worker(name)
         worker = self.workers[str(name)]
         worker.position = [float(position[0]), float(position[1]), float(position[2])]
         worker.last_update = float(stamp)
@@ -82,12 +65,8 @@ class RescueTaskAllocator:
         self,
         target: GlobalTargetRecord,
         priority: int = 0,
-        allowed_vehicle_types: Sequence[str] = (),
         duplicate_radius_m: float = 0.0,
     ) -> RescueTaskRecord:
-        allowed = tuple(sorted({str(item).strip().lower() for item in allowed_vehicle_types}))
-        if any(item not in ("multirotor", "fixedwing") for item in allowed):
-            raise ValueError("allowed vehicle types must be multirotor or fixedwing")
         existing = self._target_to_task.get(int(target.target_id))
         if existing is not None:
             task = self.tasks[existing]
@@ -131,7 +110,6 @@ class RescueTaskAllocator:
             target_position=list(target.position),
             goal=list(target.position),
             priority=int(priority),
-            allowed_vehicle_types=allowed,
         )
         self.tasks[task.task_id] = task
         self._target_to_task[target.target_id] = task.task_id
@@ -149,14 +127,8 @@ class RescueTaskAllocator:
                 worker
                 for worker in self.workers.values()
                 if worker.online and worker.assigned_task is None
-                and (
-                    not task.allowed_vehicle_types
-                    or worker.vehicle_type in task.allowed_vehicle_types
-                )
             ]
             if not available:
-                # A later task may allow a different vehicle type even when
-                # this task currently has no compatible worker.
                 continue
             worker = min(
                 available,
