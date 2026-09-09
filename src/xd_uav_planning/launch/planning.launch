@@ -13,6 +13,12 @@
   <arg name="status_topic" default="/$(arg UAV_NAME)/planning/status"/>
   <arg name="healthy_topic" default="/$(arg UAV_NAME)/planning/healthy"/>
   <arg name="diagnostics_topic" default="/$(arg UAV_NAME)/planning/diagnostics"/>
+  <arg name="no_fly_zone_topic" default="/$(arg UAV_NAME)/planning/no_fly_zone"/>
+  <arg name="fixedwing_turning_radius" default="35.0"/>
+  <arg name="fixedwing_zone_clearance" default="15.0"/>
+  <arg name="fixedwing_planning_sample_step" default="2.0"/>
+  <arg name="fixedwing_dynamic_failure_cancel_service"
+       default="control_manager/cancel_offboard"/>
   <!-- EGO manual-target mode is required for live task-layer goals. -->
   <arg name="flight_type" default="1"/>
   <arg name="goal_x" default="1.0"/>
@@ -78,6 +84,12 @@
       <arg name="planner_status_topic" value="$(arg status_topic)"/>
       <arg name="healthy_topic" value="$(arg healthy_topic)"/>
       <arg name="diagnostics_topic" value="$(arg diagnostics_topic)"/>
+      <arg name="no_fly_zone_topic" value="$(arg no_fly_zone_topic)"/>
+      <arg name="turning_radius" value="$(arg fixedwing_turning_radius)"/>
+      <arg name="zone_clearance" value="$(arg fixedwing_zone_clearance)"/>
+      <arg name="planning_sample_step" value="$(arg fixedwing_planning_sample_step)"/>
+      <arg name="dynamic_failure_cancel_service"
+           value="$(arg fixedwing_dynamic_failure_cancel_service)"/>
     </include>
   </group>
 </launch>

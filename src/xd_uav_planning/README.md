@@ -30,6 +30,7 @@ roslaunch xd_uav_planning planning.launch \
 ```text
 /<uav>/planning/goal          geometry_msgs/PoseStamped（多旋翼输入）
 /<uav>/planning/task_path     nav_msgs/Path（固定翼执行输入）
+/<uav>/planning/no_fly_zone   xd_uav_planning/NoFlyZone（固定翼禁飞区输入）
 /<uav>/planning/status        xd_uav_task_allocate/PlannerStatus
 /<uav>/planning/healthy       std_msgs/Bool
 /<uav>/planning/diagnostics   diagnostic_msgs/DiagnosticArray
@@ -58,19 +59,62 @@ roslaunch xd_uav_planning planning.launch \
 
 ### fixedwing / Path
 
-固定翼后端不启动 EGO，也不读取点云：
+固定翼后端不启动 EGO，也不读取点云。它使用通过 ROS 话题收到的禁飞区，在任务 Path 首次
+下发前以及飞行中的每次合法禁飞区更新后进行固定翼转弯约束路径调整：
 
 ```text
-planning/task_path -> control/reference/path
+planning/no_fly_zone --┐
+planning/task_path -----+-> initial/online no-fly planning -> control/reference/path
+ControlState -----------┘                     (atomic Path replacement)
 controller/path_status -> planning/status
 ```
 
 后端校验固定翼 `ControlState`、frame、时间戳、有限数值、路径点数和最小线段长度，并把
-controller 私有 path ID 映射回任务 goal ID。它执行任务层提供的几何 Path，不宣称提供 EGO
-避障或 SEAD 动态禁飞区重规划。
+controller 私有 path ID 映射回任务 goal ID。禁飞区与 Path 必须使用同一个 `common_frame`；
+受阻路径按配置的最小转弯半径和净距生成 Dubins 绕飞路径，最终连续路径校验失败时返回
+`BLOCKED`，不向 controller 下发原始冲突路径。飞行中 UPSERT、REMOVE 或 CLEAR 会从当前
+实测位置截取原任务的剩余段，重新计算并以一条新 Path 原子替换 controller 当前路径；沿原
+任务的进度只前进不后退。在线重规划无安全解时调用 control manager 的 `cancel_offboard`
+失效保护，禁止继续执行已知冲突旧路径。
+
+禁飞区可以在任务 Path 前或飞行中发布。下面示例在 `uav1/odom` 中新增/替换永久矩形禁飞区：
+
+```bash
+rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "
+header:
+  stamp: now
+  frame_id: 'uav1/odom'
+schema_version: 1
+operation: 0
+zone_id: 7101
+enabled: true
+zone_type: 0
+min_altitude: 0.0
+max_altitude: 100.0
+valid_until: {secs: 0, nsecs: 0}
+polygon:
+  points:
+    - {x: 80.0,  y: -20.0, z: 0.0}
+    - {x: 110.0, y: -20.0, z: 0.0}
+    - {x: 110.0, y: 20.0,  z: 0.0}
+    - {x: 80.0,  y: 20.0,  z: 0.0}"
+```
+
+删除 `zone_id=7101`：
+
+```bash
+rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "{header: {stamp: now, frame_id: 'uav1/odom'}, schema_version: 1, operation: 1, zone_id: 7101, enabled: false, zone_type: 0, min_altitude: 0.0, max_altitude: 0.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: []}}"
+```
+
+`operation=2, zone_id=0` 清空全部区域。
+`valid_until=0` 表示在 REMOVE/CLEAR 前永久有效。消息使用 `dubins` Python 模块；当前工作区
+系统 Python 已具备该模块，但 Ubuntu/ROS 的 rosdep 数据库没有 `python3-dubins` 安装键，部署
+新机器时需由系统镜像或项目依赖清单显式提供。
 
 固定翼可在发 Path 前等待 `planning/healthy`；多旋翼的首个 EGO command 由首目标触发，因此
-不能用该健康话题阻止多旋翼首目标发布。完整时序见接入手册。
+不能用该健康话题阻止多旋翼首目标发布。完整时序见
+[任务层接入手册](docs/TASK_PLANNING_INTEGRATION.md)，禁飞区协议、在线换路、配置与验收记录见
+[固定翼动态禁飞区规划说明](docs/FIXEDWING_DYNAMIC_NOFLY.md)。
 
 ## 演示
 
@@ -104,10 +148,22 @@ roslaunch xd_uav_planning fixedwing_sitl_demo.launch gui:=true
 
 # 无 GUI 自动验收
 roslaunch xd_uav_planning fixedwing_sitl_demo.launch gui:=false
+
+# 真实话题依次发布禁飞区和300 m任务Path，并验收实际绕飞
+roslaunch xd_uav_planning fixedwing_sitl_demo.launch \
+  gui:=false enable_nofly:=true path_length:=300
+
+# 飞行中真实新增禁飞区，飞机完成绕飞并越过安全边界后再删除，显示规划可视化
+roslaunch xd_uav_planning fixedwing_sitl_demo.launch \
+  gui:=true dynamic_nofly:=true visualize:=true path_length:=300 \
+  zone_center_fraction:=0.45
 ```
 
 验收完成后会请求受控降落，结果锁存在
-`/uav1/planning/fixedwing_acceptance/result`。
+`/uav1/planning/fixedwing_acceptance/result`。可视化同时显示任务路线、历次替换路线、当前
+controller 路线、实际航迹和活动禁飞区；关闭或停止节点时会在
+`/tmp/xd_uav_planning_visualizations/<时间>/` 保存 `summary.png`、`events.json` 和
+`trajectory.csv`。无显示器时自动使用 Agg 后端，仍会保存验收图。
 
 ## 目录
 
