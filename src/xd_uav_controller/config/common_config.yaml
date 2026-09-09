@@ -7,7 +7,7 @@ state_input:
 
 reference_input:
   # 流式PositionTarget停止更新后，控制器切换到安全保持参考。
-  timeout: 0.50
+  timeout: 2.0
 
   # 控制器保留参考原始frame，在计算控制量前转换到ControlState.header.frame_id。
   # 无斜杠名称只匹配与控制odom相同命名空间下的frame；

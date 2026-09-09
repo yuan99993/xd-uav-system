@@ -53,9 +53,25 @@ roslaunch xd_uav_planning planning.launch \
 官方 `/broadcast_bspline` 更新完整前驱轨迹。这样后机即使晚订阅或首条消息早于 odometry，也
 不会永久卡在 `SEQUENTIAL_START`，无需修改第三方源码。
 
-EGO 的内部 frame 固定为 `world`；规划层仍严格拒绝错误 frame 或非有限坐标，但允许地图范围内
-的任意三维目标高度。默认地图高度范围约为 `-0.01~10 m`；更高任务在
-`planning.launch` 中同步增大 `map_size_z` 和 `virtual_ceil_height`。
+EGO 的内部 frame 固定为 `world`；规划层仍严格拒绝错误 frame 或非有限坐标。占据地图默认是
+30×30×8 m 的固定内存滚动窗口：`rolling_map_enabled:=true` 时，飞行器进入窗口边缘前会重置并
+将窗口平移到当前位置；任务点、TF 和轨迹仍使用原来的 `world` 坐标。可通过
+`map_size_x`、`map_size_y`、`map_size_z`、`rolling_map_enabled` 与
+`rolling_map_margin_m` 覆盖。`rolling_map_margin_m` 应大于局部更新半径（默认 5.5 m）。
+高度范围约为 `-0.01~8 m`；更高任务同步增大 `map_size_z` 和 `virtual_ceil_height`。
+
+首个任务目标会先禁用旧参考量，待该目标产生新的 EGO 候选轨迹后才让 EGO 获取参考仲裁器所有权。
+`owner_acquisition_timeout`（默认 5 s）超时会明确上报失败，而非一直显示活动但不出控制量；
+一般保留 `allow_initial_ego_owner:=true`。
+
+EGO 的速度约束可通过 `planning.launch` 覆盖：`max_vel`（m/s）和 `max_acc`（m/s²）。建议
+显式设置这两个值；内部 EGO runtime 的历史默认值为 `0.30`。任务分配器中的
+`coverage/nominal_speed_mps` 只参与航线负载估算，不会改变实际飞行速度。例如：
+
+```bash
+roslaunch xd_uav_planning planning.launch UAV_NAME:=uav2 vehicle_type:=multirotor \
+  ego_id:=0 max_vel:=1.5 max_acc:=1.0
+```
 
 ### fixedwing / Path
 

@@ -11,6 +11,9 @@
   <arg name="map_size_x" default="30.0"/>
   <arg name="map_size_y" default="20.0"/>
   <arg name="map_size_z" default="12.0"/>
+  <arg name="rolling_map_enabled" default="false"/>
+  <arg name="rolling_map_margin_m" default="6.0"/>
+  <arg name="owner_acquisition_timeout" default="5.0"/>
   <arg name="ground_height" default="-0.01"/>
   <arg name="virtual_ceil_height" default="10.0"/>
   <arg name="visualization_truncate_height" default="10.0"/>
@@ -37,6 +40,8 @@
     <arg name="map_size_x_" value="$(arg map_size_x)"/>
     <arg name="map_size_y_" value="$(arg map_size_y)"/>
     <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="rolling_map_enabled_" value="$(arg rolling_map_enabled)"/>
+    <arg name="rolling_map_margin_m_" value="$(arg rolling_map_margin_m)"/>
     <arg name="ground_height_" value="$(arg ground_height)"/>
     <arg name="virtual_ceil_height_" value="$(arg virtual_ceil_height)"/>
     <arg name="visualization_truncate_height_" value="$(arg visualization_truncate_height)"/>
@@ -101,6 +106,12 @@
       <param name="flight_type" value="$(arg flight_type)"/>
       <param name="output_gate_service"
              value="/$(arg uav_name)/reference_mux/set_enabled"/>
+      <param name="owner_selection_service"
+             value="/$(arg uav_name)/reference_mux/select_ego"/>
+      <param name="candidate_topic"
+             value="/$(arg uav_name)/ego/reference_candidate"/>
+      <param name="owner_acquisition_timeout"
+             value="$(arg owner_acquisition_timeout)"/>
       <param name="cancel_service" value="planning/cancel"/>
       <param name="odometry_topic" value="/drone_$(arg ego_id)_ego/odometry"/>
       <param name="health_topic" value="$(arg healthy_topic)"/>

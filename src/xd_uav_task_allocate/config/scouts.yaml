@@ -11,6 +11,10 @@ scouts:
       backend: planning
     coverage:
       nominal_speed_mps: 4.0
+    multirotor:
+      # Maximum distance of each local EGO goal; the route is split before
+      # dispatch so long world-frame routes stay inside EGO's local map.
+      waypoint_gap: 10.0
     topics:
       detections: /uav1/detect/detections
       planner_goal: /uav1/planning/goal
@@ -28,6 +32,8 @@ scouts:
       backend: planning
     coverage:
       nominal_speed_mps: 4.0
+    multirotor:
+      waypoint_gap: 10.0
     topics:
       detections: /uav2/detect/detections
       planner_goal: /uav2/planning/goal

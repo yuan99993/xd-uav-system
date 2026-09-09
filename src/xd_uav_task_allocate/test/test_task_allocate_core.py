@@ -834,6 +834,51 @@ class CoverageTest(unittest.TestCase):
 
 
 class DirectExecutionTest(unittest.TestCase):
+    def test_planning_multirotor_advances_inside_configured_radius(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.active_goals = {"uav1": (12, "search", 3)}
+        coordinator.active_goal_points = {"uav1": (10.0, 0.0, 4.0)}
+        coordinator.vehicle_world_positions = {
+            "uav1": (5.0, (8.6, 0.0, 4.0))
+        }
+        coordinator.vehicle_backends = {"uav1": "planning"}
+        coordinator.mobility_profiles = {"uav1": "hover"}
+        coordinator.scout_configs = {
+            "uav1": {"multirotor": {"waypoint_acceptance_radius_m": 1.5}}
+        }
+        coordinator.worker_configs = {}
+        coordinator._vehicle_ready = lambda _vehicle, _now: True
+        handled = []
+        coordinator._handle_goal_status = lambda *args: handled.append(args)
+
+        coordinator._check_planning_multirotor_waypoint_arrivals(5.0)
+
+        self.assertEqual(len(handled), 1)
+        self.assertEqual(handled[0][0:3], ("uav1", 12, PlannerStatus.REACHED))
+
+    def test_planning_multirotor_does_not_advance_outside_radius(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.active_goals = {"uav1": (12, "search", 3)}
+        coordinator.active_goal_points = {"uav1": (10.0, 0.0, 4.0)}
+        coordinator.vehicle_world_positions = {
+            "uav1": (5.0, (8.4, 0.0, 4.0))
+        }
+        coordinator.vehicle_backends = {"uav1": "planning"}
+        coordinator.mobility_profiles = {"uav1": "hover"}
+        coordinator.scout_configs = {
+            "uav1": {"multirotor": {"waypoint_acceptance_radius_m": 1.5}}
+        }
+        coordinator.worker_configs = {}
+        coordinator._vehicle_ready = lambda _vehicle, _now: True
+        handled = []
+        coordinator._handle_goal_status = lambda *args: handled.append(args)
+
+        coordinator._check_planning_multirotor_waypoint_arrivals(5.0)
+
+        self.assertEqual(handled, [])
+
     def test_fixedwing_route_is_published_as_geometry_only_path(self):
         coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
         coordinator._next_goal_id = 12

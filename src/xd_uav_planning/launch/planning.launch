@@ -18,15 +18,24 @@
   <arg name="goal_x" default="1.0"/>
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>
-  <!-- Arbitrary altitude means arbitrary within these configured map bounds. -->
+  <!-- EGO dynamic limits. Override per launch for each simulation profile. -->
+  <arg name="max_vel" default="3.0"/>
+  <arg name="max_acc" default="3.0"/>
+  <!-- Fixed-memory rolling occupancy map. World-frame routes and goals are
+       unchanged; this is only the local collision-map window. -->
   <arg name="map_size_x" default="30.0"/>
-  <arg name="map_size_y" default="20.0"/>
-  <arg name="map_size_z" default="12.0"/>
+  <arg name="map_size_y" default="30.0"/>
+  <arg name="map_size_z" default="8.0"/>
+  <arg name="rolling_map_enabled" default="true"/>
+  <arg name="rolling_map_margin_m" default="6.0"/>
+  <!-- First acquisition from no controller is not a controller handoff. -->
+  <arg name="allow_initial_ego_owner" default="true"/>
+  <arg name="owner_acquisition_timeout" default="5.0"/>
   <arg name="ground_height" default="-0.01"/>
-  <arg name="virtual_ceil_height" default="10.0"/>
-  <arg name="visualization_truncate_height" default="10.0"/>
-  <arg name="cloud_input_topic" default="/$(arg UAV_NAME)/os_cloud_nodelet/points"/>
-  <arg name="cloud_input_frame" default="$(arg UAV_NAME)/os_sensor"/>
+  <arg name="virtual_ceil_height" default="8.0"/>
+  <arg name="visualization_truncate_height" default="8.0"/>
+  <arg name="cloud_input_topic" default="/$(arg UAV_NAME)/fastlio/points"/>
+  <arg name="cloud_input_frame" default="$(arg UAV_NAME)/lidar_link"/>
   <arg name="cloud_timeout" default="0.50"/>
   <arg name="minimum_sensor_range" default="0.60"/>
   <arg name="restamp_zero_timestamp" default="false"/>
@@ -39,6 +48,7 @@
       <arg name="common_frame" value="$(arg common_frame)"/>
       <arg name="output_frame" value="$(arg output_frame)"/>
       <arg name="initial_owner" value="none"/>
+      <arg name="allow_initial_ego_owner" value="$(arg allow_initial_ego_owner)"/>
       <arg name="healthy_topic" value="$(arg healthy_topic)"/>
       <arg name="diagnostics_topic" value="$(arg diagnostics_topic)"/>
     </include>
@@ -67,20 +77,18 @@
       <arg name="goal_x" value="$(arg goal_x)"/>
       <arg name="goal_y" value="$(arg goal_y)"/>
       <arg name="goal_z" value="$(arg goal_z)"/>
+      <arg name="max_vel" value="$(arg max_vel)"/>
+      <arg name="max_acc" value="$(arg max_acc)"/>
       <arg name="map_size_x" value="$(arg map_size_x)"/>
       <arg name="map_size_y" value="$(arg map_size_y)"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="rolling_map_enabled" value="$(arg rolling_map_enabled)"/>
+      <arg name="rolling_map_margin_m" value="$(arg rolling_map_margin_m)"/>
+      <arg name="owner_acquisition_timeout" value="$(arg owner_acquisition_timeout)"/>
       <arg name="ground_height" value="$(arg ground_height)"/>
       <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
       <arg name="visualization_truncate_height" value="$(arg visualization_truncate_height)"/>
     </include>
-    <node pkg="xd_uav_planning" type="select_owner_when_ready.py"
-          name="select_ego_owner_when_ready_$(arg ego_id)" output="screen">
-      <param name="health_topic" value="$(arg healthy_topic)"/>
-      <param name="candidate_topic" value="/$(arg UAV_NAME)/ego/reference_candidate"/>
-      <param name="service" value="/$(arg UAV_NAME)/reference_mux/select_ego"/>
-      <param name="timeout" value="0.0"/>
-    </node>
   </group>
 
   <group if="$(eval arg('vehicle_type') == 'fixedwing')">

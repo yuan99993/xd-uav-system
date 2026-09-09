@@ -6,6 +6,7 @@ import sys
 
 import rospy
 from geometry_msgs.msg import PoseStamped
+from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
@@ -32,6 +33,10 @@ class EgoStatus:
         self._flight_type = int(rospy.get_param("~flight_type", 1))
         self._output_gate_service = rospy.get_param(
             "~output_gate_service", "").strip()
+        self._owner_selection_service = rospy.get_param(
+            "~owner_selection_service", "").strip()
+        self._owner_acquisition_timeout = float(rospy.get_param(
+            "~owner_acquisition_timeout", 5.0))
         self._odom_timeout = float(rospy.get_param("~odom_timeout", 0.30))
         self._goal = None
         self._goal_id = None
@@ -42,6 +47,7 @@ class EgoStatus:
         self._arrival_since = None
         self._terminal = False
         self._last_state = None
+        self._owner_selected_for_goal = not bool(self._owner_selection_service)
 
         self._publisher = rospy.Publisher(
             rospy.get_param("~status_topic", "planning/status"),
@@ -58,6 +64,9 @@ class EgoStatus:
         self._odom_subscriber = rospy.Subscriber(
             rospy.get_param("~odometry_topic", "ego/odometry"),
             Odometry, self._odometry_callback, queue_size=20)
+        self._candidate_subscriber = rospy.Subscriber(
+            rospy.get_param("~candidate_topic", "ego/reference_candidate"),
+            PositionTarget, self._candidate_callback, queue_size=20)
         self._timer = rospy.Timer(rospy.Duration(0.10), self._timer_callback)
         self._cancel_service = rospy.Service(
             rospy.get_param("~cancel_service", "planning/cancel"),
@@ -81,7 +90,9 @@ class EgoStatus:
             self._publish(goal_id, PlannerStatus.FAILED,
                           "live_goal_requires_ego_manual_target_mode")
             return
-        if not self._set_output_enabled(True):
+        # Quarantine any command from a previous trajectory until this goal
+        # has produced a fresh EGO candidate and taken ownership explicitly.
+        if not self._set_output_enabled(False):
             self._publish(goal_id, PlannerStatus.FAILED,
                           "planning_output_gate_unavailable")
             return
@@ -90,10 +101,34 @@ class EgoStatus:
         self._goal_received = rospy.Time.now()
         self._arrival_since = None
         self._terminal = False
+        self._owner_selected_for_goal = not bool(self._owner_selection_service)
         self._last_state = PlannerStatus.PLANNING
         self._publish(goal_id, PlannerStatus.PLANNING, "EGO goal accepted by planning layer")
         # EGO consumes only the planning layer's validated internal topic.
         self._ego_goal_publisher.publish(message)
+
+    def _candidate_callback(self, message):
+        """Acquire EGO only after an accepted task goal produced a command."""
+        if (self._goal is None or self._terminal or
+                self._owner_selected_for_goal or
+                not self._owner_selection_service):
+            return
+        if (self._goal_received is not None and
+                message.header.stamp < self._goal_received):
+            return
+        try:
+            rospy.wait_for_service(self._owner_selection_service, timeout=0.05)
+            response = rospy.ServiceProxy(
+                self._owner_selection_service, SetBool)(True)
+            if response.success:
+                self._owner_selected_for_goal = True
+                if not self._set_output_enabled(True):
+                    self._fail("planning_output_gate_unavailable")
+                else:
+                    rospy.loginfo("EGO reference owner acquired: %s",
+                                  response.message)
+        except (rospy.ROSException, rospy.ServiceException):
+            pass
 
     def _set_output_enabled(self, enabled):
         if not self._output_gate_service:
@@ -160,6 +195,8 @@ class EgoStatus:
         if not self._health_current(now):
             self._arrival_since = None
             return
+        if not self._owner_selected_for_goal:
+            return
         position = message.pose.pose.position
         velocity = message.twist.twist.linear
         reached = arrival_reached(
@@ -192,6 +229,13 @@ class EgoStatus:
         if (self._goal_received is not None and self._goal_timeout > 0.0 and
                 (now - self._goal_received).to_sec() > self._goal_timeout):
             self._fail("EGO goal timeout")
+            return
+        if (not self._owner_selected_for_goal and
+                self._owner_acquisition_timeout > 0.0 and
+                self._goal_received is not None and
+                (now - self._goal_received).to_sec() >
+                self._owner_acquisition_timeout):
+            self._fail("EGO reference owner not acquired")
             return
         if self._last_odom_stamp is not None:
             age = (now - self._last_odom_stamp).to_sec()

@@ -32,6 +32,11 @@ class ReferenceMux:
             "~switch_position_jump", 0.20))
         self._velocity_jump = float(rospy.get_param(
             "~switch_velocity_jump", 0.30))
+        # When no controller owns the mux, a goal-triggered first EGO
+        # acquisition is not a controller-to-controller handoff.  It must not
+        # be rejected solely because the target is far from the hold baseline.
+        self._allow_initial_ego_owner = bool(rospy.get_param(
+            "~allow_initial_ego_owner", False))
         self._owner = rospy.get_param("~initial_owner", "none")
         self._enabled = True
         if self._owner not in ("none", "sead", "ego"):
@@ -176,6 +181,14 @@ class ReferenceMux:
         validation = self._valid(candidate)
         if not validation.valid:
             return SetBoolResponse(False, validation.reason)
+        if target == self._owner:
+            return SetBoolResponse(True, "owner already " + self._owner)
+        if (target == "ego" and self._owner == "none" and
+                self._allow_initial_ego_owner):
+            self._owner = target
+            self._reason = "initial_ego_owner"
+            self._owner_pub.publish(String(data=self._owner))
+            return SetBoolResponse(True, "owner=ego (initial acquisition)")
         switch_from = (self._last_output if self._last_output is not None
                        else self._baseline)
         if switch_from is None:
