@@ -27,3 +27,13 @@ distribution is included as `LICENSES/Ultralytics-AGPL-3.0.txt`.
 Deployments using an Enterprise license must retain their own applicable
 license records. This notice does not claim that the generic COCO model is
 validated for small-aircraft or airborne-to-airborne recognition.
+
+## Torchreid and OSNet person ReID checkpoint
+
+The optional deep appearance backend uses `torchreid==0.2.5` and its OSNet
+implementation to extract person re-identification embeddings.  The bundled
+`models/person_reid/osnet_x0_25_market1501.pt` artifact is the Torchreid
+Market-1501 model-zoo checkpoint.  Torchreid/OSNet are MIT-licensed; the
+upstream project and license are available at
+<https://github.com/KaiyangZhou/deep-person-reid>.  This package verifies the
+checkpoint SHA-256 at startup and does not download model files implicitly.

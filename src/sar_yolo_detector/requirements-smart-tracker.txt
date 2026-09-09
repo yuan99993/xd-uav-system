@@ -6,3 +6,10 @@ torch>=2.0,<3
 ultralytics==8.4.118
 lap>=0.5.12,<1
 rospkg>=1.5,<2
+# Optional deep person ReID (OSNet/Market1501).  The runtime never downloads
+# weights; provision models/person_reid/*.pt from the package artifact.
+torchvision>=0.15,<1
+torchreid==0.2.5
+scipy>=1.10,<2
+gdown>=5,<7
+tensorboard>=2.14,<3

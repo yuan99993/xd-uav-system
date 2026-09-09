@@ -42,7 +42,7 @@
       <arg name="uav_id" value="$(arg UAV_NAME)" />
       <arg name="sensor_id" value="down_camera" />
       <arg name="profile" value="xd_vehicle_car_ar_car_tank" />
-      <arg name="model_version" value="xd_vehicle_train2_best" />
+      <arg name="model_version" value="xd_vehicle_train_best" />
     </include>
   </group>
 
@@ -57,6 +57,6 @@
     <arg name="image_source" value="down_rgb" />
     <arg name="sensor_id" value="down_camera" />
     <arg name="detector_name" value="sar_yolo_smart_tracker" />
-    <arg name="model_version" value="xd_vehicle_train2_best" />
+    <arg name="model_version" value="xd_vehicle_train_best" />
   </include>
 </launch>

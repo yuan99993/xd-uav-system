@@ -285,6 +285,12 @@ class SmartTracker:
             if hasattr(self, "selected_object_id"):
                 self.clear_selection()
         finally:
+            appearance = getattr(self, "appearance_model", None)
+            if appearance is not None and hasattr(appearance, "close"):
+                try:
+                    appearance.close()
+                except Exception:
+                    logger.exception("[SmartTracker] Appearance model cleanup failed")
             finalizer = getattr(self, "_backend_finalizer", None)
             if finalizer is not None and finalizer.alive:
                 finalizer()
@@ -355,6 +361,15 @@ class SmartTracker:
             "model_task": getattr(self, "model_task", None),
             "geometry_mode": getattr(self, "current_geometry_mode", None),
         })
+        appearance = getattr(self, "appearance_model", None)
+        deep_model = getattr(appearance, "deep_model", None)
+        if deep_model is not None:
+            deep_status = deep_model.get_status()
+            info["appearance_reid"] = deep_status
+            info["appearance_reid_model_name"] = deep_status.get("model_name")
+            info["appearance_reid_model_sha256"] = (
+                deep_status.get("provenance", {}).get("sha256")
+            )
         return info
 
     def switch_model(self, new_model_path: str, device: str = "auto") -> dict:
@@ -1367,7 +1382,9 @@ class SmartTracker:
         Returns:
             dict: SmartTracker-specific capabilities
         """
-        return {
+        appearance = getattr(self, "appearance_model", None)
+        deep_model = getattr(appearance, "deep_model", None)
+        capabilities = {
             'data_types': [TrackerDataType.MULTI_TARGET.value],
             'supports_confidence': True,
             'supports_velocity': False,
@@ -1386,6 +1403,15 @@ class SmartTracker:
             'detection_classes': len(self.labels) if self.labels else 0,
             'geometry_mode': self.current_geometry_mode,
         }
+        capabilities['appearance_reid'] = {
+            'enabled': deep_model is not None,
+            'backend': 'torchreid_osnet' if deep_model is not None else 'handcrafted_or_disabled',
+            'model_name': deep_model.model_name if deep_model is not None else None,
+            'embedding_dimension': (
+                deep_model.embedding_dimension if deep_model is not None else None
+            ),
+        }
+        return capabilities
 
     def _normalize_center(self, center):
         """Normalize center coordinates to [-1, 1] range."""
