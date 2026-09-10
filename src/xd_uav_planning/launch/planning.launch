@@ -19,8 +19,11 @@
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>
   <!-- EGO dynamic limits. Override per launch for each simulation profile. -->
-  <arg name="max_vel" default="3.0"/>
-  <arg name="max_acc" default="3.0"/>
+  <!-- Fast but still brakeable in the 8 m local horizon.  Smoothness comes
+       from jerk limiting and controller damping, not from an artificially
+       low cruise speed. -->
+  <arg name="max_vel" default="3.5"/>
+  <arg name="max_acc" default="2.5"/>
   <!-- Fixed-memory rolling occupancy map. World-frame routes and goals are
        unchanged; this is only the local collision-map window. -->
   <arg name="map_size_x" default="30.0"/>
@@ -34,6 +37,8 @@
   <arg name="ground_height" default="-0.01"/>
   <arg name="virtual_ceil_height" default="8.0"/>
   <arg name="visualization_truncate_height" default="8.0"/>
+  <!-- This workspace's raw lidar publisher uses the fastlio/points topic
+       name even when the FAST-LIO odometry/mapping node is not running. -->
   <arg name="cloud_input_topic" default="/$(arg UAV_NAME)/fastlio/points"/>
   <arg name="cloud_input_frame" default="$(arg UAV_NAME)/lidar_link"/>
   <arg name="cloud_timeout" default="0.50"/>

@@ -54,6 +54,8 @@ void GridMap::initMap(ros::NodeHandle &nh)
   node_.param("grid_map/rolling_map_enabled", mp_.rolling_map_enabled_, false);
   node_.param("grid_map/rolling_map_margin_m", mp_.rolling_map_margin_m_, 6.0);
   node_.param("grid_map/ground_height", mp_.ground_height_, 1.0);
+  node_.param("grid_map/minimum_obstacle_height_above_ground",
+              mp_.minimum_obstacle_height_above_ground_, 0.0);
 
   node_.param("grid_map/odom_depth_timeout", mp_.odom_depth_timeout_, 1.0);
 
@@ -829,9 +831,6 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
     return;
   }
 
-  if (latest_cloud.points.size() == 0)
-    return;
-
   if (isnan(md_.camera_pos_(0)) || isnan(md_.camera_pos_(1)) || isnan(md_.camera_pos_(2)))
     return;
 
@@ -858,6 +857,15 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   {
     pt = latest_cloud.points[i];
     p3d(0) = pt.x, p3d(1) = pt.y, p3d(2) = pt.z;
+
+    // The map already represents the ground as a flight boundary.  Raw lidar
+    // ground returns (and their small vertical noise) otherwise look like a
+    // wall directly below/around the vehicle and can trigger EGO's emergency
+    // collision branch even in an empty scene.  Keep vertical obstacles: only
+    // the configurable band immediately above the configured ground is
+    // rejected.
+    if (p3d(2) <= mp_.ground_height_ + mp_.minimum_obstacle_height_above_ground_)
+      continue;
 
     /* point inside update range */
     Eigen::Vector3d devi = p3d - md_.camera_pos_;

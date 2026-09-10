@@ -3449,7 +3449,7 @@ class TaskAllocateCoordinator:
             radius = max(
                 0.0,
                 self._multirotor_setting(
-                    vehicle, "waypoint_acceptance_radius_m", 1.0
+                    vehicle, "waypoint_acceptance_radius_m", 2.5
                 ),
             )
             distance = sqrt(sum(

@@ -176,10 +176,13 @@ planner:
     # Split long world-frame hover routes into local EGO goals.
     waypoint_gap: 10.0
     # A planning-backed multirotor advances to the next split waypoint as soon
-    # as its world position enters this 3-D radius. No speed or dwell gate is
-    # applied to these route waypoints. May be overridden per vehicle under
+    # as its world position enters this 3-D radius.  This is deliberately
+    # larger than the position-error tolerance: the next local EGO goal is
+    # handed off before the current trajectory starts its terminal brake.
+    # The 10 m waypoint_gap is therefore a spacing bound, not a sequence of
+    # stop-and-go hover commands. May be overridden per vehicle under
     # scouts/workers.<name>.multirotor.
-    waypoint_acceptance_radius_m: 1.0
+    waypoint_acceptance_radius_m: 2.5
 
   fixedwing:
     # Used to replace instantaneous lawnmower reversals with sampled Dubins
