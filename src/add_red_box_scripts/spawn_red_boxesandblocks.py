@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Spawn configurable red test boxes plus tall wall/pillar obstacles in Gazebo Classic."""
+"""Spawn configurable red test boxes plus tall pillar obstacles in Gazebo Classic."""
 
 import argparse
 import math
@@ -55,7 +55,7 @@ def _area(value: str) -> Tuple[float, float, float, float]:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Spawn solid red test boxes and optional tall wall/pillar obstacles "
+            "Spawn solid red test boxes and optional tall pillar obstacles "
             "through /gazebo/spawn_sdf_model. Random obstacles use Gazebo box geometry "
             "and share the same configured/search polygons as the red boxes."
         ),
@@ -71,7 +71,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  python3 spawn_red_boxes.py --count 5 --search-area-topic "
             "/task_allocate/search_areas --size 2 2 2 --ground-z 0 "
             "--min-spacing 30 --obstacle-count 12 --obstacle-height 25 "
-            "--wall-size 12 1.5 --pillar-size 3 3 --replace\n\n"
+            "--pillar-size 1 1 --replace\n\n"
             "For a negative explicit coordinate, use --position=-10,-10.\n"
             "A two-value position is X,Y; Z is then placed on --ground-z.\n"
             "Tall obstacles are static by default and use Gazebo's default material."
@@ -148,7 +148,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         metavar="N",
-        help="number of tall random wall/pillar obstacles (default: 0)",
+        help="number of tall random pillar obstacles (default: 0)",
     )
     parser.add_argument(
         "--obstacle-height",
@@ -158,27 +158,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="height of every tall obstacle in metres (default: 20)",
     )
     parser.add_argument(
-        "--wall-size",
-        nargs=2,
-        type=float,
-        default=(12.0, 1.5),
-        metavar=("LENGTH", "THICKNESS"),
-        help="wall footprint LENGTH THICKNESS in metres (default: 12 1.5)",
-    )
-    parser.add_argument(
         "--pillar-size",
         nargs=2,
         type=float,
-        default=(3.0, 3.0),
+        default=(1.0, 1.0),
         metavar=("X", "Y"),
-        help="pillar footprint X Y in metres (default: 3 3)",
-    )
-    parser.add_argument(
-        "--wall-probability",
-        type=float,
-        default=0.5,
-        metavar="P",
-        help="probability that a random obstacle is a wall, 0..1 (default: 0.5)",
+        help="pillar footprint X Y in metres (default: 1 1)",
     )
     parser.add_argument(
         "--obstacle-margin",
@@ -260,16 +245,10 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--obstacle-count cannot be negative")
     if not math.isfinite(args.obstacle_height) or args.obstacle_height <= 0.0:
         parser.error("--obstacle-height must be finite and greater than zero")
-    if len(args.wall_size) != 2 or any(
-        not math.isfinite(item) or item <= 0.0 for item in args.wall_size
-    ):
-        parser.error("both --wall-size values must be finite and greater than zero")
     if len(args.pillar_size) != 2 or any(
         not math.isfinite(item) or item <= 0.0 for item in args.pillar_size
     ):
         parser.error("both --pillar-size values must be finite and greater than zero")
-    if not math.isfinite(args.wall_probability) or not 0.0 <= args.wall_probability <= 1.0:
-        parser.error("--wall-probability must be between 0 and 1")
     if not math.isfinite(args.obstacle_margin) or args.obstacle_margin < 0.0:
         parser.error("--obstacle-margin must be finite and non-negative")
     if not math.isfinite(args.obstacle_min_spacing) or args.obstacle_min_spacing < 0.0:
@@ -547,9 +526,7 @@ def _random_obstacles_in_polygons(
     polygons: Sequence[Polygon2],
     ground_z: float,
     obstacle_height: float,
-    wall_size: Sequence[float],
     pillar_size: Sequence[float],
-    wall_probability: float,
     margin: float,
     obstacle_min_spacing: float,
     red_box_positions: Sequence[Tuple[float, float, float]],
@@ -557,7 +534,7 @@ def _random_obstacles_in_polygons(
     red_obstacle_spacing: float,
     generator: random.Random,
 ) -> List[ObstacleSpec]:
-    """Create tall static wall/pillar box specs fully inside the polygons."""
+    """Create tall static pillar box specs fully inside the polygons."""
 
     if count <= 0:
         return []
@@ -579,15 +556,10 @@ def _random_obstacles_in_polygons(
     centre_z = float(ground_z) + float(obstacle_height) / 2.0
 
     for selected_index in selected_indices:
-        kind = "wall" if generator.random() < wall_probability else "pillar"
-        if kind == "wall":
-            footprint_x = float(wall_size[0])
-            footprint_y = float(wall_size[1])
-            yaw_deg = generator.uniform(0.0, 180.0)
-        else:
-            footprint_x = float(pillar_size[0])
-            footprint_y = float(pillar_size[1])
-            yaw_deg = generator.uniform(0.0, 180.0)
+        kind = "pillar"
+        footprint_x = float(pillar_size[0])
+        footprint_y = float(pillar_size[1])
+        yaw_deg = 0.0
 
         size = (footprint_x, footprint_y, float(obstacle_height))
         radius = math.hypot(footprint_x / 2.0, footprint_y / 2.0)
@@ -614,8 +586,7 @@ def _random_obstacles_in_polygons(
             if not _has_boundary_clearance((x, y), polygon, clearance):
                 continue
 
-            # Use circumscribed footprint radii. This is conservative for walls
-            # but guarantees no overlap regardless of each wall's random yaw.
+            # Use circumscribed footprint radii so pillars keep the requested clearance.
             if any(
                 math.hypot(x - old_x, y - old_y)
                 < radius + old_radius + obstacle_min_spacing
@@ -636,7 +607,7 @@ def _random_obstacles_in_polygons(
         else:
             raise ValueError(
                 "could not place all tall obstacles inside the search polygons; "
-                "reduce --obstacle-count/--wall-size/--pillar-size/"
+                "reduce --obstacle-count/--pillar-size/"
                 "--obstacle-min-spacing/--obstacle-red-spacing, or enlarge the areas"
             )
 
@@ -781,7 +752,7 @@ def _spawn(
                 return 2
             red_pattern = re.compile(rf"^{re.escape(args.prefix)}_[0-9]+$")
             obstacle_pattern = re.compile(
-                rf"^{re.escape(args.obstacle_prefix)}_(wall|pillar)_[0-9]+$"
+                rf"^{re.escape(args.obstacle_prefix)}_pillar_[0-9]+$"
             )
             for old_name in world.model_names:
                 if not (
@@ -906,9 +877,7 @@ def main() -> int:
                 polygons,
                 args.ground_z,
                 args.obstacle_height,
-                args.wall_size,
                 args.pillar_size,
-                args.wall_probability,
                 args.obstacle_margin,
                 args.obstacle_min_spacing,
                 positions,

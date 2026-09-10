@@ -22,9 +22,11 @@ multirotor:
     # 状态为[position, velocity]，MPC直接输出期望加速度。
     mpc:
       horizon: 26
-      q: [500.0, 100.0]
-      terminal_q: [1000.0, 300.0]
-      r: 20.0
+      # EGO replans in flight.  Penalise aggressive control changes enough to
+      # track its continuous P/V/A reference without exciting lateral sway.
+      q: [500.0, 180.0]
+      terminal_q: [1000.0, 400.0]
+      r: 45.0
 
     # 对位置、速度和纯加速度控制模式分别补偿低频扰动。
     # 积分状态直接表示附加加速度；专用起飞/降落阶段自动停用。
@@ -47,14 +49,14 @@ multirotor:
   limits:
     minimum_throttle: 0.05
     maximum_throttle: 0.90
-    maximum_tilt: 0.61
-    maximum_body_rate: [3.0, 3.0, 2.0]
-    maximum_velocity_xy: 10.0
-    maximum_velocity_z: 8.0
-    maximum_acceleration_xy: 8
-    maximum_acceleration_z: 7
-    maximum_jerk_xy: 8
-    maximum_jerk_z: 7
+    maximum_tilt: 0.52
+    maximum_body_rate: [2.5, 2.5, 1.8]
+    maximum_velocity_xy: 4.0
+    maximum_velocity_z: 3.0
+    maximum_acceleration_xy: 3.5
+    maximum_acceleration_z: 2.0
+    maximum_jerk_xy: 5
+    maximum_jerk_z: 2
 
   # 起飞与降落保持为两种机型一致的顶层业务阶段；具体参数由当前机型文件定义。
   takeoff:

@@ -3,7 +3,7 @@
 post_arrival:
   # arrive: preserve the original behavior and complete immediately at REACHED.
   # task_execute: send ExecuteTaskGoal and complete only after action success.
-  mode: task_execute  # arrive | task_execute
+  mode: arrive  # arrive | task_execute
 
   action_name_template: /{worker}/task_execute/execute
   server_wait_timeout_sec: 2.0
