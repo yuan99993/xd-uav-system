@@ -31,7 +31,7 @@
   <arg name="map_size_x" default="30.0"/>
   <arg name="map_size_y" default="20.0"/>
   <arg name="map_size_z" default="5.0"/>
-  <arg name="rolling_map_enabled" default="false"/>
+  <arg name="rolling_map_enabled" default="true"/>
   <arg name="rolling_map_margin_m" default="6.0"/>
   <arg name="allow_initial_ego_owner" default="true"/>
   <arg name="owner_acquisition_timeout" default="5.0"/>

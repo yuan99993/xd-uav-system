@@ -55,10 +55,11 @@ EGO 的内部 frame 固定为 `world`；规划层拒绝错误 frame 和非有限
 超时会明确上报失败。首次从 `none` 获取 EGO owner 可由 `allow_initial_ego_owner` 放行，后续
 SEAD/EGO owner 切换仍执行位置和速度跳变检查。
 
-EGO 地图大小、高度边界和动态约束可从正式入口配置。为兼容现有运行结果，默认仍为
-`30×20×5 m`、`max_vel=0.30 m/s`、`max_acc=0.30 m/s²`，点云默认仍使用 Ouster 话题。
-`rolling_map_enabled:=true` 时，占据地图在飞机接近水平边界前重置有限体素缓存并将窗口中心
-移动到当前位置；任务目标、TF 和轨迹继续使用 `world` 坐标。`rolling_map_margin_m` 默认
+EGO 地图大小、高度边界和动态约束可从正式入口配置。默认仍为 `30×20×5 m`、
+`max_vel=0.30 m/s`、`max_acc=0.30 m/s²`，点云默认仍使用 Ouster 话题；与 construction
+入口一致，滚动地图默认开启，需要固定地图时可传入 `rolling_map_enabled:=false`。占据地图
+在飞机接近水平边界前重置有限体素缓存并将窗口中心移动到当前位置；任务目标、TF 和轨迹
+继续使用 `world` 坐标。`rolling_map_margin_m` 默认
 6 m，应大于 EGO 5.5 m 的局部更新半径。重定位会清空旧占据缓存，必须依靠后续传感器数据
 重建，因此实机启用前需要验证重定位期间的障碍重建和轨迹安全性。
 
