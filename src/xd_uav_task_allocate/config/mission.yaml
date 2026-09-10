@@ -160,7 +160,7 @@ allocation:
 planner:
   # Production navigation always enters xd_uav_planning. The direct controller
   # backend remains below only as an explicit clear-area test fallback.
-  backend: direct_controller_test
+  backend: planning  # planning | direct_controller_test
   direct_controller_test:
     # Mandatory acknowledgement: this backend sends multirotor mission points
     # and complete fixed-wing geometric paths directly to the controller;

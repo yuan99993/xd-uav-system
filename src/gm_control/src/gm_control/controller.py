@@ -44,6 +44,8 @@ class ControllerConfig:
     pitch_sign: float = 1.0
     max_yaw_rate_deg_s: float = 80.0
     max_pitch_rate_deg_s: float = 60.0
+    # Deprecated compatibility parameters. Angle commands are intentionally
+    # not clamped by gm_control.
     max_yaw_angle_deg: float = 45.0
     max_pitch_angle_deg: float = 30.0
     deadzone_x: float = 0.02
@@ -71,6 +73,8 @@ class ImageGimbalController:
         self.last_error_y = 0.0
         self.last_time = None
         self.last_target_time = 0.0
+        self.target_seen_once = False
+        self.manual_search_enabled = False
         self.integral_x = 0.0
         self.integral_y = 0.0
         self.last_command = GimbalCommandData(mode=self.config.control_mode, valid=False)
@@ -80,9 +84,20 @@ class ImageGimbalController:
         self.last_error_y = 0.0
         self.last_time = None
         self.last_target_time = 0.0
+        self.target_seen_once = False
+        self.manual_search_enabled = False
         self.integral_x = 0.0
         self.integral_y = 0.0
         self.last_command = GimbalCommandData(mode=self.config.control_mode, valid=False)
+
+    def set_manual_search(self, enabled: bool) -> None:
+        """Enable an explicit search request without fabricating a target loss."""
+        self.manual_search_enabled = bool(enabled)
+        self.last_time = None
+        self.last_error_x = 0.0
+        self.last_error_y = 0.0
+        self.integral_x = 0.0
+        self.integral_y = 0.0
 
     def normalized_error(self, target: TargetBox, image_size: ImageSize) -> Tuple[float, float]:
         if image_size.width <= 0 or image_size.height <= 0:
@@ -113,20 +128,43 @@ class ImageGimbalController:
         )
 
         if has_target:
+            self.target_seen_once = True
             self.last_target_time = now
-        elif now - self.last_target_time > cfg.target_timeout_s:
+        else:
+            lost_time = now - self.last_target_time
+
+            # A manual search is an explicit operator request and may start
+            # before the first target has ever been detected.
+            if self.manual_search_enabled:
+                command = self._search_command()
+                self.last_command = command
+                return command, (0.0, 0.0)
+
+            # Merely enabling tracking must not make a never-seen target look
+            # lost. Keep the adapter at its current angle until a target has
+            # actually been acquired once.
+            if not self.target_seen_once:
+                return GimbalCommandData(mode=cfg.control_mode, valid=False), (0.0, 0.0)
+
+            # Ignore short detector gaps. The adapter interprets an invalid
+            # command as hold, so this does not cause a spurious movement.
+            if lost_time <= cfg.target_timeout_s:
+                if (
+                    cfg.target_lost_action == "hold_last"
+                    and lost_time <= cfg.target_lost_hold_time_s
+                    and self.last_command.valid
+                ):
+                    return self.last_command, (0.0, 0.0)
+                return GimbalCommandData(mode=cfg.control_mode, valid=False), (0.0, 0.0)
+
             self.last_time = now
             self.last_error_x = 0.0
             self.last_error_y = 0.0
             self.integral_x = 0.0
             self.integral_y = 0.0
             command = self._target_lost_command(now)
-            self.last_command = command
-            return command, (0.0, 0.0)
-
-        if not has_target:
-            command = self._target_lost_command(now)
-            self.last_command = command
+            if command.valid:
+                self.last_command = command
             return command, (0.0, 0.0)
 
         error_x, error_y = self.normalized_error(target, image_size)
@@ -169,8 +207,8 @@ class ImageGimbalController:
             command = GimbalCommandData(
                 mode="angle",
                 valid=True,
-                yaw_deg=_clamp(current_yaw + yaw_raw, -cfg.max_yaw_angle_deg, cfg.max_yaw_angle_deg),
-                pitch_deg=_clamp(current_pitch + pitch_raw, -cfg.max_pitch_angle_deg, cfg.max_pitch_angle_deg),
+                yaw_deg=current_yaw + yaw_raw,
+                pitch_deg=current_pitch + pitch_raw,
             )
         else:
             yaw_rate = _clamp(yaw_raw, -cfg.max_yaw_rate_deg_s, cfg.max_yaw_rate_deg_s)
@@ -194,31 +232,26 @@ class ImageGimbalController:
             return self.last_command
 
         if action == "search":
-            return GimbalCommandData(
-                mode="rate",
-                valid=True,
-                yaw_rate_deg_s=self.config.target_lost_search_yaw_rate_deg_s,
-                pitch_rate_deg_s=self.config.target_lost_search_pitch_rate_deg_s,
-            )
+            return self._search_command()
 
         if action == "back_to_init":
             return GimbalCommandData(
                 mode="angle",
                 valid=True,
-                yaw_deg=_clamp(
-                    self.config.target_lost_back_to_init_yaw_deg,
-                    -self.config.max_yaw_angle_deg,
-                    self.config.max_yaw_angle_deg,
-                ),
-                pitch_deg=_clamp(
-                    self.config.target_lost_back_to_init_pitch_deg,
-                    -self.config.max_pitch_angle_deg,
-                    self.config.max_pitch_angle_deg,
-                ),
+                yaw_deg=self.config.target_lost_back_to_init_yaw_deg,
+                pitch_deg=self.config.target_lost_back_to_init_pitch_deg,
                 roll_deg=self.config.target_lost_back_to_init_roll_deg,
             )
 
         return GimbalCommandData(mode=self.config.control_mode, valid=False)
+
+    def _search_command(self) -> GimbalCommandData:
+        return GimbalCommandData(
+            mode="rate",
+            valid=True,
+            yaw_rate_deg_s=self.config.target_lost_search_yaw_rate_deg_s,
+            pitch_rate_deg_s=self.config.target_lost_search_pitch_rate_deg_s,
+        )
 
     def _smooth_command(self, command: GimbalCommandData, dt: float) -> GimbalCommandData:
         cfg = self.config

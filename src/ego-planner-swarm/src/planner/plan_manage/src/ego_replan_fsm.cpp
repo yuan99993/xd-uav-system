@@ -214,9 +214,8 @@ namespace ego_planner
     // trigger_ = true;
     init_pt_ = odom_pos_;
 
-    // Preserve the full validated 3-D goal.  The upstream implementation
-    // forced every live RViz/manual target onto z=1 m, which made the planner
-    // unusable for task-layer routes at other flight altitudes.
+    // Planning already validates frame and finite coordinates. Preserve the
+    // complete 3-D task goal instead of forcing every live target to z=1 m.
     Eigen::Vector3d end_wp(msg->pose.position.x, msg->pose.position.y,
                           msg->pose.position.z);
 

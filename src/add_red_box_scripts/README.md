@@ -327,6 +327,8 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red
 
 `rostopic pub -1` 只发布一次。请先运行生成脚本，看到它开始等待区域消息后，
 再发布搜索区域；或者让区域发布者使用 latched topic。
+
+任务搜索区域发布：
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 50.0, y: 0.0, z: 0.0}, {x: 50.0, y: 50.0, z: 0.0}, {x: 0.0, y: 50.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 4.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -50.0, y: -50.0, z: 0.0}, {x: 0.0, y: -50.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -50.0, y: 0.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 4.0, priority: 1}]}"
 
 
@@ -338,6 +340,12 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /ta
 
 
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 50.0, y: 50.0, z: 0.0}, {x: 200.0, y: 50.0, z: 0.0}, {x: 200.0, y: 200.0, z: 0.0}, {x: 50.0, y: 200.0, z: 0.0}]}, altitude: 8.0, lane_spacing: 8.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -0.0, y: -0.0, z: 0.0}, {x: -50.0, y: 0.0, z: 0.0}, {x: -50.0, y: -50.0, z: 0.0}, {x: 0.0, y: -50.0, z: 0.0}]}, altitude: 8.0, lane_spacing: 8.0, priority: 1}]}"
+
+
+禁飞区指令：
+
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "{header: {stamp: now, frame_id: 'world'}, schema_version: 1, operation: 0, zone_id: 7101, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: 105.0, y: 105.0, z: 0.0}, {x: 145.0, y: 105.0, z: 0.0}, {x: 145.0, y: 145.0, z: 0.0}, {x: 105.0, y: 145.0, z: 0.0}]}}"
+
 ### Gazebo 提示模型名称已存在
 
 再次生成时加 `--replace`，或者通过 `--prefix` 使用新的模型名前缀。

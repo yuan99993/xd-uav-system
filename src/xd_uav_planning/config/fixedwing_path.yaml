@@ -4,7 +4,23 @@ path_timeout: 1.0
 future_tolerance: 0.02
 minimum_segment_length: 0.05
 maximum_points: 10000
-# Used only if cancellation happens while measured horizontal speed and
-# airspeed are unavailable.  The one-shot release reference is then replaced
-# by tracking input or expires into the controller's configured loiter mode.
+
+# Fallback airspeed for the normal planning/cancel handoff when measured
+# horizontal velocity is not available.
 cancel_cruise_airspeed: 15.0
+
+# Initial and online remaining-path adjustment for dynamic no-fly updates.
+turning_radius: 35.0
+zone_clearance: 15.0
+planning_sample_step: 2.0
+zone_max_message_age: 1.0
+zone_max_ttl: 3600.0
+zone_min_altitude_limit: -1000.0
+zone_max_altitude_limit: 10000.0
+zone_max_abs_coordinate: 100000.0
+zone_min_polygon_area: 1.0
+zone_max_vertices: 64
+
+# Existing control-manager Trigger service used only when an online replan has
+# no safe solution; an empty value disables the automatic fail-closed request.
+dynamic_failure_cancel_service: control_manager/cancel_offboard

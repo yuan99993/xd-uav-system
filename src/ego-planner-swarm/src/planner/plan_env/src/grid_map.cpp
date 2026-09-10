@@ -237,8 +237,8 @@ void GridMap::recenterRollingMap(const Eigen::Vector3d& position)
   if (!rollingMapNeedsRecenter(position))
     return;
 
-  // Keep the public map and planner coordinates in world frame.  Only the
-  // finite voxel backing store moves; height remains fixed to ground/ceiling.
+  // Keep planner coordinates in world frame and move only the finite voxel
+  // backing store. The vertical bounds remain tied to ground and ceiling.
   mp_.map_origin_(0) = std::floor(
       (position(0) - 0.5 * mp_.map_size_(0)) * mp_.resolution_inv_) /
       mp_.resolution_inv_;
@@ -831,6 +831,9 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
     return;
   }
 
+  if (latest_cloud.points.size() == 0)
+    return;
+
   if (isnan(md_.camera_pos_(0)) || isnan(md_.camera_pos_(1)) || isnan(md_.camera_pos_(2)))
     return;
 
@@ -858,13 +861,8 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
     pt = latest_cloud.points[i];
     p3d(0) = pt.x, p3d(1) = pt.y, p3d(2) = pt.z;
 
-    // The map already represents the ground as a flight boundary.  Raw lidar
-    // ground returns (and their small vertical noise) otherwise look like a
-    // wall directly below/around the vehicle and can trigger EGO's emergency
-    // collision branch even in an empty scene.  Keep vertical obstacles: only
-    // the configurable band immediately above the configured ground is
-    // rejected.
-    if (p3d(2) <= mp_.ground_height_ + mp_.minimum_obstacle_height_above_ground_)
+    if (p3d(2) <= mp_.ground_height_ +
+                    mp_.minimum_obstacle_height_above_ground_)
       continue;
 
     /* point inside update range */

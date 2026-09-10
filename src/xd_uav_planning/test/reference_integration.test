@@ -20,6 +20,18 @@
       <param name="output_topic" value="control/reference/setpoint"/>
     </node>
   </group>
+  <group ns="uav_initial">
+    <node pkg="xd_uav_planning" type="reference_mux_node.py"
+          name="reference_mux" required="true">
+      <param name="initial_owner" value="none"/>
+      <param name="allow_initial_ego_owner" value="true"/>
+      <param name="common_frame" value="world"/>
+      <param name="candidate_timeout" value="0.20"/>
+      <param name="health_timeout" value="0.20"/>
+      <param name="ego_healthy_topic" value="planning/healthy"/>
+      <param name="output_topic" value="control/reference/setpoint"/>
+    </node>
+  </group>
   <test test-name="reference_integration"
         pkg="xd_uav_planning"
         type="test_reference_integration.py"

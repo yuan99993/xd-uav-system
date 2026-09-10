@@ -54,8 +54,6 @@
     <arg name="fx" value="387.0"/><arg name="fy" value="387.0"/>
     <arg name="max_vel" value="$(arg max_vel)"/>
     <arg name="max_acc" value="$(arg max_acc)"/>
-    <!-- Match the wider local obstacle window: a short horizon cannot commit
-         to a side of a 12 m wall even after the lidar sees its edges. -->
     <arg name="planning_horizon" value="8.0"/>
     <arg name="use_distinctive_trajs" value="false"/>
     <arg name="flight_type" value="$(arg flight_type)"/>

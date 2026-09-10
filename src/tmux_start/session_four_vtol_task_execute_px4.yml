@@ -58,29 +58,29 @@ windows:
           waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
           roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav1 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
           detector_pid=$!;
-          until rosservice info /uav1/sar_yolo_smart_tracker/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
-          rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          until rosservice info /uav1/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav1/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
           wait "$detector_pid"
         - >-
           waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
           roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav2 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
           detector_pid=$!;
-          until rosservice info /uav2/sar_yolo_smart_tracker/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
-          rosservice call /uav2/sar_yolo_smart_tracker/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          until rosservice info /uav2/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav2/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
           wait "$detector_pid"
         - >-
           waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
           roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav3 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
           detector_pid=$!;
-          until rosservice info /uav3/sar_yolo_smart_tracker/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
-          rosservice call /uav3/sar_yolo_smart_tracker/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          until rosservice info /uav3/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav3/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
           wait "$detector_pid"
         - >-
           waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
           roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav4 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
           detector_pid=$!;
-          until rosservice info /uav4/sar_yolo_smart_tracker/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
-          rosservice call /uav4/sar_yolo_smart_tracker/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          until rosservice info /uav4/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav4/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
           wait "$detector_pid"
 
   - track_execute:

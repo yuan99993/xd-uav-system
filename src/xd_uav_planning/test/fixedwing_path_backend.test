@@ -5,6 +5,9 @@
       <param name="common_frame" value="world"/>
       <param name="state_timeout" value="0.50"/>
       <param name="path_timeout" value="1.0"/>
+      <param name="turning_radius" value="5.0"/>
+      <param name="zone_clearance" value="2.0"/>
+      <param name="planning_sample_step" value="1.0"/>
     </node>
   </group>
   <test test-name="fixedwing_path_backend"

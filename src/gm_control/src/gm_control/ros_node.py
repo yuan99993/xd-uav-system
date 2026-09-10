@@ -7,7 +7,12 @@ from cv_bridge import CvBridge, CvBridgeError
 from dynamic_reconfigure.server import Server as DynamicReconfigureServer
 from geometry_msgs.msg import Vector3Stamped
 from sensor_msgs.msg import Image
-from gm_control.srv import StartGimbalTracking, StartGimbalTrackingResponse
+from gm_control.srv import (
+    StartGimbalSearch,
+    StartGimbalSearchResponse,
+    StartGimbalTracking,
+    StartGimbalTrackingResponse,
+)
 
 from gm_control.adapters.base import GimbalCommandData, GimbalStateData
 from gm_control.cfg import GimbalPidConfig
@@ -75,6 +80,7 @@ class GimbalImageControllerNode:
         self.target_box = None
         self.gimbal_state = None
         self.tracking_enabled = bool(rospy.get_param("~tracking_enabled_at_startup", False))
+        self.search_enabled = False
         self.last_stamp = rospy.Time.now()
         self.bridge = CvBridge()
 
@@ -105,27 +111,37 @@ class GimbalImageControllerNode:
         self.bbox_sub = rospy.Subscriber(bbox_topic, BoundingBox2D, self._bbox_callback, queue_size=5)
         self.state_sub = rospy.Subscriber(state_topic, GimbalState, self._state_callback, queue_size=5)
         start_service = rospy.get_param("~start_service", "gm_control/start_tracking")
+        search_service = rospy.get_param("~search_service", "gm_control/start_search")
         self.start_service = rospy.Service(
             start_service,
             StartGimbalTracking,
             self._start_tracking_callback,
         )
+        self.search_service = rospy.Service(
+            search_service,
+            StartGimbalSearch,
+            self._start_search_callback,
+        )
 
         rospy.loginfo("gm_control image controller started")
         rospy.loginfo(
             "image_topic=%s bbox_topic=%s command_topic=%s state_topic=%s "
-            "start_service=%s tracking_enabled=%s",
+            "start_service=%s search_service=%s tracking_enabled=%s",
             image_topic,
             bbox_topic,
             command_topic,
             state_topic,
             rospy.resolve_name(start_service),
+            rospy.resolve_name(search_service),
             self.tracking_enabled,
         )
 
     def _start_tracking_callback(self, request):
         with self.lock:
             self.tracking_enabled = bool(request.start)
+            # start_tracking is the tracking gate. It must never implicitly
+            # start a manual search, and disabling tracking stops search too.
+            self.search_enabled = False
             # Do not carry integral/derivative state across a manual start.
             self.controller.reset()
             active = self.tracking_enabled
@@ -138,6 +154,24 @@ class GimbalImageControllerNode:
             rospy.loginfo(message)
 
         return StartGimbalTrackingResponse(
+            success=True,
+            active=active,
+            message=message,
+        )
+
+    def _start_search_callback(self, request):
+        with self.lock:
+            self.search_enabled = bool(request.start)
+            self.controller.set_manual_search(self.search_enabled)
+            active = self.search_enabled
+
+        message = (
+            "manual gimbal search enabled"
+            if active
+            else "manual gimbal search disabled; holding current gimbal target"
+        )
+        rospy.loginfo(message)
+        return StartGimbalSearchResponse(
             success=True,
             active=active,
             message=message,
@@ -291,8 +325,9 @@ class GimbalImageControllerNode:
                 gimbal_state = self.gimbal_state
                 stamp = self.last_stamp
                 tracking_enabled = self.tracking_enabled
+                search_enabled = self.search_enabled
 
-            if tracking_enabled:
+            if tracking_enabled or search_enabled:
                 command, (error_x, error_y) = self.controller.update(
                     target=target,
                     image_size=image_size,

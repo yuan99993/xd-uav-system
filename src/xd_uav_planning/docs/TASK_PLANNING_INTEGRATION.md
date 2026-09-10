@@ -1,6 +1,6 @@
 # 任务层接入 `xd_uav_planning` 手册
 
-更新：2026-09-09
+更新：2026-09-10
 适用基准：当前工作区 `xd_uav_planning` 与 `xd_uav_task_allocate`
 
 ## 1. 当前结论
@@ -20,7 +20,8 @@ xd_uav_task_allocate -> xd_uav_planning -> xd_uav_controller
 - 多旋翼：实时三维点目标、EGO 轨迹、健康门、控制权仲裁、取消和状态回报；高度不再固定为
   `1.0 m`，但仍必须位于 EGO 地图和安全边界内。
 - 固定翼：接收完整几何 Path、严格校验、转发 controller，并把 controller 私有 path ID
-  映射回任务 goal ID；不提供 EGO 点云避障或 SEAD 动态禁飞区重规划。
+  映射回任务 goal ID，并支持任务前/飞行中的动态禁飞区绕飞和剩余路径重规划；无安全解时
+  返回 `BLOCKED` 并触发 `cancel_offboard` 失效保护。
 - pause/stop/skip/disable/replan 与视觉任务交接均经过 `planning/cancel`，取消失败时任务层保持
   原状态并拒绝交接。
 
@@ -171,18 +172,29 @@ string detail
 点云、body frame 和 EGO 参数也由 `planning.launch` 显式暴露。真机接入时必须使用经过标定的
 body-to-sensor 变换，不能把 frame 名称直接改写成另一个坐标系。
 
-## 7. `xd_uav_task_allocate` 已实现的接入契约
+## 7. `xd_uav_task_allocate` 最小改造清单
 
-协调器现已识别正式 `planning` 后端；旧值 `ego_swarm` 只作为兼容别名。该后端的行为是：
+以下工作应由任务层维护者在自己的包内完成；规划包不代改上游源码。
 
-1. 多旋翼只发布 `planner_goal`，固定翼搜索和 worker 短路径只发布 `planner_task_path`。
-2. 两种机型都只用 `planner_status` 推进 goal 生命周期，并配置 `planner_cancel`。
-3. `route_preview` 仅用于可视化，不携带可执行 goal。
-4. pause、stop、skip waypoint、禁用飞机、取消任务及视觉任务交接，均先请求 planning 取消；
-   服务失败时不清除 active goal，也不启动下一级控制器。
-5. `direct_controller_test` 只在显式配置时创建 controller publisher/订阅者，不是 planning 失败回退。
+1. 在 coordinator 接受的 backend 枚举中新增正式 `planning`（也可以将 `ego_swarm` 重新定义为
+   统一 planning backend，但固定翼和多旋翼必须采用相同的“不直连 controller”边界）。
+2. `_configure_vehicle()`：
+   - 多旋翼创建 `planner_goal` publisher；
+   - 固定翼创建 `planner_task_path` publisher；
+   - 两种机型都订阅 `planner_status`；
+   - 订阅 `planner_healthy`：固定翼可作为 Path 派发前条件，多旋翼只用于目标下发后的执行链
+     监控，不能阻止首目标发布；
+   - planning backend 不创建 controller setpoint/path publisher，也不订阅 `PathStatus`。
+3. 保留 `_publish_direct_fixedwing_path()` 中现有路线生成和嵌套 goal-ID 编码逻辑，将最终发布者
+   改成 `planner_task_path`。建议同时把函数重命名为 `_publish_fixedwing_task_path()`。
+4. 搜索航线和固定翼 worker 的短路径都必须走同一个 `planner_task_path` publisher。
+5. `_planner_status_callback()` 继续作为唯一状态入口；删除 planning backend 内部的
+   `_publish_direct_status()` 和 `_path_status_callback()` 路径。
+6. 预览 Path 单独发布到 `route_preview`，不得把无活动 goal ID 的预览发送给 `task_path`。
+7. pause、stop、skip waypoint、禁用飞机、取消任务及视觉任务交接，均先请求
+   `planning/cancel`；服务失败时不清除 active goal，也不启动下一级控制器。
 
-配置示例：
+建议配置目标态：
 
 ```yaml
 planner:
@@ -211,6 +223,9 @@ scouts:
       planner_cancel: /uav2/planning/cancel
       route_preview: /uav2/planning/route_preview
 ```
+
+这段 YAML 是任务层改造后的目标配置；当前 `origin/dev@e763836` 尚不识别 `planning`、
+`planner_task_path`、`planner_healthy` 或 `route_preview`，不能直接复制到现有版本运行。
 
 ## 8. 过渡期 goal ID
 
@@ -259,5 +274,6 @@ rostopic info /uav1/controller/path_status
 ## 10. 后续增强项
 
 - 用专用请求消息替代 `PoseStamped.header.seq`/任务状态查询的过渡 goal ID；
-- 为固定翼增加点云避障或动态禁飞区重规划；
-- 对完整多机任务做长时间 SITL 与真机安全复验。
+- 完善 pause/resume/replan 服务和安全状态机；
+- 多机产品级组合入口；
+- EGO 第三方源码恢复官方原样及外部 swarm 适配。

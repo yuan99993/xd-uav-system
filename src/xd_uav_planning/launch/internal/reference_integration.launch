@@ -3,8 +3,7 @@
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
   <arg name="uav_name" default="$(arg UAV_NAME)"/>
   <arg name="initial_owner" default="none"/>
-  <!-- Only bypass jump checking when taking the first owner from none.  All
-       later SEAD/EGO handoffs retain the configured jump guard. -->
+  <!-- The first owner acquisition is not a controller-to-controller handoff. -->
   <arg name="allow_initial_ego_owner" default="false"/>
   <arg name="common_frame" default="world"/>
   <arg name="output_frame" default="$(arg common_frame)"/>

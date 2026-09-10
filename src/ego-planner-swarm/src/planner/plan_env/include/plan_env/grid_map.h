@@ -81,8 +81,6 @@ struct MappingParameters {
 
   /* visualization and computation time display */
   double visualization_truncate_height_, virtual_ceil_height_, ground_height_, virtual_ceil_yp_, virtual_ceil_yn_;
-  // Returns from a downward-looking lidar commonly contain the ground.  It
-  // must not be promoted to a 3-D obstacle in the local collision map.
   double minimum_obstacle_height_above_ground_;
   bool show_occ_time_;
 

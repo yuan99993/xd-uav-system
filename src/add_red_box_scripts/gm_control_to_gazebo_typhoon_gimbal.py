@@ -30,10 +30,6 @@ class LatestCommand:
     stamp: float = 0.0
 
 
-def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(high, value))
-
-
 def deg_to_rad(value: float) -> float:
     return math.radians(value)
 
@@ -80,10 +76,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yaw-offset-deg", type=float, default=0.0)
     parser.add_argument("--pitch-offset-deg", type=float, default=0.0)
     parser.add_argument("--roll-offset-deg", type=float, default=0.0)
-
-    parser.add_argument("--max-yaw-deg", type=float, default=240.0)
-    parser.add_argument("--max-pitch-deg", type=float, default=90.0)
-    parser.add_argument("--max-roll-deg", type=float, default=45.0)
 
     parser.add_argument("--log-interval", type=float, default=1.0)
     return parser.parse_args()
@@ -192,9 +184,9 @@ class TyphoonGimbalAdapter:
             self.pitch_deg += self.pitch_rate_deg_s * dt
             self.roll_deg += self.roll_rate_deg_s * dt
 
-        self.yaw_deg = clamp(self.yaw_deg, -self.args.max_yaw_deg, self.args.max_yaw_deg)
-        self.pitch_deg = clamp(self.pitch_deg, -self.args.max_pitch_deg, self.args.max_pitch_deg)
-        self.roll_deg = clamp(self.roll_deg, -self.args.max_roll_deg, self.args.max_roll_deg)
+        # Do not impose an application-level angle limit here. The command
+        # remains an unbounded logical target; any remaining limit is owned by
+        # the Gazebo joint definition itself.
 
     def step(self) -> None:
         now = time.time()

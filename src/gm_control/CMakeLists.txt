@@ -21,6 +21,7 @@ add_message_files(
 add_service_files(
   FILES
   StartGimbalTracking.srv
+  StartGimbalSearch.srv
 )
 
 catkin_python_setup()

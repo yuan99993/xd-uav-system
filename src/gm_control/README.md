@@ -57,6 +57,21 @@ The service uses `StartGimbalTracking.srv`. Disabling tracking publishes invalid
 gimbal commands while retaining the latest bbox, so the adapter can hold the
 current gimbal target and tracking can be enabled again later.
 
+`start_tracking: true` does not start search. If no valid target has ever been
+detected, the controller publishes an invalid/hold command. Automatic
+`target_lost.action: search` starts only after a valid target was detected once
+and then remains lost for `target_lost.timeout_s`.
+
+Search can be started and stopped explicitly:
+
+```bash
+rosservice call /uav1/gm_control/start_search "start: true"
+rosservice call /uav1/gm_control/start_search "start: false"
+```
+
+Manual search is allowed before the first detection. A valid target always has
+priority over the search command.
+
 ## Topics
 
 Input:
@@ -151,6 +166,12 @@ If the gimbal turns the wrong way, flip `yaw_sign` or `pitch_sign` in
 - `search`: output a constant search yaw/pitch rate.
 - `back_to_init`: output an angle command to return the gimbal to the configured
   initial yaw/pitch/roll.
+
+In `angle` mode, `gm_control` and its Gazebo bridge do not clamp the commanded
+logical yaw/pitch/roll angles. `max_yaw_angle_deg` and `max_pitch_angle_deg` are
+retained only for compatibility and are no longer used. The Typhoon H480 SDF
+gimbal joints are configured without an angle limit as well; other Gazebo
+models or physical gimbal backends may still impose their own limits.
 
 `smoothing` filters command jumps caused by bbox noise.
 

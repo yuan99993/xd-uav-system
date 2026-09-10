@@ -5,6 +5,7 @@ find_package(catkin REQUIRED COMPONENTS
   diagnostic_msgs
   geographic_msgs
   geometry_msgs
+  message_generation
   mavros_msgs
   mrs_msgs
   nav_msgs
@@ -22,9 +23,21 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_python_setup()
 
+add_message_files(
+  FILES
+  NoFlyZone.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  geometry_msgs
+  std_msgs
+)
+
 catkin_package(CATKIN_DEPENDS
   diagnostic_msgs
   geometry_msgs
+  message_runtime
   mavros_msgs
   nav_msgs
   rospy
@@ -45,6 +58,7 @@ catkin_install_python(PROGRAMS
   scripts/ego_status_node.py
   scripts/fixedwing_path_backend_node.py
   scripts/demo/fixedwing_path_acceptance.py
+  scripts/demo/fixedwing_nofly_visualizer.py
   scripts/runtime/auto_takeoff_when_ready.py
   scripts/runtime/deterministic_obstacle_cloud.py
   scripts/runtime/imu_frame_adapter.py
@@ -80,6 +94,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_bridge_core.py)
   catkin_add_nosetests(test/test_pointcloud_core.py)
   catkin_add_nosetests(test/test_planning_core.py)
+  catkin_add_nosetests(test/test_nofly.py)
   catkin_add_nosetests(test/test_portable_runtime_configuration.py)
   add_rostest(test/ego_bridge_node.test)
   add_rostest(test/ego_pointcloud_adapter.test)
