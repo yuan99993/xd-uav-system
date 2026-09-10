@@ -356,7 +356,8 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /ta
 ## Typhoon H480 云台闭环仿真
 
 `gm_control_to_gazebo_typhoon_gimbal.py` 是 Typhoon CGO3 的 Gazebo 后端：
-它订阅 `/uav1/gm_control/gimbal_cmd`，直接设置三个云台 joint，并把当前逻辑角度发布到
+它订阅 `/uav1/gm_control/gimbal_cmd`，通过 MAVLink 把角度发送给 SDF 内置的
+`gimbal_controller` PID，由 Gazebo 负责关节力矩和重力补偿，并把当前逻辑角度发布到
 `/uav1/gm_control/gimbal_state`。云台控制接口不使用 MAVROS mount-control。
 
 `gazebo_udp_video_to_ros_image.py` 监听 Typhoon CGO3 的 UDP 5600 RTP/H264 输出，

@@ -1,0 +1,27 @@
+# Two fixed-wing scouts + two Typhoon GM workers.
+# Loaded only by the dedicated two-fixed-two-gm session.
+
+target_registry:
+  # Use one scout confirmation for the first end-to-end GM test. Raise this
+  # back to 2 after the two fixed-wing views have been verified together.
+  confirmation_distinct_uavs: 1
+
+post_arrival:
+  mode: task_execute
+  action_name_template: /{worker}/task_execute/execute
+  server_wait_timeout_sec: 2.0
+  failure_policy: fail
+  retry_delay_sec: 5.0
+  default_task:
+    task_type: track
+    local_track_id: -1
+    follower_profile: gm_velocity_chase
+    required_execution_sec: 10.0
+    maximum_duration_sec: 60.0
+  mobility_profile_overrides:
+    hover:
+      follower_profile: gm_velocity_chase
+    fixedwing:
+      follower_profile: fw_velocity_vector
+  class_overrides: {}
+  worker_overrides: {}

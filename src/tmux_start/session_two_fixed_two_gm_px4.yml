@@ -1,0 +1,150 @@
+# do not modify these
+root: ./
+name: two_fixed_two_gm_px4
+socket_name: mrs
+attach: false
+tmux_options: -f /etc/ctu-mrs/tmux.conf
+
+# Heterogeneous four-UAV SITL test:
+#   uav1/uav2: fixed-wing reconnaissance aircraft
+#   uav3/uav4: Typhoon H480 work aircraft with CGO3 gimbals
+#
+# Red target boxes are produced by sar_yolo_detector's red mode. The Typhoon
+# path is intentionally:
+#   red detector -> xd_uav_track multi-target selection -> gm_control -> gimbal
+# gm_control does not run its own bbox tracker in this session.
+pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:${ROS_PACKAGE_PATH:-}; export GAZEBO_PLUGIN_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:${GAZEBO_PLUGIN_PATH:-}; export GAZEBO_MODEL_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo/models:${GAZEBO_MODEL_PATH:-}; export LD_LIBRARY_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:${LD_LIBRARY_PATH:-}; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
+startup_window: estimator
+
+windows:
+  - roscore:
+      layout: tiled
+      panes:
+        - roscore
+
+  - px4_sitl:
+      layout: tiled
+      panes:
+        # Give the UDP video receivers time to bind before Typhoon starts.
+        - waitForRos; sleep 3; roslaunch px4 mavros_posix_sitl_2fixed_2typhoon_ns.launch
+
+  - estimator:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav3 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav4 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+
+  - controller:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager fixedwing_system.launch UAV_NAME:=uav1
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager fixedwing_system.launch UAV_NAME:=uav2
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav3 use_controller_override_config:=true controller_override_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_controller/config/typhoon_h480_override.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav4 use_controller_override_config:=true controller_override_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_controller/config/typhoon_h480_override.yaml
+
+  - world_tf:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch
+
+  - camera:
+      layout: tiled
+      panes:
+        # Typhoon's SDF emits RTP/H264; convert each stream to sensor_msgs/Image.
+        # Each FFmpeg receiver uses RTP port + adjacent RTCP port.
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gazebo_udp_video_to_ros_image.py --udp-port 5604 --topic /uav3/cgo3_camera/image_raw --frame-id uav3/cgo3_camera_link --width 640 --height 360 --fps 10 --ros-node-name typhoon_uav3_video
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gazebo_udp_video_to_ros_image.py --udp-port 5606 --topic /uav4/cgo3_camera/image_raw --frame-id uav4/cgo3_camera_link --width 640 --height 360 --fps 10 --ros-node-name typhoon_uav4_video
+
+  - detect_fixedwing:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav2 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
+
+  - yolo_red:
+      layout: tiled
+      panes:
+        # Fixed-wing scouts: red detection -> 2D bridge -> metric detection.
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav1 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info output_detections_topic:=detect/input/detections_2d use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
+          detector_pid=$!;
+          until rosservice info /uav1/sar_yolo_smart_tracker/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          wait "$detector_pid"
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav2 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info output_detections_topic:=detect/input/detections_2d use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
+          detector_pid=$!;
+          until rosservice info /uav2/sar_yolo_smart_tracker/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav2/sar_yolo_smart_tracker/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          wait "$detector_pid"
+        # Typhoon workers: the RTP bridge has no CameraInfo publisher. Seed the
+        # image dimensions for the detection adapter, then publish directly to
+        # detect/detections for task allocation and track handoff.
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          rosparam set /uav3/vision_to_xd_bridge/image_width 640;
+          rosparam set /uav3/vision_to_xd_bridge/image_height 360;
+          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav3 input_image_topic:=cgo3_camera/image_raw camera_info_topic:=cgo3_camera/camera_info output_detections_topic:=detect/detections use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
+          detector_pid=$!;
+          until rosservice info /uav3/sar_yolo_smart_tracker/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav3/sar_yolo_smart_tracker/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          wait "$detector_pid"
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          rosparam set /uav4/vision_to_xd_bridge/image_width 640;
+          rosparam set /uav4/vision_to_xd_bridge/image_height 360;
+          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav4 input_image_topic:=cgo3_camera/image_raw camera_info_topic:=cgo3_camera/camera_info output_detections_topic:=detect/detections use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
+          detector_pid=$!;
+          until rosservice info /uav4/sar_yolo_smart_tracker/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav4/sar_yolo_smart_tracker/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          wait "$detector_pid"
+
+  - track_execute:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_track track.launch UAV_NAME:=uav3
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_track track.launch UAV_NAME:=uav4
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_execute task_execute.launch UAV_NAME:=uav3
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_execute task_execute.launch UAV_NAME:=uav4
+
+  - gm_gimbal:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch gm_control xd_track_gimbal_control.launch UAV_NAME:=uav3 image_topic:=/uav3/cgo3_camera/image_raw
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch gm_control xd_track_gimbal_control.launch UAV_NAME:=uav4 image_topic:=/uav4/cgo3_camera/image_raw
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gm_control_to_gazebo_typhoon_gimbal.py --command-topic /uav3/gm_control/gimbal_cmd --state-topic /uav3/gm_control/gimbal_state --gimbal-port 13282 --frame-id uav3/cgo3_gimbal --yaw-sign -1 --pitch-sign -1 --rate 50
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gm_control_to_gazebo_typhoon_gimbal.py --command-topic /uav4/gm_control/gimbal_cmd --state-topic /uav4/gm_control/gimbal_state --gimbal-port 13283 --frame-id uav4/cgo3_gimbal --yaw-sign -1 --pitch-sign -1 --rate 50
+
+  - task_allocator:
+      layout: tiled
+      panes:
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          roslaunch xd_uav_task_allocate task_allocate.launch
+          mission_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_task_allocate/config/mission.yaml
+          scout_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_task_allocate/config/scouts_two_fixed.yaml
+          worker_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_task_allocate/config/workers.yaml
+          post_arrival_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_task_allocate/config/task_execution_two_fixed_two_gm.yaml
+
+
+  - rviz:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; rosrun rviz rviz -d rviz_cfg/xd_uav.rviz
+
+  - takeoff:
+      layout: tiled
+      panes:
+        # Fixed-wing scouts fly at 40 m; Typhoon workers hover at 6 m.
+        - >-
+          history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 40.0"; rosservice call /uav2/control_manager/takeoff "altitude: 40.0"; rosservice call /uav3/control_manager/takeoff "altitude: 6.0"; rosservice call /uav4/control_manager/takeoff "altitude: 6.0"'
+
+  - land_home:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /task_allocate/stop; rosservice call /uav1/control_manager/land_home; rosservice call /uav2/control_manager/land_home; rosservice call /uav3/control_manager/land_home; rosservice call /uav4/control_manager/land_home'

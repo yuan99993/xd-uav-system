@@ -8,9 +8,6 @@ scouts:
       world_odometry_topic: /uav1/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav1/control_manager/state
-    execution:
-      # May override the mission-wide planner/backend independently per vehicle.
-      backend: planning
     coverage:
       nominal_speed_mps: 15.0
     fixedwing:
@@ -40,6 +37,9 @@ scouts:
       planner_cancel: /uav1/planning/cancel
       route_preview: /uav1/planning/route_preview
       planner_status: /uav1/planning/status
+      controller_path: /uav1/control/reference/path
+      controller_path_status: /uav1/controller/path_status
+      controller_setpoint: /uav1/control/reference/setpoint
 
   uav2:
     mobility_profile: hover
@@ -47,8 +47,6 @@ scouts:
       world_odometry_topic: /uav2/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav2/control_manager/state
-    execution:
-      backend: planning
     coverage:
       nominal_speed_mps: 4.0
     multirotor:
@@ -60,3 +58,6 @@ scouts:
       planner_cancel: /uav2/planning/cancel
       route_preview: /uav2/planning/route_preview
       planner_status: /uav2/planning/status
+      controller_path: /uav2/control/reference/path
+      controller_path_status: /uav2/controller/path_status
+      controller_setpoint: /uav2/control/reference/setpoint

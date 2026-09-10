@@ -7,8 +7,6 @@ scouts:
       world_odometry_topic: /uav1/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav1/control_manager/state
-    execution:
-      backend: planning
     coverage:
       nominal_speed_mps: 4.0
     multirotor:
@@ -28,8 +26,6 @@ scouts:
       world_odometry_topic: /uav2/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav2/control_manager/state
-    execution:
-      backend: planning
     coverage:
       nominal_speed_mps: 4.0
     multirotor:
