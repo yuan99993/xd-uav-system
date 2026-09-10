@@ -80,7 +80,7 @@ windows:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_allocate task_allocate.launch scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts.yaml
-  - detect:
+  - detect1:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/multirotor_detect.yaml
