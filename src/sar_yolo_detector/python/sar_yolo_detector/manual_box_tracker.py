@@ -488,7 +488,7 @@ class ManualBoxTracker:
         if best_bbox is None:
             return self._configured_colour_failure("configured_colour_not_found")
         image_area = float(frame.shape[0] * frame.shape[1])
-        confidence = min(1.0, best_area / max(1.0, image_area * 0.001))
+        confidence = min(1.0, best_area / max(1.0, image_area * 0.02))
         self._last_bbox = best_bbox
         self._active = True
         self._failures = 0

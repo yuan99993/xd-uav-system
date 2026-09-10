@@ -1,5 +1,6 @@
 <launch>
   <arg name="config" default="$(find sar_yolo_detector)/config/smart_tracker.yaml" />
+  <arg name="node_name" default="sar_yolo_smart_tracker" />
   <arg name="overlay_config" default="" />
   <arg name="input_image_topic" default="camera/image_raw" />
   <arg name="tracked_detections_topic" default="sar_yolo_detector/smart/tracked_detections" />
@@ -22,7 +23,7 @@
   <arg name="coordinate_contract" default="CAMERA_RAY" />
 
   <node pkg="sar_yolo_detector" type="sar_yolo_smart_tracker"
-        name="sar_yolo_smart_tracker" output="screen" required="true">
+        name="$(arg node_name)" output="screen" required="true">
     <env name="SAR_YOLO_SMART_PYTHON" value="$(arg python_executable)" />
     <rosparam command="load" file="$(arg config)" />
     <rosparam if="$(eval arg('overlay_config') != '')" command="load"

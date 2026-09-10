@@ -2,6 +2,7 @@
   <!-- Message-only adapter. Keep xd_uav_detect running with its existing
        launch/config and place this launch in the same UAV namespace. -->
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
+  <arg name="node_name" default="vision_to_xd_bridge" />
   <arg name="input_detections_topic"
        default="sar_yolo_detector/detections" />
   <arg name="input_type" default="vision" />
@@ -15,7 +16,7 @@
 
   <group ns="$(arg UAV_NAME)">
     <node pkg="sar_yolo_detector" type="sar_vision_to_xd_bridge"
-          name="vision_to_xd_bridge" output="screen" required="true">
+          name="$(arg node_name)" output="screen" required="true">
       <param name="input_detections_topic"
              value="$(arg input_detections_topic)" />
       <param name="input_type" value="$(arg input_type)" />

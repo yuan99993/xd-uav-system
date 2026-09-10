@@ -23,6 +23,8 @@
   <arg name="use_gpu" default="true" />
   <arg name="python_executable" default="" />
   <arg name="publish_annotated_image" default="true" />
+  <!-- Optional SmartTracker overlay, e.g. smart_tracker_person_reid.yaml. -->
+  <arg name="smart_tracker_overlay_config" default="" />
 
   <!-- The chain is wired by default, but an unvalidated model cannot emit
        actionable candidates. Set model_validated only after deployment tests. -->
@@ -47,6 +49,7 @@
     <include file="$(find sar_yolo_detector)/launch/smart_tracker.launch">
       <arg name="config"
            value="$(find sar_yolo_detector)/config/smart_tracker_aircraft.yaml" />
+      <arg name="overlay_config" value="$(arg smart_tracker_overlay_config)" />
       <arg name="input_image_topic" value="$(arg input_image_topic)" />
       <arg name="tracked_detections_topic"
            value="sar_yolo_detector/aircraft/tracked_detections" />

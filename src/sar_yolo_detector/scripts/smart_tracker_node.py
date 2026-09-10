@@ -236,6 +236,7 @@ class SmartTrackerNode:
         for key in (
             "SMART_TRACKER_GPU_MODEL_PATH",
             "SMART_TRACKER_CPU_MODEL_PATH",
+            "DEEP_REID_MODEL_PATH",
         ):
             raw_path = str(smart_config.get(key, "")).strip()
             if raw_path and not Path(raw_path).expanduser().is_absolute():
@@ -867,6 +868,13 @@ class SmartTrackerNode:
             status.add("effective_device", runtime.get("effective_device", ""))
             status.add("backend", runtime.get("backend", ""))
             status.add("artifact_sha256", runtime.get("artifact_sha256", ""))
+            reid_runtime = runtime.get("appearance_reid") or {}
+            status.add("appearance_reid_model", reid_runtime.get("model_name", "disabled"))
+            status.add(
+                "appearance_reid_sha256",
+                (reid_runtime.get("provenance") or {}).get("sha256", ""),
+            )
+            status.add("appearance_reid_device", reid_runtime.get("device", ""))
             status.add("active_source", self._tracking_mode)
             status.add("manual_enabled", self._manual_enabled)
             status.add("manual_active", self._manual_active)

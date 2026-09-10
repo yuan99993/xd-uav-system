@@ -4,8 +4,9 @@
 Appearance Model for Object Re-identification.
 
 Provides visual appearance-based matching to re-identify objects after long
-occlusions (>5 frames). Uses color histograms and HOG features for robust
-matching across lighting and pose variations.
+occlusions (>5 frames). Supports the legacy color-histogram/HOG features and
+an opt-in OSNet deep person-ReID embedding for robust matching across lighting
+and pose variations.
 
 Author: PixEagle Team
 Date: 2025
@@ -18,13 +19,15 @@ import logging
 from typing import Optional, Tuple, Dict, List
 from collections import deque
 
+from .deep_reid_model import DeepReIDModel
+
 
 class AppearanceModel:
     """
     Visual appearance model for object re-identification.
 
-    Extracts and compares visual features (color histogram, HOG) to
-    re-identify objects that were temporarily lost.
+    Extracts and compares visual features (color histogram, HOG, or deep OSNet)
+    to re-identify objects that were temporarily lost.
     """
 
     def __init__(self, config: dict):
@@ -37,11 +40,22 @@ class AppearanceModel:
         self.config = config
 
         # Feature extraction configuration
-        self.feature_type = self.config.get('APPEARANCE_FEATURE_TYPE', 'histogram')
+        self.feature_type = str(
+            self.config.get('APPEARANCE_FEATURE_TYPE', 'histogram')
+        ).strip().lower()
         self.similarity_threshold = self.config.get('APPEARANCE_MATCH_THRESHOLD', 0.7)
         self.max_memory_frames = self.config.get('MAX_REIDENTIFICATION_FRAMES', 30)
         self.adaptive_learning = self.config.get('APPEARANCE_ADAPTIVE_LEARNING', True)
         self.learning_rate = self.config.get('APPEARANCE_LEARNING_RATE', 0.1)
+        raw_deep_class_ids = self.config.get('DEEP_REID_CLASS_IDS')
+        if raw_deep_class_ids is None:
+            self.deep_reid_class_ids = None
+        else:
+            if not isinstance(raw_deep_class_ids, (list, tuple, set)):
+                raise ValueError('DEEP_REID_CLASS_IDS must be a list of class IDs')
+            self.deep_reid_class_ids = {int(class_id) for class_id in raw_deep_class_ids}
+            if any(class_id < 0 for class_id in self.deep_reid_class_ids):
+                raise ValueError('DEEP_REID_CLASS_IDS cannot contain negative IDs')
 
         # Memory cap to prevent unbounded growth in long sessions
         self.max_lost_objects = self.config.get('MAX_LOST_OBJECTS_CACHED', 100)
@@ -71,38 +85,61 @@ class AppearanceModel:
 
     def _init_feature_params(self):
         """Initialize feature extraction parameters based on feature_type and config."""
-        # Color histogram parameters (HSV space for illumination invariance)
-        h_bins = self.config.get('HIST_H_BINS', 30)
-        s_bins = self.config.get('HIST_S_BINS', 32)
-        self.hist_bins = [h_bins, s_bins]  # H, S bins (V is less stable)
-        self.hist_ranges = [0, 180, 0, 256]  # H: 0-179, S: 0-255
+        if self.feature_type not in ('histogram', 'hog', 'hybrid', 'deep'):
+            raise ValueError(
+                "Unsupported APPEARANCE_FEATURE_TYPE=%r; expected histogram, hog, hybrid, or deep"
+                % self.feature_type
+            )
 
-        # HOG parameters (configurable for different hardware)
-        hog_win_size = self.config.get('HOG_WIN_SIZE', [64, 64])
-        hog_block_size = self.config.get('HOG_BLOCK_SIZE', [16, 16])
-        hog_block_stride = self.config.get('HOG_BLOCK_STRIDE', [8, 8])
-        hog_cell_size = self.config.get('HOG_CELL_SIZE', [8, 8])
-        hog_nbins = self.config.get('HOG_NBINS', 9)
+        self.deep_model = None
+        if self.feature_type == 'deep':
+            # The deep path is explicit and fail-closed: the wrapper verifies a
+            # local checkpoint and its SHA-256 before loading torchreid/OSNet.
+            self.deep_model = DeepReIDModel(self.config)
+            logging.info(
+                "[AppearanceModel] Deep ReID enabled: %s",
+                self.deep_model.get_status(),
+            )
+            return
 
-        # Convert to tuples (OpenCV requires tuples, not lists)
-        self.hog_win_size = tuple(hog_win_size)
-        self.hog_block_size = tuple(hog_block_size)
-        self.hog_block_stride = tuple(hog_block_stride)
-        self.hog_cell_size = tuple(hog_cell_size)
-        self.hog_nbins = hog_nbins
+        if self.feature_type in ('histogram', 'hybrid'):
+            # Color histogram parameters (HSV space for illumination invariance)
+            h_bins = self.config.get('HIST_H_BINS', 30)
+            s_bins = self.config.get('HIST_S_BINS', 32)
+            self.hist_bins = [h_bins, s_bins]  # H, S bins (V is less stable)
+            self.hist_ranges = [0, 180, 0, 256]  # H: 0-179, S: 0-255
+            logging.debug(
+                f"[AppearanceModel] Histogram params: H_bins={h_bins}, S_bins={s_bins}"
+            )
 
-        # Initialize HOG descriptor
-        self.hog = cv2.HOGDescriptor(
-            self.hog_win_size,
-            self.hog_block_size,
-            self.hog_block_stride,
-            self.hog_cell_size,
-            self.hog_nbins
-        )
+        if self.feature_type in ('hog', 'hybrid'):
+            # HOG parameters (configurable for different hardware)
+            hog_win_size = self.config.get('HOG_WIN_SIZE', [64, 64])
+            hog_block_size = self.config.get('HOG_BLOCK_SIZE', [16, 16])
+            hog_block_stride = self.config.get('HOG_BLOCK_STRIDE', [8, 8])
+            hog_cell_size = self.config.get('HOG_CELL_SIZE', [8, 8])
+            hog_nbins = self.config.get('HOG_NBINS', 9)
 
-        logging.debug(f"[AppearanceModel] HOG params: win={self.hog_win_size}, "
-                     f"block={self.hog_block_size}, cell={self.hog_cell_size}, bins={self.hog_nbins}")
-        logging.debug(f"[AppearanceModel] Histogram params: H_bins={h_bins}, S_bins={s_bins}")
+            # Convert to tuples (OpenCV requires tuples, not lists)
+            self.hog_win_size = tuple(hog_win_size)
+            self.hog_block_size = tuple(hog_block_size)
+            self.hog_block_stride = tuple(hog_block_stride)
+            self.hog_cell_size = tuple(hog_cell_size)
+            self.hog_nbins = hog_nbins
+
+            # Initialize HOG descriptor only when selected.  This keeps deep
+            # ReID independent of OpenCV builds that omit HOGDescriptor.
+            self.hog = cv2.HOGDescriptor(
+                self.hog_win_size,
+                self.hog_block_size,
+                self.hog_block_stride,
+                self.hog_cell_size,
+                self.hog_nbins
+            )
+            logging.debug(
+                f"[AppearanceModel] HOG params: win={self.hog_win_size}, "
+                f"block={self.hog_block_size}, cell={self.hog_cell_size}, bins={self.hog_nbins}"
+            )
 
     def extract_features(self, frame: np.ndarray, bbox: Tuple[int, int, int, int]) -> Optional[np.ndarray]:
         """
@@ -166,6 +203,9 @@ class AppearanceModel:
                 return None
             # Concatenate and normalize
             features = np.concatenate([hist_features, hog_features])
+        elif self.feature_type == 'deep':
+            features = self.deep_model.extract_features(frame, (x1, y1, x2, y2)) \
+                if self.deep_model is not None else None
         else:
             logging.error(f"[AppearanceModel] Unknown feature_type: {self.feature_type}")
             self.profiling_stats['failed_extractions'] += 1
@@ -326,6 +366,16 @@ class AppearanceModel:
         """
         if features is None:
             return
+        if (
+            self.feature_type == 'deep'
+            and self.deep_reid_class_ids is not None
+            and int(class_id) not in self.deep_reid_class_ids
+        ):
+            logging.debug(
+                "[AppearanceModel] Skipping deep ReID memory for class %s",
+                class_id,
+            )
+            return
 
         # Store or update features
         if track_id in self.lost_objects:
@@ -375,6 +425,13 @@ class AppearanceModel:
             Best matching detection dict with added 'appearance_similarity' field,
             or None if no match above threshold
         """
+        if (
+            self.feature_type == 'deep'
+            and self.deep_reid_class_ids is not None
+            and int(class_id) not in self.deep_reid_class_ids
+        ):
+            return None
+
         # Find lost objects of this class that are within memory window
         candidates = []
         for lost_id, lost_data in self.lost_objects.items():
@@ -477,6 +534,13 @@ class AppearanceModel:
         self.current_frame = 0
         logging.debug("[AppearanceModel] Cleared all data")
 
+    def close(self):
+        """Release optional deep ReID resources when the tracker shuts down."""
+        self.clear()
+        if self.deep_model is not None:
+            self.deep_model.close()
+            self.deep_model = None
+
     def get_memory_status(self) -> Dict:
         """
         Get current memory status for debugging.
@@ -484,7 +548,7 @@ class AppearanceModel:
         Returns:
             Dictionary with memory statistics
         """
-        return {
+        status = {
             'stored_objects': len(self.lost_objects),
             'current_frame': self.current_frame,
             'max_memory_frames': self.max_memory_frames,
@@ -497,6 +561,9 @@ class AppearanceModel:
                 for track_id, data in self.lost_objects.items()
             }
         }
+        if self.deep_model is not None:
+            status['deep_reid'] = self.deep_model.get_status()
+        return status
 
     def get_profiling_stats(self) -> Dict:
         """

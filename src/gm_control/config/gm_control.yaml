@@ -58,9 +58,9 @@ max_pitch_angle_deg: 90.0
 target_lost:
   timeout_s: 0.3
   # 丢框时发布无效命令，后端保持当前角度，避免短暂漏检导致云台反复归零。
-  action: stop
+  action: search
   hold_time_s: 0.2
-  search_yaw_rate_deg_s: 15.0
+  search_yaw_rate_deg_s: 10.0
   search_pitch_rate_deg_s: 0.0
   back_to_init_yaw_deg: 0.0
   back_to_init_pitch_deg: 0.0

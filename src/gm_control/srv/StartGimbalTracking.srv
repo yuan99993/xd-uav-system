@@ -1,0 +1,7 @@
+# Enable or disable gimbal image tracking. Detection/tracking topics may keep
+# publishing while this gate is disabled.
+bool start
+---
+bool success
+bool active
+string message

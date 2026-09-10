@@ -116,8 +116,8 @@ windows:
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch gm_control xd_track_gimbal_control.launch UAV_NAME:=uav3 image_topic:=/uav3/cgo3_camera/image_raw
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch gm_control xd_track_gimbal_control.launch UAV_NAME:=uav4 image_topic:=/uav4/cgo3_camera/image_raw
-        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gm_control_to_gazebo_typhoon_gimbal.py --command-topic /uav3/gm_control/gimbal_cmd --state-topic /uav3/gm_control/gimbal_state --gimbal-port 13282 --frame-id uav3/cgo3_gimbal --yaw-sign -1 --pitch-sign -1 --rate 50
-        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gm_control_to_gazebo_typhoon_gimbal.py --command-topic /uav4/gm_control/gimbal_cmd --state-topic /uav4/gm_control/gimbal_state --gimbal-port 13283 --frame-id uav4/cgo3_gimbal --yaw-sign -1 --pitch-sign -1 --rate 50
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gm_control_to_gazebo_typhoon_gimbal.py --command-topic /uav3/gm_control/gimbal_cmd --state-topic /uav3/gm_control/gimbal_state --gimbal-port 13282 --frame-id uav3/cgo3_gimbal --yaw-sign -1 --pitch-sign 1 --rate 50
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gm_control_to_gazebo_typhoon_gimbal.py --command-topic /uav4/gm_control/gimbal_cmd --state-topic /uav4/gm_control/gimbal_state --gimbal-port 13283 --frame-id uav4/cgo3_gimbal --yaw-sign -1 --pitch-sign 1 --rate 50
 
   - task_allocator:
       layout: tiled
@@ -129,7 +129,6 @@ windows:
           scout_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_task_allocate/config/scouts_two_fixed.yaml
           worker_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_task_allocate/config/workers.yaml
           post_arrival_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_task_allocate/config/task_execution_two_fixed_two_gm.yaml
-
 
   - rviz:
       layout: tiled

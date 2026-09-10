@@ -18,6 +18,11 @@ add_message_files(
   GimbalState.msg
 )
 
+add_service_files(
+  FILES
+  StartGimbalTracking.srv
+)
+
 catkin_python_setup()
 
 generate_dynamic_reconfigure_options(

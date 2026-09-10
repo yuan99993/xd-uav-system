@@ -44,6 +44,19 @@ those topics and no MAVROS mount-control interface is added here.
 The bridge invalidates the bbox when the track stream times out. Direction signs
 for driver-specific gimbal conventions are in `config/xd_track_bridge.yaml`.
 
+Gimbal tracking is manually gated. Starting `gm_control` does not enable motion,
+even if a valid bbox is already being published. Enable or disable the gimbal
+controller with:
+
+```bash
+rosservice call /uav1/gm_control/start_tracking "start: true"
+rosservice call /uav1/gm_control/start_tracking "start: false"
+```
+
+The service uses `StartGimbalTracking.srv`. Disabling tracking publishes invalid
+gimbal commands while retaining the latest bbox, so the adapter can hold the
+current gimbal target and tracking can be enabled again later.
+
 ## Topics
 
 Input:

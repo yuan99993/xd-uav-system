@@ -10,9 +10,9 @@
   <arg name="vehicle_config"
        default="$(find sar_yolo_detector)/config/smart_tracker_xd_vehicle.yaml" />
   <arg name="model_path"
-       default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt" />
+       default="$(find sar_yolo_detector)/models/xd_vehicle_latest/xd_vehicle_latest.pt" />
   <arg name="model_sha256"
-       default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54" />
+       default="932c04d47e426143e9fa5084a4ca6a6ff49c1a3aff70fa2b44c643b165e5151f" />
   <arg name="python_executable" default="" />
   <arg name="use_gpu" default="true" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
@@ -47,7 +47,7 @@
       <arg name="uav_id" value="$(arg UAV_NAME)" />
       <arg name="sensor_id" value="$(arg sensor_id)" />
       <arg name="profile" value="xd_vehicle_car_ar_car_tank" />
-      <arg name="model_version" value="xd_vehicle_train7_best" />
+      <arg name="model_version" value="xd_vehicle_train_best" />
     </include>
   </group>
 
@@ -63,6 +63,6 @@
     <arg name="image_source" value="$(arg image_source)" />
     <arg name="sensor_id" value="$(arg sensor_id)" />
     <arg name="detector_name" value="sar_yolo_smart_tracker" />
-    <arg name="model_version" value="xd_vehicle_train7_best" />
+    <arg name="model_version" value="xd_vehicle_train_best" />
   </include>
 </launch>
