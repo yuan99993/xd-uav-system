@@ -8,6 +8,18 @@
   <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
   <arg name="gui" default="false"/>
   <arg name="run_acceptance" default="true"/>
+  <arg name="path_length" default="180.0"/>
+  <arg name="enable_nofly" default="false"/>
+  <arg name="dynamic_nofly" default="false"/>
+  <arg name="dynamic_insert_fraction" default="0.08"/>
+  <arg name="dynamic_remove_fraction" default="0.20"/>
+  <arg name="dynamic_remove_margin" default="5.0"/>
+  <arg name="zone_id" default="7101"/>
+  <arg name="zone_center_fraction" default="0.25"/>
+  <arg name="zone_half_size" default="10.0"/>
+  <arg name="zone_clearance" default="10.0"/>
+  <arg name="turning_radius" default="35.0"/>
+  <arg name="visualize" default="false"/>
   <!-- Automated acceptance must not couple PX4 lifetime to terminal stdin. -->
   <arg name="interactive" default="false"/>
 
@@ -59,9 +71,26 @@
     <arg name="vehicle_type" value="fixedwing"/>
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="common_frame" value="$(arg UAV_NAME)/odom"/>
+    <arg name="fixedwing_turning_radius" value="$(arg turning_radius)"/>
+    <arg name="fixedwing_zone_clearance" value="$(arg zone_clearance)"/>
   </include>
   <node if="$(arg run_acceptance)" pkg="xd_uav_planning"
         type="fixedwing_path_acceptance.py" name="fixedwing_path_acceptance"
+        output="screen" required="false">
+    <param name="uav_name" value="$(arg UAV_NAME)"/>
+    <param name="path_length" value="$(arg path_length)"/>
+    <param name="enable_nofly" value="$(arg enable_nofly)"/>
+    <param name="dynamic_nofly" value="$(arg dynamic_nofly)"/>
+    <param name="dynamic_insert_fraction" value="$(arg dynamic_insert_fraction)"/>
+    <param name="dynamic_remove_fraction" value="$(arg dynamic_remove_fraction)"/>
+    <param name="dynamic_remove_margin" value="$(arg dynamic_remove_margin)"/>
+    <param name="zone_id" value="$(arg zone_id)"/>
+    <param name="zone_center_fraction" value="$(arg zone_center_fraction)"/>
+    <param name="zone_half_size" value="$(arg zone_half_size)"/>
+    <param name="zone_clearance" value="$(arg zone_clearance)"/>
+  </node>
+  <node if="$(arg visualize)" pkg="xd_uav_planning"
+        type="fixedwing_nofly_visualizer.py" name="fixedwing_nofly_visualizer"
         output="screen" required="false">
     <param name="uav_name" value="$(arg UAV_NAME)"/>
   </node>

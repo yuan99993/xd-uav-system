@@ -90,8 +90,8 @@ class EgoStatus:
             self._publish(goal_id, PlannerStatus.FAILED,
                           "live_goal_requires_ego_manual_target_mode")
             return
-        # Quarantine any command from a previous trajectory until this goal
-        # has produced a fresh EGO candidate and taken ownership explicitly.
+        # Quarantine any previous trajectory before handing the new goal to
+        # EGO. Output resumes only after this goal produces a fresh candidate.
         if not self._set_output_enabled(False):
             self._publish(goal_id, PlannerStatus.FAILED,
                           "planning_output_gate_unavailable")
@@ -108,7 +108,6 @@ class EgoStatus:
         self._ego_goal_publisher.publish(message)
 
     def _candidate_callback(self, message):
-        """Acquire EGO only after an accepted task goal produced a command."""
         if (self._goal is None or self._terminal or
                 self._owner_selected_for_goal or
                 not self._owner_selection_service):

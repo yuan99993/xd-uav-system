@@ -32,9 +32,6 @@ class ReferenceMux:
             "~switch_position_jump", 0.20))
         self._velocity_jump = float(rospy.get_param(
             "~switch_velocity_jump", 0.30))
-        # When no controller owns the mux, a goal-triggered first EGO
-        # acquisition is not a controller-to-controller handoff.  It must not
-        # be rejected solely because the target is far from the hold baseline.
         self._allow_initial_ego_owner = bool(rospy.get_param(
             "~allow_initial_ego_owner", False))
         self._owner = rospy.get_param("~initial_owner", "none")
@@ -210,15 +207,16 @@ class ReferenceMux:
     def _set_enabled(self, request):
         self._enabled = bool(request.data)
         if not self._enabled:
-            # Do not allow a cached command from the cancelled navigation goal
-            # to be emitted when planning is enabled for the next goal.
+            # A later goal must never release a cached command from the
+            # previous trajectory.
             self._candidates = {"sead": None, "ego": None}
             self._last_output = None
             self._reason = "output_disabled"
         else:
             self._reason = "waiting"
         self._publish_status()
-        return SetBoolResponse(True, "enabled=" + str(self._enabled).lower())
+        return SetBoolResponse(
+            True, "enabled=" + str(self._enabled).lower())
 
     def _timer_callback(self, _event):
         if not self._enabled:

@@ -6,6 +6,7 @@
   <arg name="command_topic" default="/gm_control/gimbal_cmd" />
   <arg name="state_topic" default="/gm_control/gimbal_state" />
   <arg name="start_service" default="gm_control/start_tracking" />
+  <arg name="search_service" default="gm_control/start_search" />
 
   <node pkg="gm_control" type="bbox_tracker_node.py" name="bbox_tracker" output="screen">
     <rosparam file="$(arg config)" command="load" />
@@ -21,6 +22,7 @@
     <param name="command_topic" value="$(arg command_topic)" />
     <param name="state_topic" value="$(arg state_topic)" />
     <param name="start_service" value="$(arg start_service)" />
+    <param name="search_service" value="$(arg search_service)" />
     <param name="tracking_enabled_at_startup" value="false" />
   </node>
 </launch>

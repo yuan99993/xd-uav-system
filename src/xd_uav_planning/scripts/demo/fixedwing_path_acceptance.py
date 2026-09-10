@@ -7,13 +7,15 @@ import sys
 import time
 
 import rospy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point32, PoseStamped
 from mavros_msgs.msg import State
 from mavros_msgs.srv import ParamGet, ParamSet, ParamSetRequest
 from nav_msgs.msg import Path
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from xd_uav_controller.msg import ControlState
+from xd_uav_planning.msg import NoFlyZone
+from xd_uav_planning.nofly import Zone, path_min_clearance
 from xd_uav_controller.srv import Takeoff
 from xd_uav_task_allocate.msg import PlannerStatus
 
@@ -30,10 +32,27 @@ class FixedwingPathAcceptance:
         self.takeoff_altitude = float(rospy.get_param("~takeoff_altitude", 30.0))
         self.path_length = float(rospy.get_param("~path_length", 180.0))
         self.goal_id = int(rospy.get_param("~goal_id", 9001))
+        self.enable_nofly = bool(rospy.get_param("~enable_nofly", False))
+        self.dynamic_nofly = bool(rospy.get_param("~dynamic_nofly", False))
+        self.zone_id = int(rospy.get_param("~zone_id", 7101))
+        self.zone_center_fraction = float(
+            rospy.get_param("~zone_center_fraction", 0.25))
+        self.zone_half_size = float(rospy.get_param("~zone_half_size", 10.0))
+        self.zone_clearance = float(rospy.get_param("~zone_clearance", 10.0))
+        self.dynamic_insert_fraction = float(
+            rospy.get_param("~dynamic_insert_fraction", 0.08))
+        self.dynamic_remove_fraction = float(
+            rospy.get_param("~dynamic_remove_fraction", 0.20))
+        self.dynamic_remove_margin = float(
+            rospy.get_param("~dynamic_remove_margin", 5.0))
         self.state = None
         self.control_state = None
         self.statuses = []
         self.start_position = None
+        self.forwarded_paths = []
+        self.zone_model = None
+        self.path_direction = None
+        self.zone_pass_distance = None
 
         self.state_subscriber = rospy.Subscriber(
             self.namespace + "/mavros/state", State, self._state_callback)
@@ -46,6 +65,12 @@ class FixedwingPathAcceptance:
         self.path_publisher = rospy.Publisher(
             self.namespace + "/planning/task_path", Path,
             queue_size=1, latch=True)
+        self.zone_publisher = rospy.Publisher(
+            self.namespace + "/planning/no_fly_zone", NoFlyZone,
+            queue_size=1, latch=True)
+        self.forwarded_path_subscriber = rospy.Subscriber(
+            self.namespace + "/control/reference/path", Path,
+            self.forwarded_paths.append)
         self.result_publisher = rospy.Publisher(
             self.namespace + "/planning/fixedwing_acceptance/result",
             String, queue_size=1, latch=True)
@@ -132,7 +157,61 @@ class FixedwingPathAcceptance:
             pose.pose.orientation.w = 1.0
             path.poses.append(pose)
         self.start_position = (origin.x, origin.y, origin.z)
+        self.path_direction = (math.cos(course), math.sin(course))
         return path
+
+    def _zone(self, path):
+        start = path.poses[0].pose.position
+        end = path.poses[-1].pose.position
+        fraction = self.zone_center_fraction
+        center_x = start.x + fraction * (end.x - start.x)
+        center_y = start.y + fraction * (end.y - start.y)
+        half = self.zone_half_size
+        message = NoFlyZone()
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = self.frame_id
+        message.schema_version = NoFlyZone.CURRENT_SCHEMA_VERSION
+        message.operation = NoFlyZone.OP_UPSERT
+        message.zone_id = self.zone_id
+        message.enabled = True
+        message.zone_type = NoFlyZone.TYPE_NO_FLY
+        message.min_altitude = 0.0
+        message.max_altitude = max(100.0, self.takeoff_altitude + 30.0)
+        message.valid_until = rospy.Time(0)
+        vertices = ((center_x - half, center_y - half),
+                    (center_x + half, center_y - half),
+                    (center_x + half, center_y + half),
+                    (center_x - half, center_y + half))
+        for x_value, y_value in vertices:
+            message.polygon.points.append(
+                Point32(x=x_value, y=y_value, z=0.0))
+        self.zone_model = Zone(
+            self.zone_id, True, message.min_altitude,
+            message.max_altitude, vertices)
+        direction_x, direction_y = self.path_direction
+        self.zone_pass_distance = max(
+            (x_value - start.x) * direction_x +
+            (y_value - start.y) * direction_y
+            for x_value, y_value in vertices)
+        self.zone_pass_distance += (
+            self.zone_clearance + self.dynamic_remove_margin)
+        return message
+
+    def _zone_remove(self):
+        message = NoFlyZone()
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = self.frame_id
+        message.schema_version = NoFlyZone.CURRENT_SCHEMA_VERSION
+        message.operation = NoFlyZone.OP_REMOVE
+        message.zone_id = self.zone_id
+        message.enabled = False
+        message.zone_type = NoFlyZone.TYPE_NO_FLY
+        return message
+
+    @staticmethod
+    def _path_points(path):
+        return [(pose.pose.position.x, pose.pose.position.y,
+                 pose.pose.position.z) for pose in path.poses]
 
     def _has_status(self, state):
         return any(message.goal_id == self.goal_id and message.state == state
@@ -146,6 +225,14 @@ class FixedwingPathAcceptance:
             (position.x - self.start_position[0]) ** 2 +
             (position.y - self.start_position[1]) ** 2 +
             (position.z - self.start_position[2]) ** 2)
+
+    def _along_track_distance(self):
+        if (self.start_position is None or self.control_state is None or
+                self.path_direction is None):
+            return 0.0
+        position = self.control_state.position_odom
+        return ((position.x - self.start_position[0]) * self.path_direction[0] +
+                (position.y - self.start_position[1]) * self.path_direction[1])
 
     def run(self):
         self._wait(
@@ -171,6 +258,18 @@ class FixedwingPathAcceptance:
             90.0, "fixed-wing OFFBOARD takeoff")
 
         path = self._path()
+        if self.enable_nofly and self.dynamic_nofly:
+            raise AcceptanceFailure(
+                "enable_nofly and dynamic_nofly are mutually exclusive")
+        if self.enable_nofly:
+            if self.path_length < 240.0:
+                raise AcceptanceFailure(
+                    "no-fly demo requires path_length >= 240 m")
+            zone = self._zone(path)
+            self._wait(lambda: self.zone_publisher.get_num_connections() > 0,
+                       10.0, "planning no-fly-zone subscriber")
+            self.zone_publisher.publish(zone)
+            rospy.sleep(0.3)
         self._wait(lambda: self.path_publisher.get_num_connections() > 0,
                    10.0, "planning path subscriber")
         deadline = time.monotonic() + 10.0
@@ -183,6 +282,63 @@ class FixedwingPathAcceptance:
             time.sleep(0.2)
         if not self._has_status(PlannerStatus.ACTIVE):
             raise AcceptanceFailure("controller did not activate planning path")
+        minimum_clearance = None
+        if self.enable_nofly:
+            self._wait(lambda: bool(self.forwarded_paths), 5.0,
+                       "adjusted controller path")
+            forwarded = self.forwarded_paths[-1]
+            if len(forwarded.poses) <= len(path.poses):
+                raise AcceptanceFailure("planning did not expand the blocked path")
+            minimum_clearance = path_min_clearance(
+                self._path_points(forwarded), (self.zone_model,), 1.0)
+            if minimum_clearance < self.zone_clearance:
+                raise AcceptanceFailure(
+                    "adjusted path violates zone clearance: %.2f m" %
+                    minimum_clearance)
+        elif self.dynamic_nofly:
+            if self.path_length < 240.0:
+                raise AcceptanceFailure(
+                    "dynamic no-fly demo requires path_length >= 240 m")
+            zone = self._zone(path)
+            self._wait(
+                lambda: self._distance_flown() >=
+                        self.path_length * self.dynamic_insert_fraction,
+                30.0, "dynamic no-fly insertion point")
+            before_insert = len(self.forwarded_paths)
+            status_before_insert = len(self.statuses)
+            self.zone_publisher.publish(zone)
+            self._wait(
+                lambda: len(self.forwarded_paths) > before_insert and any(
+                    message.goal_id == self.goal_id and
+                    "dynamic no-fly upsert" in message.detail
+                    for message in self.statuses[status_before_insert:]),
+                15.0, "online detour replacement")
+            detour = self.forwarded_paths[-1]
+            minimum_clearance = path_min_clearance(
+                self._path_points(detour), (self.zone_model,), 1.0)
+            if minimum_clearance < self.zone_clearance:
+                raise AcceptanceFailure(
+                    "online detour violates zone clearance: %.2f m" %
+                    minimum_clearance)
+            self._wait(
+                lambda: (self._distance_flown() >=
+                         self.path_length * self.dynamic_remove_fraction and
+                         self._along_track_distance() >=
+                         self.zone_pass_distance),
+                45.0, "aircraft passing the no-fly zone and clearance margin")
+            before_remove = len(self.forwarded_paths)
+            status_before_remove = len(self.statuses)
+            self.zone_publisher.publish(self._zone_remove())
+            self._wait(
+                lambda: len(self.forwarded_paths) > before_remove and any(
+                    message.goal_id == self.goal_id and
+                    "dynamic no-fly remove" in message.detail
+                    for message in self.statuses[status_before_remove:]),
+                15.0, "restored remaining-path replacement")
+            restored = self.forwarded_paths[-1]
+            if len(restored.poses) >= len(detour.poses):
+                raise AcceptanceFailure(
+                    "zone removal did not restore a simpler remaining path")
 
         self._wait(lambda: self._has_status(PlannerStatus.REACHED), 60.0,
                    "fixed-wing path completion")
@@ -201,6 +357,11 @@ class FixedwingPathAcceptance:
             "goal_id": self.goal_id,
             "distance_m": round(distance, 1),
             "landing_accepted": True,
+            "no_fly_enabled": self.enable_nofly,
+            "dynamic_no_fly": self.dynamic_nofly,
+            "online_replacements": (2 if self.dynamic_nofly else 0),
+            "zone_clearance_m": (round(minimum_clearance, 2)
+                                 if minimum_clearance is not None else None),
         }, sort_keys=True)
         rospy.loginfo("[FIXEDWING_PLANNING_ACCEPTANCE] %s", result)
         self.result_publisher.publish(String(data=result))

@@ -57,6 +57,10 @@ class SingleChainTest(unittest.TestCase):
         self.state_timer = rospy.Timer(rospy.Duration(0.01), self._state_timer)
         self.cloud_timer = rospy.Timer(rospy.Duration(0.1), self._cloud_timer)
 
+    def tearDown(self):
+        self.state_timer.shutdown()
+        self.cloud_timer.shutdown()
+
     def _command_callback(self, message):
         with self.lock:
             self.raw_command = message
@@ -136,6 +140,11 @@ class SingleChainTest(unittest.TestCase):
         with self.lock:
             return self.healthy is expected
 
+    def _command_x_greater_than(self, threshold):
+        with self.lock:
+            return (self.raw_command is not None and
+                    self.raw_command.position.x > threshold)
+
     def test_chain_and_faults(self):
         self._wait_for(lambda: self.goal_pub.get_num_connections() > 0,
                        5.0, "manual EGO goal subscriber")
@@ -144,7 +153,7 @@ class SingleChainTest(unittest.TestCase):
         goal.header.frame_id = "world"
         goal.pose.position.x = 6.0
         goal.pose.position.y = 0.0
-        goal.pose.position.z = 1.0
+        goal.pose.position.z = 2.0
         goal.pose.orientation.w = 1.0
         self.goal_pub.publish(goal)
         self._wait_for(lambda: self.bspline is not None, 15.0, "Bspline")
@@ -178,6 +187,17 @@ class SingleChainTest(unittest.TestCase):
             candidate.yaw, candidate.yaw_rate)))
         self.assertGreaterEqual(cloud_count, 5)
 
+        # With the 20 m map and 6 m margin, x > 4 m forces a rolling-map
+        # recenter. Verify that command production continues afterwards.
+        self._wait_for(lambda: self._command_x_greater_than(4.2), 12.0,
+                       "rolling-map recenter threshold")
+        with self.lock:
+            commands_before_recenter_settle = len(self.command_times)
+        rospy.sleep(0.35)
+        with self.lock:
+            self.assertGreater(len(self.command_times),
+                               commands_before_recenter_settle)
+
         command_window = command_times[-101:]
         candidate_window = candidate_times[-101:]
         self.assertGreaterEqual(len(command_window), 80)
@@ -189,9 +209,10 @@ class SingleChainTest(unittest.TestCase):
         self.assertGreater(command_hz, 80.0)
         self.assertGreater(candidate_hz, 80.0)
 
-        # Official EGO manual-target mode executes at its fixed 1 m altitude.
+        # The live task goal altitude must reach EGO without being forced to
+        # the upstream historical z=1 m value.
         endpoint_z = bspline.pos_pts[-1].z
-        self.assertAlmostEqual(1.0, endpoint_z, delta=0.25)
+        self.assertAlmostEqual(2.0, endpoint_z, delta=0.25)
 
         publications, subscriptions, _ = rosgraph.Master(
             rospy.get_name()).getSystemState()
@@ -238,7 +259,7 @@ class SingleChainTest(unittest.TestCase):
         evidence = {
             "result": "pass",
             "frame": command.header.frame_id,
-            "target_z": 1.0,
+            "target_z": 2.0,
             "bspline_endpoint_z": endpoint_z,
             "bspline_drone_id": int(bspline.drone_id),
             "command_hz": command_hz,

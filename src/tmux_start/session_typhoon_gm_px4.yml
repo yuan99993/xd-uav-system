@@ -6,7 +6,7 @@ attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 
 # One namespaced Typhoon H480 and the complete red-target -> track -> gimbal loop.
-pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:$ROS_PACKAGE_PATH; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
+pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:${ROS_PACKAGE_PATH:-}; export GAZEBO_PLUGIN_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:${GAZEBO_PLUGIN_PATH:-}; export GAZEBO_MODEL_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo/models:${GAZEBO_MODEL_PATH:-}; export LD_LIBRARY_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:${LD_LIBRARY_PATH:-}; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
 startup_window: closed_loop
 
 windows:
@@ -24,7 +24,7 @@ windows:
   - vehicle_stack:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /uav1/mavros/imu/data >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /uav1/mavros/imu/data >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 republish_world:=false tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
         - waitForTime; rostopic echo -n1 /uav1/mavros/imu/data >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav1 use_controller_override_config:=true controller_override_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_controller/config/typhoon_h480_override.yaml
 
   - camera_and_target:

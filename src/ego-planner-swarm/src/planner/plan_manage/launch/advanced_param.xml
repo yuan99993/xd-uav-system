@@ -96,21 +96,12 @@
     <param name="grid_map/map_size_z"   value="$(arg map_size_z_)" /> 
     <param name="grid_map/rolling_map_enabled" value="$(arg rolling_map_enabled_)" type="bool"/>
     <param name="grid_map/rolling_map_margin_m" value="$(arg rolling_map_margin_m_)" type="double"/>
-    <!-- The generated wall is 12 m wide.  A 5.5 m half-window cannot see an
-         edge, so a local planner correctly but unhelpfully treats it as an
-         infinite barrier.  This window exposes both edges of ordinary walls
-         and leaves enough room to choose a side around a pillar. -->
     <param name="grid_map/local_update_range_x"  value="18.0"/>
     <param name="grid_map/local_update_range_y"  value="18.0"/>
-    <param name="grid_map/local_update_range_z"  value="10.0" /> 
-    <!-- X500 has an approximately 0.45 m swept radius.  Add tracking and
-         point-cloud discretisation margin so EGO plans for the airframe,
-         rather than letting its geometric centre graze a wall. -->
+    <param name="grid_map/local_update_range_z"  value="10.0"/>
     <param name="grid_map/obstacles_inflation"     value="0.65"/>
     <param name="grid_map/local_map_margin" value="10"/>
     <param name="grid_map/ground_height"        value="$(arg ground_height_)"/>
-    <!-- Filter the raw-lidar ground band before collision inflation.  Real
-         vertical obstacles remain above this band. -->
     <param name="grid_map/minimum_obstacle_height_above_ground" value="0.25"/>
     <!-- camera parameter -->
     <param name="grid_map/cx" value="$(arg cx)"/>
@@ -143,8 +134,6 @@
   <!-- planner manager -->
     <param name="manager/max_vel" value="$(arg max_vel)" type="double"/>
     <param name="manager/max_acc" value="$(arg max_acc)" type="double"/>
-    <!-- Avoid sharp acceleration reversals when the local obstacle map is
-         refreshed and EGO replaces its trajectory. -->
     <param name="manager/max_jerk" value="3.0" type="double"/>
     <param name="manager/control_points_distance" value="0.4" type="double"/>
     <param name="manager/feasibility_tolerance" value="0.05" type="double"/>

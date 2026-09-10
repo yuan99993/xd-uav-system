@@ -3,10 +3,10 @@ control_rate: 100.0
 multirotor:
   model:
     gravity: 9.80665
-    hover_throttle: 0.43
+    hover_throttle: 0.45
 
   attitude_control:
-    gain: [3.0, 3.0, 3.0]
+    gain: [3.0, 3.0, 2.0]
 
   position_control:
     mpc:
@@ -17,17 +17,17 @@ multirotor:
       # Kp=1.04、Kv=2.57，减少速度噪声和jerk限幅共同引起的0.7~0.8Hz摆动。
       r: 80.0
 
-    # Z轴保留较慢的独立预测器，避免20m起飞高度阶跃与速度/加速度前馈叠加后
-    # 使用水平轴的高增益，造成推力饱和和持续上下振荡。
+    # Z轴使用明显低于水平轴的反馈，避免起飞高度阶跃与速度/加速度前馈叠加后
+    # 放大垂向速度估计噪声。当前离散模型的首步反馈约为Kp=0.032、Kv=0.169。
     mpc_z:
-      horizon: 26
-      q: [250.0, 220.0]
-      terminal_q: [400.0, 350.0]
-      r: 90.0
+      horizon: 30
+      q: [120.0, 100.0]
+      terminal_q: [180.0, 140.0]
+      r: 120.0
 
     disturbance_rejection:
-      position_integral_gain: [0.015, 0.015, 0.05]
-      position_integral_acceleration_limit: [0.30, 0.30, 0.40]
+      position_integral_gain: [0.015, 0.015, 0.01]
+      position_integral_acceleration_limit: [0.30, 0.30, 0.25]
 
       velocity_integral_gain: [0.5, 0.5, 1.0]
       velocity_integral_acceleration_limit: [0.5, 0.5, 0.6]
@@ -67,8 +67,10 @@ multirotor:
     # land_home水平返航的速度上限。控制器会根据剩余距离和多旋翼最大加速度
     # 自动提前减速，不会把该速度保持到目标点。
     return_max_velocity: 1.0
-    position_tolerance: 0.15
-    velocity_tolerance: 0.10
+    # 仿真中H480在固定home附近存在约0.6m的稳定局部偏差；进入该捕获范围后
+    # 直接开始受控下降，同时继续用XY位置环修正，不再无限期保持悬停。
+    position_tolerance: 0.80
+    velocity_tolerance: 0.20
 
     distance_sensor_cfg:
       timeout: 0.5
@@ -90,3 +92,7 @@ multirotor:
       touchdown_offset: 0.10
       touchdown_height_tolerance: 0.05
       touchdown_velocity_tolerance: 0.20
+
+home:
+  # H480 land_home不需要为了回到固定航向而额外旋转机体，避免起降瞬间的偏航扰动。
+  use_home_yaw: false

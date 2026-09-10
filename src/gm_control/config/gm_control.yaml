@@ -47,13 +47,17 @@ pitch_sign: 1.0
 
 max_yaw_rate_deg_s: 60.0
 max_pitch_rate_deg_s: 60.0
+# Kept for compatibility with older parameter files. Angle mode no longer
+# clamps yaw_deg/pitch_deg in gm_control; rate limits above still apply in
+# rate mode.
 max_yaw_angle_deg: 90.0
 max_pitch_angle_deg: 90.0
 
 # Target-lost behavior:
 #   stop      - publish invalid command after timeout
 #   hold_last - briefly keep the previous command
-#   search    - publish a constant search rate after target loss
+#   search    - publish a constant search rate after a previously seen target
+#               is lost and target_lost/timeout_s has elapsed
 #   back_to_init - publish an angle command to return the gimbal to its initial pose
 target_lost:
   timeout_s: 0.3

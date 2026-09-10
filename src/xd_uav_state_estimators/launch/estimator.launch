@@ -8,6 +8,7 @@
   <arg name="body_frame" default="$(arg uav_name)/base_link"/>
   <arg name="imu_topic" default="mavros/imu/data"/>
   <arg name="respawn" default="false"/>
+  <arg name="republish_world" default="true"/>
 
   <group ns="$(arg uav_name)">
     <node pkg="xd_uav_state_estimators"
@@ -21,6 +22,12 @@
       <env name="LC_ALL" value="C.UTF-8"/>
       <rosparam command="load" file="$(arg algorithm_config)"/>
       <rosparam command="load" file="$(arg sources_config)"/>
+      <!-- 单机不启动world_tf时，只发布local_origin，避免无意义的TF查找警告；
+           多机默认保留world输出供任务分配器使用。 -->
+      <rosparam unless="$(arg republish_world)" param="main_republish_in_frames">[local_origin]</rosparam>
+      <rosparam unless="$(arg republish_world)" param="sources/mavros/republish_in_frames">[local_origin]</rosparam>
+      <rosparam unless="$(arg republish_world)" param="sources/fastlio/republish_in_frames">[local_origin]</rosparam>
+      <rosparam unless="$(arg republish_world)" param="sources/openvins/republish_in_frames">[local_origin]</rosparam>
       <param name="uav_name" value="$(arg uav_name)"/>
       <param name="odom_frame" value="$(arg odom_frame)"/>
       <param name="body_frame" value="$(arg body_frame)"/>

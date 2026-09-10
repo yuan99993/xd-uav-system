@@ -8,6 +8,10 @@
       <param name="goal_topic" value="planning/goal"/>
       <param name="ego_goal_topic" value="ego/validated_goal"/>
       <param name="flight_type" value="1"/>
+      <param name="output_gate_service" value="/uav1/test_mux/set_enabled"/>
+      <param name="owner_selection_service" value="/uav1/test_mux/select_ego"/>
+      <param name="candidate_topic" value="ego/reference_candidate"/>
+      <param name="owner_acquisition_timeout" value="2.0"/>
       <param name="health_topic" value="planning/healthy"/>
       <param name="odometry_topic" value="ego/odometry"/>
       <param name="status_topic" value="planning/status"/>

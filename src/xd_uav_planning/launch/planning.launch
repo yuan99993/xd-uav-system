@@ -13,32 +13,30 @@
   <arg name="status_topic" default="/$(arg UAV_NAME)/planning/status"/>
   <arg name="healthy_topic" default="/$(arg UAV_NAME)/planning/healthy"/>
   <arg name="diagnostics_topic" default="/$(arg UAV_NAME)/planning/diagnostics"/>
+  <arg name="no_fly_zone_topic" default="/$(arg UAV_NAME)/planning/no_fly_zone"/>
+  <arg name="fixedwing_turning_radius" default="35.0"/>
+  <arg name="fixedwing_zone_clearance" default="15.0"/>
+  <arg name="fixedwing_planning_sample_step" default="2.0"/>
+  <arg name="fixedwing_dynamic_failure_cancel_service"
+       default="control_manager/cancel_offboard"/>
   <!-- EGO manual-target mode is required for live task-layer goals. -->
   <arg name="flight_type" default="1"/>
   <arg name="goal_x" default="1.0"/>
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>
-  <!-- EGO dynamic limits. Override per launch for each simulation profile. -->
-  <!-- Fast but still brakeable in the 8 m local horizon.  Smoothness comes
-       from jerk limiting and controller damping, not from an artificially
-       low cruise speed. -->
+  <!-- Multirotor EGO settings restored to the previous construction profile. -->
   <arg name="max_vel" default="3.5"/>
   <arg name="max_acc" default="2.5"/>
-  <!-- Fixed-memory rolling occupancy map. World-frame routes and goals are
-       unchanged; this is only the local collision-map window. -->
   <arg name="map_size_x" default="30.0"/>
   <arg name="map_size_y" default="30.0"/>
   <arg name="map_size_z" default="8.0"/>
   <arg name="rolling_map_enabled" default="true"/>
   <arg name="rolling_map_margin_m" default="6.0"/>
-  <!-- First acquisition from no controller is not a controller handoff. -->
   <arg name="allow_initial_ego_owner" default="true"/>
   <arg name="owner_acquisition_timeout" default="5.0"/>
   <arg name="ground_height" default="-0.01"/>
   <arg name="virtual_ceil_height" default="8.0"/>
   <arg name="visualization_truncate_height" default="8.0"/>
-  <!-- This workspace's raw lidar publisher uses the fastlio/points topic
-       name even when the FAST-LIO odometry/mapping node is not running. -->
   <arg name="cloud_input_topic" default="/$(arg UAV_NAME)/fastlio/points"/>
   <arg name="cloud_input_frame" default="$(arg UAV_NAME)/lidar_link"/>
   <arg name="cloud_timeout" default="0.50"/>
@@ -104,6 +102,12 @@
       <arg name="planner_status_topic" value="$(arg status_topic)"/>
       <arg name="healthy_topic" value="$(arg healthy_topic)"/>
       <arg name="diagnostics_topic" value="$(arg diagnostics_topic)"/>
+      <arg name="no_fly_zone_topic" value="$(arg no_fly_zone_topic)"/>
+      <arg name="turning_radius" value="$(arg fixedwing_turning_radius)"/>
+      <arg name="zone_clearance" value="$(arg fixedwing_zone_clearance)"/>
+      <arg name="planning_sample_step" value="$(arg fixedwing_planning_sample_step)"/>
+      <arg name="dynamic_failure_cancel_service"
+           value="$(arg fixedwing_dynamic_failure_cancel_service)"/>
     </include>
   </group>
 </launch>

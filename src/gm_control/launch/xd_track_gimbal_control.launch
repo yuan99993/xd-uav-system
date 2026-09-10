@@ -10,6 +10,7 @@
   <arg name="gm_state_topic" default="gm_control/gimbal_state"/>
   <arg name="track_gimbal_state_topic" default="track/gimbal_state"/>
   <arg name="start_service" default="gm_control/start_tracking"/>
+  <arg name="search_service" default="gm_control/start_search"/>
 
   <group ns="$(arg UAV_NAME)">
     <node pkg="gm_control"
@@ -36,6 +37,7 @@
       <param name="state_topic" value="$(arg gm_state_topic)"/>
       <param name="start_service" value="$(arg start_service)"/>
       <param name="tracking_enabled_at_startup" value="false"/>
+      <param name="search_service" value="$(arg search_service)"/>
       <param name="error_topic" value="gm_control/image_error"/>
       <param name="debug_image_topic" value="gm_control/debug_image"/>
     </node>

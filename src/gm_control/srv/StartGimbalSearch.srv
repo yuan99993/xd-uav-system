@@ -1,0 +1,7 @@
+# Enable or disable manual gimbal search. When enabled, the controller searches
+# while no valid target is available; a valid target still takes priority.
+bool start
+---
+bool success
+bool active
+string message
