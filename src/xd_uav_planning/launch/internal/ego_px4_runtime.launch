@@ -8,6 +8,15 @@
   <arg name="goal_x" default="1.0"/>
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>
+  <arg name="map_size_x" default="30.0"/>
+  <arg name="map_size_y" default="20.0"/>
+  <arg name="map_size_z" default="5.0"/>
+  <arg name="rolling_map_enabled" default="false"/>
+  <arg name="rolling_map_margin_m" default="6.0"/>
+  <arg name="owner_acquisition_timeout" default="5.0"/>
+  <arg name="ground_height" default="-0.01"/>
+  <arg name="virtual_ceil_height" default="2.9"/>
+  <arg name="visualization_truncate_height" default="1.8"/>
   <arg name="goal_topic" default="/move_base_simple/goal"/>
   <arg name="status_topic" default="planning/status"/>
   <arg name="healthy_topic" default="planning/healthy"/>
@@ -28,9 +37,14 @@
     <remap from="/drone_$(arg ego_id)_planning/swarm_trajs" to="$(arg swarm_raw_topic)"/>
   <include file="$(find ego_planner)/launch/advanced_param.xml">
     <arg name="drone_id" value="$(arg ego_id)"/>
-    <arg name="map_size_x_" value="30.0"/>
-    <arg name="map_size_y_" value="20.0"/>
-    <arg name="map_size_z_" value="5.0"/>
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="rolling_map_enabled_" value="$(arg rolling_map_enabled)"/>
+    <arg name="rolling_map_margin_m_" value="$(arg rolling_map_margin_m)"/>
+    <arg name="ground_height_" value="$(arg ground_height)"/>
+    <arg name="virtual_ceil_height_" value="$(arg virtual_ceil_height)"/>
+    <arg name="visualization_truncate_height_" value="$(arg visualization_truncate_height)"/>
     <arg name="odometry_topic" value="ego/odometry"/>
     <arg name="obj_num_set" value="0"/>
     <arg name="camera_pose_topic" value="unused/camera_pose"/>
@@ -90,8 +104,14 @@
       <param name="goal_topic" value="$(arg goal_topic)"/>
       <param name="ego_goal_topic" value="$(arg ego_goal_topic)"/>
       <param name="flight_type" value="$(arg flight_type)"/>
-      <!-- Official EGO manual-target code executes live goals at z=1.0 m. -->
-      <param name="manual_target_altitude_m" value="1.0"/>
+      <param name="output_gate_service"
+             value="/$(arg uav_name)/reference_mux/set_enabled"/>
+      <param name="owner_selection_service"
+             value="/$(arg uav_name)/reference_mux/select_ego"/>
+      <param name="candidate_topic"
+             value="/$(arg uav_name)/ego/reference_candidate"/>
+      <param name="owner_acquisition_timeout"
+             value="$(arg owner_acquisition_timeout)"/>
       <param name="odometry_topic" value="/drone_$(arg ego_id)_ego/odometry"/>
       <param name="health_topic" value="$(arg healthy_topic)"/>
       <param name="status_topic" value="$(arg status_topic)"/>

@@ -2,6 +2,11 @@
   <arg name="map_size_x_"/>
   <arg name="map_size_y_"/>
   <arg name="map_size_z_"/>
+  <arg name="rolling_map_enabled_" default="false"/>
+  <arg name="rolling_map_margin_m_" default="6.0"/>
+  <arg name="ground_height_" default="-0.01"/>
+  <arg name="virtual_ceil_height_" default="2.9"/>
+  <arg name="visualization_truncate_height_" default="1.8"/>
 
   <arg name="odometry_topic"/>
   <arg name="camera_pose_topic"/>
@@ -89,12 +94,14 @@
     <param name="grid_map/map_size_x"   value="$(arg map_size_x_)" /> 
     <param name="grid_map/map_size_y"   value="$(arg map_size_y_)" /> 
     <param name="grid_map/map_size_z"   value="$(arg map_size_z_)" /> 
+    <param name="grid_map/rolling_map_enabled" value="$(arg rolling_map_enabled_)" type="bool"/>
+    <param name="grid_map/rolling_map_margin_m" value="$(arg rolling_map_margin_m_)" type="double"/>
     <param name="grid_map/local_update_range_x"  value="5.5" /> 
     <param name="grid_map/local_update_range_y"  value="5.5" /> 
     <param name="grid_map/local_update_range_z"  value="4.5" /> 
     <param name="grid_map/obstacles_inflation"     value="0.099" /> 
     <param name="grid_map/local_map_margin" value="10"/>
-    <param name="grid_map/ground_height"        value="-0.01"/>
+    <param name="grid_map/ground_height"        value="$(arg ground_height_)"/>
     <!-- camera parameter -->
     <param name="grid_map/cx" value="$(arg cx)"/>
     <param name="grid_map/cy" value="$(arg cy)"/>
@@ -117,8 +124,8 @@
     <param name="grid_map/min_ray_length" value="0.1"/>
     <param name="grid_map/max_ray_length" value="4.5"/>
 
-    <param name="grid_map/virtual_ceil_height"   value="2.9"/>
-    <param name="grid_map/visualization_truncate_height"   value="1.8"/>
+    <param name="grid_map/virtual_ceil_height"   value="$(arg virtual_ceil_height_)"/>
+    <param name="grid_map/visualization_truncate_height"   value="$(arg visualization_truncate_height_)"/>
     <param name="grid_map/show_occ_time"  value="false"/>
     <param name="grid_map/pose_type"     value="1"/>  
     <param name="grid_map/frame_id"      value="world"/>

@@ -7,6 +7,8 @@
     <arg name="map_size_x_" value="20.0" />
     <arg name="map_size_y_" value="12.0" />
     <arg name="map_size_z_" value="5.0" />
+    <arg name="rolling_map_enabled_" value="true" />
+    <arg name="rolling_map_margin_m_" value="6.0" />
     <arg name="odometry_topic" value="synthetic/odom" />
     <arg name="obj_num_set" value="0" />
     <arg name="camera_pose_topic" value="synthetic/camera_pose" />

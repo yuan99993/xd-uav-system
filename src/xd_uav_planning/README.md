@@ -49,13 +49,22 @@ roslaunch xd_uav_planning planning.launch \
 `PlannerStatus`。EGO 私有 `PositionCommand` 只有在 frame、时间戳、载机状态和健康条件有效后
 才进入 controller。
 
-仓库中的 `ego-planner-swarm` 保持官方 `92fe9f7` 原样。官方 sequential swarm 的瞬时
-`MultiBsplines` 交接由本包 `swarm_handoff_relay.py` 外部增强：锁存并周期重发启动链，同时根据
-官方 `/broadcast_bspline` 更新完整前驱轨迹。这样后机即使晚订阅或首条消息早于 odometry，也
-不会永久卡在 `SEQUENTIAL_START`，无需修改第三方源码。
+EGO 的内部 frame 固定为 `world`；规划层拒绝错误 frame 和非有限坐标。收到新目标后先关闭
+参考输出，只有该目标产生时间戳不早于目标接收时刻的新 EGO candidate，才获取 reference mux
+所有权并重新开放输出，避免上一条轨迹的缓存命令泄漏。`owner_acquisition_timeout` 默认 5 s，
+超时会明确上报失败。首次从 `none` 获取 EGO owner 可由 `allow_initial_ego_owner` 放行，后续
+SEAD/EGO owner 切换仍执行位置和速度跳变检查。
 
-官方 EGO 的内部 frame 固定为 `world`，manual-target 只能执行 `world z=1.0 m` 的实时目标；
-其他 frame 或高度会返回 `FAILED`，不会静默飞错。任意三维目标属于后续能力扩展。
+EGO 地图大小、高度边界和动态约束可从正式入口配置。为兼容现有运行结果，默认仍为
+`30×20×5 m`、`max_vel=0.30 m/s`、`max_acc=0.30 m/s²`，点云默认仍使用 Ouster 话题。
+`rolling_map_enabled:=true` 时，占据地图在飞机接近水平边界前重置有限体素缓存并将窗口中心
+移动到当前位置；任务目标、TF 和轨迹继续使用 `world` 坐标。`rolling_map_margin_m` 默认
+6 m，应大于 EGO 5.5 m 的局部更新半径。重定位会清空旧占据缓存，必须依靠后续传感器数据
+重建，因此实机启用前需要验证重定位期间的障碍重建和轨迹安全性。
+
+官方 sequential swarm 的瞬时 `MultiBsplines` 交接仍由本包 `swarm_handoff_relay.py` 外部增强：
+锁存并周期重发启动链，同时根据 `/broadcast_bspline` 更新完整前驱轨迹，避免后机因晚订阅或
+首条消息早于 odometry 而永久卡在 `SEQUENTIAL_START`。
 
 ### fixedwing / Path
 
@@ -182,9 +191,9 @@ docs/                    操作及上下层接入手册
 ```
 
 起降、OFFBOARD、状态估计和底层控制仍分别属于 control manager、estimator 和 controller。
-`xd_uav_task_allocate` 是只读上游；`ego-planner-swarm` 是只读第三方依赖，项目适配全部位于
-本包。旧 `xd_uav_system_integration` 与 `xd_uav_sead` 仅作为 legacy 源码保留，不属于正式
-`task_allocate -> planning -> controller` 链路。
+`xd_uav_task_allocate` 是只读上游。`ego-planner-swarm` 仅带有 construction 分支移植来的最小
+滚动地图补丁；其余项目适配位于本包。旧 `xd_uav_system_integration` 与 `xd_uav_sead` 仅作为
+legacy 源码保留，不属于正式 `task_allocate -> planning -> controller` 链路。
 
 ## 旧 EGO bridge 恢复
 

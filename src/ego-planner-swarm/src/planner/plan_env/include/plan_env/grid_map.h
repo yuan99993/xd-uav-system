@@ -76,6 +76,8 @@ struct MappingParameters {
 
   /* local map update and clear */
   int local_map_margin_;
+  bool rolling_map_enabled_;
+  double rolling_map_margin_m_;
 
   /* visualization and computation time display */
   double visualization_truncate_height_, virtual_ceil_height_, ground_height_, virtual_ceil_yp_, virtual_ceil_yn_;
@@ -208,6 +210,9 @@ private:
   void projectDepthImage();
   void raycastProcess();
   void clearAndInflateLocalMap();
+  bool rollingMapNeedsRecenter(const Eigen::Vector3d& position) const;
+  void recenterRollingMap(const Eigen::Vector3d& position);
+  void clearRollingMapBuffers();
 
   inline void inflatePoint(const Eigen::Vector3i& pt, int step, vector<Eigen::Vector3i>& pts);
   int setCacheOccupancy(Eigen::Vector3d pos, int occ);

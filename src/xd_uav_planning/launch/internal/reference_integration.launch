@@ -3,6 +3,8 @@
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
   <arg name="uav_name" default="$(arg UAV_NAME)"/>
   <arg name="initial_owner" default="none"/>
+  <!-- The first owner acquisition is not a controller-to-controller handoff. -->
+  <arg name="allow_initial_ego_owner" default="false"/>
   <arg name="common_frame" default="world"/>
   <arg name="output_frame" default="$(arg common_frame)"/>
   <arg name="healthy_topic" default="planning/healthy"/>
@@ -25,6 +27,7 @@
           name="reference_mux" output="screen" clear_params="true">
       <param name="common_frame" value="$(arg common_frame)"/>
       <param name="initial_owner" value="$(arg initial_owner)"/>
+      <param name="allow_initial_ego_owner" value="$(arg allow_initial_ego_owner)"/>
       <param name="candidate_timeout" value="0.20"/>
       <param name="health_timeout" value="0.30"/>
       <param name="ego_healthy_topic" value="$(arg healthy_topic)"/>

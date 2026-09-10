@@ -23,6 +23,15 @@ class ReferenceIntegrationTest(unittest.TestCase):
         self._canonical_sub = rospy.Subscriber(
             "/uav1/control/reference/setpoint", PositionTarget,
             self._canonical.append)
+        self._initial_canonical = []
+        self._initial_health = rospy.Publisher(
+            "/uav_initial/planning/healthy", Bool, queue_size=1, latch=True)
+        self._initial_candidate = rospy.Publisher(
+            "/uav_initial/ego/reference_candidate",
+            PositionTarget, queue_size=5)
+        self._initial_canonical_sub = rospy.Subscriber(
+            "/uav_initial/control/reference/setpoint", PositionTarget,
+            self._initial_canonical.append)
 
     @staticmethod
     def _wait(predicate, timeout=4.0):
@@ -112,6 +121,39 @@ class ReferenceIntegrationTest(unittest.TestCase):
         rospy.sleep(0.10)
         self.assertEqual(len(self._canonical), count)
 
+        rospy.wait_for_service("/uav1/reference_mux/set_enabled", timeout=3.0)
+        set_enabled = rospy.ServiceProxy(
+            "/uav1/reference_mux/set_enabled", SetBool)
+        self.assertTrue(set_enabled(False).success)
+        self._bridge_health.publish(Bool(data=True))
+        self._sensing_health.publish(Bool(data=True))
+        rospy.sleep(0.05)
+        count = len(self._canonical)
+        for _ in range(4):
+            self._candidate.publish(self._message())
+            rospy.sleep(0.03)
+        rospy.sleep(0.10)
+        self.assertEqual(len(self._canonical), count)
+
+        self.assertTrue(self._wait(
+            lambda: self._initial_health.get_num_connections() > 0 and
+                    self._initial_candidate.get_num_connections() > 0))
+        self._initial_health.publish(Bool(data=True))
+        for _ in range(4):
+            self._initial_candidate.publish(self._message())
+            rospy.sleep(0.03)
+        rospy.wait_for_service(
+            "/uav_initial/reference_mux/select_ego", timeout=3.0)
+        initial_select = rospy.ServiceProxy(
+            "/uav_initial/reference_mux/select_ego", SetBool)
+        response = initial_select(True)
+        self.assertTrue(response.success, response.message)
+        self.assertIn("initial acquisition", response.message)
+        for _ in range(3):
+            self._initial_health.publish(Bool(data=True))
+            self._initial_candidate.publish(self._message())
+            rospy.sleep(0.03)
+        self.assertTrue(self._wait(lambda: len(self._initial_canonical) > 0))
 
 if __name__ == "__main__":
     rospy.init_node("test_reference_integration")

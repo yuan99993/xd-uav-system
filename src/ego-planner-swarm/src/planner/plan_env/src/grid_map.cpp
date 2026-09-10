@@ -1,5 +1,7 @@
 #include "plan_env/grid_map.h"
 
+#include <algorithm>
+
 // #define current_img_ md_.depth_image_[image_cnt_ & 1]
 // #define last_img_ md_.depth_image_[!(image_cnt_ & 1)]
 
@@ -49,6 +51,8 @@ void GridMap::initMap(ros::NodeHandle &nh)
 
   node_.param("grid_map/frame_id", mp_.frame_id_, string("world"));
   node_.param("grid_map/local_map_margin", mp_.local_map_margin_, 1);
+  node_.param("grid_map/rolling_map_enabled", mp_.rolling_map_enabled_, false);
+  node_.param("grid_map/rolling_map_margin_m", mp_.rolling_map_margin_m_, 6.0);
   node_.param("grid_map/ground_height", mp_.ground_height_, 1.0);
 
   node_.param("grid_map/odom_depth_timeout", mp_.odom_depth_timeout_, 1.0);
@@ -61,6 +65,10 @@ void GridMap::initMap(ros::NodeHandle &nh)
   mp_.resolution_inv_ = 1 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
+  const double max_rolling_margin =
+      std::max(0.0, 0.5 * std::min(x_size, y_size) - mp_.resolution_);
+  mp_.rolling_map_margin_m_ = std::max(
+      0.0, std::min(mp_.rolling_map_margin_m_, max_rolling_margin));
 
   mp_.prob_hit_log_ = logit(mp_.p_hit_);
   mp_.prob_miss_log_ = logit(mp_.p_miss_);
@@ -188,6 +196,58 @@ void GridMap::resetBuffer(Eigen::Vector3d min_pos, Eigen::Vector3d max_pos)
       {
         md_.occupancy_buffer_inflate_[toAddress(x, y, z)] = 0;
       }
+}
+
+bool GridMap::rollingMapNeedsRecenter(const Eigen::Vector3d& position) const
+{
+  if (!mp_.rolling_map_enabled_)
+    return false;
+
+  const double margin = mp_.rolling_map_margin_m_;
+  return position(0) < mp_.map_min_boundary_(0) + margin ||
+         position(0) > mp_.map_max_boundary_(0) - margin ||
+         position(1) < mp_.map_min_boundary_(1) + margin ||
+         position(1) > mp_.map_max_boundary_(1) - margin;
+}
+
+void GridMap::clearRollingMapBuffers()
+{
+  std::fill(md_.occupancy_buffer_.begin(), md_.occupancy_buffer_.end(),
+            mp_.clamp_min_log_ - mp_.unknown_flag_);
+  std::fill(md_.occupancy_buffer_inflate_.begin(),
+            md_.occupancy_buffer_inflate_.end(), 0);
+  std::fill(md_.count_hit_and_miss_.begin(), md_.count_hit_and_miss_.end(), 0);
+  std::fill(md_.count_hit_.begin(), md_.count_hit_.end(), 0);
+  std::fill(md_.flag_rayend_.begin(), md_.flag_rayend_.end(), -1);
+  std::fill(md_.flag_traverse_.begin(), md_.flag_traverse_.end(), -1);
+  std::queue<Eigen::Vector3i> empty_queue;
+  std::swap(md_.cache_voxel_, empty_queue);
+  md_.raycast_num_ = 0;
+  md_.proj_points_cnt = 0;
+  md_.local_bound_min_ = Eigen::Vector3i::Zero();
+  md_.local_bound_max_ = mp_.map_voxel_num_ - Eigen::Vector3i::Ones();
+  md_.local_updated_ = false;
+  md_.occ_need_update_ = false;
+}
+
+void GridMap::recenterRollingMap(const Eigen::Vector3d& position)
+{
+  if (!rollingMapNeedsRecenter(position))
+    return;
+
+  // Keep planner coordinates in world frame and move only the finite voxel
+  // backing store. The vertical bounds remain tied to ground and ceiling.
+  mp_.map_origin_(0) = std::floor(
+      (position(0) - 0.5 * mp_.map_size_(0)) * mp_.resolution_inv_) /
+      mp_.resolution_inv_;
+  mp_.map_origin_(1) = std::floor(
+      (position(1) - 0.5 * mp_.map_size_(1)) * mp_.resolution_inv_) /
+      mp_.resolution_inv_;
+  mp_.map_min_boundary_ = mp_.map_origin_;
+  mp_.map_max_boundary_ = mp_.map_origin_ + mp_.map_size_;
+  clearRollingMapBuffers();
+  ROS_INFO("Rolling occupancy map recentered at [%.2f, %.2f], origin [%.2f, %.2f]",
+           position(0), position(1), mp_.map_origin_(0), mp_.map_origin_(1));
 }
 
 int GridMap::setCacheOccupancy(Eigen::Vector3d pos, int occ)
@@ -726,6 +786,7 @@ void GridMap::depthPoseCallback(const sensor_msgs::ImageConstPtr &img,
   md_.camera_r_m_ = Eigen::Quaterniond(pose->pose.orientation.w, pose->pose.orientation.x,
                                        pose->pose.orientation.y, pose->pose.orientation.z)
                         .toRotationMatrix();
+  recenterRollingMap(md_.camera_pos_);
   if (isInMap(md_.camera_pos_))
   {
     md_.has_odom_ = true;
@@ -748,6 +809,8 @@ void GridMap::odomCallback(const nav_msgs::OdometryConstPtr &odom)
   md_.camera_pos_(0) = odom->pose.pose.position.x;
   md_.camera_pos_(1) = odom->pose.pose.position.y;
   md_.camera_pos_(2) = odom->pose.pose.position.z;
+
+  recenterRollingMap(md_.camera_pos_);
 
   md_.has_odom_ = true;
 }
@@ -1009,6 +1072,7 @@ void GridMap::depthOdomCallback(const sensor_msgs::ImageConstPtr &img,
   md_.camera_pos_(1) = cam_T(1, 3);
   md_.camera_pos_(2) = cam_T(2, 3);
   md_.camera_r_m_ = cam_T.block<3, 3>(0, 0);
+  recenterRollingMap(md_.camera_pos_);
 
   /* get depth image */
   cv_bridge::CvImagePtr cv_ptr;

@@ -32,7 +32,10 @@ class ReferenceMux:
             "~switch_position_jump", 0.20))
         self._velocity_jump = float(rospy.get_param(
             "~switch_velocity_jump", 0.30))
+        self._allow_initial_ego_owner = bool(rospy.get_param(
+            "~allow_initial_ego_owner", False))
         self._owner = rospy.get_param("~initial_owner", "none")
+        self._enabled = True
         if self._owner not in ("none", "sead", "ego"):
             raise rospy.ROSInitException("initial_owner must be none, sead or ego")
         self._candidates = {"sead": None, "ego": None}
@@ -76,6 +79,8 @@ class ReferenceMux:
         ]
         self._service = rospy.Service(
             "~select_ego", SetBool, self._select_ego)
+        self._enable_service = rospy.Service(
+            "~set_enabled", SetBool, self._set_enabled)
         self._timer = rospy.Timer(rospy.Duration(0.05), self._timer_callback)
         self._publish_status()
 
@@ -103,7 +108,7 @@ class ReferenceMux:
     def _candidate_callback(self, message, source):
         validation = self._valid(message)
         self._candidates[source] = copy.deepcopy(message) if validation.valid else None
-        if source == self._owner:
+        if source == self._owner and self._enabled:
             if not validation.valid:
                 self._reason = source + ":" + validation.reason
             elif not self._source_healthy(source):
@@ -173,6 +178,14 @@ class ReferenceMux:
         validation = self._valid(candidate)
         if not validation.valid:
             return SetBoolResponse(False, validation.reason)
+        if target == self._owner:
+            return SetBoolResponse(True, "owner already " + self._owner)
+        if (target == "ego" and self._owner == "none" and
+                self._allow_initial_ego_owner):
+            self._owner = target
+            self._reason = "initial_ego_owner"
+            self._owner_pub.publish(String(data=self._owner))
+            return SetBoolResponse(True, "owner=ego (initial acquisition)")
         switch_from = (self._last_output if self._last_output is not None
                        else self._baseline)
         if switch_from is None:
@@ -191,8 +204,24 @@ class ReferenceMux:
         self._owner_pub.publish(String(data=self._owner))
         return SetBoolResponse(True, "owner=" + self._owner)
 
+    def _set_enabled(self, request):
+        self._enabled = bool(request.data)
+        if not self._enabled:
+            # A later goal must never release a cached command from the
+            # previous trajectory.
+            self._candidates = {"sead": None, "ego": None}
+            self._last_output = None
+            self._reason = "output_disabled"
+        else:
+            self._reason = "waiting"
+        self._publish_status()
+        return SetBoolResponse(
+            True, "enabled=" + str(self._enabled).lower())
+
     def _timer_callback(self, _event):
-        if self._owner != "none":
+        if not self._enabled:
+            self._reason = "output_disabled"
+        elif self._owner != "none":
             candidate = self._candidates[self._owner]
             if not self._source_healthy(self._owner):
                 self._reason = self._owner + ":health_false"
@@ -220,6 +249,8 @@ class ReferenceMux:
                         else DiagnosticStatus.ERROR)
         status.message = "forwarding" if self._reason == "ok" else "fail_closed"
         status.values = [KeyValue(key="owner", value=self._owner),
+                         KeyValue(key="enabled",
+                                  value=str(self._enabled).lower()),
                          KeyValue(key="reason", value=self._reason),
                          KeyValue(key="output_frame", value=self._output_frame)]
         array.status = [status]
