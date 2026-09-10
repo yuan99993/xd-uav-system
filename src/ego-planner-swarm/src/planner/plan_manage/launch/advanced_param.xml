@@ -100,9 +100,9 @@
          edge, so a local planner correctly but unhelpfully treats it as an
          infinite barrier.  This window exposes both edges of ordinary walls
          and leaves enough room to choose a side around a pillar. -->
-    <param name="grid_map/local_update_range_x"  value="10.0"/>
-    <param name="grid_map/local_update_range_y"  value="10.0"/>
-    <param name="grid_map/local_update_range_z"  value="4.5" /> 
+    <param name="grid_map/local_update_range_x"  value="20.0"/>
+    <param name="grid_map/local_update_range_y"  value="20.0"/>
+    <param name="grid_map/local_update_range_z"  value="10.0" /> 
     <!-- X500 has an approximately 0.45 m swept radius.  Add tracking and
          point-cloud discretisation margin so EGO plans for the airframe,
          rather than letting its geometric centre graze a wall. -->
