@@ -6,7 +6,7 @@
 Default_Tracker: SmartTracker # SmartTracker / FeatureTracker / ColorTracker
 
 SmartTracker:
-  # xd_vehicle_latest.pt uses the local training label space:
+  # xd_vehicle_train7.pt uses the local training label space:
   # car=0, ar-car=1, tank=2. Filtering is applied both inside Ultralytics and
   # before SmartTracker draws or publishes detections.
   SMART_TRACKER_ALLOWED_CLASS_IDS: [0, 1, 2]
