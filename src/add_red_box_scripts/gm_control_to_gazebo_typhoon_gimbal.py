@@ -9,13 +9,19 @@ adapters while keeping the gm_control image controller unchanged.
 
 import argparse
 import math
+import os
 import threading
 import time
 from dataclasses import dataclass
 
+# The native Gazebo gimbal controller uses MAVLink 2 messages.
+os.environ.setdefault("MAVLINK20", "1")
+
 import rospy
-from gazebo_msgs.srv import SetModelConfiguration, SetModelConfigurationRequest
 from gm_control.msg import GimbalCommand, GimbalState
+from pymavlink import mavutil
+
+mavutil.set_dialect("common")
 
 
 @dataclass
@@ -32,19 +38,36 @@ def deg_to_rad(value: float) -> float:
     return math.radians(value)
 
 
+def quaternion_from_euler(roll_rad: float, pitch_rad: float, yaw_rad: float):
+    """Return a MAVLink quaternion in [w, x, y, z] order."""
+    cr = math.cos(0.5 * roll_rad)
+    sr = math.sin(0.5 * roll_rad)
+    cp = math.cos(0.5 * pitch_rad)
+    sp = math.sin(0.5 * pitch_rad)
+    cy = math.cos(0.5 * yaw_rad)
+    sy = math.sin(0.5 * yaw_rad)
+    return [
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    ]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Apply gm_control/GimbalCommand to the Typhoon H480 Gazebo gimbal."
     )
     parser.add_argument("--command-topic", default="/uav1/gm_control/gimbal_cmd")
     parser.add_argument("--state-topic", default="/uav1/gm_control/gimbal_state")
-    # single_vehicle_spawn.launch appends the PX4 instance ID to the vehicle
-    # name. The single namespaced launcher uses instance zero.
-    parser.add_argument("--model", default="typhoon_h4800")
     parser.add_argument("--frame-id", default="uav1/cgo3_gimbal")
     parser.add_argument("--rate", type=float, default=50.0)
     parser.add_argument("--command-timeout", type=float, default=0.5)
     parser.add_argument("--invalid-action", choices=["hold", "center"], default="hold")
+
+    parser.add_argument("--gimbal-host", default="127.0.0.1")
+    parser.add_argument("--gimbal-port", type=int, required=True,
+                        help="fixed UDP port of the native Gazebo gimbal controller")
 
     parser.add_argument("--initial-yaw-deg", type=float, default=0.0)
     parser.add_argument("--initial-pitch-deg", type=float, default=0.0)
@@ -80,6 +103,49 @@ class CommandBuffer:
             return self._latest
 
 
+class NativeGimbalSender:
+    """Send angle setpoints to the native Gazebo gimbal PID controller."""
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.link = mavutil.mavlink_connection(
+            "udpout:{0}:{1}".format(args.gimbal_host, args.gimbal_port),
+            source_system=255,
+            source_component=mavutil.mavlink.MAV_COMP_ID_ONBOARD_COMPUTER,
+        )
+        # Roll and pitch are treated as lock-frame angles by the native plugin.
+        # Yaw is left in follow/body frame, matching the old ROS adapter's
+        # relative-to-vehicle command convention.
+        self.flags = (
+            mavutil.mavlink.GIMBAL_DEVICE_FLAGS_ROLL_LOCK
+            | mavutil.mavlink.GIMBAL_DEVICE_FLAGS_PITCH_LOCK
+        )
+        rospy.loginfo(
+            "Native Gazebo gimbal MAVLink endpoint: udp://%s:%d",
+            args.gimbal_host,
+            args.gimbal_port,
+        )
+
+    def send_angles(self, yaw_deg: float, pitch_deg: float, roll_deg: float) -> None:
+        # The native plugin internally applies the Typhoon joint-axis signs:
+        # physical roll = q.roll, physical pitch = -q.pitch, physical yaw = -q.yaw
+        # (for yaw-follow mode). Convert the old adapter's physical target into
+        # the quaternion expected by GIMBAL_DEVICE_SET_ATTITUDE.
+        q = quaternion_from_euler(
+            deg_to_rad(roll_deg),
+            -deg_to_rad(pitch_deg),
+            -deg_to_rad(yaw_deg),
+        )
+        self.link.mav.gimbal_device_set_attitude_send(
+            0,
+            0,
+            self.flags,
+            q,
+            float("nan"),
+            float("nan"),
+            float("nan"),
+        )
+
+
 class TyphoonGimbalAdapter:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -100,31 +166,12 @@ class TyphoonGimbalAdapter:
         self.state_pub = rospy.Publisher(args.state_topic, GimbalState, queue_size=10)
         rospy.Subscriber(args.command_topic, GimbalCommand, self.command_buffer.callback, queue_size=1)
 
-        rospy.loginfo("Waiting for /gazebo/set_model_configuration ...")
-        rospy.wait_for_service("/gazebo/set_model_configuration")
-        self.set_config = rospy.ServiceProxy("/gazebo/set_model_configuration", SetModelConfiguration)
+        self.native_gimbal = NativeGimbalSender(args)
         rospy.loginfo(
-            "gm_control Gazebo gimbal adapter started: command_topic=%s state_topic=%s model=%s",
+            "gm_control native Gazebo gimbal adapter started: command_topic=%s state_topic=%s",
             args.command_topic,
             args.state_topic,
-            args.model,
         )
-
-    def make_request(self, yaw_deg: float, pitch_deg: float, roll_deg: float):
-        req = SetModelConfigurationRequest()
-        req.model_name = self.args.model
-        req.urdf_param_name = ""
-        req.joint_names = [
-            "cgo3_vertical_arm_joint",
-            "cgo3_horizontal_arm_joint",
-            "cgo3_camera_joint",
-        ]
-        req.joint_positions = [
-            deg_to_rad(yaw_deg),
-            deg_to_rad(roll_deg),
-            deg_to_rad(pitch_deg),
-        ]
-        return req
 
     def update_angles_from_command(self, cmd: GimbalCommand, dt: float) -> None:
         if cmd.mode == GimbalCommand.MODE_ANGLE:
@@ -176,14 +223,14 @@ class TyphoonGimbalAdapter:
         pitch_out = self.args.pitch_sign * self.pitch_deg + self.args.pitch_offset_deg
         roll_out = self.args.roll_sign * self.roll_deg + self.args.roll_offset_deg
 
+        # Always send the current target, including when the target is invalid.
+        # This preserves hold/center semantics while the native SDF PID applies
+        # the force needed to counter gravity.
         try:
-            resp = self.set_config(self.make_request(yaw_out, pitch_out, roll_out))
-            if not resp.success and now - self.last_log_time > self.args.log_interval:
-                rospy.logwarn("set_model_configuration failed: %s", resp.status_message)
-                self.last_log_time = now
-        except rospy.ServiceException as exc:
+            self.native_gimbal.send_angles(yaw_out, pitch_out, roll_out)
+        except (OSError, AttributeError, TypeError, ValueError) as exc:
             if now - self.last_log_time > self.args.log_interval:
-                rospy.logwarn("set_model_configuration service error: %s", exc)
+                rospy.logwarn("native gimbal MAVLink send error: %s", exc)
                 self.last_log_time = now
 
         if now - self.last_log_time > self.args.log_interval:

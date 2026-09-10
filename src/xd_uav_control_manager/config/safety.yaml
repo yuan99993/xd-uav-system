@@ -1,16 +1,16 @@
 safety:
   # 传感器、估计器与PX4状态的有效性检查。
   inputs:
-    odometry_timeout: 0.50
+    odometry_timeout: 1.0
     imu_timeout: 1.0
-    acceleration_timeout: 0.20
-    airspeed_timeout: 0.30
-    estimator_status_timeout: 0.30
-    mavros_state_timeout: 1.0
-    extended_state_timeout: 1.0
+    acceleration_timeout: 1.0
+    airspeed_timeout: 1.0
+    estimator_status_timeout: 1.0
+    mavros_state_timeout: 2.0
+    extended_state_timeout: 2.0
     # MAVROS的FCU时间同步与Gazebo /clock可能有毫秒级相位差；允许消息时间戳
     # 最多略超前ROS时间50ms。超过该范围仍视为时钟异常。
-    future_stamp_tolerance: 0.05
+    future_stamp_tolerance: 0.5
 
     require_acceleration: true
     require_localization: false

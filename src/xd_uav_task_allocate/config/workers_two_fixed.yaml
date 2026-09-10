@@ -10,8 +10,6 @@ workers:
       world_odometry_topic: /uav3/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav3/control_manager/state
-    execution:
-      backend: planning
     coverage:
       # Also used for the safe forward reference after a fixed-wing goal.
       nominal_speed_mps: 15.0
@@ -24,6 +22,9 @@ workers:
       planner_cancel: /uav3/planning/cancel
       route_preview: /uav3/planning/route_preview
       planner_status: /uav3/planning/status
+      controller_path: /uav3/control/reference/path
+      controller_path_status: /uav3/controller/path_status
+      controller_setpoint: /uav3/control/reference/setpoint
 
   uav4:
     mobility_profile: fixedwing
@@ -31,8 +32,6 @@ workers:
       world_odometry_topic: /uav4/state_estimator/main/frames/world/odom
     health:
       control_state_topic: /uav4/control_manager/state
-    execution:
-      backend: planning
     coverage:
       nominal_speed_mps: 15.0
     fixedwing:
@@ -44,3 +43,6 @@ workers:
       planner_cancel: /uav4/planning/cancel
       route_preview: /uav4/planning/route_preview
       planner_status: /uav4/planning/status
+      controller_path: /uav4/control/reference/path
+      controller_path_status: /uav4/controller/path_status
+      controller_setpoint: /uav4/control/reference/setpoint
