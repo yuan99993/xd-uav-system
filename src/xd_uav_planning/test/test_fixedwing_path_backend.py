@@ -11,14 +11,17 @@ from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Path
 from std_msgs.msg import Bool
 from xd_uav_controller.msg import ControlState, PathStatus
-from xd_uav_planning.msg import NoFlyZone
+from xd_uav_planning.msg import NoFlyZone, NoFlyZoneArray
 from xd_uav_task_allocate.msg import PlannerStatus
 from xd_uav_task_allocate.srv import CancelPlanning
+from visualization_msgs.msg import MarkerArray
 
 
 class FixedwingPathBackendTest(unittest.TestCase):
     def setUp(self):
         self.forwarded = []
+        self.adjusted_paths = []
+        self.zone_markers = []
         self.statuses = []
         self.health = []
         self.release_setpoints = []
@@ -27,13 +30,19 @@ class FixedwingPathBackendTest(unittest.TestCase):
         self.path_pub = rospy.Publisher(
             "/uav1/planning/task_path", Path, queue_size=2)
         self.zone_pub = rospy.Publisher(
-            "/uav1/planning/no_fly_zone", NoFlyZone,
+            "/planning/no_fly_zones", NoFlyZoneArray,
             queue_size=2, latch=True)
         self.controller_status_pub = rospy.Publisher(
             "/uav1/controller/path_status", PathStatus, queue_size=10)
         self.forwarded_sub = rospy.Subscriber(
             "/uav1/control/reference/path", Path,
             self.forwarded.append, queue_size=2)
+        self.adjusted_path_sub = rospy.Subscriber(
+            "/uav1/planning/adjusted_path", Path,
+            self.adjusted_paths.append, queue_size=2)
+        self.zone_marker_sub = rospy.Subscriber(
+            "/planning/no_fly_zone_markers", MarkerArray,
+            self.zone_markers.append, queue_size=2)
         self.status_sub = rospy.Subscriber(
             "/uav1/planning/status", PlannerStatus,
             self.statuses.append, queue_size=10)
@@ -118,6 +127,13 @@ class FixedwingPathBackendTest(unittest.TestCase):
                 Point32(x=x_value, y=y_value, z=0.0))
         return message
 
+    def _publish_zone_batch(self, *zones):
+        message = NoFlyZoneArray()
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = "world"
+        message.zones = list(zones)
+        self.zone_pub.publish(message)
+
     def _publish_path_until(self, message, predicate, timeout=5.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and not rospy.is_shutdown():
@@ -196,8 +212,11 @@ class FixedwingPathBackendTest(unittest.TestCase):
     def test_no_fly_zone_adjusts_path_before_controller(self):
         self._wait_for(lambda: self.zone_pub.get_num_connections() > 0)
         zone = self._zone()
-        self.zone_pub.publish(zone)
+        self._publish_zone_batch(zone)
         rospy.sleep(0.1)
+        self._wait_for(lambda: any(
+            marker.ns == "fixedwing_no_fly_zones" and marker.id == 71
+            for array in self.zone_markers for marker in array.markers))
         before = len(self.forwarded)
         try:
             self._publish_path_until(
@@ -207,20 +226,49 @@ class FixedwingPathBackendTest(unittest.TestCase):
                     and "no-fly path adjusted" in msg.detail
                     for msg in self.statuses))
             adjusted = self.forwarded[-1]
+            self.assertTrue(self.adjusted_paths)
+            self.assertEqual(len(self.adjusted_paths[-1].poses),
+                             len(adjusted.poses))
             self.assertGreater(len(adjusted.poses), 3)
             self.assertTrue(any(abs(pose.pose.position.y) > 6.0
                                 for pose in adjusted.poses))
         finally:
             clear = self._zone(NoFlyZone.OP_CLEAR)
             clear.header.stamp = rospy.Time.now()
-            self.zone_pub.publish(clear)
+            self._publish_zone_batch(clear)
             rospy.sleep(0.1)
+
+    def test_shared_batch_topic_applies_multiple_zones(self):
+        self._wait_for(lambda: self.zone_pub.get_num_connections() > 0)
+        clear = self._zone(NoFlyZone.OP_CLEAR)
+        self._publish_zone_batch(clear)
+        rospy.sleep(0.1)
+
+        first = self._zone()
+        second = self._zone()
+        second.zone_id = 72
+        second.polygon.points = [
+            Point32(x=35.0, y=-4.0, z=0.0),
+            Point32(x=45.0, y=-4.0, z=0.0),
+            Point32(x=45.0, y=4.0, z=0.0),
+            Point32(x=35.0, y=4.0, z=0.0),
+        ]
+        self._publish_zone_batch(first, second)
+        self._wait_for(lambda: any(
+            marker.ns == "fixedwing_no_fly_zones" and marker.id == 71
+            for array in self.zone_markers for marker in array.markers))
+        self._wait_for(lambda: any(
+            marker.ns == "fixedwing_no_fly_zones" and marker.id == 72
+            for array in self.zone_markers for marker in array.markers))
+
+        self._publish_zone_batch(clear)
+        rospy.sleep(0.1)
 
     def test_active_path_is_replaced_on_zone_upsert_and_remove(self):
         self._wait_for(lambda: self.path_pub.get_num_connections() > 0)
         self._wait_for(lambda: self.zone_pub.get_num_connections() > 0)
         clear = self._zone(NoFlyZone.OP_CLEAR)
-        self.zone_pub.publish(clear)
+        self._publish_zone_batch(clear)
         rospy.sleep(0.1)
 
         self._publish_path_until(
@@ -244,7 +292,7 @@ class FixedwingPathBackendTest(unittest.TestCase):
 
         self.position_x = 5.0
         rospy.sleep(0.15)
-        self.zone_pub.publish(self._zone())
+        self._publish_zone_batch(self._zone())
         self._wait_for(lambda: len(self.forwarded) > initial_count)
         detour = self.forwarded[-1]
         self.assertGreater(len(detour.poses), 3)
@@ -264,7 +312,7 @@ class FixedwingPathBackendTest(unittest.TestCase):
                 for msg in self.statuses))
         remove = self._zone(NoFlyZone.OP_REMOVE)
         remove.header.stamp = rospy.Time.now()
-        self.zone_pub.publish(remove)
+        self._publish_zone_batch(remove)
         self._wait_for(lambda: len(self.forwarded) > detour_count)
         restored = self.forwarded[-1]
         self.assertLess(len(restored.poses), len(detour.poses))

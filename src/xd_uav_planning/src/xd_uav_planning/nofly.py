@@ -18,6 +18,8 @@ class NoSafePathError(RuntimeError):
 @dataclass(frozen=True)
 class NoFlyConfig:
     expected_frame: str
+    # Kept for configuration compatibility.  A zone is a persistent planning
+    # object, so its header timestamp is not used as a message-age gate.
     max_message_age: float = 1.0
     future_tolerance: float = 0.05
     max_ttl: float = 3600.0
@@ -138,13 +140,6 @@ class NoFlyZoneStore:
         frame = str(message.header.frame_id or "").strip("/")
         if frame != self.config.expected_frame.strip("/"):
             raise NoFlyZoneError("zone_frame_mismatch")
-        stamp = _seconds(message.header.stamp)
-        if not math.isfinite(stamp) or stamp <= 0.0:
-            raise NoFlyZoneError("zone_stamp_not_positive")
-        if stamp > now + self.config.future_tolerance:
-            raise NoFlyZoneError("zone_stamp_in_future")
-        if now - stamp > self.config.max_message_age:
-            raise NoFlyZoneError("zone_message_stale")
         zone_id = int(message.zone_id)
         with self._lock:
             if operation == self.OP_CLEAR:
@@ -175,9 +170,9 @@ class NoFlyZoneStore:
                 if not math.isfinite(valid_until) or valid_until < 0.0:
                     raise NoFlyZoneError("invalid_valid_until")
                 if valid_until:
-                    if valid_until <= now or valid_until <= stamp:
+                    if valid_until <= now:
                         raise NoFlyZoneError("zone_already_expired")
-                    if valid_until - stamp > self.config.max_ttl:
+                    if valid_until - now > self.config.max_ttl:
                         raise NoFlyZoneError("zone_ttl_exceeds_limit")
                 vertices = tuple((float(point.x), float(point.y))
                                  for point in message.polygon.points)
@@ -467,32 +462,133 @@ def adjust_fixedwing_path(points, current_position, current_course, zones,
     current = (float(current_position[0]), float(current_position[1]),
                float(current_course))
     current_altitude = float(current_position[2])
-    adjusted = [(current[0], current[1], current_altitude)]
-    for index, target in enumerate(targets):
-        if index + 1 < len(targets):
-            following = targets[index + 1]
-            goal_heading = math.atan2(following[1] - target[1],
-                                      following[0] - target[0])
-        else:
-            goal_heading = math.atan2(target[1] - current[1],
-                                      target[0] - current[0])
-        active = tuple(zone for zone in zones if _zone_overlaps_altitudes(
-            zone, current_altitude, target[2]))
+    route_points = [(current[0], current[1], current_altitude)] + targets
+    adjusted = [route_points[0]]
+
+    # The task allocator's fixed-wing route is already a sampled, curvature-
+    # constrained path.  Re-running a Dubins connection for every sample is
+    # both unnecessary and pathological: a dense route with many gentle turn
+    # samples can become tens of thousands of points when each sample is
+    # treated as an independent pose.  Keep clear route edges unchanged and
+    # invoke the detour planner only for a consecutive blocked section.
+    def _heading(first_index, second_index):
+        first = route_points[first_index]
+        second = route_points[second_index]
+        return math.atan2(second[1] - first[1], second[0] - first[0])
+
+    def _start_heading(index):
+        return current[2] if index == 0 else _heading(index - 1, index)
+
+    def _goal_heading(index):
+        if index + 1 < len(route_points):
+            return _heading(index, index + 1)
+        return _heading(index - 1, index)
+
+    def _active_zones(first, second):
+        return tuple(zone for zone in zones if _zone_overlaps_altitudes(
+            zone, first[2], second[2]))
+
+    def _detour(start_index, end_index):
+        start = route_points[start_index]
+        end = route_points[end_index]
+        active = _active_zones(start, end)
         segment = plan_dubins_segment(
-            current, (target[0], target[1], goal_heading), turning_radius,
-            active, clearance, sample_step)
-        if len(segment) < 2:
+            (start[0], start[1], _start_heading(start_index)),
+            (end[0], end[1], _goal_heading(end_index)),
+            turning_radius, active, clearance, sample_step)
+        if len(segment) < 2 or not path_is_clear(
+                segment, active, clearance, sample_step):
+            return None
+        return segment
+
+    def _candidate_indices(first, last, stride, descending=False):
+        if descending:
+            result = list(range(first, last - 1, -stride))
+        else:
+            result = list(range(first, last + 1, stride))
+        if not result or result[-1] != last:
+            result.append(last)
+        return result
+
+    prefix_index = 0
+    while prefix_index < len(route_points) - 1:
+        first_blocked = None
+        for index in range(prefix_index, len(route_points) - 1):
+            edge = (route_points[index], route_points[index + 1])
+            if not path_is_clear(
+                    edge, _active_zones(*edge), clearance, sample_step):
+                first_blocked = index
+                break
+        if first_blocked is None:
+            adjusted.extend(route_points[prefix_index + 1:])
+            break
+
+        last_blocked = first_blocked
+        while last_blocked + 1 < len(route_points) - 1:
+            edge = (route_points[last_blocked + 1],
+                    route_points[last_blocked + 2])
+            if path_is_clear(
+                    edge, _active_zones(*edge), clearance, sample_step):
+                break
+            last_blocked += 1
+
+        # A fixed-wing aircraft may need to start turning before the first
+        # waypoint next to the zone and may need a little extra distance after
+        # the last blocked waypoint.  Try coarse anchors first; this avoids a
+        # quadratic number of expensive Dubins searches on dense routes.
+        stride = max(1, int(math.ceil(
+            float(turning_radius) / max(float(sample_step), 0.1))))
+        start_candidates = _candidate_indices(
+            first_blocked, prefix_index, stride, descending=True)
+        end_candidates = _candidate_indices(
+            last_blocked + 1, len(route_points) - 1, stride)
+        selected = None
+        for start_index in start_candidates:
+            for end_index in end_candidates:
+                if end_index <= start_index:
+                    continue
+                segment = _detour(start_index, end_index)
+                if segment is not None:
+                    selected = (start_index, end_index, segment)
+                    break
+            if selected is not None:
+                break
+
+        if selected is None:
+            # Coarse anchors normally suffice.  Retain an exact fallback for
+            # narrow or irregular polygons where the useful anchor is between
+            # the coarse samples.
+            attempts = 0
+            for start_index in range(first_blocked, prefix_index - 1, -1):
+                for end_index in range(last_blocked + 1, len(route_points)):
+                    if end_index <= start_index:
+                        continue
+                    segment = _detour(start_index, end_index)
+                    attempts += 1
+                    if segment is not None:
+                        selected = (start_index, end_index, segment)
+                        break
+                    if attempts >= 400:
+                        break
+                if selected is not None or attempts >= 400:
+                    break
+        if selected is None:
             raise NoSafePathError("no safe turn-constrained bypass")
+
+        start_index, end_index, segment = selected
+        adjusted.extend(route_points[prefix_index + 1:start_index + 1])
+        start_altitude = route_points[start_index][2]
+        end_altitude = route_points[end_index][2]
         lengths = [0.0]
         for first, second in zip(segment, segment[1:]):
             lengths.append(lengths[-1] + math.hypot(
                 second[0] - first[0], second[1] - first[1]))
         total = max(lengths[-1], 1e-9)
         for sample, distance in zip(segment[1:], lengths[1:]):
-            altitude = current_altitude + (target[2] - current_altitude) * distance / total
+            altitude = (start_altitude +
+                        (end_altitude - start_altitude) * distance / total)
             adjusted.append((sample[0], sample[1], altitude))
-        current = (target[0], target[1], goal_heading)
-        current_altitude = target[2]
+        prefix_index = end_index
     if not path_is_clear(adjusted, zones, clearance, sample_step):
         raise NoSafePathError("final adjusted path failed continuous clearance check")
     return adjusted, True

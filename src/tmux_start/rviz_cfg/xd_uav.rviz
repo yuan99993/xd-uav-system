@@ -6,7 +6,8 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /PointCloud24
+        - /FrontPath1
+        - /FrontPath2
       Splitter Ratio: 0.5
     Tree Height: 549
   - Class: rviz/Selection
@@ -26,7 +27,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: PointCloud2
+    SyncSource: ""
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -67,15 +68,9 @@ Visualization Manager:
           Value: true
         uav1/camera_optical_frame:
           Value: true
-        uav1/distance_sensor_link:
-          Value: true
         uav1/down_camera_link:
           Value: true
         uav1/down_camera_optical_frame:
-          Value: true
-        uav1/lidar_imu_link:
-          Value: true
-        uav1/lidar_link:
           Value: true
         uav1/local_origin:
           Value: true
@@ -97,15 +92,9 @@ Visualization Manager:
           Value: true
         uav2/camera_optical_frame:
           Value: true
-        uav2/distance_sensor_link:
-          Value: true
         uav2/down_camera_link:
           Value: true
         uav2/down_camera_optical_frame:
-          Value: true
-        uav2/lidar_imu_link:
-          Value: true
-        uav2/lidar_link:
           Value: true
         uav2/local_origin:
           Value: true
@@ -127,15 +116,9 @@ Visualization Manager:
           Value: true
         uav3/camera_optical_frame:
           Value: true
-        uav3/distance_sensor_link:
-          Value: true
         uav3/down_camera_link:
           Value: true
         uav3/down_camera_optical_frame:
-          Value: true
-        uav3/lidar_imu_link:
-          Value: true
-        uav3/lidar_link:
           Value: true
         uav3/local_origin:
           Value: true
@@ -157,15 +140,9 @@ Visualization Manager:
           Value: true
         uav4/camera_optical_frame:
           Value: true
-        uav4/distance_sensor_link:
-          Value: true
         uav4/down_camera_link:
           Value: true
         uav4/down_camera_optical_frame:
-          Value: true
-        uav4/lidar_imu_link:
-          Value: true
-        uav4/lidar_link:
           Value: true
         uav4/local_origin:
           Value: true
@@ -199,13 +176,8 @@ Visualization Manager:
                 uav1/camera_link:
                   uav1/camera_optical_frame:
                     {}
-                uav1/distance_sensor_link:
-                  {}
                 uav1/down_camera_link:
                   uav1/down_camera_optical_frame:
-                    {}
-                uav1/lidar_link:
-                  uav1/lidar_imu_link:
                     {}
               uav1/mavros_origin:
                 uav1/mavros_estimated_base_link:
@@ -222,13 +194,8 @@ Visualization Manager:
                 uav2/camera_link:
                   uav2/camera_optical_frame:
                     {}
-                uav2/distance_sensor_link:
-                  {}
                 uav2/down_camera_link:
                   uav2/down_camera_optical_frame:
-                    {}
-                uav2/lidar_link:
-                  uav2/lidar_imu_link:
                     {}
               uav2/mavros_origin:
                 uav2/mavros_estimated_base_link:
@@ -245,13 +212,8 @@ Visualization Manager:
                 uav3/camera_link:
                   uav3/camera_optical_frame:
                     {}
-                uav3/distance_sensor_link:
-                  {}
                 uav3/down_camera_link:
                   uav3/down_camera_optical_frame:
-                    {}
-                uav3/lidar_link:
-                  uav3/lidar_imu_link:
                     {}
               uav3/mavros_origin:
                 uav3/mavros_estimated_base_link:
@@ -268,13 +230,8 @@ Visualization Manager:
                 uav4/camera_link:
                   uav4/camera_optical_frame:
                     {}
-                uav4/distance_sensor_link:
-                  {}
                 uav4/down_camera_link:
                   uav4/down_camera_optical_frame:
-                    {}
-                uav4/lidar_link:
-                  uav4/lidar_imu_link:
                     {}
               uav4/mavros_origin:
                 uav4/mavros_estimated_base_link:
@@ -304,7 +261,7 @@ Visualization Manager:
       Radius: 0.029999999329447746
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
-      Topic: /uav1/planning/mission_path
+      Topic: /uav1/planning/adjusted_path
       Unreliable: false
       Value: true
     - Alpha: 1
@@ -328,7 +285,7 @@ Visualization Manager:
       Radius: 0.029999999329447746
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
-      Topic: /uav2/planning/mission_path
+      Topic: /uav2/planning/adjusted_path
       Unreliable: false
       Value: true
     - Class: rviz/MarkerArray
@@ -337,6 +294,15 @@ Visualization Manager:
       Name: Verification Areas
       Namespaces:
         {}
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /planning/no_fly_zone_markers
+      Name: Fixed-wing no-fly zones
+      Namespaces:
+        fixedwing_no_fly_zone_labels: true
+        fixedwing_no_fly_zones: true
       Queue Size: 10
       Value: true
     - Angle Tolerance: 0.10000000149011612
@@ -413,7 +379,7 @@ Visualization Manager:
     - Alpha: 1
       Buffer Length: 1
       Class: rviz/Path
-      Color: 25; 255; 0
+      Color: 114; 159; 207
       Enabled: true
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
@@ -437,7 +403,7 @@ Visualization Manager:
     - Alpha: 1
       Buffer Length: 1
       Class: rviz/Path
-      Color: 25; 255; 0
+      Color: 114; 159; 207
       Enabled: true
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
@@ -598,7 +564,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 602.884521484375
+      Distance: 2026.19287109375
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -614,9 +580,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: -0.12520326673984528
+      Pitch: 0.39479637145996094
       Target Frame: <Fixed Frame>
-      Yaw: 0.09223061800003052
+      Yaw: 0.1172308549284935
     Saved: ~
 Window Geometry:
   Displays:
@@ -635,4 +601,4 @@ Window Geometry:
     collapsed: true
   Width: 1200
   X: 72
-  Y: 49
+  Y: 27

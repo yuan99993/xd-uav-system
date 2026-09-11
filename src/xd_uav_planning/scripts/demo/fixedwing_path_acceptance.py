@@ -14,7 +14,7 @@ from nav_msgs.msg import Path
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from xd_uav_controller.msg import ControlState
-from xd_uav_planning.msg import NoFlyZone
+from xd_uav_planning.msg import NoFlyZone, NoFlyZoneArray
 from xd_uav_planning.nofly import Zone, path_min_clearance
 from xd_uav_controller.srv import Takeoff
 from xd_uav_task_allocate.msg import PlannerStatus
@@ -66,7 +66,7 @@ class FixedwingPathAcceptance:
             self.namespace + "/planning/task_path", Path,
             queue_size=1, latch=True)
         self.zone_publisher = rospy.Publisher(
-            self.namespace + "/planning/no_fly_zone", NoFlyZone,
+            "/planning/no_fly_zones", NoFlyZoneArray,
             queue_size=1, latch=True)
         self.forwarded_path_subscriber = rospy.Subscriber(
             self.namespace + "/control/reference/path", Path,
@@ -208,6 +208,13 @@ class FixedwingPathAcceptance:
         message.zone_type = NoFlyZone.TYPE_NO_FLY
         return message
 
+    def _publish_zone(self, zone):
+        batch = NoFlyZoneArray()
+        batch.header.stamp = rospy.Time.now()
+        batch.header.frame_id = self.frame_id
+        batch.zones = [zone]
+        self.zone_publisher.publish(batch)
+
     @staticmethod
     def _path_points(path):
         return [(pose.pose.position.x, pose.pose.position.y,
@@ -268,7 +275,7 @@ class FixedwingPathAcceptance:
             zone = self._zone(path)
             self._wait(lambda: self.zone_publisher.get_num_connections() > 0,
                        10.0, "planning no-fly-zone subscriber")
-            self.zone_publisher.publish(zone)
+            self._publish_zone(zone)
             rospy.sleep(0.3)
         self._wait(lambda: self.path_publisher.get_num_connections() > 0,
                    10.0, "planning path subscriber")
@@ -306,7 +313,7 @@ class FixedwingPathAcceptance:
                 30.0, "dynamic no-fly insertion point")
             before_insert = len(self.forwarded_paths)
             status_before_insert = len(self.statuses)
-            self.zone_publisher.publish(zone)
+            self._publish_zone(zone)
             self._wait(
                 lambda: len(self.forwarded_paths) > before_insert and any(
                     message.goal_id == self.goal_id and
@@ -328,7 +335,7 @@ class FixedwingPathAcceptance:
                 45.0, "aircraft passing the no-fly zone and clearance margin")
             before_remove = len(self.forwarded_paths)
             status_before_remove = len(self.statuses)
-            self.zone_publisher.publish(self._zone_remove())
+            self._publish_zone(self._zone_remove())
             self._wait(
                 lambda: len(self.forwarded_paths) > before_remove and any(
                     message.goal_id == self.goal_id and

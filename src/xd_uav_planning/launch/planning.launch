@@ -13,7 +13,11 @@
   <arg name="status_topic" default="/$(arg UAV_NAME)/planning/status"/>
   <arg name="healthy_topic" default="/$(arg UAV_NAME)/planning/healthy"/>
   <arg name="diagnostics_topic" default="/$(arg UAV_NAME)/planning/diagnostics"/>
-  <arg name="no_fly_zone_topic" default="/$(arg UAV_NAME)/planning/no_fly_zone"/>
+  <arg name="no_fly_zones_topic" default="/planning/no_fly_zones"/>
+  <arg name="no_fly_zone_markers_topic"
+       default="/planning/no_fly_zone_markers"/>
+  <arg name="fixedwing_adjusted_path_topic"
+       default="/$(arg UAV_NAME)/planning/adjusted_path"/>
   <arg name="fixedwing_turning_radius" default="35.0"/>
   <arg name="fixedwing_zone_clearance" default="15.0"/>
   <arg name="fixedwing_planning_sample_step" default="2.0"/>
@@ -102,7 +106,11 @@
       <arg name="planner_status_topic" value="$(arg status_topic)"/>
       <arg name="healthy_topic" value="$(arg healthy_topic)"/>
       <arg name="diagnostics_topic" value="$(arg diagnostics_topic)"/>
-      <arg name="no_fly_zone_topic" value="$(arg no_fly_zone_topic)"/>
+      <arg name="no_fly_zones_topic" value="$(arg no_fly_zones_topic)"/>
+      <arg name="no_fly_zone_markers_topic"
+           value="$(arg no_fly_zone_markers_topic)"/>
+      <arg name="adjusted_path_topic"
+           value="$(arg fixedwing_adjusted_path_topic)"/>
       <arg name="turning_radius" value="$(arg fixedwing_turning_radius)"/>
       <arg name="zone_clearance" value="$(arg fixedwing_zone_clearance)"/>
       <arg name="planning_sample_step" value="$(arg fixedwing_planning_sample_step)"/>

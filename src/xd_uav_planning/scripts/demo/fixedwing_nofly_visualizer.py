@@ -18,7 +18,7 @@ from matplotlib.patches import Polygon as PolygonPatch
 import rospy
 from nav_msgs.msg import Path
 from xd_uav_controller.msg import ControlState
-from xd_uav_planning.msg import NoFlyZone
+from xd_uav_planning.msg import NoFlyZone, NoFlyZoneArray
 from xd_uav_task_allocate.msg import PlannerStatus
 
 
@@ -52,8 +52,8 @@ class FixedwingNoFlyVisualizer:
                              Path, self._task_callback, queue_size=2),
             rospy.Subscriber(namespace + "/control/reference/path",
                              Path, self._active_path_callback, queue_size=5),
-            rospy.Subscriber(namespace + "/planning/no_fly_zone",
-                             NoFlyZone, self._zone_callback, queue_size=10),
+            rospy.Subscriber("/planning/no_fly_zones", NoFlyZoneArray,
+                             self._zone_array_callback, queue_size=10),
             rospy.Subscriber(namespace + "/planning/status",
                              PlannerStatus, self._status_callback, queue_size=20),
         ]
@@ -103,26 +103,28 @@ class FixedwingNoFlyVisualizer:
         self._event("controller path replaced", points=len(points),
                     controller_path_id=int(message.header.seq))
 
-    def _zone_callback(self, message):
-        zone_id = int(message.zone_id)
-        with self._lock:
-            if message.operation == NoFlyZone.OP_CLEAR:
-                self._removed_zones.update(self._zones)
-                self._zones.clear()
-            elif message.operation == NoFlyZone.OP_REMOVE or not message.enabled:
-                removed = self._zones.pop(zone_id, None)
-                if removed is not None:
-                    self._removed_zones[zone_id] = removed
-            elif message.operation == NoFlyZone.OP_UPSERT:
-                self._zones[zone_id] = {
-                    "vertices": [(float(point.x), float(point.y))
-                                 for point in message.polygon.points],
-                    "min_altitude": float(message.min_altitude),
-                    "max_altitude": float(message.max_altitude),
-                }
-                self._removed_zones.pop(zone_id, None)
-        self._event("no-fly update", operation=int(message.operation),
-                    zone_id=zone_id)
+    def _zone_array_callback(self, message):
+        for zone in message.zones:
+            zone_id = int(zone.zone_id)
+            with self._lock:
+                if zone.operation == NoFlyZone.OP_CLEAR:
+                    self._removed_zones.update(self._zones)
+                    self._zones.clear()
+                elif (zone.operation == NoFlyZone.OP_REMOVE or
+                      not zone.enabled):
+                    removed = self._zones.pop(zone_id, None)
+                    if removed is not None:
+                        self._removed_zones[zone_id] = removed
+                elif zone.operation == NoFlyZone.OP_UPSERT:
+                    self._zones[zone_id] = {
+                        "vertices": [(float(point.x), float(point.y))
+                                     for point in zone.polygon.points],
+                        "min_altitude": float(zone.min_altitude),
+                        "max_altitude": float(zone.max_altitude),
+                    }
+                    self._removed_zones.pop(zone_id, None)
+            self._event("no-fly update", operation=int(zone.operation),
+                        zone_id=zone_id)
 
     def _status_callback(self, message):
         state = (int(message.goal_id), int(message.state), str(message.detail))

@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
   std_srvs
+  visualization_msgs
   tf
   tf2_ros
   tf2_geometry_msgs
@@ -26,6 +27,7 @@ catkin_python_setup()
 add_message_files(
   FILES
   NoFlyZone.msg
+  NoFlyZoneArray.msg
 )
 
 generate_messages(
@@ -44,6 +46,7 @@ catkin_package(CATKIN_DEPENDS
   sensor_msgs
   std_msgs
   std_srvs
+  visualization_msgs
   tf
   tf2_ros
   tf2_geometry_msgs

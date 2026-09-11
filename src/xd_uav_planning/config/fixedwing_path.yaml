@@ -13,6 +13,8 @@ cancel_cruise_airspeed: 15.0
 turning_radius: 35.0
 zone_clearance: 15.0
 planning_sample_step: 2.0
+# Deprecated compatibility parameter.  No-fly-zone header.stamp is not used
+# as a freshness gate; valid_until controls optional zone expiration.
 zone_max_message_age: 1.0
 zone_max_ttl: 3600.0
 zone_min_altitude_limit: -1000.0

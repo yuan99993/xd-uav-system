@@ -12,7 +12,7 @@ scouts:
       nominal_speed_mps: 15.0
     fixedwing:
       coverage_altitude_m: 40.0
-      coverage_lane_spacing_m: 30.0
+      coverage_lane_spacing_m: 0.0
       minimum_turn_radius_m: 30.0
       turn_waypoint_spacing_m: 5.0
       straight_lead_distance_m: 30.0
@@ -39,7 +39,7 @@ scouts:
       nominal_speed_mps: 15.0
     fixedwing:
       coverage_altitude_m: 40.0
-      coverage_lane_spacing_m: 30.0
+      coverage_lane_spacing_m: 0.0
       minimum_turn_radius_m: 30.0
       turn_waypoint_spacing_m: 5.0
       straight_lead_distance_m: 30.0
