@@ -23,8 +23,8 @@ import、链接、包含或作为 launch 子项启动。
 ## 2. 数据流与包边界
 
 ```text
-task Path --------------------┐
-NoFlyZone UPSERT/REMOVE/CLEAR +--> xd_uav_planning --> controller Path
+task Path ----------------------┐
+NoFlyZoneArray batch updates ----+--> xd_uav_planning --> controller Path
 fixed-wing ControlState ------┘                         replacement
 
 controller PathStatus ------------> planning PlannerStatus
@@ -46,56 +46,42 @@ controller 和 control manager，这些是仿真/飞控闭环依赖，不是禁�
 
 ## 3. ROS 接口
 
-默认接口以 `uav1` 为例：
+固定翼规划节点以 `uav1`、`uav2` 等不同命名空间运行，但禁飞区输入使用全局共享话题：
 
 | 方向 | 话题 | 类型 |
 |---|---|---|
 | task -> planning | `/uav1/planning/task_path` | `nav_msgs/Path` |
-| airspace -> planning | `/uav1/planning/no_fly_zone` | `xd_uav_planning/NoFlyZone` |
+| airspace -> all fixed-wing planners | `/planning/no_fly_zones` | `xd_uav_planning/NoFlyZoneArray` |
+| planning -> RViz | `/planning/no_fly_zone_markers` | `visualization_msgs/MarkerArray` |
 | state -> planning | `/uav1/control_manager/state` | `xd_uav_controller/ControlState` |
 | planning -> controller | `/uav1/control/reference/path` | `nav_msgs/Path` |
 | controller -> planning | `/uav1/controller/path_status` | `xd_uav_controller/PathStatus` |
 | planning -> task | `/uav1/planning/status` | `xd_uav_task_allocate/PlannerStatus` |
 | task -> planning | `/uav1/planning/cancel` | `xd_uav_task_allocate/CancelPlanning` |
 
-禁飞区和任务 Path 必须使用同一个 `common_frame`。演示默认是 `uav1/odom`；实际系统以
-`planning.launch` 的 `common_frame` 参数为准，不进行静默 frame 重标记。
+禁飞区数组和任务 Path 必须使用同一个 `common_frame`。当前系统默认使用 `world`；实际系统以
+各固定翼 `planning.launch` 的 `common_frame` 参数为准，不进行静默 frame 重标记。
 
-### 3.1 新增或替换禁飞区
+### 3.1 批量新增或替换禁飞区
 
-同一个非零 `zone_id` 再次 UPSERT 表示替换该区域：
+同一个非零 `zone_id` 再次 UPSERT 表示替换该区域。一次消息可以放多个更新：
 
 ```bash
-rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "
-header:
-  stamp: now
-  frame_id: 'uav1/odom'
-schema_version: 1
-operation: 0
-zone_id: 7101
-enabled: true
-zone_type: 0
-min_altitude: 0.0
-max_altitude: 100.0
-valid_until: {secs: 0, nsecs: 0}
-polygon:
-  points:
-    - {x: 80.0,  y: -20.0, z: 0.0}
-    - {x: 110.0, y: -20.0, z: 0.0}
-    - {x: 110.0, y: 20.0,  z: 0.0}
-    - {x: 80.0,  y: 20.0,  z: 0.0}"
+rostopic pub -1 /planning/no_fly_zones xd_uav_planning/NoFlyZoneArray "{header: {stamp: now, frame_id: 'world'}, zones: [{schema_version: 1, operation: 0, zone_id: 7101, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: 80.0, y: -20.0, z: 0.0}, {x: 110.0, y: -20.0, z: 0.0}, {x: 110.0, y: 20.0, z: 0.0}, {x: 80.0, y: 20.0, z: 0.0}]}}, {schema_version: 1, operation: 0, zone_id: 7102, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: 160.0, y: -20.0, z: 0.0}, {x: 190.0, y: -20.0, z: 0.0}, {x: 190.0, y: 20.0, z: 0.0}, {x: 160.0, y: 20.0, z: 0.0}]}}]}"
 ```
 
-### 3.2 删除一个禁飞区
+数组头部的 `frame_id` 会补给区域中为空的 `header.frame_id`，所以每个区域不需要重复填写坐标系。
+
+### 3.2 删除或清空禁飞区
 
 ```bash
-rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "{header: {stamp: now, frame_id: 'uav1/odom'}, schema_version: 1, operation: 1, zone_id: 7101, enabled: false, zone_type: 0, min_altitude: 0.0, max_altitude: 0.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: []}}"
+rostopic pub -1 /planning/no_fly_zones xd_uav_planning/NoFlyZoneArray "{header: {stamp: now, frame_id: 'world'}, zones: [{schema_version: 1, operation: 1, zone_id: 7101, enabled: false, zone_type: 0, min_altitude: 0.0, max_altitude: 0.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: []}}]}"
 ```
 
-### 3.3 清空全部禁飞区
+清空全部区域：
 
 ```bash
-rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "{header: {stamp: now, frame_id: 'uav1/odom'}, schema_version: 1, operation: 2, zone_id: 0, enabled: false, zone_type: 0, min_altitude: 0.0, max_altitude: 0.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: []}}"
+rostopic pub -1 /planning/no_fly_zones xd_uav_planning/NoFlyZoneArray "{header: {stamp: now, frame_id: 'world'}, zones: [{schema_version: 1, operation: 2, zone_id: 0, enabled: false, zone_type: 0, min_altitude: 0.0, max_altitude: 0.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: []}}]}"
 ```
 
 消息约束：
@@ -104,8 +90,9 @@ rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "{header: {
 - UPSERT 的 `zone_id` 必须非零，CLEAR 的 `zone_id` 必须为零；
 - 多边形至少 3 个点、不得自交、面积和坐标范围必须满足配置；
 - `min_altitude < max_altitude`，使用与 Path 相同坐标系下的高度；
-- 消息时间戳默认不得旧于 1 s，也不得超过未来容差；
-- `valid_until=0` 表示永久有效，直到 REMOVE/CLEAR；当前版本对非零 `valid_until` 做合法性
+- `header.stamp` 不作为禁飞区新鲜度门槛；允许手动发布的零时间戳和延迟到达消息；
+- `valid_until=0` 表示永久有效，直到 REMOVE/CLEAR；`header.stamp` 只保留为消息元数据，
+  不参与消息新鲜度拒收。当前版本对非零 `valid_until` 做合法性
   校验，但为安全起见不会自动删除过期区域，仍应由上层显式 REMOVE/CLEAR。
 
 ## 4. 在线换路行为
@@ -136,7 +123,7 @@ REMOVE/CLEAR 也会触发步骤 1～6，因此飞机会从当前位置回归原�
 | `turning_radius` | 35 m | 固定翼规划最小转弯半径 |
 | `zone_clearance` | 15 m | 多边形水平安全净距 |
 | `planning_sample_step` | 2 m | Dubins 生成和连续安全检查采样步长 |
-| `zone_max_message_age` | 1 s | 禁飞区消息最大接收年龄 |
+| `zone_max_message_age` | 1 s | 兼容保留参数，当前不用于禁飞区消息拒收 |
 | `zone_max_ttl` | 3600 s | 非零有效期允许的最大 TTL |
 | `zone_max_vertices` | 64 | 单个多边形最大顶点数 |
 | `dynamic_failure_cancel_service` | `control_manager/cancel_offboard` | 在线无解失效保护服务；空值表示禁用自动请求 |

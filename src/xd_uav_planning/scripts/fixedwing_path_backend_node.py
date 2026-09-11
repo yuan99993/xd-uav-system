@@ -8,13 +8,16 @@ import threading
 
 import rospy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point, PoseStamped
 from mavros_msgs.msg import PositionTarget
 from nav_msgs.msg import Path
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
+import tf2_ros
+import tf.transformations as transformations
+from visualization_msgs.msg import Marker, MarkerArray
 from xd_uav_controller.msg import ControlState, PathStatus
-from xd_uav_planning.msg import NoFlyZone
+from xd_uav_planning.msg import NoFlyZone, NoFlyZoneArray
 from xd_uav_task_allocate.msg import PlannerStatus
 from xd_uav_task_allocate.srv import CancelPlanning, CancelPlanningResponse
 
@@ -38,6 +41,8 @@ class FixedwingPathBackend:
     def __init__(self):
         self._common_frame = rospy.get_param("~common_frame", "world").strip("/")
         self._state_timeout = float(rospy.get_param("~state_timeout", 0.30))
+        self._state_transform_timeout = float(rospy.get_param(
+            "~state_transform_timeout", 0.20))
         self._path_timeout = float(rospy.get_param("~path_timeout", 1.0))
         self._future_tolerance = float(
             rospy.get_param("~future_tolerance", 0.02))
@@ -62,6 +67,8 @@ class FixedwingPathBackend:
         self._original_task_points = None
         self._original_progress = 0.0
         self._planning_lock = threading.RLock()
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
         self._state_reason = "state_not_received"
         self._path_reason = "path_not_received"
         self._zone_reason = "no_zone_received"
@@ -91,6 +98,13 @@ class FixedwingPathBackend:
         self._path_publisher = rospy.Publisher(
             rospy.get_param("~controller_path_topic", "control/reference/path"),
             Path, queue_size=1)
+        self._adjusted_path_publisher = rospy.Publisher(
+            rospy.get_param("~adjusted_path_topic", "planning/adjusted_path"),
+            Path, queue_size=1, latch=True)
+        self._no_fly_zone_marker_publisher = rospy.Publisher(
+            rospy.get_param("~no_fly_zone_markers_topic",
+                            "/planning/no_fly_zone_markers"),
+            MarkerArray, queue_size=1, latch=True)
         self._setpoint_publisher = rospy.Publisher(
             rospy.get_param("~controller_setpoint_topic",
                             "control/reference/setpoint"),
@@ -111,8 +125,8 @@ class FixedwingPathBackend:
             rospy.get_param("~task_path_topic", "planning/task_path"),
             Path, self._path_callback, queue_size=2)
         self._zone_subscriber = rospy.Subscriber(
-            rospy.get_param("~no_fly_zone_topic", "planning/no_fly_zone"),
-            NoFlyZone, self._zone_callback, queue_size=10)
+            rospy.get_param("~no_fly_zones_topic", "/planning/no_fly_zones"),
+            NoFlyZoneArray, self._zone_array_callback, queue_size=10)
         self._path_status_subscriber = rospy.Subscriber(
             rospy.get_param("~controller_path_status_topic",
                             "controller/path_status"),
@@ -122,6 +136,7 @@ class FixedwingPathBackend:
             rospy.get_param("~cancel_service", "planning/cancel"),
             CancelPlanning, self._cancel_callback)
         self._publish_health(False)
+        self._publish_no_fly_zone_markers()
 
     @staticmethod
     def _vehicle_state(message):
@@ -176,24 +191,142 @@ class FixedwingPathBackend:
         result = self._state_validation()
         self._state_reason = result.reason if result is not None else "state_not_received"
 
-    def _zone_callback(self, message):
+    def _zone_array_callback(self, message):
+        updates = []
+        for zone in message.zones:
+            # The batch header is the convenient common frame for CLI and
+            # airspace-manager publishers.  An explicitly populated zone
+            # header still wins, which keeps the message self-describing.
+            if (not str(zone.header.frame_id or "").strip() and
+                    str(message.header.frame_id or "").strip()):
+                zone = copy.deepcopy(zone)
+                zone.header = copy.deepcopy(message.header)
+            updates.append(zone)
+        if not updates:
+            rospy.logwarn("fixed-wing no-fly batch ignored: zones is empty")
+            return
+
         with self._planning_lock:
-            accepted = self._zone_store.accept(
-                message, rospy.Time.now().to_sec())
-            self._zone_reason = self._zone_store.last_reason
-            if accepted:
-                rospy.loginfo(
-                    "fixed-wing no-fly update accepted: operation=%d zone=%d revision=%d",
-                    message.operation, message.zone_id,
-                    self._zone_store.revision)
-                if (self._active_goal_id is not None and
-                        self._original_task_points is not None and
-                        not self._active_terminal):
-                    self._replace_active_remaining_path(message.operation)
-            else:
-                rospy.logerr(
-                    "fixed-wing no-fly update rejected: operation=%d zone=%d reason=%s",
-                    message.operation, message.zone_id, self._zone_reason)
+            accepted_updates = []
+            now = rospy.Time.now().to_sec()
+            for zone in updates:
+                accepted = self._zone_store.accept(zone, now)
+                self._zone_reason = self._zone_store.last_reason
+                if accepted:
+                    accepted_updates.append(zone)
+                    rospy.loginfo(
+                        "fixed-wing no-fly update accepted: operation=%d zone=%d revision=%d",
+                        zone.operation, zone.zone_id,
+                        self._zone_store.revision)
+                else:
+                    rospy.logerr(
+                        "fixed-wing no-fly update rejected: operation=%d zone=%d reason=%s",
+                        zone.operation, zone.zone_id, self._zone_reason)
+            if not accepted_updates:
+                return
+
+            self._publish_no_fly_zone_markers()
+            if (self._active_goal_id is not None and
+                    self._original_task_points is not None and
+                    not self._active_terminal):
+                self._replace_active_remaining_path(
+                    "batch" if len(accepted_updates) > 1
+                    else accepted_updates[0].operation)
+
+    def _publish_no_fly_zone_markers(self):
+        """Publish persistent RViz wireframe prisms for cached no-fly zones."""
+        markers = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        markers.markers.append(clear)
+        stamp = rospy.Time.now()
+        for zone in sorted(self._zone_store.snapshot(),
+                           key=lambda item: item.zone_id):
+            if len(zone.vertices) < 3:
+                continue
+            boundary = Marker()
+            boundary.header.stamp = stamp
+            boundary.header.frame_id = self._common_frame
+            boundary.ns = "fixedwing_no_fly_zones"
+            boundary.id = int(zone.zone_id)
+            boundary.type = Marker.LINE_LIST
+            boundary.action = Marker.ADD
+            boundary.pose.orientation.w = 1.0
+            boundary.scale.x = 0.8
+            boundary.color.r = 1.0
+            boundary.color.g = 0.08
+            boundary.color.b = 0.05
+            boundary.color.a = 0.95
+            bottom = float(zone.min_altitude)
+            top = float(zone.max_altitude)
+            for index, first in enumerate(zone.vertices):
+                second = zone.vertices[(index + 1) % len(zone.vertices)]
+                boundary.points.extend([
+                    Point(x=first[0], y=first[1], z=bottom),
+                    Point(x=second[0], y=second[1], z=bottom),
+                    Point(x=first[0], y=first[1], z=top),
+                    Point(x=second[0], y=second[1], z=top),
+                    Point(x=first[0], y=first[1], z=bottom),
+                    Point(x=first[0], y=first[1], z=top),
+                ])
+            markers.markers.append(boundary)
+
+            label = Marker()
+            label.header.stamp = stamp
+            label.header.frame_id = self._common_frame
+            label.ns = "fixedwing_no_fly_zone_labels"
+            label.id = int(zone.zone_id)
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = sum(point[0] for point in zone.vertices) / len(zone.vertices)
+            label.pose.position.y = sum(point[1] for point in zone.vertices) / len(zone.vertices)
+            label.pose.position.z = bottom + 2.0
+            label.pose.orientation.w = 1.0
+            label.scale.z = 5.0
+            label.color.r = 1.0
+            label.color.g = 0.08
+            label.color.b = 0.05
+            label.color.a = 1.0
+            label.text = "NFZ {}".format(zone.zone_id)
+            markers.markers.append(label)
+        self._no_fly_zone_marker_publisher.publish(markers)
+
+    def _state_in_common_frame(self):
+        """Return the current fixed-wing state in the planning frame."""
+        if self._state_position is None or self._state_course is None:
+            raise NoSafePathError("state_not_available")
+        if self._state_frame == self._common_frame:
+            return self._state_position, self._state_course
+        if not self._state_frame:
+            raise NoSafePathError("state_frame_empty")
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                self._common_frame, self._state_frame, rospy.Time(0),
+                rospy.Duration(self._state_transform_timeout))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException, rospy.ROSException) as error:
+            raise NoSafePathError(
+                "state_transform_failed:{}->{}:{}".format(
+                    self._state_frame, self._common_frame, error))
+
+        rotation = [
+            float(transform.transform.rotation.x),
+            float(transform.transform.rotation.y),
+            float(transform.transform.rotation.z),
+            float(transform.transform.rotation.w),
+        ]
+        matrix = transformations.quaternion_matrix(rotation)
+        matrix[0, 3] = float(transform.transform.translation.x)
+        matrix[1, 3] = float(transform.transform.translation.y)
+        matrix[2, 3] = float(transform.transform.translation.z)
+        position = matrix.dot([
+            self._state_position[0], self._state_position[1],
+            self._state_position[2], 1.0])
+        transform_yaw = transformations.euler_from_quaternion(rotation)[2]
+        course = math.atan2(
+            math.sin(self._state_course + transform_yaw),
+            math.cos(self._state_course + transform_yaw))
+        return (float(position[0]), float(position[1]), float(position[2])), course
 
     def _adjust_points(self, input_points):
         zones = self._zone_store.snapshot()
@@ -201,10 +334,9 @@ class FixedwingPathBackend:
                 input_points, zones, self._zone_clearance,
                 self._planning_sample_step):
             return list(input_points), False
-        if self._state_frame != self._common_frame:
-            raise NoSafePathError("state_frame_mismatch")
+        state_position, state_course = self._state_in_common_frame()
         output_points, adjusted = adjust_fixedwing_path(
-            input_points, self._state_position, self._state_course,
+            input_points, state_position, state_course,
             zones, self._turning_radius, self._zone_clearance,
             self._planning_sample_step)
         if len(output_points) > self._maximum_points:
@@ -244,8 +376,9 @@ class FixedwingPathBackend:
         self._path_reason = detail
         self._publish_status(
             self._active_goal_id, PlannerStatus.PLANNING, detail)
-        self._path_publisher.publish(
-            self._path_message(points, self._active_goal_id))
+        path_message = self._path_message(points, self._active_goal_id)
+        self._adjusted_path_publisher.publish(path_message)
+        self._path_publisher.publish(path_message)
 
     def _fail_dynamic_replan(self, reason):
         detail = "fixedwing_dynamic_nofly_blocked:" + str(reason)
@@ -329,19 +462,20 @@ class FixedwingPathBackend:
                     state.reason if state is not None else "state_not_received"))
             return
         try:
+            current_position, _ = self._state_in_common_frame()
             remaining, progress = remaining_path(
-                self._original_task_points, self._state_position,
+                self._original_task_points, current_position,
                 self._original_progress)
             output_points, adjusted = self._adjust_points(remaining)
         except (NoSafePathError, ValueError) as error:
             self._fail_dynamic_replan(error)
             return
         self._original_progress = progress
-        action = {
+        action = (operation if isinstance(operation, str) else {
             NoFlyZone.OP_UPSERT: "upsert",
             NoFlyZone.OP_REMOVE: "remove",
             NoFlyZone.OP_CLEAR: "clear",
-        }.get(int(operation), "update")
+        }.get(int(operation), "update"))
         detail = (
             "dynamic no-fly {} revision {}: {} remaining path; awaiting "
             "controller acceptance").format(

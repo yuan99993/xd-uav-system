@@ -30,7 +30,10 @@ roslaunch xd_uav_planning planning.launch \
 ```text
 /<uav>/planning/goal          geometry_msgs/PoseStamped（多旋翼输入）
 /<uav>/planning/task_path     nav_msgs/Path（固定翼执行输入）
-/<uav>/planning/no_fly_zone   xd_uav_planning/NoFlyZone（固定翼禁飞区输入）
+/<uav>/planning/route_preview nav_msgs/Path（任务层原始路线预览）
+/<uav>/planning/adjusted_path nav_msgs/Path（固定翼禁飞区调整后路径）
+/planning/no_fly_zones         xd_uav_planning/NoFlyZoneArray（全机共享禁飞区输入）
+/planning/no_fly_zone_markers  visualization_msgs/MarkerArray（RViz 禁飞区显示）
 /<uav>/planning/cancel        xd_uav_task_allocate/CancelPlanning（两类飞机）
 /<uav>/planning/status        xd_uav_task_allocate/PlannerStatus
 /<uav>/planning/healthy       std_msgs/Bool
@@ -73,9 +76,10 @@ EGO 地图大小、高度边界和动态约束可从正式入口配置。默认�
 下发前以及飞行中的每次合法禁飞区更新后进行固定翼转弯约束路径调整：
 
 ```text
-planning/no_fly_zone --┐
-planning/task_path -----+-> initial/online no-fly planning -> control/reference/path
-ControlState -----------┘                     (atomic Path replacement)
+planning/no_fly_zones --┐
+planning/task_path ------+-> initial/online no-fly planning -> planning/adjusted_path
+ControlState -----------┘                                  -> control/reference/path
+                                                           (atomic Path replacement)
 controller/path_status -> planning/status
 ```
 
@@ -88,37 +92,23 @@ controller 私有 path ID 映射回任务 goal ID。禁飞区与 Path 必须使�
 重规划无安全解时仍调用 control manager 的 `cancel_offboard` 失效保护，禁止继续执行已知
 冲突旧路径。
 
-禁飞区可以在任务 Path 前或飞行中发布。下面示例在 `uav1/odom` 中新增/替换永久矩形禁飞区：
+禁飞区可以在任务 Path 前或飞行中发布。所有固定翼后端共享同一个全局话题，一条消息可以携带多个
+区域。数组头部的 `frame_id` 会作为未填写区域头部的默认坐标系。下面示例一次新增两个永久矩形禁飞区：
 
 ```bash
-rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "
-header:
-  stamp: now
-  frame_id: 'uav1/odom'
-schema_version: 1
-operation: 0
-zone_id: 7101
-enabled: true
-zone_type: 0
-min_altitude: 0.0
-max_altitude: 100.0
-valid_until: {secs: 0, nsecs: 0}
-polygon:
-  points:
-    - {x: 80.0,  y: -20.0, z: 0.0}
-    - {x: 110.0, y: -20.0, z: 0.0}
-    - {x: 110.0, y: 20.0,  z: 0.0}
-    - {x: 80.0,  y: 20.0,  z: 0.0}"
+rostopic pub -1 /planning/no_fly_zones xd_uav_planning/NoFlyZoneArray "{header: {stamp: now, frame_id: 'world'}, zones: [{schema_version: 1, operation: 0, zone_id: 7101, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: 80.0, y: -20.0, z: 0.0}, {x: 110.0, y: -20.0, z: 0.0}, {x: 110.0, y: 20.0, z: 0.0}, {x: 80.0, y: 20.0, z: 0.0}]}}, {schema_version: 1, operation: 0, zone_id: 7102, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: 160.0, y: -20.0, z: 0.0}, {x: 190.0, y: -20.0, z: 0.0}, {x: 190.0, y: 20.0, z: 0.0}, {x: 160.0, y: 20.0, z: 0.0}]}}]}"
 ```
 
-删除 `zone_id=7101`：
+删除 `zone_id=7101`，数组中只放一个 REMOVE 更新：
 
 ```bash
-rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "{header: {stamp: now, frame_id: 'uav1/odom'}, schema_version: 1, operation: 1, zone_id: 7101, enabled: false, zone_type: 0, min_altitude: 0.0, max_altitude: 0.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: []}}"
+rostopic pub -1 /planning/no_fly_zones xd_uav_planning/NoFlyZoneArray "{header: {stamp: now, frame_id: 'world'}, zones: [{schema_version: 1, operation: 1, zone_id: 7101, enabled: false, zone_type: 0, min_altitude: 0.0, max_altitude: 0.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: []}}]}"
 ```
 
-`operation=2, zone_id=0` 清空全部区域。
-`valid_until=0` 表示在 REMOVE/CLEAR 前永久有效。消息使用 `dubins` Python 模块；当前工作区
+`operation=2, zone_id=0` 清空全部区域；也可以把多个 UPSERT、REMOVE 或 CLEAR 更新放在同一个数组中，
+后端按数组顺序处理，并只触发一次在线换路。
+`valid_until=0` 表示在 REMOVE/CLEAR 前永久有效。禁飞区 `header.stamp` 仅作消息元数据，
+不会因为为 0 或消息延迟而拒绝；消息使用 `dubins` Python 模块；当前工作区
 系统 Python 已具备该模块，但 Ubuntu/ROS 的 rosdep 数据库没有 `python3-dubins` 安装键，部署
 新机器时需由系统镜像或项目依赖清单显式提供。
 

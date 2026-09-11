@@ -9,7 +9,9 @@
   <arg name="planner_status_topic" default="planning/status"/>
   <arg name="healthy_topic" default="planning/healthy"/>
   <arg name="diagnostics_topic" default="planning/diagnostics"/>
-  <arg name="no_fly_zone_topic" default="planning/no_fly_zone"/>
+  <arg name="no_fly_zones_topic" default="/planning/no_fly_zones"/>
+  <arg name="no_fly_zone_markers_topic" default="/planning/no_fly_zone_markers"/>
+  <arg name="adjusted_path_topic" default="planning/adjusted_path"/>
   <arg name="turning_radius" default="35.0"/>
   <arg name="zone_clearance" default="15.0"/>
   <arg name="planning_sample_step" default="2.0"/>
@@ -33,7 +35,10 @@
       <param name="cancel_service" value="planning/cancel"/>
       <param name="healthy_topic" value="$(arg healthy_topic)"/>
       <param name="diagnostics_topic" value="$(arg diagnostics_topic)"/>
-      <param name="no_fly_zone_topic" value="$(arg no_fly_zone_topic)"/>
+      <param name="no_fly_zones_topic" value="$(arg no_fly_zones_topic)"/>
+      <param name="no_fly_zone_markers_topic"
+             value="$(arg no_fly_zone_markers_topic)"/>
+      <param name="adjusted_path_topic" value="$(arg adjusted_path_topic)"/>
       <param name="turning_radius" value="$(arg turning_radius)"/>
       <param name="zone_clearance" value="$(arg zone_clearance)"/>
       <param name="planning_sample_step" value="$(arg planning_sample_step)"/>
