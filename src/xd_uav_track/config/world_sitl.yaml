@@ -1,0 +1,21 @@
+# Minimal one-aircraft world configuration for fixed-wing SITL.  A fixed
+# origin avoids waiting for MAVROS gp_origin during PX4 startup; production
+# flights should use the gps_origin mode in the shared world.yaml.
+world:
+  frame_id: world
+  datum:
+    latitude: 47.397800
+    longitude: 8.545594
+    altitude: 47.325902413
+  position: [0.0, 0.0, 0.0]
+  enu_to_world_yaw: 0.0
+
+vehicles: [uav1]
+
+vehicle_configs:
+  uav1:
+    enabled: true
+    mode: fixed
+    local_origin_frame: uav1/local_origin
+    fixed_position: [0.0, 0.0, 0.0]
+    fixed_yaw: 0.0

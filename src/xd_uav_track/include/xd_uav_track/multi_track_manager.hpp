@@ -1,0 +1,77 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include <std_msgs/Header.h>
+#include <xd_uav_track/DetectionArray.h>
+#include <xd_uav_track/DetectionCandidate.h>
+#include <xd_uav_track/TrackStateArray.h>
+
+namespace xd_uav_track {
+
+struct MultiTrackConfig {
+  int confirmation_hits{2};
+  int occlusion_frames{5};
+  int removal_frames{30};
+  int maximum_tracks{128};
+  int maximum_embedding_dimension{2048};
+  double minimum_new_track_confidence{0.20};
+  double minimum_update_confidence{0.05};
+  double association_iou_threshold{0.20};
+  double association_center_distance{1.50};
+  double appearance_minimum_cosine{0.78};
+  double process_noise{1.0};
+  double measurement_noise{1.0};
+};
+
+struct MultiTrackStatistics {
+  std::uint64_t input_frames{0};
+  std::uint64_t accepted_detections{0};
+  std::uint64_t rejected_detections{0};
+  std::uint64_t created_tracks{0};
+  std::uint64_t removed_tracks{0};
+  std::size_t active_tracks{0};
+};
+
+struct ManagedDetectionFrame {
+  xd_uav_track::DetectionArray candidates;
+  xd_uav_track::TrackStateArray tracks;
+};
+
+// Maintains an independent constant-velocity Kalman state and lifecycle for
+// every visible target. The class has no publishers and keeps the tracking
+// policy isolated so it can be reused by tests/nodelets or adapted behind a
+// future transport wrapper.
+class MultiTrackManager {
+ public:
+  explicit MultiTrackManager(const MultiTrackConfig& config = MultiTrackConfig());
+  ~MultiTrackManager();
+  MultiTrackManager(MultiTrackManager&&) noexcept;
+  MultiTrackManager& operator=(MultiTrackManager&&) noexcept;
+
+  MultiTrackManager(const MultiTrackManager&) = delete;
+  MultiTrackManager& operator=(const MultiTrackManager&) = delete;
+
+  ManagedDetectionFrame update(const xd_uav_track::DetectionArray& detections,
+                               int image_width, int image_height);
+  // Source-aware overload keeps independent ROS image streams observable
+  // without changing the legacy three-argument API.
+  ManagedDetectionFrame update(const xd_uav_track::DetectionArray& detections,
+                               int image_width, int image_height,
+                               const std::string& image_source);
+  bool latestCandidate(int track_id, xd_uav_track::DetectionCandidate* candidate,
+                       std_msgs::Header* header = nullptr) const;
+  void setSelectedTrackId(int track_id);
+  int selectedTrackId() const;
+  void reset();
+  MultiTrackStatistics statistics() const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+}  // namespace xd_uav_track

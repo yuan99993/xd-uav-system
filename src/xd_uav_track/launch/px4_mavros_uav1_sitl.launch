@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<launch>
+  <!--
+    Keep Gazebo/PX4 in the root namespace because the PX4 Gazebo plugin
+    uses absolute /gazebo services. MAVROS and payload plugins are
+    parameterized with UAV_NAME so parallel vehicles do not share topics.
+  -->
+  <arg name="vehicle" default="plane"/>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <!-- Set PX4_AUTOPILOT_DIR to the checkout used for this SITL run. -->
+  <arg name="px4_autopilot_dir" default="$(optenv PX4_AUTOPILOT_DIR)"/>
+  <arg name="model_name" default="$(arg UAV_NAME)"/>
+  <!-- Fixed-wing models need clearance from the ground/catapult fixture. -->
+  <arg name="x" default="0"/>
+  <arg name="y" default="0"/>
+  <arg name="z" default="0"/>
+  <arg name="R" default="0"/>
+  <arg name="P" default="0"/>
+  <arg name="Y" default="0"/>
+  <arg name="sdf" default="$(find mavlink_sitl_gazebo)/models/$(arg vehicle)/$(arg vehicle).sdf"/>
+  <arg name="gui" default="false"/>
+  <arg name="interactive" default="false"/>
+  <arg name="verbose" default="false"/>
+  <arg name="world" default="$(find mavlink_sitl_gazebo)/worlds/empty.world"/>
+  <arg name="fcu_url" default="udp://:14540@localhost:14557"/>
+
+  <!-- Put the workspace overlay first, while retaining the stock PX4 models. -->
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find xd_uav_track)/models:$(arg px4_autopilot_dir)/Tools/sitl_gazebo/models:$(optenv GAZEBO_MODEL_PATH)"/>
+  <env name="GAZEBO_PLUGIN_PATH"
+       value="$(arg px4_autopilot_dir)/build/px4_sitl_default/build_gazebo:$(optenv GAZEBO_PLUGIN_PATH)"/>
+
+  <include file="$(find xd_uav_track)/launch/px4_posix_sitl_multi.launch">
+    <arg name="px4_autopilot_dir" value="$(arg px4_autopilot_dir)"/>
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="vehicle" value="$(arg vehicle)"/>
+    <arg name="model_name" value="$(arg model_name)"/>
+    <arg name="sdf" value="$(arg sdf)"/>
+    <arg name="x" value="$(arg x)"/>
+    <arg name="y" value="$(arg y)"/>
+    <arg name="z" value="$(arg z)"/>
+    <arg name="R" value="$(arg R)"/>
+    <arg name="P" value="$(arg P)"/>
+    <arg name="Y" value="$(arg Y)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="interactive" value="$(arg interactive)"/>
+    <arg name="verbose" value="$(arg verbose)"/>
+  </include>
+
+  <group ns="$(arg UAV_NAME)">
+    <include file="$(find mavros)/launch/px4.launch">
+      <arg name="gcs_url" value=""/>
+      <arg name="fcu_url" value="$(arg fcu_url)"/>
+      <arg name="respawn_mavros" value="false"/>
+    </include>
+    <!-- Match the namespaced state-estimator/control-manager frame contract.
+         MAVROS defaults to the unscoped base_link even when its ROS topics
+         are namespaced, which makes the control safety frame check reject
+         otherwise valid SITL odometry. -->
+    <param name="mavros/imu/frame_id" value="$(arg UAV_NAME)/base_link"/>
+    <param name="mavros/local_position/frame_id" value="$(arg UAV_NAME)/odom"/>
+    <param name="mavros/local_position/tf/child_frame_id" value="$(arg UAV_NAME)/base_link"/>
+    <param name="mavros/global_position/child_frame_id" value="$(arg UAV_NAME)/base_link"/>
+    <param name="mavros/odometry/fcu/odom_child_id_des" value="$(arg UAV_NAME)/base_link"/>
+
+  </group>
+</launch>

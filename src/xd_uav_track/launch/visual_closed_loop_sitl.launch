@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="model_name" default="plane_catapult"/>
+  <arg name="px4_autopilot_dir" default="$(optenv PX4_AUTOPILOT_DIR)"/>
+  <arg name="gui" default="false"/>
+  <!-- The stock PX4 plane model/catapult accelerates along Gazebo +X.  Put
+       the ground target at the nominal climb-out point so the fixed camera
+       has a valid metric observation after takeoff; callers can override
+       these two arguments for a different intercept geometry. -->
+  <arg name="spawn_x" default="-180"/>
+  <arg name="spawn_y" default="0"/>
+
+  <include file="$(find xd_uav_track)/launch/fixedwing_sitl_stack.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="model_name" value="$(arg model_name)"/>
+    <arg name="px4_autopilot_dir" value="$(arg px4_autopilot_dir)"/>
+    <arg name="x" value="$(arg spawn_x)"/>
+    <arg name="y" value="$(arg spawn_y)"/>
+    <arg name="gui" value="$(arg gui)"/>
+  </include>
+
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_visual_target"
+        args="-sdf -file $(find xd_uav_track)/models/visual_target/visual_target.sdf -model visual_target -x 0 -y 0 -z 0"/>
+
+  <include file="$(find xd_uav_detect)/launch/detect.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="config" value="$(find xd_uav_detect)/config/fixedwing_detect.yaml"/>
+    <arg name="body_frame" value="$(arg UAV_NAME)/base_link"/>
+    <arg name="world_frame" value="$(arg UAV_NAME)/local_origin"/>
+  </include>
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="down_camera_tf"
+        args="0 0 0.2 0.70710678 -0.70710678 0 0 $(arg UAV_NAME)/base_link $(arg UAV_NAME)/down_camera_optical_frame"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="down_lrf_tf"
+        args="0 0 0.2 0.70710678 -0.70710678 0 0 $(arg UAV_NAME)/base_link $(arg UAV_NAME)/down_lrf_frame"/>
+
+</launch>
