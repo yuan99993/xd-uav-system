@@ -8,9 +8,16 @@ namespace ego_planner
   {
     current_wp_ = 0;
     exec_state_ = FSM_EXEC_STATE::INIT;
+    have_trigger_ = false;
     have_target_ = false;
     have_odom_ = false;
+    have_new_target_ = false;
     have_recv_pre_agent_ = false;
+    have_pending_reference_path_ = false;
+    flag_escape_emergency_ = false;
+    route_reference_points_.clear();
+    route_progress_time_ = 0.0;
+    route_target_time_ = 0.0;
 
     /*  fsm param  */
     nh.param("fsm/flight_type", target_type_, -1);
@@ -18,9 +25,16 @@ namespace ego_planner
     nh.param("fsm/thresh_no_replan_meter", no_replan_thresh_, -1.0);
     nh.param("fsm/planning_horizon", planning_horizen_, -1.0);
     nh.param("fsm/planning_horizen_time", planning_horizen_time_, -1.0);
+    nh.param("fsm/replan_lookahead_time", replan_lookahead_time_, 0.12);
+    replan_lookahead_time_ = std::max(0.0, replan_lookahead_time_);
     nh.param("fsm/emergency_time", emergency_time_, 1.0);
+    nh.param("fsm/safety_check_interval", safety_check_interval_, 0.05);
     nh.param("fsm/realworld_experiment", flag_realworld_experiment_, false);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
+    nh.param("fsm/reference_path_topic", reference_path_topic_,
+             std::string("reference_path"));
+    nh.param("fsm/reference_path_frame", reference_path_frame_,
+             std::string("world"));
 
     have_trigger_ = !flag_realworld_experiment_;
 
@@ -41,7 +55,9 @@ namespace ego_planner
 
     /* callback */
     exec_timer_ = nh.createTimer(ros::Duration(0.01), &EGOReplanFSM::execFSMCallback, this);
-    safety_timer_ = nh.createTimer(ros::Duration(0.05), &EGOReplanFSM::checkCollisionCallback, this);
+    safety_timer_ = nh.createTimer(
+        ros::Duration(std::max(0.005, safety_check_interval_)),
+        &EGOReplanFSM::checkCollisionCallback, this);
 
     odom_sub_ = nh.subscribe("odom_world", 1, &EGOReplanFSM::odometryCallback, this);
 
@@ -62,6 +78,18 @@ namespace ego_planner
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
     {
       waypoint_sub_ = nh.subscribe("/move_base_simple/goal", 1, &EGOReplanFSM::waypointCallback, this);
+    }
+    else if (target_type_ == TARGET_TYPE::REFENCE_PATH)
+    {
+      reference_path_sub_ = nh.subscribe(
+          reference_path_topic_, 1, &EGOReplanFSM::referencePathCallback,
+          this, ros::TransportHints().tcpNoDelay());
+      // A complete Path is the trigger in route mode.  The actual planning
+      // callback still waits for odometry, so a latched task Path is safe to
+      // publish before this node has finished starting.
+      have_trigger_ = true;
+      ROS_INFO("EGO route mode enabled; waiting for Path on [%s]",
+               reference_path_topic_.c_str());
     }
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
     {
@@ -222,6 +250,176 @@ namespace ego_planner
     planNextWaypoint(end_wp);
   }
 
+  void EGOReplanFSM::referencePathCallback(const nav_msgs::PathConstPtr &msg)
+  {
+    if (target_type_ != TARGET_TYPE::REFENCE_PATH || !msg)
+      return;
+
+    // The planning bridge publishes an empty latched Path on cancellation.
+    // Clear EGO's target as well, otherwise traj_server would keep publishing
+    // the last B-spline after the allocator released the task.
+    if (msg->poses.empty())
+    {
+      clearReferencePath();
+      return;
+    }
+
+    if (!have_odom_)
+    {
+      pending_reference_path_ = *msg;
+      have_pending_reference_path_ = true;
+      ROS_INFO_THROTTLE(2.0,
+                        "EGO route received before odometry; buffering it");
+      return;
+    }
+
+    setReferencePath(*msg);
+  }
+
+  bool EGOReplanFSM::setReferencePath(const nav_msgs::Path &msg)
+  {
+    auto canonical_frame = [](const std::string &frame) {
+      const std::string::size_type first = frame.find_first_not_of('/');
+      if (first == std::string::npos)
+        return std::string();
+      const std::string::size_type last = frame.find_last_not_of('/');
+      return frame.substr(first, last - first + 1);
+    };
+
+    if (canonical_frame(msg.header.frame_id) !=
+        canonical_frame(reference_path_frame_))
+    {
+      ROS_ERROR("Rejecting EGO reference Path: frame [%s] != [%s]",
+                msg.header.frame_id.c_str(), reference_path_frame_.c_str());
+      return false;
+    }
+    if (msg.header.stamp.toSec() <= 0.0)
+    {
+      ROS_ERROR("Rejecting EGO reference Path with non-positive timestamp");
+      return false;
+    }
+    const double path_age = (ros::Time::now() - msg.header.stamp).toSec();
+    if (path_age < -0.25 || path_age > 2.5)
+    {
+      ROS_WARN("Rejecting stale/future EGO reference Path (age=%.3fs)",
+               path_age);
+      return false;
+    }
+
+    std::vector<Eigen::Vector3d> route;
+    route.reserve(msg.poses.size());
+    constexpr double MIN_ROUTE_POINT_DISTANCE = 0.05;
+    for (const auto &pose : msg.poses)
+    {
+      if (!pose.header.frame_id.empty() &&
+          canonical_frame(pose.header.frame_id) !=
+              canonical_frame(reference_path_frame_))
+      {
+        ROS_ERROR("Rejecting EGO reference Path: nested pose frame [%s] != [%s]",
+                  pose.header.frame_id.c_str(), reference_path_frame_.c_str());
+        return false;
+      }
+      const Eigen::Vector3d point(pose.pose.position.x,
+                                  pose.pose.position.y,
+                                  pose.pose.position.z);
+      if (!std::isfinite(point.x()) || !std::isfinite(point.y()) ||
+          !std::isfinite(point.z()))
+      {
+        ROS_ERROR("Rejecting EGO reference Path containing non-finite point");
+        return false;
+      }
+      if (route.empty() ||
+          (point - route.back()).norm() >= MIN_ROUTE_POINT_DISTANCE)
+      {
+        route.push_back(point);
+      }
+    }
+
+    if (route.size() < 2)
+    {
+      ROS_ERROR("Rejecting EGO reference Path: fewer than two distinct points");
+      return false;
+    }
+
+    // Generate one continuous global trajectory through all route points.
+    // EGO's existing rebound optimizer then replans only the local horizon
+    // against the rolling occupancy map built from the native point cloud.
+    if (!planner_manager_->planGlobalTrajWaypoints(
+            odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), route,
+            Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()))
+    {
+      ROS_ERROR("EGO failed to create a global trajectory from %zu Path points",
+                route.size());
+      return false;
+    }
+
+    wps_ = route;
+    route_reference_points_.clear();
+    route_progress_time_ = 0.0;
+    route_target_time_ = 0.0;
+    wp_id_ = 0;
+    end_pt_ = route.back();
+    end_vel_.setZero();
+    have_target_ = true;
+    have_trigger_ = true;
+    have_new_target_ = true;
+    flag_escape_emergency_ = false;
+
+    // Reconnect a newly received/recovered route from measured odometry
+    // immediately instead of waiting for the previous local trajectory.
+    if (exec_state_ != INIT)
+      changeFSMExecState(GEN_NEW_TRAJ, "REFERENCE_PATH");
+
+    const double display_step = 0.2;
+    const int display_count = std::min(
+        2000, static_cast<int>(std::ceil(
+                  planner_manager_->global_data_.global_duration_ /
+                  display_step)));
+    std::vector<Eigen::Vector3d> global_path;
+    global_path.reserve(std::max(0, display_count));
+    for (int i = 0; i < display_count; ++i)
+    {
+      global_path.push_back(planner_manager_->global_data_.global_traj_.evaluate(
+          std::min(planner_manager_->global_data_.global_duration_,
+                   i * display_step)));
+    }
+    if (!global_path.empty())
+      visualization_->displayGlobalPathList(global_path, 0.1, 0);
+
+    double route_length = 0.0;
+    for (size_t i = 1; i < route.size(); ++i)
+      route_length += (route[i] - route[i - 1]).norm();
+    ROS_INFO("EGO accepted complete reference Path: %zu points, %.2f m, %.2f s",
+             route.size(), route_length,
+             planner_manager_->global_data_.global_duration_);
+    return true;
+  }
+
+  void EGOReplanFSM::clearReferencePath()
+  {
+    pending_reference_path_.poses.clear();
+    have_pending_reference_path_ = false;
+    if (target_type_ != TARGET_TYPE::REFENCE_PATH)
+      return;
+
+    have_target_ = false;
+    have_new_target_ = false;
+    wps_.clear();
+    route_reference_points_.clear();
+    route_progress_time_ = 0.0;
+    route_target_time_ = 0.0;
+    if (have_odom_ && planner_manager_)
+    {
+      // Cancellation is a deliberate handoff to the baseline controller, not
+      // a safety failure. Publish a stationary trajectory before waiting for
+      // the next route so a standalone EGO instance also stops cleanly.
+      callEmergencyStop(odom_pos_);
+    }
+    if (exec_state_ != INIT && exec_state_ != WAIT_TARGET)
+      changeFSMExecState(WAIT_TARGET, "REFERENCE_PATH_CLEAR");
+    ROS_INFO("EGO reference Path cleared; waiting for the next task route");
+  }
+
   void EGOReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
   {
     odom_pos_(0) = msg->pose.pose.position.x;
@@ -240,6 +438,15 @@ namespace ego_planner
     odom_orient_.z() = msg->pose.pose.orientation.z;
 
     have_odom_ = true;
+
+    if (target_type_ == TARGET_TYPE::REFENCE_PATH &&
+        have_pending_reference_path_)
+    {
+      nav_msgs::Path pending = pending_reference_path_;
+      have_pending_reference_path_ = false;
+      pending_reference_path_.poses.clear();
+      setReferencePath(pending);
+    }
   }
 
   void EGOReplanFSM::BroadcastBsplineCallback(const traj_utils::BsplinePtr &msg)
@@ -483,7 +690,14 @@ namespace ego_planner
       {
         if (have_odom_ && have_target_ && have_trigger_)
         {
-          bool success = planFromGlobalTraj(10); // zx-todo
+          // A complete allocator route is retried by the 10 ms FSM timer.
+          // Do not perform ten full A*/optimizer attempts in one callback:
+          // that blocks cloud and safety callbacks and makes the aircraft
+          // appear to stop responding. Keep the legacy retry count for the
+          // old manual/preset modes.
+          const int initial_plan_trials =
+              target_type_ == TARGET_TYPE::REFENCE_PATH ? 1 : 10;
+          bool success = planFromGlobalTraj(initial_plan_trials);
           if (success)
           {
             changeFSMExecState(EXEC_TRAJ, "FSM");
@@ -512,7 +726,9 @@ namespace ego_planner
       // start_yaw_(0)         = atan2(rot_x(1), rot_x(0));
       // start_yaw_(1) = start_yaw_(2) = 0.0;
 
-      bool success = planFromGlobalTraj(10); // zx-todo
+      const int initial_plan_trials =
+          target_type_ == TARGET_TYPE::REFENCE_PATH ? 1 : 10;
+      bool success = planFromGlobalTraj(initial_plan_trials);
       if (success)
       {
         changeFSMExecState(EXEC_TRAJ, "FSM");
@@ -643,12 +859,19 @@ namespace ego_planner
     LocalTrajData *info = &planner_manager_->local_data_;
     ros::Time time_now = ros::Time::now();
     double t_cur = (time_now - info->start_time_).toSec();
+    // Plan the splice from a short distance into the trajectory that is still
+    // being executed. This compensates for A*/L-BFGS computation and message
+    // handoff latency; starting from the state at callback entry otherwise
+    // makes every replacement trajectory begin behind the vehicle.
+    const double t_plan = std::max(
+        0.0, std::min(info->duration_,
+                      t_cur + replan_lookahead_time_));
 
     //cout << "info->velocity_traj_=" << info->velocity_traj_.get_control_points() << endl;
 
-    start_pt_ = info->position_traj_.evaluateDeBoorT(t_cur);
-    start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_cur);
-    start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
+    start_pt_ = info->position_traj_.evaluateDeBoorT(t_plan);
+    start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_plan);
+    start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_plan);
 
     bool success = callReboundReplan(false, false);
 
@@ -680,31 +903,48 @@ namespace ego_planner
     LocalTrajData *info = &planner_manager_->local_data_;
     auto map = planner_manager_->grid_map_;
 
-    if (exec_state_ == WAIT_TARGET || info->start_time_.toSec() < 1e-5)
+    // EmergencyStop() replaces the active trajectory with a stationary
+    // trajectory at the measured vehicle position. Do not feed that safety
+    // trajectory back into the normal collision checker: a lidar return on
+    // the vehicle (or the occupied voxel under it) would immediately issue
+    // another EMERGENCY_STOP and prevent the FSM from ever attempting its
+    // recovery replan.
+    if (exec_state_ == WAIT_TARGET || exec_state_ == EMERGENCY_STOP ||
+        info->start_time_.toSec() < 1e-5)
       return;
 
     /* ---------- check lost of depth ---------- */
     if (map->getOdomDepthTimeout())
     {
-      ROS_ERROR("Depth Lost! EMERGENCY_STOP");
-      enable_fail_safe_ = false;
-      changeFSMExecState(EMERGENCY_STOP, "SAFETY");
+      if (exec_state_ != EMERGENCY_STOP)
+      {
+        ROS_ERROR_THROTTLE(1.0, "Depth/cloud input lost! EMERGENCY_STOP");
+        // EMERGENCY_STOP must publish one stationary trajectory before the
+        // recovery branch is allowed to generate a new route.
+        flag_escape_emergency_ = true;
+        changeFSMExecState(EMERGENCY_STOP, "SAFETY");
+      }
+      return;
     }
 
     /* ---------- check trajectory ---------- */
     constexpr double time_step = 0.01;
     double t_cur = (ros::Time::now() - info->start_time_).toSec();
-    Eigen::Vector3d p_cur = info->position_traj_.evaluateDeBoorT(t_cur);
     const double CLEARANCE = 1.0 * planner_manager_->getSwarmClearance();
     double t_cur_global = ros::Time::now().toSec();
-    double t_2_3 = info->duration_ * 2 / 3;
+    // Check the complete active local trajectory. The old first-2/3 rule was
+    // tuned for a short-horizon free-goal demo, but in route mode it allowed
+    // the last third of the allocator path to remain blocked and still be
+    // sent to the controller.
     for (double t = t_cur; t < info->duration_; t += time_step)
     {
-      if (t_cur < t_2_3 && t >= t_2_3) // If t_cur < t_2_3, only the first 2/3 partition of the trajectory is considered valid and will get checked.
-        break;
-
       bool occ = false;
-      occ |= map->getInflateOccupancy(info->position_traj_.evaluateDeBoorT(t));
+      const Eigen::Vector3d predicted_position =
+          info->position_traj_.evaluateDeBoorT(t);
+      // Unknown voxels inside the rolling map are traversable, but -1 means
+      // the trajectory has left the finite collision-checking volume and must
+      // trigger replanning just like an occupied voxel.
+      occ |= map->getInflateOccupancy(predicted_position) != 0;
 
       for (size_t id = 0; id < planner_manager_->swarm_trajs_buf_.size(); id++)
       {
@@ -715,7 +955,10 @@ namespace ego_planner
 
         double t_X = t_cur_global - planner_manager_->swarm_trajs_buf_.at(id).start_time_.toSec();
         Eigen::Vector3d swarm_pridicted = planner_manager_->swarm_trajs_buf_.at(id).position_traj_.evaluateDeBoorT(t_X);
-        double dist = (p_cur - swarm_pridicted).norm();
+        // Both trajectories must be evaluated at the same future time. Using
+        // p_cur here reports false collisions whenever another aircraft's
+        // future position passes near our current position.
+        double dist = (predicted_position - swarm_pridicted).norm();
 
         if (dist < CLEARANCE)
         {
@@ -738,6 +981,9 @@ namespace ego_planner
           if (t - t_cur < emergency_time_) // 0.8s of emergency time
           {
             ROS_WARN("Suddenly discovered obstacles. emergency stop! time=%f", t - t_cur);
+            // The emergency state is entered from an active trajectory, so
+            // request the stationary safety trajectory exactly once.
+            flag_escape_emergency_ = true;
             changeFSMExecState(EMERGENCY_STOP, "SAFETY");
           }
           else
@@ -757,8 +1003,16 @@ namespace ego_planner
 
     getLocalTarget();
 
+    const std::vector<Eigen::Vector3d> empty_route_reference;
+    const std::vector<Eigen::Vector3d> &route_reference =
+        target_type_ == TARGET_TYPE::REFENCE_PATH
+            ? route_reference_points_
+            : empty_route_reference;
     bool plan_and_refine_success =
-        planner_manager_->reboundReplan(start_pt_, start_vel_, start_acc_, local_target_pt_, local_target_vel_, (have_new_target_ || flag_use_poly_init), flag_randomPolyTraj);
+        planner_manager_->reboundReplan(start_pt_, start_vel_, start_acc_,
+                                        local_target_pt_, local_target_vel_,
+                                        (have_new_target_ || flag_use_poly_init),
+                                        flag_randomPolyTraj, route_reference);
     have_new_target_ = false;
 
     cout << "refine_success=" << plan_and_refine_success << endl;
@@ -893,6 +1147,121 @@ namespace ego_planner
 
   void EGOReplanFSM::getLocalTarget()
   {
+    if (target_type_ == TARGET_TYPE::REFENCE_PATH &&
+        planner_manager_->global_data_.global_duration_ > 1.0e-3)
+    {
+      // Route mode advances on the geometric length of the reference rather
+      // than the Euclidean distance to a future point.  Euclidean look-ahead
+      // becomes ambiguous at lawn-mower turns and can select a point on the
+      // wrong side of a bend.
+      const double duration = planner_manager_->global_data_.global_duration_;
+      const double max_vel = std::max(0.1, planner_manager_->pp_.max_vel_);
+      const double previous_progress = std::max(
+          0.0, std::min(duration, route_progress_time_));
+      const double previous_target = std::max(
+          previous_progress,
+          std::min(duration,
+                   planner_manager_->global_data_.last_progress_time_));
+      const double search_back = std::max(1.0, planning_horizen_ / max_vel * 0.25);
+      const double search_forward = std::max(2.0, planning_horizen_ / max_vel);
+      const double search_start = std::max(0.0, previous_progress - search_back);
+      const double search_end = std::min(
+          duration, std::max(previous_progress + search_forward,
+                             previous_target));
+      const double search_step = 0.05;
+
+      double closest_time = previous_progress;
+      double closest_distance =
+          (planner_manager_->global_data_.global_traj_.evaluate(
+               previous_progress) - start_pt_)
+              .norm();
+      for (double candidate = search_start; candidate <= search_end + 1.0e-6;
+           candidate += search_step)
+      {
+        const double candidate_time = std::min(duration, candidate);
+        const double distance =
+            (planner_manager_->global_data_.global_traj_.evaluate(candidate_time) -
+             start_pt_)
+                .norm();
+        if (distance < closest_distance)
+        {
+          closest_distance = distance;
+          closest_time = candidate_time;
+        }
+      }
+
+      // Do not let a temporary tracking error move the route cursor backward.
+      route_progress_time_ = std::max(previous_progress, closest_time);
+
+      const double local_horizon = std::max(0.5, planning_horizen_);
+      double target_time = duration;
+      double route_distance = 0.0;
+      Eigen::Vector3d previous_position =
+          planner_manager_->global_data_.global_traj_.evaluate(
+              route_progress_time_);
+      for (double candidate = route_progress_time_ + search_step;
+           candidate < duration + 1.0e-6; candidate += search_step)
+      {
+        const double candidate_time = std::min(duration, candidate);
+        const Eigen::Vector3d candidate_position =
+            planner_manager_->global_data_.global_traj_.evaluate(candidate_time);
+        route_distance += (candidate_position - previous_position).norm();
+        previous_position = candidate_position;
+        if (route_distance >= local_horizon)
+        {
+          target_time = candidate_time;
+          break;
+        }
+      }
+
+      route_target_time_ = target_time;
+      local_target_pt_ = planner_manager_->global_data_.global_traj_.evaluate(
+          target_time);
+      planner_manager_->global_data_.last_progress_time_ = target_time;
+
+      const double braking_distance =
+          planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_ /
+          (2.0 * std::max(0.1, planner_manager_->pp_.max_acc_));
+      if (target_time >= duration - 1.0e-5 ||
+          (end_pt_ - local_target_pt_).norm() < braking_distance)
+      {
+        local_target_vel_.setZero();
+      }
+      else
+      {
+        local_target_vel_ =
+            planner_manager_->global_data_.global_traj_.evaluateVel(target_time);
+      }
+
+      // The local B-spline is initialized from the same continuous reference
+      // that EGO uses for look-ahead. This prevents the first optimization
+      // iteration from replacing a curved/turning route with a straight chord.
+      route_reference_points_.clear();
+      const double reference_spacing = 0.35;
+      const int reference_count = std::max(
+          6, static_cast<int>(std::ceil(
+                  std::max(route_distance, local_horizon) /
+                  reference_spacing)));
+      route_reference_points_.reserve(reference_count + 1);
+      route_reference_points_.push_back(start_pt_);
+      for (int i = 1; i <= reference_count; ++i)
+      {
+        const double ratio = static_cast<double>(i) / reference_count;
+        const double sample_time =
+            route_progress_time_ + (target_time - route_progress_time_) * ratio;
+        const Eigen::Vector3d sample =
+            planner_manager_->global_data_.global_traj_.evaluate(
+                std::min(duration, sample_time));
+        if ((sample - route_reference_points_.back()).norm() >= 0.05 ||
+            i == reference_count)
+        {
+          route_reference_points_.push_back(sample);
+        }
+      }
+      route_reference_points_.back() = local_target_pt_;
+      return;
+    }
+
     double t;
 
     double t_step = planning_horizen_ / 20 / planner_manager_->pp_.max_vel_;

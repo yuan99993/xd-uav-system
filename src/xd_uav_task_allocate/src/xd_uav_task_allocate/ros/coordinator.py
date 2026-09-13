@@ -431,6 +431,10 @@ class TaskAllocateCoordinator:
             str, List[Tuple[float, int]]
         ] = {}
         self.active_controller_paths: Set[str] = set()
+        # Planning-backed hover vehicles receive one complete reference path.
+        # Keep this separate from the legacy single-goal path so the timer
+        # cannot report an intermediate route sample as a mission arrival.
+        self.active_route_paths: Set[str] = set()
         self.verification_pending: List[int] = []
         self.verification_target_by_scout: Dict[str, int] = {}
         self.verification_scout_by_target: Dict[int, str] = {}
@@ -1165,7 +1169,7 @@ class TaskAllocateCoordinator:
                     ),
                     Path,
                     queue_size=1,
-                    latch=False,
+                    latch=True,
                 )
             else:
                 self.goal_publishers[name] = rospy.Publisher(
@@ -1174,6 +1178,16 @@ class TaskAllocateCoordinator:
                     ),
                     PoseStamped,
                     queue_size=2,
+                    latch=True,
+                )
+                self.planning_path_publishers[name] = rospy.Publisher(
+                    self._topic(
+                        config,
+                        "planner_task_path",
+                        f"/{name}/planning/task_path",
+                    ),
+                    Path,
+                    queue_size=1,
                     latch=True,
                 )
             self.planning_cancel_clients[name] = rospy.ServiceProxy(
@@ -1509,9 +1523,6 @@ class TaskAllocateCoordinator:
                     )
             else:
                 route = [point for area in areas for point in area.path]
-                route = self._densify_multirotor_route(
-                    scout, route, scout_positions.get(scout)
-                )
             self.routes[scout] = route
             self._publish_path(scout, route, self.loaded_area_stamp)
             rospy.loginfo(
@@ -1567,6 +1578,7 @@ class TaskAllocateCoordinator:
         self.active_goal_origins.clear()
         self.rescue_routes.clear()
         self.rescue_route_indices.clear()
+        getattr(self, "active_route_paths", set()).clear()
         self.active_trajectory_end_times.clear()
         self.active_trajectory_route_progress.clear()
         self.active_controller_paths.clear()
@@ -1662,6 +1674,37 @@ class TaskAllocateCoordinator:
         active = self.active_goals.get(vehicle)
         point = self.active_goal_points.get(vehicle)
         if active is None or point is None:
+            return
+        if (
+            vehicle in getattr(self, "active_route_paths", set())
+            and self._uses_planning(vehicle)
+            and self._mobility_profile(vehicle) == "hover"
+        ):
+            route = (
+                getattr(self, "rescue_routes", {}).get(vehicle, [])
+                if active[1] == "rescue"
+                else self.routes.get(vehicle, [])
+            )
+            index = (
+                getattr(self, "rescue_route_indices", {}).get(vehicle, 0)
+                if active[1] == "rescue"
+                else self.route_indices.get(vehicle, 0)
+            )
+            current = self.vehicle_world_positions.get(vehicle)
+            remaining = list(route[int(index):])
+            if current is not None and remaining:
+                current_point = tuple(float(value) for value in current[1])
+                separation = sqrt(sum(
+                    (float(remaining[0][axis]) - current_point[axis]) ** 2
+                    for axis in range(3)
+                ))
+                path_points = (
+                    [current_point] if separation > 1.0e-3 else []
+                ) + remaining
+                if len(path_points) >= 2:
+                    self._publish_fixedwing_path(
+                        vehicle, active[0], path_points
+                    )
             return
         if (
             self._mobility_profile(vehicle) == "fixedwing"
@@ -2412,12 +2455,9 @@ class TaskAllocateCoordinator:
             self.verification_target_by_scout[scout] = region_id
             self.verification_scout_by_target[region_id] = scout
             self.verification_region_states[region_id] = "active"
-            current = self.vehicle_world_positions.get(scout)
-            self.routes[scout] = self._densify_multirotor_route(
-                scout,
-                planned.path,
-                current[1] if current is not None else None,
-            )
+            self.routes[scout] = [
+                tuple(float(value) for value in point) for point in planned.path
+            ]
             self.route_indices[scout] = 0
             self._publish_path(scout, self.routes[scout], rospy.Time.now())
             rospy.loginfo(
@@ -2786,6 +2826,7 @@ class TaskAllocateCoordinator:
         self.active_trajectory_end_times.pop(vehicle, None)
         self.active_trajectory_route_progress.pop(vehicle, None)
         self.active_controller_paths.discard(vehicle)
+        getattr(self, "active_route_paths", set()).discard(vehicle)
         self.arrival_tracker.reset(vehicle)
 
     def _publish_direct_status(
@@ -2904,7 +2945,17 @@ class TaskAllocateCoordinator:
     ) -> None:
         """Publish a geometric path through the selected execution backend."""
 
-        path_points = [tuple(float(value) for value in point) for point in points]
+        path_points = []
+        for point in points:
+            normalized = tuple(float(value) for value in point)
+            if (
+                not path_points
+                or sqrt(sum(
+                    (normalized[axis] - path_points[-1][axis]) ** 2
+                    for axis in range(3)
+                )) >= 0.05
+            ):
+                path_points.append(normalized)
         if len(path_points) < 2:
             raise ValueError("fixed-wing path needs at least two points")
         message = Path()
@@ -2929,6 +2980,61 @@ class TaskAllocateCoordinator:
             self.direct_path_publishers[vehicle].publish(message)
         else:
             self.planning_path_publishers[vehicle].publish(message)
+
+    def _publish_planning_route_goal(
+        self, vehicle: str, route, start_index: int, kind: str, object_id: int
+    ) -> int:
+        """Publish one complete route to a planning-backed hover vehicle.
+
+        ``start_index`` is only the handoff point. The planner receives every
+        remaining route sample, so it can generate one continuous global
+        trajectory and perform local obstacle avoidance without stopping at
+        each sample.
+        """
+        current = self.vehicle_world_positions.get(vehicle)
+        remaining = [
+            tuple(float(value) for value in point)
+            for point in route[int(start_index):]
+        ]
+        if current is None or not remaining:
+            raise ValueError("planning route needs current position and route")
+        current_point = tuple(float(value) for value in current[1])
+        first = remaining[0]
+        separation = sqrt(sum(
+            (first[axis] - current_point[axis]) ** 2 for axis in range(3)
+        ))
+        path_points = ([current_point] if separation > 1.0e-3 else []) + remaining
+        goal_id = self._new_goal_id()
+
+        self.active_goals[vehicle] = (goal_id, str(kind), int(object_id))
+        getattr(self, "worker_visual_handoff_waiting", {}).pop(vehicle, None)
+        self.active_goal_points[vehicle] = tuple(
+            float(value) for value in route[-1]
+        )
+        self.active_goal_origins[vehicle] = current_point
+        if not hasattr(self, "active_route_paths"):
+            self.active_route_paths = set()
+        self.active_route_paths.add(vehicle)
+        self.arrival_tracker.reset(vehicle)
+
+        if len(path_points) < 2:
+            # The route endpoint is already under the vehicle. Complete the
+            # route-level goal without sending an invalid one-pose Path.
+            self._handle_goal_status(
+                vehicle, goal_id, PlannerStatus.REACHED,
+                "route endpoint already reached",
+            )
+            return goal_id
+
+        self._publish_fixedwing_path(vehicle, goal_id, path_points)
+        rospy.loginfo(
+            "[task_allocate] %s published complete planning path: "
+            "route_points=%d nominal_speed=%.1fm/s",
+            vehicle,
+            len(remaining),
+            self._coverage_speed(vehicle),
+        )
+        return goal_id
 
     # Kept as a compatibility shim for focused legacy unit tests.
     def _publish_direct_fixedwing_path(self, vehicle, goal_id, points):
@@ -3072,18 +3178,20 @@ class TaskAllocateCoordinator:
         self.rescue_route_indices = rescue_route_indices
         route = rescue_routes.get(vehicle, [])
         if not route:
-            current = self.vehicle_world_positions.get(vehicle)
-            start = current[1] if current is not None else None
-            if self._mobility_profile(vehicle) == "hover":
-                route = self._densify_multirotor_route(vehicle, [target], start)
-            else:
-                route = [tuple(float(value) for value in target)]
+            route = [tuple(float(value) for value in target)]
             self.rescue_routes[vehicle] = route
             self.rescue_route_indices[vehicle] = 0
         index = rescue_route_indices.get(vehicle, 0)
         if index >= len(route):
             index = len(route) - 1
             self.rescue_route_indices[vehicle] = index
+        if (
+            self._uses_planning(vehicle)
+            and self._mobility_profile(vehicle) == "hover"
+        ):
+            return self._publish_planning_route_goal(
+                vehicle, route, index, "rescue", task_id
+            )
         return self._publish_goal(vehicle, route[index], "rescue", task_id)
 
     def _publish_next_scout_goal(self, scout: str) -> None:
@@ -3118,7 +3226,24 @@ class TaskAllocateCoordinator:
                     error,
                 )
             return
-        self._publish_goal(scout, route[index], kind, index)
+        if self._uses_direct_controller(scout):
+            # The direct controller contract for a hover vehicle is a stream
+            # of PositionTarget goals.  Only the fixed-wing direct backend
+            # accepts a complete nav_msgs/Path; sending a hover route through
+            # _publish_planning_route_goal would therefore address the
+            # unconfigured fixed-wing path publisher and raise KeyError.
+            self._publish_goal(scout, route[index], kind, index)
+            return
+        try:
+            self._publish_planning_route_goal(
+                scout, route, index, kind, len(route) - 1
+            )
+        except ValueError as error:
+            rospy.logerr(
+                "[task_allocate] cannot publish planning path for %s: %s",
+                scout,
+                error,
+            )
 
     def _dispatch_assignments(self) -> None:
         if self.mission_state != MISSION_ACTIVE:
@@ -3428,6 +3553,7 @@ class TaskAllocateCoordinator:
                 not self._uses_planning(vehicle)
                 or self._mobility_profile(vehicle) != "hover"
                 or kind not in ("search", "verification", "rescue")
+                or vehicle in getattr(self, "active_route_paths", set())
             ):
                 continue
             if kind == "rescue":

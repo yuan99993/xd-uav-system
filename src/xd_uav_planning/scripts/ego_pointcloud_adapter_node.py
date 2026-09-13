@@ -2,16 +2,13 @@
 """Transform a physical sensor PointCloud2 into EGO's common world frame."""
 
 import copy
-import math
 
 import rospy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-from sensor_msgs import point_cloud2
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Bool, Header
 from geometry_msgs.msg import PoseStamped, TransformStamped
 import tf2_ros
-from tf2_sensor_msgs.tf2_sensor_msgs import do_transform_cloud
 from tf2_geometry_msgs.tf2_geometry_msgs import do_transform_pose
 from tf.transformations import quaternion_matrix, quaternion_from_matrix
 import numpy as np
@@ -29,7 +26,7 @@ class EgoPointCloudAdapter:
         self._future_tolerance = float(rospy.get_param("~future_tolerance", 0.02))
         self._transform_timeout = float(rospy.get_param("~transform_timeout", 0.05))
         self._minimum_sensor_range = float(
-            rospy.get_param("~minimum_sensor_range", 0.60))
+            rospy.get_param("~minimum_sensor_range", 0.35))
         self._restamp_zero_timestamp = bool(
             rospy.get_param("~restamp_zero_timestamp", False))
         self._calibrated_body_transform = bool(
@@ -37,6 +34,19 @@ class EgoPointCloudAdapter:
         self._body_frame = rospy.get_param("~body_frame", "").strip("/")
         self._body_to_sensor = tuple(float(value) for value in rospy.get_param(
             "~body_to_sensor_translation_m", [0.0, 0.0, 0.0]))
+        self._self_filter_enabled = bool(
+            rospy.get_param("~self_filter_enabled", True))
+        self._self_filter_half_x = max(
+            0.0, float(rospy.get_param("~self_filter_half_x", 0.32)))
+        self._self_filter_half_y = max(
+            0.0, float(rospy.get_param("~self_filter_half_y", 0.32)))
+        self._self_filter_min_z = float(
+            rospy.get_param("~self_filter_min_z", -0.20))
+        self._self_filter_max_z = float(
+            rospy.get_param("~self_filter_max_z", 0.25))
+        if self._self_filter_max_z < self._self_filter_min_z:
+            self._self_filter_min_z, self._self_filter_max_z = (
+                self._self_filter_max_z, self._self_filter_min_z)
         self._state_timeout = float(rospy.get_param("~state_timeout", 0.10))
         if self._calibrated_body_transform:
             if not self._body_frame or len(self._body_to_sensor) != 3:
@@ -45,6 +55,7 @@ class EgoPointCloudAdapter:
         self._last_state = None
         self._reason = "cloud_not_received"
         self._last_valid_stamp = None
+        self._last_self_filtered_points = 0
 
         input_topic = rospy.get_param("~input_topic", "sensing/points")
         output_topic = rospy.get_param("~output_topic", "ego/cloud_world")
@@ -101,33 +112,149 @@ class EgoPointCloudAdapter:
                              self._common_frame, message.header.frame_id,
                              message.header.stamp,
                              rospy.Duration(self._transform_timeout)))
-            transformed = do_transform_cloud(message, transform)
+            sensor_points = self._xyz_array(message)
+            finite = np.all(np.isfinite(sensor_points), axis=1)
+            sensor_points = sensor_points[finite]
+            common_from_sensor = self._transform_matrix(transform)
+            common_points = np.dot(
+                sensor_points, common_from_sensor[0:3, 0:3].T)
+            common_points += common_from_sensor[0:3, 3]
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException) as error:
+                tf2_ros.ExtrapolationException, ValueError) as error:
             self._reason = "cloud_transform_unavailable: {}".format(error)
             self._last_valid_stamp = None
             self._publish_status(False)
             return
-        origin = transform.transform.translation
-        finite_points = [
-            point for point in point_cloud2.read_points(
-                transformed, field_names=("x", "y", "z"), skip_nans=True)
-            if math.sqrt((point[0] - origin.x) ** 2 +
-                         (point[1] - origin.y) ** 2 +
-                         (point[2] - origin.z) ** 2) >= self._minimum_sensor_range
-        ]
-        if not finite_points:
+        origin = common_from_sensor[0:3, 3]
+        body_from_common = None
+        if self._self_filter_enabled and self._body_frame:
+            try:
+                body_transform = self._buffer.lookup_transform(
+                    self._body_frame, self._common_frame,
+                    message.header.stamp,
+                    rospy.Duration(self._transform_timeout))
+                body_from_common = self._transform_matrix(body_transform)
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                    tf2_ros.ExtrapolationException) as error:
+                # Self filtering is supplemental.  Do not discard an
+                # otherwise valid obstacle cloud just because the body TF is
+                # temporarily unavailable; the normal sensor-range filter
+                # still remains active and the diagnostic reports the issue.
+                self._reason = "self_filter_transform_unavailable: {}".format(error)
+                rospy.logwarn_throttle(
+                    1.0, "EGO pointcloud self-filter disabled for this scan: %s",
+                    error)
+
+        if common_points.size:
+            offset = common_points - origin
+            keep = np.einsum("ij,ij->i", offset, offset) >= (
+                self._minimum_sensor_range ** 2)
+        else:
+            keep = np.zeros((0,), dtype=bool)
+
+        self_filtered = 0
+        # Remove returns lying inside the configured vehicle envelope. This
+        # remains a geometric self-return filter, but all points are handled
+        # in one vectorized operation instead of one Python matrix multiply
+        # per return.
+        if body_from_common is not None and common_points.size:
+            body_points = np.dot(
+                common_points, body_from_common[0:3, 0:3].T)
+            body_points += body_from_common[0:3, 3]
+            inside_body = (
+                (np.abs(body_points[:, 0]) <= self._self_filter_half_x) &
+                (np.abs(body_points[:, 1]) <= self._self_filter_half_y) &
+                (body_points[:, 2] >= self._self_filter_min_z) &
+                (body_points[:, 2] <= self._self_filter_max_z))
+            self_filtered = int(np.count_nonzero(keep & inside_body))
+            keep &= ~inside_body
+        finite_points = common_points[keep]
+
+        self._last_self_filtered_points = self_filtered
+
+        if finite_points.shape[0] == 0:
             self._reason = "cloud_no_finite_xyz"
             self._last_valid_stamp = None
             self._publish_status(False)
             return
         header = Header(stamp=message.header.stamp,
                         frame_id=self._common_frame)
-        self._cloud_pub.publish(
-            point_cloud2.create_cloud_xyz32(header, finite_points))
+        self._cloud_pub.publish(self._create_xyz_cloud(header, finite_points))
         self._last_valid_stamp = message.header.stamp
         self._reason = "ok"
         self._publish_status(True)
+
+    @staticmethod
+    def _transform_matrix(transform):
+        rotation = transform.transform.rotation
+        matrix = quaternion_matrix([
+            rotation.x, rotation.y, rotation.z, rotation.w])
+        translation = transform.transform.translation
+        matrix[0, 3] = translation.x
+        matrix[1, 3] = translation.y
+        matrix[2, 3] = translation.z
+        return matrix
+
+    @staticmethod
+    def _xyz_array(message):
+        """Expose PointCloud2 XYZ fields as an array without per-point loops."""
+        fields = {field.name: field for field in message.fields}
+        formats = {
+            PointField.INT8: "i1", PointField.UINT8: "u1",
+            PointField.INT16: "i2", PointField.UINT16: "u2",
+            PointField.INT32: "i4", PointField.UINT32: "u4",
+            PointField.FLOAT32: "f4", PointField.FLOAT64: "f8",
+        }
+        selected = []
+        for name in ("x", "y", "z"):
+            field = fields.get(name)
+            if (field is None or field.count != 1 or
+                    field.datatype not in formats):
+                raise ValueError("PointCloud2 requires scalar numeric {} field".format(
+                    name))
+            byte_order = ">" if message.is_bigendian else "<"
+            selected.append((name, byte_order + formats[field.datatype],
+                             int(field.offset)))
+        if message.point_step <= 0 or message.row_step <= 0:
+            raise ValueError("PointCloud2 has invalid point/row step")
+        dtype = np.dtype({
+            "names": [entry[0] for entry in selected],
+            "formats": [entry[1] for entry in selected],
+            "offsets": [entry[2] for entry in selected],
+            "itemsize": int(message.point_step),
+        })
+        try:
+            view = np.ndarray(
+                shape=(int(message.height), int(message.width)), dtype=dtype,
+                buffer=message.data,
+                strides=(int(message.row_step), int(message.point_step)))
+        except (TypeError, ValueError) as error:
+            raise ValueError("PointCloud2 data layout invalid: {}".format(error))
+        return np.column_stack([
+            view[name].reshape(-1) for name in ("x", "y", "z")
+        ]).astype(np.float64, copy=False)
+
+    @staticmethod
+    def _create_xyz_cloud(header, points):
+        xyz = np.ascontiguousarray(points, dtype=np.float32)
+        cloud = PointCloud2()
+        cloud.header = header
+        cloud.height = 1
+        cloud.width = int(xyz.shape[0])
+        cloud.fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32,
+                       count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32,
+                       count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32,
+                       count=1),
+        ]
+        cloud.is_bigendian = False
+        cloud.point_step = 12
+        cloud.row_step = cloud.point_step * cloud.width
+        cloud.is_dense = True
+        cloud.data = xyz.tobytes(order="C")
+        return cloud
 
     def _state_callback(self, message):
         if (message.state_valid and message.localization_valid and
@@ -201,6 +328,10 @@ class EgoPointCloudAdapter:
                      value=self._expected_input_frame or "any"),
             KeyValue(key="minimum_sensor_range",
                      value=str(self._minimum_sensor_range)),
+            KeyValue(key="self_filter_enabled",
+                     value=str(self._self_filter_enabled).lower()),
+            KeyValue(key="self_filtered_points",
+                     value=str(self._last_self_filtered_points)),
             KeyValue(key="restamp_zero_timestamp",
                      value=str(self._restamp_zero_timestamp).lower()),
             KeyValue(key="transform_mode", value=(

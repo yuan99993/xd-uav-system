@@ -3,6 +3,7 @@
 
 #include <Eigen/Eigen>
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <nav_msgs/Path.h>
 #include <sensor_msgs/Imu.h>
@@ -59,12 +60,16 @@ namespace ego_planner
     double waypoints_[50][3];
     int waypoint_num_, wp_id_;
     double planning_horizen_, planning_horizen_time_;
+    double replan_lookahead_time_;
     double emergency_time_;
+    double safety_check_interval_{0.05};
     bool flag_realworld_experiment_;
     bool enable_fail_safe_;
+    std::string reference_path_topic_, reference_path_frame_;
 
     /* planning data */
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;
+    bool have_pending_reference_path_;
     FSM_EXEC_STATE exec_state_;
     int continously_called_times_{0};
 
@@ -75,14 +80,18 @@ namespace ego_planner
     Eigen::Vector3d end_pt_, end_vel_;                                       // goal state
     Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
     std::vector<Eigen::Vector3d> wps_;
+    std::vector<Eigen::Vector3d> route_reference_points_;
+    nav_msgs::Path pending_reference_path_;
     int current_wp_;
+    double route_progress_time_{0.0};
+    double route_target_time_{0.0};
 
     bool flag_escape_emergency_;
 
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, odom_sub_, swarm_trajs_sub_, broadcast_bspline_sub_, trigger_sub_;
+    ros::Subscriber waypoint_sub_, reference_path_sub_, odom_sub_, swarm_trajs_sub_, broadcast_bspline_sub_, trigger_sub_;
     ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, swarm_trajs_pub_, broadcast_bspline_pub_;
 
     /* helper functions */
@@ -104,6 +113,9 @@ namespace ego_planner
     void execFSMCallback(const ros::TimerEvent &e);
     void checkCollisionCallback(const ros::TimerEvent &e);
     void waypointCallback(const geometry_msgs::PoseStampedPtr &msg);
+    void referencePathCallback(const nav_msgs::PathConstPtr &msg);
+    bool setReferencePath(const nav_msgs::Path &msg);
+    void clearReferencePath();
     void triggerCallback(const geometry_msgs::PoseStampedPtr &msg);
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
     void swarmTrajsCallback(const traj_utils::MultiBsplinesPtr &msg);

@@ -23,6 +23,7 @@ int traj_id_;
 // yaw control
 double last_yaw_, last_yaw_dot_;
 double time_forward_;
+double yaw_min_horizontal_speed_;
 
 void bsplineCallback(traj_utils::BsplineConstPtr msg)
 {
@@ -77,9 +78,29 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
   double yaw = 0;
   double yawdot = 0;
 
-  Eigen::Vector3d dir = t_cur + time_forward_ <= traj_duration_ ? traj_[0].evaluateDeBoorT(t_cur + time_forward_) - pos : traj_[0].evaluateDeBoorT(traj_duration_) - pos;
-  double yaw_temp = dir.norm() > 0.1 ? atan2(dir(1), dir(0)) : last_yaw_;
-  double max_yaw_change = YAW_DOT_MAX_PER_SEC * (time_now - time_last).toSec();
+  // A zero time_forward makes the old implementation subtract the current
+  // position from itself, so yaw_temp remains last_yaw_ forever. This is easy
+  // to hit because the runtime launch used to set time_forward to 0.0. Use a
+  // small positive look-ahead and fall back to the local trajectory velocity
+  // when the look-ahead displacement is too short (hover/end of route).
+  const double lookahead = std::max(0.05, time_forward_);
+  const double query_time = std::min(
+      traj_duration_, std::max(0.0, t_cur + lookahead));
+  Eigen::Vector3d dir = traj_[0].evaluateDeBoorT(query_time) - pos;
+  if (dir.head<2>().norm() < yaw_min_horizontal_speed_ &&
+      t_cur >= 0.0 && t_cur <= traj_duration_)
+  {
+    const Eigen::Vector3d velocity = traj_[1].evaluateDeBoorT(
+        std::min(traj_duration_, std::max(0.0, t_cur)));
+    if (velocity.head<2>().norm() >= yaw_min_horizontal_speed_)
+      dir = velocity;
+  }
+
+  double yaw_temp = dir.head<2>().norm() >= yaw_min_horizontal_speed_
+                        ? atan2(dir(1), dir(0))
+                        : last_yaw_;
+  const double dt = std::max(1.0e-3, (time_now - time_last).toSec());
+  double max_yaw_change = YAW_DOT_MAX_PER_SEC * dt;
   if (yaw_temp - last_yaw_ > PI)
   {
     if (yaw_temp - last_yaw_ - 2 * PI < -max_yaw_change)
@@ -96,7 +117,7 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
       if (yaw - last_yaw_ > PI)
         yawdot = -YAW_DOT_MAX_PER_SEC;
       else
-        yawdot = (yaw_temp - last_yaw_) / (time_now - time_last).toSec();
+        yawdot = (yaw_temp - last_yaw_) / dt;
     }
   }
   else if (yaw_temp - last_yaw_ < -PI)
@@ -115,7 +136,7 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
       if (yaw - last_yaw_ < -PI)
         yawdot = YAW_DOT_MAX_PER_SEC;
       else
-        yawdot = (yaw_temp - last_yaw_) / (time_now - time_last).toSec();
+        yawdot = (yaw_temp - last_yaw_) / dt;
     }
   }
   else
@@ -144,7 +165,7 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
       else if (yaw - last_yaw_ < -PI)
         yawdot = YAW_DOT_MAX_PER_SEC;
       else
-        yawdot = (yaw_temp - last_yaw_) / (time_now - time_last).toSec();
+        yawdot = (yaw_temp - last_yaw_) / dt;
     }
   }
 
@@ -250,7 +271,13 @@ int main(int argc, char **argv)
   cmd.kv[1] = vel_gain[1];
   cmd.kv[2] = vel_gain[2];
 
-  nh.param("traj_server/time_forward", time_forward_, -1.0);
+  nh.param("traj_server/time_forward", time_forward_, 0.8);
+  // Newer runtime files expose the more descriptive yaw_lookahead name. Use
+  // it when present while retaining time_forward for old EGO launch files.
+  nh.param("traj_server/yaw_lookahead", time_forward_, time_forward_);
+  nh.param("traj_server/yaw_min_horizontal_speed",
+           yaw_min_horizontal_speed_, 0.05);
+  yaw_min_horizontal_speed_ = std::max(0.0, yaw_min_horizontal_speed_);
   last_yaw_ = 0.0;
   last_yaw_dot_ = 0.0;
 

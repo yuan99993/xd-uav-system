@@ -52,6 +52,13 @@ struct MappingParameters {
   Eigen::Vector3d local_update_range_;
   double resolution_, resolution_inv_;
   double obstacles_inflation_;
+  // Native lidar clouds can have a narrow vertical FOV. When enabled, a
+  // non-ground obstacle return is conservatively projected into a vertical
+  // column so EGO cannot fly over the unseen top of the obstacle.
+  bool cloud_vertical_obstacle_guard_;
+  double cloud_obstacle_min_height_;
+  double cloud_obstacle_height_;
+  double cloud_obstacle_persistence_;
   string frame_id_;
   int pose_type_;
 
@@ -81,7 +88,6 @@ struct MappingParameters {
 
   /* visualization and computation time display */
   double visualization_truncate_height_, virtual_ceil_height_, ground_height_, virtual_ceil_yp_, virtual_ceil_yn_;
-  double minimum_obstacle_height_above_ground_;
   bool show_occ_time_;
 
   /* active mapping */
@@ -95,6 +101,10 @@ struct MappingData {
 
   std::vector<double> occupancy_buffer_;
   std::vector<char> occupancy_buffer_inflate_;
+  // Last direct-cloud observation time for each inflated voxel. A short
+  // persistence window prevents a static obstacle from disappearing during
+  // one scan of self-occlusion or sparse lidar returns.
+  std::vector<double> cloud_observation_time_;
 
   // camera position and pose data
 
@@ -211,6 +221,9 @@ private:
   void projectDepthImage();
   void raycastProcess();
   void clearAndInflateLocalMap();
+  void expireCloudObstacles(const Eigen::Vector3d& min,
+                            const Eigen::Vector3d& max,
+                            double now_sec);
   bool rollingMapNeedsRecenter(const Eigen::Vector3d& position) const;
   void recenterRollingMap(const Eigen::Vector3d& position);
   void clearRollingMapBuffers();

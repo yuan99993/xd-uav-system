@@ -24,10 +24,21 @@ namespace ego_planner
     nh.param("manager/planning_horizon", pp_.planning_horizen_, 5.0);
     nh.param("manager/use_distinctive_trajs", pp_.use_distinctive_trajs, false);
     nh.param("manager/drone_id", pp_.drone_id, -1);
+    nh.param("manager/astar_resolution", a_star_resolution_, 0.2);
+    double a_star_search_time = 0.15;
+    int a_star_pool_size_xy = 100;
+    int a_star_pool_size_z = 60;
+    nh.param("manager/astar_search_time", a_star_search_time, 0.15);
+    nh.param("manager/astar_pool_size_xy", a_star_pool_size_xy, 100);
+    nh.param("manager/astar_pool_size_z", a_star_pool_size_z, 60);
+    a_star_pool_size_xy = std::max(20, a_star_pool_size_xy);
+    a_star_pool_size_z = std::max(20, a_star_pool_size_z);
 
     local_data_.traj_id_ = 0;
     grid_map_.reset(new GridMap);
     grid_map_->initMap(nh);
+    a_star_resolution_ = std::max(grid_map_->getResolution(),
+                                  a_star_resolution_);
 
     // obj_predictor_.reset(new fast_planner::ObjPredictor(nh));
     // obj_predictor_->init();
@@ -36,8 +47,19 @@ namespace ego_planner
     bspline_optimizer_.reset(new BsplineOptimizer);
     bspline_optimizer_->setParam(nh);
     bspline_optimizer_->setEnvironment(grid_map_, obj_predictor_);
+    bspline_optimizer_->setAStarResolution(a_star_resolution_);
     bspline_optimizer_->a_star_.reset(new AStar);
-    bspline_optimizer_->a_star_->initGridMap(grid_map_, Eigen::Vector3i(100, 100, 100));
+    bspline_optimizer_->a_star_->initGridMap(
+        grid_map_, Eigen::Vector3i(a_star_pool_size_xy,
+                                  a_star_pool_size_xy,
+                                  a_star_pool_size_z));
+    bspline_optimizer_->a_star_->setSearchTimeLimit(a_star_search_time);
+    ROS_INFO("EGO A*: resolution %.2f m, search box %.1f x %.1f x %.1f m, timeout %.2f s",
+             a_star_resolution_,
+             a_star_resolution_ * a_star_pool_size_xy,
+             a_star_resolution_ * a_star_pool_size_xy,
+             a_star_resolution_ * a_star_pool_size_z,
+             std::max(0.01, a_star_search_time));
 
     visualization_ = vis;
   }
@@ -49,6 +71,18 @@ namespace ego_planner
   bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
                                         Eigen::Vector3d start_acc, Eigen::Vector3d local_target_pt,
                                         Eigen::Vector3d local_target_vel, bool flag_polyInit, bool flag_randomPolyTraj)
+  {
+    const std::vector<Eigen::Vector3d> no_route_reference;
+    return reboundReplan(start_pt, start_vel, start_acc, local_target_pt,
+                         local_target_vel, flag_polyInit, flag_randomPolyTraj,
+                         no_route_reference);
+  }
+
+  bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
+                                        Eigen::Vector3d start_acc, Eigen::Vector3d local_target_pt,
+                                        Eigen::Vector3d local_target_vel, bool flag_polyInit,
+                                        bool flag_randomPolyTraj,
+                                        const std::vector<Eigen::Vector3d> &route_reference)
   {
     static int count = 0;
     printf("\033[47;30m\n[drone %d replan %d]==============================================\033[0m\n", pp_.drone_id, count++);
@@ -73,13 +107,159 @@ namespace ego_planner
     vector<Eigen::Vector3d> point_set, start_end_derivatives;
     static bool flag_first_call = true, flag_force_polynomial = false;
     bool flag_regenerate = false;
+    const bool use_route_reference = route_reference.size() >= 2;
     do
     {
       point_set.clear();
       start_end_derivatives.clear();
       flag_regenerate = false;
 
-      if (flag_first_call || flag_polyInit || flag_force_polynomial /*|| ( start_pt - local_target_pt ).norm() < 1.0*/) // Initial path generated from a min-snap traj by order.
+      if (use_route_reference)
+      {
+        // In route mode the local optimizer must start from the same geometry
+        // that the allocator supplied.  The legacy polynomial-only seed goes
+        // straight to local_target_pt and silently cuts every route corner.
+        for (const Eigen::Vector3d &reference_point : route_reference)
+        {
+          if (!reference_point.allFinite())
+            continue;
+          if (point_set.empty() ||
+              (reference_point - point_set.back()).norm() >= 0.05)
+            point_set.push_back(reference_point);
+        }
+        if (point_set.empty())
+          point_set.push_back(start_pt);
+        point_set.front() = start_pt;
+        if ((point_set.back() - local_target_pt).norm() >= 0.05)
+          point_set.push_back(local_target_pt);
+        else
+          point_set.back() = local_target_pt;
+
+        // The allocator path is a geometric reference, not a collision-free
+        // local trajectory. If its first horizon is blocked, starting the
+        // optimizer from that same colliding polyline can leave the first
+        // B-spline interval inside the inflated map. In that situation use a
+        // short A* detour as the local seed. The global allocator route is
+        // unchanged and will be used again after the vehicle clears the wall.
+        const double collision_sample_step =
+            std::max(0.05, grid_map_->getResolution() * 0.5);
+        bool route_seed_blocked = false;
+        for (size_t i = 1; i < point_set.size() && !route_seed_blocked; ++i)
+        {
+          const Eigen::Vector3d delta = point_set[i] - point_set[i - 1];
+          const double length = delta.norm();
+          const int samples = std::max(
+              1, static_cast<int>(std::ceil(length / collision_sample_step)));
+          for (int sample = 0; sample <= samples; ++sample)
+          {
+            const double ratio = static_cast<double>(sample) / samples;
+            const Eigen::Vector3d position =
+                point_set[i - 1] + ratio * delta;
+            if (grid_map_->getInflateOccupancy(position) != 0)
+            {
+              route_seed_blocked = true;
+              break;
+            }
+          }
+        }
+
+        if (route_seed_blocked && bspline_optimizer_->a_star_ &&
+            bspline_optimizer_->a_star_->AstarSearch(
+                a_star_resolution_, start_pt, local_target_pt))
+        {
+          const std::vector<Eigen::Vector3d> astar_path =
+              bspline_optimizer_->a_star_->getPath();
+          std::vector<Eigen::Vector3d> detour;
+          detour.reserve(astar_path.size());
+
+          // Keep approximately the normal control-point spacing, while
+          // retaining sharp A* corners so the resampling does not cut back
+          // through the obstacle.
+          const double detour_spacing =
+              std::max(0.25, pp_.ctrl_pt_dist * 0.8);
+          for (size_t i = 0; i < astar_path.size(); ++i)
+          {
+            if (!astar_path[i].allFinite())
+              continue;
+            bool keep = detour.empty() ||
+                        (astar_path[i] - detour.back()).norm() >=
+                            detour_spacing;
+            if (!keep && i > 0 && i + 1 < astar_path.size())
+            {
+              const Eigen::Vector3d incoming =
+                  astar_path[i] - astar_path[i - 1];
+              const Eigen::Vector3d outgoing =
+                  astar_path[i + 1] - astar_path[i];
+              if (incoming.squaredNorm() > 1.0e-8 &&
+                  outgoing.squaredNorm() > 1.0e-8 &&
+                  incoming.normalized().dot(outgoing.normalized()) < 0.85)
+                keep = true;
+            }
+            if (keep)
+              detour.push_back(astar_path[i]);
+          }
+
+          const bool reaches_target =
+              detour.size() >= 2 &&
+              (detour.back() - local_target_pt).norm() <= 0.35;
+          if (reaches_target)
+          {
+            detour.front() = start_pt;
+            detour.back() = local_target_pt;
+            if (detour.size() >= 7)
+            {
+              point_set.swap(detour);
+              ROS_WARN_THROTTLE(
+                  1.0,
+                  "Allocator route is blocked; using a local A* detour seed");
+            }
+          }
+        }
+
+        // parameterizeToBspline() is numerically better conditioned with a
+        // small number of samples even for a very short final horizon. Keep
+        // the route geometry while doing so: interpolating only start/end
+        // points would turn a short L-shaped route into a chord outside the
+        // allocator's Path.
+        if (point_set.size() < 7)
+        {
+          const vector<Eigen::Vector3d> route_seed = point_set;
+          vector<double> arc_length(route_seed.size(), 0.0);
+          for (size_t i = 1; i < route_seed.size(); ++i)
+          {
+            arc_length[i] = arc_length[i - 1] +
+                            (route_seed[i] - route_seed[i - 1]).norm();
+          }
+
+          const double route_length = arc_length.back();
+          point_set.clear();
+          for (int sample = 0; sample < 7; ++sample)
+          {
+            const double sample_length =
+                route_length * static_cast<double>(sample) / 6.0;
+            size_t segment = 0;
+            while (segment + 1 < arc_length.size() &&
+                   arc_length[segment + 1] < sample_length)
+              ++segment;
+
+            const double segment_length =
+                arc_length[segment + 1] - arc_length[segment];
+            const double ratio = segment_length > 1.0e-6
+                                     ? (sample_length - arc_length[segment]) /
+                                           segment_length
+                                     : 0.0;
+            point_set.push_back(route_seed[segment] * (1.0 - ratio) +
+                                route_seed[segment + 1] * ratio);
+          }
+          point_set.front() = start_pt;
+          point_set.back() = local_target_pt;
+        }
+        start_end_derivatives.push_back(start_vel);
+        start_end_derivatives.push_back(local_target_vel);
+        start_end_derivatives.push_back(start_acc);
+        start_end_derivatives.push_back(Eigen::Vector3d::Zero());
+      }
+      else if (flag_first_call || flag_polyInit || flag_force_polynomial /*|| ( start_pt - local_target_pt ).norm() < 1.0*/) // Initial path generated from a min-snap traj by order.
       {
         flag_first_call = false;
         flag_force_polynomial = false;
@@ -217,6 +397,11 @@ namespace ego_planner
 
     Eigen::MatrixXd ctrl_pts, ctrl_pts_temp;
     UniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
+
+    if (use_route_reference)
+      bspline_optimizer_->setRouteReference(point_set);
+    else
+      bspline_optimizer_->clearRouteReference();
 
     vector<std::pair<int, int>> segments;
     segments = bspline_optimizer_->initControlPoints(ctrl_pts, true);
@@ -378,21 +563,42 @@ namespace ego_planner
                                                   const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
   {
 
+    if (waypoints.empty() || !start_pos.allFinite() ||
+        !start_vel.allFinite() || !start_acc.allFinite() ||
+        !end_vel.allFinite() || !end_acc.allFinite() ||
+        pp_.max_vel_ <= 1.0e-3)
+    {
+      ROS_ERROR("Cannot generate global trajectory: invalid route or max velocity");
+      return false;
+    }
+
     // generate global reference trajectory
 
     vector<Eigen::Vector3d> points;
     points.push_back(start_pos);
 
+    // The route handoff normally includes the measured position as its first
+    // pose. Remove only near duplicates; every meaningful route bend remains
+    // a constraint of the global trajectory.
+    constexpr double MIN_WAYPOINT_DISTANCE = 0.05;
     for (size_t wp_i = 0; wp_i < waypoints.size(); wp_i++)
     {
-      points.push_back(waypoints[wp_i]);
+      if (!waypoints[wp_i].allFinite())
+      {
+        ROS_ERROR("Cannot generate global trajectory: non-finite route point");
+        return false;
+      }
+      if ((waypoints[wp_i] - points.back()).norm() >= MIN_WAYPOINT_DISTANCE)
+        points.push_back(waypoints[wp_i]);
     }
 
+    if (points.size() < 2)
+      return false;
+
     double total_len = 0;
-    total_len += (start_pos - waypoints[0]).norm();
-    for (size_t i = 0; i < waypoints.size() - 1; i++)
+    for (size_t i = 0; i < points.size() - 1; i++)
     {
-      total_len += (waypoints[i + 1] - waypoints[i]).norm();
+      total_len += (points[i + 1] - points[i]).norm();
     }
 
     // insert intermediate points if too far
@@ -430,23 +636,41 @@ namespace ego_planner
     for (int i = 0; i < pt_num; ++i)
       pos.col(i) = inter_points[i];
 
-    Eigen::Vector3d zero(0, 0, 0);
     Eigen::VectorXd time(pt_num - 1);
     for (int i = 0; i < pt_num - 1; ++i)
     {
       time(i) = (pos.col(i + 1) - pos.col(i)).norm() / (pp_.max_vel_);
+      time(i) = std::max(time(i), 0.05);
     }
 
     time(0) *= 2.0;
     time(time.rows() - 1) *= 2.0;
 
+    // A minimum-snap polynomial through a lawn-mower route overshoots every
+    // sharp reversal: its continuous derivatives make the global reference
+    // leave the allocator's Path before the local obstacle planner even runs.
+    // Keep the route-mode global reference on the supplied piecewise-linear
+    // geometry.  The local B-spline still smooths the active horizon and can
+    // leave this reference only when the occupancy map requires an avoidance
+    // manoeuvre.
     PolynomialTraj gl_traj;
-    if (pos.cols() >= 3)
-      gl_traj = PolynomialTraj::minSnapTraj(pos, start_vel, end_vel, start_acc, end_acc, time);
-    else if (pos.cols() == 2)
-      gl_traj = PolynomialTraj::one_segment_traj_gen(start_pos, start_vel, start_acc, pos.col(1), end_vel, end_acc, time(0));
-    else
-      return false;
+    for (int i = 0; i < pt_num - 1; ++i)
+    {
+      const Eigen::Vector3d delta = pos.col(i + 1) - pos.col(i);
+      const double segment_time = time(i);
+      const Eigen::Vector3d velocity = delta / segment_time;
+
+      // PolynomialTraj stores coefficients from highest to lowest power for
+      // addSegment(): [slope, intercept] gives p(t) = intercept + slope * t.
+      // A linear segment is monotonic and therefore cannot cut outside its
+      // two route endpoints.
+      gl_traj.addSegment(
+          {velocity.x(), pos(0, i)},
+          {velocity.y(), pos(1, i)},
+          {velocity.z(), pos(2, i)},
+          segment_time);
+    }
+    gl_traj.init();
 
     auto time_now = ros::Time::now();
     global_data_.setGlobalTraj(gl_traj, time_now);
@@ -529,10 +753,14 @@ namespace ego_planner
 
     traj = UniformBspline(ctrl_pts, 3, ts);
 
-    double t_step = traj.getTimeSum() / (ctrl_pts.cols() - 3);
+    const int reference_segments = std::max(1, static_cast<int>(ctrl_pts.cols()) - 3);
+    double t_step = traj.getTimeSum() / reference_segments;
     bspline_optimizer_->ref_pts_.clear();
-    for (double t = 0; t < traj.getTimeSum() + 1e-4; t += t_step)
+    for (int i = 0; i <= reference_segments; ++i)
+    {
+      const double t = std::min(traj.getTimeSum(), i * t_step);
       bspline_optimizer_->ref_pts_.push_back(traj.evaluateDeBoorT(t));
+    }
 
     bool success = bspline_optimizer_->BsplineOptimizeTrajRefine(ctrl_pts, ts, optimal_control_points);
 

@@ -90,7 +90,7 @@
     <remap from="position_cmd" to="drone_$(arg drone_id)_planning/pos_cmd"/>
     <remap from="~planning/bspline" to="drone_$(arg drone_id)_planning/bspline"/>
 
-    <param name="traj_server/time_forward" value="1.0" type="double"/>
+    <param name="traj_server/time_forward" value="0.8" type="double"/>
   </node>
 
   <!--node pkg="waypoint_generator" name="waypoint_generator" type="waypoint_generator" output="screen">

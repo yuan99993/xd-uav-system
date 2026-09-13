@@ -6,8 +6,8 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /FrontPath1
-        - /FrontPath2
+        - /Axes1
+        - /UAV41
       Splitter Ratio: 0.5
     Tree Height: 549
   - Class: rviz/Selection
@@ -27,7 +27,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: ""
+    SyncSource: UAV4
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -68,9 +68,15 @@ Visualization Manager:
           Value: true
         uav1/camera_optical_frame:
           Value: true
+        uav1/distance_sensor_link:
+          Value: true
         uav1/down_camera_link:
           Value: true
         uav1/down_camera_optical_frame:
+          Value: true
+        uav1/lidar_imu_link:
+          Value: true
+        uav1/lidar_link:
           Value: true
         uav1/local_origin:
           Value: true
@@ -88,21 +94,9 @@ Visualization Manager:
           Value: true
         uav2/base_link_frd:
           Value: true
-        uav2/camera_link:
-          Value: true
-        uav2/camera_optical_frame:
-          Value: true
-        uav2/down_camera_link:
-          Value: true
-        uav2/down_camera_optical_frame:
-          Value: true
         uav2/local_origin:
           Value: true
         uav2/local_origin_ned:
-          Value: true
-        uav2/mavros_estimated_base_link:
-          Value: true
-        uav2/mavros_origin:
           Value: true
         uav2/odom:
           Value: true
@@ -112,21 +106,9 @@ Visualization Manager:
           Value: true
         uav3/base_link_frd:
           Value: true
-        uav3/camera_link:
-          Value: true
-        uav3/camera_optical_frame:
-          Value: true
-        uav3/down_camera_link:
-          Value: true
-        uav3/down_camera_optical_frame:
-          Value: true
         uav3/local_origin:
           Value: true
         uav3/local_origin_ned:
-          Value: true
-        uav3/mavros_estimated_base_link:
-          Value: true
-        uav3/mavros_origin:
           Value: true
         uav3/odom:
           Value: true
@@ -140,9 +122,15 @@ Visualization Manager:
           Value: true
         uav4/camera_optical_frame:
           Value: true
+        uav4/distance_sensor_link:
+          Value: true
         uav4/down_camera_link:
           Value: true
         uav4/down_camera_optical_frame:
+          Value: true
+        uav4/lidar_imu_link:
+          Value: true
+        uav4/lidar_link:
           Value: true
         uav4/local_origin:
           Value: true
@@ -165,6 +153,18 @@ Visualization Manager:
       Show Axes: true
       Show Names: true
       Tree:
+        uav2/base_link:
+          uav2/base_link_frd:
+            {}
+        uav2/odom:
+          uav2/odom_ned:
+            {}
+        uav3/base_link:
+          uav3/base_link_frd:
+            {}
+        uav3/odom:
+          uav3/odom_ned:
+            {}
         world:
           uav1/local_origin:
             uav1/local_origin_ned:
@@ -176,8 +176,13 @@ Visualization Manager:
                 uav1/camera_link:
                   uav1/camera_optical_frame:
                     {}
+                uav1/distance_sensor_link:
+                  {}
                 uav1/down_camera_link:
                   uav1/down_camera_optical_frame:
+                    {}
+                uav1/lidar_link:
+                  uav1/lidar_imu_link:
                     {}
               uav1/mavros_origin:
                 uav1/mavros_estimated_base_link:
@@ -187,39 +192,9 @@ Visualization Manager:
           uav2/local_origin:
             uav2/local_origin_ned:
               {}
-            uav2/odom:
-              uav2/base_link:
-                uav2/base_link_frd:
-                  {}
-                uav2/camera_link:
-                  uav2/camera_optical_frame:
-                    {}
-                uav2/down_camera_link:
-                  uav2/down_camera_optical_frame:
-                    {}
-              uav2/mavros_origin:
-                uav2/mavros_estimated_base_link:
-                  {}
-              uav2/odom_ned:
-                {}
           uav3/local_origin:
             uav3/local_origin_ned:
               {}
-            uav3/odom:
-              uav3/base_link:
-                uav3/base_link_frd:
-                  {}
-                uav3/camera_link:
-                  uav3/camera_optical_frame:
-                    {}
-                uav3/down_camera_link:
-                  uav3/down_camera_optical_frame:
-                    {}
-              uav3/mavros_origin:
-                uav3/mavros_estimated_base_link:
-                  {}
-              uav3/odom_ned:
-                {}
           uav4/local_origin:
             uav4/local_origin_ned:
               {}
@@ -230,8 +205,13 @@ Visualization Manager:
                 uav4/camera_link:
                   uav4/camera_optical_frame:
                     {}
+                uav4/distance_sensor_link:
+                  {}
                 uav4/down_camera_link:
                   uav4/down_camera_optical_frame:
+                    {}
+                uav4/lidar_link:
+                  uav4/lidar_imu_link:
                     {}
               uav4/mavros_origin:
                 uav4/mavros_estimated_base_link:
@@ -301,8 +281,7 @@ Visualization Manager:
       Marker Topic: /planning/no_fly_zone_markers
       Name: Fixed-wing no-fly zones
       Namespaces:
-        fixedwing_no_fly_zone_labels: true
-        fixedwing_no_fly_zones: true
+        {}
       Queue Size: 10
       Value: true
     - Angle Tolerance: 0.10000000149011612
@@ -343,39 +322,39 @@ Visualization Manager:
     - Alpha: 1
       Class: rviz/Axes
       Enabled: true
-      Length: 3
+      Length: 1
       Name: Axes
-      Radius: 5
+      Radius: 1
       Reference Frame: uav1/base_link
       Show Trail: false
       Value: true
     - Alpha: 1
       Class: rviz/Axes
-      Enabled: true
+      Enabled: false
       Length: 3
       Name: Axes
       Radius: 5
       Reference Frame: uav2/base_link
       Show Trail: false
-      Value: true
+      Value: false
     - Alpha: 1
       Class: rviz/Axes
-      Enabled: true
+      Enabled: false
       Length: 3
       Name: Axes
       Radius: 5
       Reference Frame: uav3/base_link
       Show Trail: false
-      Value: true
+      Value: false
     - Alpha: 1
       Class: rviz/Axes
-      Enabled: true
+      Enabled: false
       Length: 3
       Name: Axes
       Radius: 5
       Reference Frame: uav4/base_link
       Show Trail: false
-      Value: true
+      Value: false
     - Alpha: 1
       Buffer Length: 1
       Class: rviz/Path
@@ -440,7 +419,7 @@ Visualization Manager:
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
-      Name: PointCloud2
+      Name: UAV1
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
@@ -464,11 +443,11 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
-      Name: PointCloud2
+      Name: UAV2
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
@@ -479,7 +458,7 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -492,11 +471,11 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
-      Name: PointCloud2
+      Name: UAV3
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
@@ -507,7 +486,7 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -524,17 +503,25 @@ Visualization Manager:
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
-      Name: PointCloud2
+      Name: UAV4
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
       Size (Pixels): 3
       Size (m): 0.009999999776482582
       Style: Flat Squares
-      Topic: /drone_3_ego/cloud_world
+      Topic: /drone_0_ego_planner_node/grid_map/occupancy_inflate
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /drone_0_ego_planner_node/optimal_list
+      Name: Marker
+      Namespaces:
+        "": true
+      Queue Size: 100
       Value: true
   Enabled: true
   Global Options:
@@ -564,7 +551,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 2026.19287109375
+      Distance: 597.6670532226562
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -580,9 +567,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.39479637145996094
+      Pitch: -0.0952034443616867
       Target Frame: <Fixed Frame>
-      Yaw: 0.1172308549284935
+      Yaw: 0.10223084688186646
     Saved: ~
 Window Geometry:
   Displays:
@@ -600,5 +587,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 1200
-  X: 72
-  Y: 27
+  X: 175
+  Y: 105

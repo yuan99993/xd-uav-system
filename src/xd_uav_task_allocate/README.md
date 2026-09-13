@@ -24,11 +24,11 @@ planner:
   backend: planning
 ```
 
-此时旋翼点目标和固定翼完整几何路径分别发布到：
+此时旋翼和固定翼的完整路径都发布到 `task_path`；旋翼仍保留点目标兼容接口：
 
 ```text
-/<uav>/planning/goal       geometry_msgs/PoseStamped
-/<uav>/planning/task_path  nav_msgs/Path
+/<uav>/planning/task_path  nav_msgs/Path（旋翼/固定翼默认完整路线）
+/<uav>/planning/goal       geometry_msgs/PoseStamped（旋翼旧单点兼容）
 ```
 
 两类飞机统一从 planning 接收状态，并通过取消服务完成 pause/stop、到达以及视觉跟踪前的
@@ -51,8 +51,10 @@ EGO-Swarm 生成避障轨迹；固定翼 planning 后端校验 Path 并转交固
 Odometry，在目标容差内持续指定时间后判定 `REACHED`。固定翼整段搜索只有收到与当前
 `goal_id`一致的控制器 `PathStatus.COMPLETED` 才推进到完成；不再用名义飞行时长判定。
 
-旋翼的 EGO 地图是局部地图。若搜索区域距离起飞点较远，可在对应飞机配置中设置
-`multirotor/waypoint_gap`，任务层会把长航段拆成不超过该距离的局部航点，再逐点发送给规划器：
+旋翼的 EGO 地图是局部地图，但任务层不会再把通用路线拆成逐点目标。规划-backed 旋翼会把
+当前点到路线终点之间的完整剩余路线一次发布到 `/<uav>/planning/task_path`，EGO 负责生成
+连续 global trajectory，并在局部地图内滚动避障。路径中间采样点不会触发任务完成或下一次
+目标切换：
 
 ```yaml
 scouts:
@@ -60,17 +62,16 @@ scouts:
     mobility_profile: hover
     multirotor:
       waypoint_gap: 10.0
-      # 到此三维半径即推进下一个分段点；不要求停稳。
       waypoint_acceptance_radius_m: 1.0
 ```
 
-这两个值只影响旋翼航点分段，不改变固定翼的完整 `task_path`。前者为最大分段长度，后者为
-每个中间航点的三维到达半径；可在 `mission.yaml/planner/multirotor` 统一设置，也可按飞机覆盖。
+`waypoint_gap` 仅为旧 PoseStamped 集成保留；Path 模式只使用最终端点位置容差和路径进度。
+可在 `mission.yaml/planner/multirotor` 统一设置，也可按飞机覆盖。
 工作机使用独立的到达条件：在 0.5 m 的停距目标容差内持续 1 s，且三维速度不超过
 0.35 m/s，随后立即锁存当前位置保持，避免高速掠过停距点后继续撞向目标。
 
-旋翼工作机前往远距离救援目标时也使用同一 `multirotor/waypoint_gap` 分段参数；中间航点
-只保持任务执行状态，只有最后一个目标航点到达后才释放规划控制权并进入视觉交接。
+旋翼工作机前往远距离救援目标时也使用同一完整 Path 接口；只有最终目标到达后才释放规划
+控制权并进入视觉交接。
 
 `ego_swarm` 仅保留为旧配置的 planning 别名；新配置统一写 `planning`。路线可视化单独发布到
 `/<uav>/planning/route_preview`，绝不能把预览 Path 当作固定翼执行输入。
@@ -401,7 +402,8 @@ rosservice call /task_allocate/start
 
 当前工作空间已由 `xd_uav_planning` 完成 EGO-Swarm 适配：
 
-1. 订阅 `planning/goal`，把共享 frame 的三维目标交给 EGO-Swarm；
+1. 默认订阅 `planning/task_path`，把共享 frame 的完整 Path 交给 EGO-Swarm；仍可订阅
+   `planning/goal` 作为旧单点兼容接口；
 2. 将规划/执行状态映射成 `PlannerStatus`；
 3. 将安全轨迹通过 reference mux 转成当前 controller 的流式 `PositionTarget`；
 4. `planning/cancel` 关闭输出门并清空活动目标，交接成功后任务层才启动跟踪控制。

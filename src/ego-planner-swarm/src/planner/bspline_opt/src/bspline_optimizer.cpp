@@ -11,11 +11,14 @@ namespace ego_planner
     nh.param("optimization/lambda_collision", lambda2_, -1.0);
     nh.param("optimization/lambda_feasibility", lambda3_, -1.0);
     nh.param("optimization/lambda_fitness", lambda4_, -1.0);
+    nh.param("optimization/lambda_route_tracking", lambda_route_tracking_, 8.0);
 
     nh.param("optimization/dist0", dist0_, -1.0);
     nh.param("optimization/swarm_clearance", swarm_clearance_, -1.0);
     nh.param("optimization/max_vel", max_vel_, -1.0);
     nh.param("optimization/max_acc", max_acc_, -1.0);
+    nh.param("optimization/astar_resolution", a_star_resolution_, 0.2);
+    a_star_resolution_ = std::max(0.05, a_star_resolution_);
 
     nh.param("optimization/order", order_, 3);
   }
@@ -57,7 +60,11 @@ namespace ego_planner
     std::vector<ControlPoints> control_pts_buf;
     control_pts_buf.reserve(MAX_TRAJS);
     const double RESOLUTION = grid_map_->getResolution();
-    const double CTRL_PT_DIST = (cps_.points.col(0) - cps_.points.col(cps_.size - 1)).norm() / (cps_.size - 1);
+    double mean_ctrl_pt_dist = 0.0;
+    for (int i = 1; i < cps_.size; ++i)
+      mean_ctrl_pt_dist += (cps_.points.col(i) - cps_.points.col(i - 1)).norm();
+    mean_ctrl_pt_dist /= std::max(1, cps_.size - 1);
+    const double CTRL_PT_DIST = std::max(RESOLUTION, mean_ctrl_pt_dist);
 
     // Step 1. Find the opposite vectors and base points for every segment.
     std::vector<std::pair<ControlPoints, ControlPoints>> RichInfoSegs;
@@ -94,12 +101,17 @@ namespace ego_planner
         for (int j = 0; j < RichInfoSegs[i].first.size - 1; j++)
         {
           //cout << "A *" << j << "*" << endl;
-          double step_size = RESOLUTION / (RichInfoSegs[i].first.points.col(j) - RichInfoSegs[i].first.points.col(j + 1)).norm() / 2;
+          const double segment_length =
+              (RichInfoSegs[i].first.points.col(j) - RichInfoSegs[i].first.points.col(j + 1)).norm();
+          double step_size = segment_length > 1.0e-6
+                                 ? RESOLUTION / segment_length / 2.0
+                                 : 1.0;
+          step_size = std::min(1.0, std::max(1.0e-3, step_size));
           for (double a = 1; a > 0; a -= step_size)
           {
             Eigen::Vector3d pt(a * RichInfoSegs[i].first.points.col(j) + (1 - a) * RichInfoSegs[i].first.points.col(j + 1));
             //cout << " " << grid_map_->getInflateOccupancy(pt) << " pt=" << pt.transpose() << endl;
-            if (grid_map_->getInflateOccupancy(pt))
+            if (grid_map_->getInflateOccupancy(pt) != 0)
             {
               occ_start_id = j;
               occ_start_pt = pt;
@@ -113,13 +125,18 @@ namespace ego_planner
           //cout << "j=" << j << endl;
           //cout << "B *" << j << "*" << endl;
           ;
-          double step_size = RESOLUTION / (RichInfoSegs[i].first.points.col(j) - RichInfoSegs[i].first.points.col(j - 1)).norm();
+          const double segment_length =
+              (RichInfoSegs[i].first.points.col(j) - RichInfoSegs[i].first.points.col(j - 1)).norm();
+          double step_size = segment_length > 1.0e-6
+                                 ? RESOLUTION / segment_length
+                                 : 1.0;
+          step_size = std::min(1.0, std::max(1.0e-3, step_size));
           for (double a = 1; a > 0; a -= step_size)
           {
             Eigen::Vector3d pt(a * RichInfoSegs[i].first.points.col(j) + (1 - a) * RichInfoSegs[i].first.points.col(j - 1));
             //cout << " " << grid_map_->getInflateOccupancy(pt) << " pt=" << pt.transpose() << endl;
             ;
-            if (grid_map_->getInflateOccupancy(pt))
+            if (grid_map_->getInflateOccupancy(pt) != 0)
             {
               occ_end_id = j;
               occ_end_pt = pt;
@@ -199,7 +216,7 @@ namespace ego_planner
             base_pt_reverse = RichInfoSegs[i].first.points.col(j) + base_vec_reverse * (RichInfoSegs[i].first.base_point[j][0] - RichInfoSegs[i].first.points.col(j)).norm();
           }
 
-          if (grid_map_->getInflateOccupancy(base_pt_reverse)) // Search outward.
+          if (grid_map_->getInflateOccupancy(base_pt_reverse) != 0) // Search outward.
           {
             double l_upbound = 5 * CTRL_PT_DIST; // "5" is the threshold.
             double l = RESOLUTION;
@@ -207,7 +224,7 @@ namespace ego_planner
             {
               Eigen::Vector3d base_pt_temp = base_pt_reverse + l * base_vec_reverse;
               //cout << base_pt_temp.transpose() << endl;
-              if (!grid_map_->getInflateOccupancy(base_pt_temp))
+              if (grid_map_->getInflateOccupancy(base_pt_temp) == 0)
               {
                 RichInfoSegs[i].second.base_point[j][0] = base_pt_temp;
                 RichInfoSegs[i].second.direction[j][0] = base_vec_reverse;
@@ -274,7 +291,7 @@ namespace ego_planner
         Eigen::Vector3d base_vec_reverse = -RichInfoSegs[i].first.direction[0][0];
         Eigen::Vector3d base_pt_reverse = RichInfoSegs[i].first.points.col(0) + base_vec_reverse * (RichInfoSegs[i].first.base_point[0][0] - RichInfoSegs[i].first.points.col(0)).norm();
 
-        if (grid_map_->getInflateOccupancy(base_pt_reverse)) // Search outward.
+        if (grid_map_->getInflateOccupancy(base_pt_reverse) != 0) // Search outward.
         {
           double l_upbound = 5 * CTRL_PT_DIST; // "5" is the threshold.
           double l = RESOLUTION;
@@ -282,7 +299,7 @@ namespace ego_planner
           {
             Eigen::Vector3d base_pt_temp = base_pt_reverse + l * base_vec_reverse;
             //cout << base_pt_temp.transpose() << endl;
-            if (!grid_map_->getInflateOccupancy(base_pt_temp))
+            if (grid_map_->getInflateOccupancy(base_pt_temp) == 0)
             {
               RichInfoSegs[i].second.base_point[0][0] = base_pt_temp;
               RichInfoSegs[i].second.direction[0][0] = base_vec_reverse;
@@ -443,19 +460,35 @@ namespace ego_planner
 
     /*** Segment the initial trajectory according to obstacles ***/
     constexpr int ENOUGH_INTERVAL = 2;
-    double step_size = grid_map_->getResolution() / ((init_points.col(0) - init_points.rightCols(1)).norm() / (init_points.cols() - 1)) / 1.5;
+    // Sample every control-point segment at approximately one voxel. The old
+    // implementation used only the start/end chord; a turning or duplicated
+    // route could therefore produce an infinite/huge step and miss the
+    // occupied part of the initial B-spline.
+    const double resolution = std::max(1.0e-3, grid_map_->getResolution());
     int in_id = -1, out_id = -1;
     vector<std::pair<int, int>> segment_ids;
     int same_occ_state_times = ENOUGH_INTERVAL + 1;
     bool occ, last_occ = false;
     bool flag_got_start = false, flag_got_end = false, flag_got_end_maybe = false;
-    int i_end = (int)init_points.cols() - order_ - ((int)init_points.cols() - 2 * order_) / 3; // only check closed 2/3 points.
+    // The original implementation segmented only the first 2/3 of the seed
+    // because it replanned very frequently. In route mode that allowed an
+    // obstacle in the last third to be published without any rebound
+    // direction. Generate collision segments for the complete local seed.
+    int i_end = (int)init_points.cols() - order_;
+    bool route_blocked = false;
     for (int i = order_; i <= i_end; ++i)
     {
       //cout << " *" << i-1 << "*" ;
+      const double segment_length =
+          (init_points.col(i - 1) - init_points.col(i)).norm();
+      double step_size = segment_length > 1.0e-6
+                             ? resolution / segment_length / 1.5
+                             : 1.0;
+      step_size = std::min(1.0, std::max(1.0e-3, step_size));
       for (double a = 1.0; a > 0.0; a -= step_size)
       {
-        occ = grid_map_->getInflateOccupancy(a * init_points.col(i - 1) + (1 - a) * init_points.col(i));
+        occ = grid_map_->getInflateOccupancy(a * init_points.col(i - 1) + (1 - a) * init_points.col(i)) != 0;
+        route_blocked = route_blocked || (route_reference_mode_ && occ);
         //cout << " " << occ;
         // cout << setprecision(5);
         // cout << (a * init_points.col(i-1) + (1-a) * init_points.col(i)).transpose() << " occ1=" << occ << endl;
@@ -497,6 +530,24 @@ namespace ego_planner
         }
       }
     }
+
+    if (flag_first_init && route_reference_mode_)
+    {
+      // A route cost is useful for keeping a clear allocator path exact, but
+      // becomes a local minimum when that same path enters an obstacle. Let
+      // collision/rebound costs dominate only for this blocked local horizon.
+      // A blocked allocator route is only a nominal guide. Keeping even a
+      // small route gradient here can pin L-BFGS to the colliding side of a
+      // wall, especially when the first local B-spline interval is already
+      // occupied. Collision/rebound and feasibility costs must be the only
+      // active route objective until a free detour has been found.
+      route_tracking_scale_ = route_blocked ? 0.0 : 1.0;
+      if (route_blocked)
+      {
+        ROS_WARN("Allocator route intersects the inflated map; relaxing route tracking to %.2f for obstacle rebound",
+                 route_tracking_scale_);
+      }
+    }
     // cout << endl;
 
     // for (size_t i = 0; i < segment_ids.size(); i++)
@@ -517,7 +568,7 @@ namespace ego_planner
     {
       //cout << "in=" << in.transpose() << " out=" << out.transpose() << endl;
       Eigen::Vector3d in(init_points.col(segment_ids[i].first)), out(init_points.col(segment_ids[i].second));
-      if (a_star_->AstarSearch(/*(in-out).norm()/10+0.05*/ 0.1, in, out))
+      if (a_star_->AstarSearch(a_star_resolution_, in, out))
       {
         a_star_pathes.push_back(a_star_->getPath());
       }
@@ -653,7 +704,7 @@ namespace ego_planner
             cps_.flag_temp[j] = true;
             for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
             {
-              occ = grid_map_->getInflateOccupancy((a / length) * intersection_point + (1 - a / length) * init_points.col(j));
+              occ = grid_map_->getInflateOccupancy((a / length) * intersection_point + (1 - a / length) * init_points.col(j)) != 0;
 
               if (occ || a < grid_map_->getResolution())
               {
@@ -909,26 +960,47 @@ namespace ego_planner
 
     int end_idx = q.cols() - order_;
 
+    // Rebound optimization normally has no geometric reference. Route mode
+    // supplies one reference point for every interpolation point, including
+    // the final one. Guard this to avoid reading past ref_pts_ on short paths.
+    const size_t required_reference_count =
+        static_cast<size_t>(std::max(0, end_idx + 1));
+    if (ref_pts_.size() < required_reference_count)
+      return;
+
     // def: f = |x*v|^2/a^2 + |x×v|^2/b^2
-    double a2 = 25, b2 = 1;
+    // The legacy fitness term deliberately allows a large longitudinal
+    // deviation because it is used for free local replanning.  A complete
+    // allocator route is different: in a clear map it is a hard geometric
+    // guide, so use a much tighter isotropic error here. Obstacle cost can
+    // still pull the trajectory away when the route is actually blocked.
+    const double a2 = route_reference_mode_ ? 1.0 : 25.0;
+    const double b2 = route_reference_mode_ ? 0.25 : 1.0;
     for (auto i = order_ - 1; i < end_idx + 1; ++i)
     {
       Eigen::Vector3d x = (q.col(i - 1) + 4 * q.col(i) + q.col(i + 1)) / 6.0 - ref_pts_[i - 1];
-      Eigen::Vector3d v = (ref_pts_[i] - ref_pts_[i - 2]).normalized();
+      Eigen::Vector3d tangent = ref_pts_[i] - ref_pts_[i - 2];
+      if (tangent.squaredNorm() < 1.0e-8)
+        tangent = q.col(i + 1) - q.col(i - 1);
+      if (tangent.squaredNorm() < 1.0e-8)
+        continue;
+      Eigen::Vector3d v = tangent.normalized();
 
       double xdotv = x.dot(v);
       Eigen::Vector3d xcrossv = x.cross(v);
 
       double f = pow((xdotv), 2) / a2 + pow(xcrossv.norm(), 2) / b2;
+      f *= route_reference_mode_ ? route_tracking_scale_ : 1.0;
       cost += f;
 
       Eigen::Matrix3d m;
       m << 0, -v(2), v(1), v(2), 0, -v(0), -v(1), v(0), 0;
       Eigen::Vector3d df_dx = 2 * xdotv / a2 * v + 2 / b2 * m * xcrossv;
 
-      gradient.col(i - 1) += df_dx / 6;
-      gradient.col(i) += 4 * df_dx / 6;
-      gradient.col(i + 1) += df_dx / 6;
+      const double route_scale = route_reference_mode_ ? route_tracking_scale_ : 1.0;
+      gradient.col(i - 1) += route_scale * df_dx / 6;
+      gradient.col(i) += route_scale * 4 * df_dx / 6;
+      gradient.col(i + 1) += route_scale * df_dx / 6;
     }
   }
 
@@ -1208,7 +1280,7 @@ namespace ego_planner
     for (int i = order_ - 1; i <= i_end; ++i)
     {
 
-      bool occ = grid_map_->getInflateOccupancy(cps_.points.col(i));
+      bool occ = grid_map_->getInflateOccupancy(cps_.points.col(i)) != 0;
 
       /*** check if the new collision will be valid ***/
       if (occ)
@@ -1231,7 +1303,7 @@ namespace ego_planner
         int j;
         for (j = i - 1; j >= 0; --j)
         {
-          occ = grid_map_->getInflateOccupancy(cps_.points.col(j));
+          occ = grid_map_->getInflateOccupancy(cps_.points.col(j)) != 0;
           if (!occ)
           {
             in_id = j;
@@ -1246,7 +1318,7 @@ namespace ego_planner
 
         for (j = i + 1; j < cps_.size; ++j)
         {
-          occ = grid_map_->getInflateOccupancy(cps_.points.col(j));
+          occ = grid_map_->getInflateOccupancy(cps_.points.col(j)) != 0;
 
           if (!occ)
           {
@@ -1275,7 +1347,7 @@ namespace ego_planner
       {
         /*** a star search ***/
         Eigen::Vector3d in(cps_.points.col(segment_ids[i].first)), out(cps_.points.col(segment_ids[i].second));
-        if (a_star_->AstarSearch(/*(in-out).norm()/10+0.05*/ 0.1, in, out))
+        if (a_star_->AstarSearch(a_star_resolution_, in, out))
         {
           a_star_pathes.push_back(a_star_->getPath());
         }
@@ -1345,7 +1417,7 @@ namespace ego_planner
               cps_.flag_temp[j] = true;
               for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
               {
-                bool occ = grid_map_->getInflateOccupancy((a / length) * intersection_point + (1 - a / length) * cps_.points.col(j));
+                bool occ = grid_map_->getInflateOccupancy((a / length) * intersection_point + (1 - a / length) * cps_.points.col(j)) != 0;
 
                 if (occ || a < grid_map_->getResolution())
                 {
@@ -1496,22 +1568,49 @@ namespace ego_planner
         UniformBspline traj = UniformBspline(cps_.points, 3, bspline_interval_);
         double tm, tmp;
         traj.getTimeSpan(tm, tmp);
-        double t_step = (tmp - tm) / ((traj.evaluateDeBoorT(tmp) - traj.evaluateDeBoorT(tm)).norm() / grid_map_->getResolution());
-        for (double t = tm; t < tmp * 2 / 3; t += t_step) // Only check the closest 2/3 partition of the whole trajectory.
+        // Use a bounded time step instead of dividing by the endpoint chord.
+        // A route can turn back, making that chord almost zero even though
+        // the trajectory is long; the old expression then skipped collision
+        // samples or produced an invalid step.
+        const double t_step = std::max(
+            0.005, std::min(0.02,
+                            grid_map_->getResolution() /
+                                std::max(0.1, max_vel_)));
+        // Validate the whole local trajectory before accepting it. Checking
+        // only the first 2/3 is unsafe for a complete allocator route: the
+        // final third is still sent to traj_server and can contain a wall.
+        const double check_end = tmp;
+        Eigen::Vector3d first_collision = Eigen::Vector3d::Zero();
+        double first_collision_time = -1.0;
+        for (double t = tm; t < check_end; t += t_step)
         {
-          flag_occ = grid_map_->getInflateOccupancy(traj.evaluateDeBoorT(t));
+          const Eigen::Vector3d sample = traj.evaluateDeBoorT(t);
+          flag_occ = grid_map_->getInflateOccupancy(sample) != 0;
           if (flag_occ)
           {
+            first_collision = sample;
+            first_collision_time = t;
             //cout << "hit_obs, t=" << t << " P=" << traj.evaluateDeBoorT(t).transpose() << endl;
 
-            if (t <= bspline_interval_) // First 3 control points in obstacles!
+            if (t <= bspline_interval_ && !route_reference_mode_)
             {
               // cout << cps_.points.col(1).transpose() << "\n"
               //      << cps_.points.col(2).transpose() << "\n"
               //      << cps_.points.col(3).transpose() << "\n"
               //      << cps_.points.col(4).transpose() << endl;
-              ROS_WARN("First 3 control points in obstacles! return false, t=%f", t);
+              ROS_WARN("First 3 control points in obstacles! return false, t=%f, p=(%.2f, %.2f, %.2f)",
+                       t, sample.x(), sample.y(), sample.z());
               return false;
+            }
+
+            if (t <= bspline_interval_ && route_reference_mode_)
+            {
+              // A blocked allocator route may touch the first local
+              // B-spline interval. Route mode now gets a detour seed above;
+              // keep this as a rebound retry fallback instead of aborting
+              // before the existing collision-direction update can run.
+              ROS_WARN("Initial route segment collides; retrying rebound instead of aborting, t=%.3f, p=(%.2f, %.2f, %.2f)",
+                       t, sample.x(), sample.y(), sample.z());
             }
 
             break;
@@ -1573,6 +1672,11 @@ namespace ego_planner
         }
         else // restart
         {
+          if (route_reference_mode_)
+            route_tracking_scale_ = std::max(0.05, route_tracking_scale_ * 0.25);
+          ROS_WARN("Optimized B-spline still intersects inflated map at t=%.3f, p=(%.2f, %.2f, %.2f); retry route_scale=%.2f",
+                   first_collision_time, first_collision.x(), first_collision.y(),
+                   first_collision.z(), route_tracking_scale_);
           restart_nums++;
           initControlPoints(cps_.points, false);
           new_lambda2_ *= 2;
@@ -1638,10 +1742,14 @@ namespace ego_planner
       UniformBspline traj = UniformBspline(cps_.points, 3, bspline_interval_);
       double tm, tmp;
       traj.getTimeSpan(tm, tmp);
-      double t_step = (tmp - tm) / ((traj.evaluateDeBoorT(tmp) - traj.evaluateDeBoorT(tm)).norm() / grid_map_->getResolution()); // Step size is defined as the maximum size that can passes throgth every gird.
-      for (double t = tm; t < tmp * 2 / 3; t += t_step)
+      const double t_step = std::max(
+          0.005, std::min(0.02,
+                          grid_map_->getResolution() /
+                              std::max(0.1, max_vel_)));
+      const double check_end = tmp;
+      for (double t = tm; t < check_end; t += t_step)
       {
-        if (grid_map_->getInflateOccupancy(traj.evaluateDeBoorT(t)))
+        if (grid_map_->getInflateOccupancy(traj.evaluateDeBoorT(t)) != 0)
         {
           // cout << "Refined traj hit_obs, t=" << t << " P=" << traj.evaluateDeBoorT(t).transpose() << endl;
 
@@ -1679,7 +1787,7 @@ namespace ego_planner
     memcpy(cps_.points.data() + 3 * order_, x, n * sizeof(x[0]));
 
     /* ---------- evaluate cost and gradient ---------- */
-    double f_smoothness, f_distance, f_feasibility /*, f_mov_objs*/, f_swarm, f_terminal;
+    double f_smoothness, f_distance, f_feasibility /*, f_mov_objs*/, f_swarm, f_terminal, f_route;
 
     Eigen::MatrixXd g_smoothness = Eigen::MatrixXd::Zero(3, cps_.size);
     Eigen::MatrixXd g_distance = Eigen::MatrixXd::Zero(3, cps_.size);
@@ -1687,6 +1795,7 @@ namespace ego_planner
     // Eigen::MatrixXd g_mov_objs = Eigen::MatrixXd::Zero(3, cps_.size);
     Eigen::MatrixXd g_swarm = Eigen::MatrixXd::Zero(3, cps_.size);
     Eigen::MatrixXd g_terminal = Eigen::MatrixXd::Zero(3, cps_.size);
+    Eigen::MatrixXd g_route = Eigen::MatrixXd::Zero(3, cps_.size);
 
     calcSmoothnessCost(cps_.points, f_smoothness, g_smoothness);
     calcDistanceCostRebound(cps_.points, f_distance, g_distance, iter_num_, f_smoothness);
@@ -1694,12 +1803,13 @@ namespace ego_planner
     // calcMovingObjCost(cps_.points, f_mov_objs, g_mov_objs);
     calcSwarmCost(cps_.points, f_swarm, g_swarm);
     calcTerminalCost(cps_.points, f_terminal, g_terminal);
+    calcFitnessCost(cps_.points, f_route, g_route);
 
-    f_combine = lambda1_ * f_smoothness + new_lambda2_ * f_distance + lambda3_ * f_feasibility + new_lambda2_ * f_swarm + lambda2_ * f_terminal;
+    f_combine = lambda1_ * f_smoothness + new_lambda2_ * f_distance + lambda3_ * f_feasibility + new_lambda2_ * f_swarm + lambda2_ * f_terminal + lambda_route_tracking_ * f_route;
     //f_combine = lambda1_ * f_smoothness + new_lambda2_ * f_distance + lambda3_ * f_feasibility + new_lambda2_ * f_mov_objs;
     //printf("origin %f %f %f %f\n", f_smoothness, f_distance, f_feasibility, f_combine);
 
-    Eigen::MatrixXd grad_3D = lambda1_ * g_smoothness + new_lambda2_ * g_distance + lambda3_ * g_feasibility + new_lambda2_ * g_swarm + lambda2_ * g_terminal;
+    Eigen::MatrixXd grad_3D = lambda1_ * g_smoothness + new_lambda2_ * g_distance + lambda3_ * g_feasibility + new_lambda2_ * g_swarm + lambda2_ * g_terminal + lambda_route_tracking_ * g_route;
     //Eigen::MatrixXd grad_3D = lambda1_ * g_smoothness + new_lambda2_ * g_distance + lambda3_ * g_feasibility + new_lambda2_ * g_mov_objs;
     memcpy(grad, grad_3D.data() + 3 * order_, n * sizeof(grad[0]));
   }

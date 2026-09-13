@@ -8,22 +8,62 @@
   <arg name="goal_x" default="1.0"/>
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>
-  <arg name="map_size_x" default="30.0"/>
-  <arg name="map_size_y" default="20.0"/>
-  <arg name="map_size_z" default="12.0"/>
+  <arg name="map_resolution" default="0.20"/>
+  <arg name="map_size_x" default="36.0"/>
+  <arg name="map_size_y" default="36.0"/>
+  <arg name="map_size_z" default="9.0"/>
+  <arg name="local_update_range_x" default="14.0"/>
+  <arg name="local_update_range_y" default="14.0"/>
+  <arg name="local_update_range_z" default="7.5"/>
   <arg name="rolling_map_enabled" default="false"/>
-  <arg name="rolling_map_margin_m" default="6.0"/>
+  <arg name="rolling_map_margin_m" default="12.0"/>
+  <arg name="astar_resolution" default="0.20"/>
+  <arg name="astar_search_time" default="0.15"/>
+  <arg name="astar_pool_size_xy" default="100"/>
+  <arg name="astar_pool_size_z" default="60"/>
   <arg name="owner_acquisition_timeout" default="5.0"/>
+  <arg name="gate_owner_until_takeoff" default="true"/>
+  <arg name="startup_min_altitude" default="0.60"/>
+  <arg name="startup_max_vertical_speed" default="0.45"/>
+  <arg name="control_command_topic" default="/$(arg uav_name)/controller/command"/>
+  <arg name="path_timeout" default="2.0"/>
+  <arg name="route_stall_timeout" default="12.0"/>
+  <arg name="route_stall_recovery_enabled" default="true"/>
+  <arg name="route_stall_max_recoveries" default="0"/>
+  <arg name="route_progress_epsilon_m" default="0.25"/>
+  <arg name="path_progress_backtrack_m" default="1.0"/>
+  <arg name="path_progress_search_window_m" default="25.0"/>
   <arg name="ground_height" default="-0.01"/>
   <arg name="virtual_ceil_height" default="10.0"/>
   <arg name="visualization_truncate_height" default="10.0"/>
   <arg name="goal_topic" default="/move_base_simple/goal"/>
+  <arg name="task_path_topic" default="/$(arg uav_name)/planning/task_path"/>
   <arg name="status_topic" default="planning/status"/>
   <arg name="healthy_topic" default="planning/healthy"/>
   <arg name="ego_goal_topic" default="/drone_$(arg ego_id)_planning/validated_goal"/>
+  <arg name="ego_path_topic" default="/drone_$(arg ego_id)_planning/validated_path"/>
   <arg name="max_vel" default="0.30"/>
   <arg name="max_acc" default="0.30"/>
-  <arg name="flight_type" default="1"/>
+  <!-- Local EGO planning horizon in metres. Keep this independent from map
+       dimensions so a longer look-ahead does not allocate a larger map. -->
+  <arg name="planning_horizon" default="10.0"/>
+  <arg name="route_tracking_weight" default="8.0"/>
+  <arg name="replan_interval" default="0.25"/>
+  <arg name="replan_lookahead_time" default="0.12"/>
+  <arg name="safety_check_interval" default="0.02"/>
+  <arg name="obstacle_clearance" default="0.90"/>
+  <arg name="obstacle_inflation" default="0.25"/>
+  <!-- Use only measured lidar returns; do not create vertical pseudo-clouds. -->
+  <arg name="cloud_vertical_obstacle_guard" default="false"/>
+  <arg name="cloud_obstacle_min_height" default="0.20"/>
+  <arg name="cloud_obstacle_height" default="10.0"/>
+  <arg name="cloud_obstacle_persistence" default="0.5"/>
+  <!-- Multiple candidates are useful in very cluttered scenes but increase
+       latency. The fast single-rebound mode is the default for live flight. -->
+  <arg name="use_distinctive_trajs" default="false"/>
+  <!-- Route mode is the normal integration path: the allocator publishes one
+       nav_msgs/Path and EGO performs the local obstacle-avoiding replans. -->
+  <arg name="flight_type" default="3"/>
   <arg name="traj_command_topic" default="/$(arg uav_name)/ego/position_command"/>
   <arg name="bridge_command_topic" default="$(arg traj_command_topic)"/>
   <arg name="swarm_raw_topic" default="/drone_$(arg ego_id)_planning/swarm_trajs_raw"/>
@@ -37,11 +77,22 @@
     <remap from="/drone_$(arg ego_id)_planning/swarm_trajs" to="$(arg swarm_raw_topic)"/>
   <include file="$(find ego_planner)/launch/advanced_param.xml">
     <arg name="drone_id" value="$(arg ego_id)"/>
+    <arg name="reference_path_topic" value="$(arg ego_path_topic)"/>
+    <arg name="frame_id" value="$(arg common_frame)"/>
+    <arg name="route_tracking_weight" value="$(arg route_tracking_weight)"/>
+    <arg name="map_resolution" value="$(arg map_resolution)"/>
     <arg name="map_size_x_" value="$(arg map_size_x)"/>
     <arg name="map_size_y_" value="$(arg map_size_y)"/>
     <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="local_update_range_x" value="$(arg local_update_range_x)"/>
+    <arg name="local_update_range_y" value="$(arg local_update_range_y)"/>
+    <arg name="local_update_range_z" value="$(arg local_update_range_z)"/>
     <arg name="rolling_map_enabled_" value="$(arg rolling_map_enabled)"/>
     <arg name="rolling_map_margin_m_" value="$(arg rolling_map_margin_m)"/>
+    <arg name="astar_resolution" value="$(arg astar_resolution)"/>
+    <arg name="astar_search_time" value="$(arg astar_search_time)"/>
+    <arg name="astar_pool_size_xy" value="$(arg astar_pool_size_xy)"/>
+    <arg name="astar_pool_size_z" value="$(arg astar_pool_size_z)"/>
     <arg name="ground_height_" value="$(arg ground_height)"/>
     <arg name="virtual_ceil_height_" value="$(arg virtual_ceil_height)"/>
     <arg name="visualization_truncate_height_" value="$(arg visualization_truncate_height)"/>
@@ -54,8 +105,17 @@
     <arg name="fx" value="387.0"/><arg name="fy" value="387.0"/>
     <arg name="max_vel" value="$(arg max_vel)"/>
     <arg name="max_acc" value="$(arg max_acc)"/>
-    <arg name="planning_horizon" value="8.0"/>
-    <arg name="use_distinctive_trajs" value="false"/>
+    <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+    <arg name="replan_interval" value="$(arg replan_interval)"/>
+    <arg name="replan_lookahead_time" value="$(arg replan_lookahead_time)"/>
+    <arg name="safety_check_interval" value="$(arg safety_check_interval)"/>
+    <arg name="obstacle_clearance" value="$(arg obstacle_clearance)"/>
+    <arg name="obstacle_inflation" value="$(arg obstacle_inflation)"/>
+    <arg name="cloud_vertical_obstacle_guard" value="$(arg cloud_vertical_obstacle_guard)"/>
+    <arg name="cloud_obstacle_min_height" value="$(arg cloud_obstacle_min_height)"/>
+    <arg name="cloud_obstacle_height" value="$(arg cloud_obstacle_height)"/>
+    <arg name="cloud_obstacle_persistence" value="$(arg cloud_obstacle_persistence)"/>
+    <arg name="use_distinctive_trajs" value="$(arg use_distinctive_trajs)"/>
     <arg name="flight_type" value="$(arg flight_type)"/>
     <arg name="point_num" value="1"/>
     <arg name="point0_x" value="$(arg goal_x)"/>
@@ -72,7 +132,9 @@
         type="traj_server" output="screen" required="true">
     <remap from="position_cmd" to="$(arg traj_command_topic)"/>
     <remap from="~planning/bspline" to="/drone_$(arg ego_id)_planning/bspline"/>
-    <param name="traj_server/time_forward" value="0.0"/>
+    <param name="traj_server/time_forward" value="0.8"/>
+    <param name="traj_server/yaw_lookahead" value="0.8"/>
+    <param name="traj_server/yaw_min_horizontal_speed" value="0.05"/>
   </node>
 
   <node pkg="xd_uav_planning" type="swarm_handoff_relay.py"
@@ -102,7 +164,9 @@
       <param name="uav_name" value="$(arg uav_name)"/>
       <param name="task_state_service" value="/task_allocate/get_state"/>
       <param name="goal_topic" value="$(arg goal_topic)"/>
+      <param name="path_topic" value="$(arg task_path_topic)"/>
       <param name="ego_goal_topic" value="$(arg ego_goal_topic)"/>
+      <param name="ego_path_topic" value="$(arg ego_path_topic)"/>
       <param name="flight_type" value="$(arg flight_type)"/>
       <param name="output_gate_service"
              value="/$(arg uav_name)/reference_mux/set_enabled"/>
@@ -112,6 +176,27 @@
              value="/$(arg uav_name)/ego/reference_candidate"/>
       <param name="owner_acquisition_timeout"
              value="$(arg owner_acquisition_timeout)"/>
+      <param name="gate_owner_until_takeoff"
+             value="$(arg gate_owner_until_takeoff)" type="bool"/>
+      <param name="startup_ground_height" value="$(arg ground_height)"
+             type="double"/>
+      <param name="startup_min_altitude"
+             value="$(arg startup_min_altitude)"/>
+      <param name="startup_max_vertical_speed"
+             value="$(arg startup_max_vertical_speed)"/>
+      <param name="control_command_topic"
+             value="$(arg control_command_topic)"/>
+      <param name="path_timeout" value="$(arg path_timeout)"/>
+      <param name="route_stall_timeout" value="$(arg route_stall_timeout)"/>
+      <param name="route_stall_recovery_enabled"
+             value="$(arg route_stall_recovery_enabled)"/>
+      <param name="route_stall_max_recoveries"
+             value="$(arg route_stall_max_recoveries)"/>
+      <param name="route_progress_epsilon_m" value="$(arg route_progress_epsilon_m)"/>
+      <param name="path_progress_backtrack_m"
+             value="$(arg path_progress_backtrack_m)"/>
+      <param name="path_progress_search_window_m"
+             value="$(arg path_progress_search_window_m)"/>
       <param name="cancel_service" value="planning/cancel"/>
       <param name="odometry_topic" value="/drone_$(arg ego_id)_ego/odometry"/>
       <param name="health_topic" value="$(arg healthy_topic)"/>

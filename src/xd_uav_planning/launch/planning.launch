@@ -23,31 +23,93 @@
   <arg name="fixedwing_planning_sample_step" default="2.0"/>
   <arg name="fixedwing_dynamic_failure_cancel_service"
        default="control_manager/cancel_offboard"/>
-  <!-- EGO manual-target mode is required for live task-layer goals. -->
-  <arg name="flight_type" default="1"/>
+  <!-- EGO route mode consumes one complete nav_msgs/Path. Set to 1 only
+       when running the legacy single PoseStamped goal interface. -->
+  <arg name="flight_type" default="3"/>
   <arg name="goal_x" default="1.0"/>
   <arg name="goal_y" default="0.0"/>
   <arg name="goal_z" default="2.0"/>
-  <!-- Multirotor EGO settings restored to the previous construction profile. -->
-  <arg name="max_vel" default="3.5"/>
+  <!-- Deployment-safe default for a 10 Hz lidar and PX4 position tracking.
+       Faster profiles must be validated against measured braking distance. -->
+  <arg name="max_vel" default="2.0"/>
   <arg name="max_acc" default="2.5"/>
-  <arg name="map_size_x" default="30.0"/>
-  <arg name="map_size_y" default="30.0"/>
-  <arg name="map_size_z" default="8.0"/>
+  <!-- Local EGO planning horizon. This changes the look-ahead target only;
+       it does not enlarge the rolling voxel map. -->
+  <arg name="planning_horizon" default="10.0"/>
+  <arg name="route_tracking_weight" default="8.0"/>
+  <!-- Replan early enough that the vehicle does not travel a full metre before
+       the next local trajectory is generated. -->
+  <arg name="replan_interval" default="0.25"/>
+  <!-- EGO keeps executing the old spline while A* and L-BFGS run. Splice the
+       replacement slightly ahead to account for that computation latency. -->
+  <arg name="replan_lookahead_time" default="0.12"/>
+  <arg name="safety_check_interval" default="0.02"/>
+  <!-- Multiple rebound candidates cost more CPU; enable explicitly for dense
+       scenes after the fast single-rebound path is verified. -->
+  <arg name="use_distinctive_trajs" default="false"/>
+  <!-- Keep the B-spline away from the already inflated point-cloud map. -->
+  <arg name="obstacle_clearance" default="0.90"/>
+  <arg name="obstacle_inflation" default="0.25"/>
+  <!-- Do not synthesize vertical obstacle columns. The lidar pitch/FOV is
+       configured by the operator, so EGO should consume only real returns. -->
+  <arg name="cloud_vertical_obstacle_guard" default="false"/>
+  <arg name="cloud_obstacle_min_height" default="0.20"/>
+  <arg name="cloud_obstacle_height" default="8.0"/>
+  <!-- Retain direct-cloud hits across five frames of the 10 Hz simulated
+       lidar so temporary occlusion cannot erase a known static pillar. -->
+  <arg name="cloud_obstacle_persistence" default="0.5"/>
+  <!-- The 60 m lidar does not need a 0.1 m planning grid for 1 m pillars.
+       A 0.2 m grid covers farther ahead with less memory and CPU. -->
+  <arg name="map_resolution" default="0.20"/>
+  <arg name="map_size_x" default="36.0"/>
+  <arg name="map_size_y" default="36.0"/>
+  <arg name="map_size_z" default="9.0"/>
+  <arg name="local_update_range_x" default="14.0"/>
+  <arg name="local_update_range_y" default="14.0"/>
+  <arg name="local_update_range_z" default="7.5"/>
   <arg name="rolling_map_enabled" default="true"/>
-  <arg name="rolling_map_margin_m" default="6.0"/>
+  <!-- Recenter after about 6 m of travel, leaving at least the 10 m planning
+       horizon inside the 36 m map on every side. -->
+  <arg name="rolling_map_margin_m" default="12.0"/>
+  <arg name="astar_resolution" default="0.20"/>
+  <arg name="astar_search_time" default="0.15"/>
+  <arg name="astar_pool_size_xy" default="100"/>
+  <arg name="astar_pool_size_z" default="60"/>
   <arg name="allow_initial_ego_owner" default="true"/>
   <arg name="owner_acquisition_timeout" default="5.0"/>
+  <arg name="gate_owner_until_takeoff" default="true"/>
+  <arg name="startup_min_altitude" default="0.60"/>
+  <arg name="startup_max_vertical_speed" default="0.45"/>
+  <arg name="control_command_topic" default="/$(arg UAV_NAME)/controller/command"/>
+  <arg name="path_timeout" default="2.0"/>
+  <arg name="route_stall_timeout" default="12.0"/>
+  <arg name="route_stall_recovery_enabled" default="true"/>
+  <!-- Zero keeps retrying the allocator-owned route until cancel/reached. -->
+  <arg name="route_stall_max_recoveries" default="0"/>
+  <arg name="route_progress_epsilon_m" default="0.25"/>
+  <arg name="path_progress_backtrack_m" default="1.0"/>
+  <arg name="path_progress_search_window_m" default="25.0"/>
   <arg name="ground_height" default="-0.01"/>
   <arg name="virtual_ceil_height" default="8.0"/>
   <arg name="visualization_truncate_height" default="8.0"/>
+  <!-- Use the native radar cloud for planning. Fast-LIO's registered cloud is
+       intentionally not the default because fastlio_origin can drift in
+       sparse or open environments; it remains selectable explicitly. -->
   <arg name="cloud_input_topic" default="/$(arg UAV_NAME)/fastlio/points"/>
   <arg name="cloud_input_frame" default="$(arg UAV_NAME)/lidar_link"/>
   <arg name="cloud_timeout" default="0.50"/>
-  <arg name="minimum_sensor_range" default="0.60"/>
+  <!-- The simulated lidar is valid from 0.30 m. Keep only a small guard
+       above that hardware limit; a larger value creates a dangerous blind
+       ring exactly when close-range collision checking matters most. -->
+  <arg name="minimum_sensor_range" default="0.35"/>
   <arg name="restamp_zero_timestamp" default="false"/>
   <arg name="calibrated_body_transform" default="false"/>
   <arg name="body_to_sensor_translation_m" default="[0.0, 0.0, 0.0]"/>
+  <arg name="self_filter_enabled" default="true"/>
+  <arg name="self_filter_half_x" default="0.32"/>
+  <arg name="self_filter_half_y" default="0.32"/>
+  <arg name="self_filter_min_z" default="-0.20"/>
+  <arg name="self_filter_max_z" default="0.25"/>
 
   <group if="$(eval arg('vehicle_type') == 'multirotor')">
     <include file="$(find xd_uav_planning)/launch/internal/reference_integration.launch">
@@ -71,6 +133,11 @@
       <arg name="calibrated_body_transform" value="$(arg calibrated_body_transform)"/>
       <arg name="body_frame" value="$(arg body_frame)"/>
       <arg name="body_to_sensor_translation_m" value="$(arg body_to_sensor_translation_m)"/>
+      <arg name="self_filter_enabled" value="$(arg self_filter_enabled)"/>
+      <arg name="self_filter_half_x" value="$(arg self_filter_half_x)"/>
+      <arg name="self_filter_half_y" value="$(arg self_filter_half_y)"/>
+      <arg name="self_filter_min_z" value="$(arg self_filter_min_z)"/>
+      <arg name="self_filter_max_z" value="$(arg self_filter_max_z)"/>
     </include>
     <include file="$(find xd_uav_planning)/launch/internal/ego_px4_runtime.launch">
       <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
@@ -78,6 +145,7 @@
       <arg name="ego_id" value="$(arg ego_id)"/>
       <arg name="body_frame" value="$(arg body_frame)"/>
       <arg name="goal_topic" value="$(arg goal_topic)"/>
+      <arg name="task_path_topic" value="$(arg task_path_topic)"/>
       <arg name="status_topic" value="$(arg status_topic)"/>
       <arg name="healthy_topic" value="$(arg healthy_topic)"/>
       <arg name="flight_type" value="$(arg flight_type)"/>
@@ -86,12 +154,45 @@
       <arg name="goal_z" value="$(arg goal_z)"/>
       <arg name="max_vel" value="$(arg max_vel)"/>
       <arg name="max_acc" value="$(arg max_acc)"/>
+      <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+      <arg name="replan_interval" value="$(arg replan_interval)"/>
+      <arg name="replan_lookahead_time" value="$(arg replan_lookahead_time)"/>
+      <arg name="safety_check_interval" value="$(arg safety_check_interval)"/>
+      <arg name="obstacle_clearance" value="$(arg obstacle_clearance)"/>
+      <arg name="obstacle_inflation" value="$(arg obstacle_inflation)"/>
+      <arg name="use_distinctive_trajs" value="$(arg use_distinctive_trajs)"/>
+      <arg name="cloud_vertical_obstacle_guard" value="$(arg cloud_vertical_obstacle_guard)"/>
+      <arg name="cloud_obstacle_min_height" value="$(arg cloud_obstacle_min_height)"/>
+      <arg name="cloud_obstacle_height" value="$(arg cloud_obstacle_height)"/>
+      <arg name="cloud_obstacle_persistence" value="$(arg cloud_obstacle_persistence)"/>
+      <arg name="route_tracking_weight" value="$(arg route_tracking_weight)"/>
+      <arg name="map_resolution" value="$(arg map_resolution)"/>
       <arg name="map_size_x" value="$(arg map_size_x)"/>
       <arg name="map_size_y" value="$(arg map_size_y)"/>
       <arg name="map_size_z" value="$(arg map_size_z)"/>
+      <arg name="local_update_range_x" value="$(arg local_update_range_x)"/>
+      <arg name="local_update_range_y" value="$(arg local_update_range_y)"/>
+      <arg name="local_update_range_z" value="$(arg local_update_range_z)"/>
       <arg name="rolling_map_enabled" value="$(arg rolling_map_enabled)"/>
       <arg name="rolling_map_margin_m" value="$(arg rolling_map_margin_m)"/>
+      <arg name="astar_resolution" value="$(arg astar_resolution)"/>
+      <arg name="astar_search_time" value="$(arg astar_search_time)"/>
+      <arg name="astar_pool_size_xy" value="$(arg astar_pool_size_xy)"/>
+      <arg name="astar_pool_size_z" value="$(arg astar_pool_size_z)"/>
       <arg name="owner_acquisition_timeout" value="$(arg owner_acquisition_timeout)"/>
+      <arg name="gate_owner_until_takeoff" value="$(arg gate_owner_until_takeoff)"/>
+      <arg name="startup_min_altitude" value="$(arg startup_min_altitude)"/>
+      <arg name="startup_max_vertical_speed" value="$(arg startup_max_vertical_speed)"/>
+      <arg name="control_command_topic" value="$(arg control_command_topic)"/>
+      <arg name="path_timeout" value="$(arg path_timeout)"/>
+      <arg name="route_stall_timeout" value="$(arg route_stall_timeout)"/>
+      <arg name="route_stall_recovery_enabled"
+           value="$(arg route_stall_recovery_enabled)"/>
+      <arg name="route_stall_max_recoveries"
+           value="$(arg route_stall_max_recoveries)"/>
+      <arg name="route_progress_epsilon_m" value="$(arg route_progress_epsilon_m)"/>
+      <arg name="path_progress_backtrack_m" value="$(arg path_progress_backtrack_m)"/>
+      <arg name="path_progress_search_window_m" value="$(arg path_progress_search_window_m)"/>
       <arg name="ground_height" value="$(arg ground_height)"/>
       <arg name="virtual_ceil_height" value="$(arg virtual_ceil_height)"/>
       <arg name="visualization_truncate_height" value="$(arg visualization_truncate_height)"/>

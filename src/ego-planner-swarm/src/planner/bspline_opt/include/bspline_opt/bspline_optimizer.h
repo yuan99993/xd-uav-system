@@ -103,6 +103,22 @@ namespace ego_planner
     void setBsplineInterval(const double &ts);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
+    void setAStarResolution(const double resolution)
+    {
+      a_star_resolution_ = std::max(0.05, resolution);
+    }
+    void setRouteReference(const std::vector<Eigen::Vector3d> &reference_points)
+    {
+      ref_pts_ = reference_points;
+      route_reference_mode_ = true;
+      route_tracking_scale_ = 1.0;
+    }
+    void clearRouteReference()
+    {
+      ref_pts_.clear();
+      route_reference_mode_ = false;
+      route_tracking_scale_ = 1.0;
+    }
 
     // optional inputs
     void setGuidePath(const vector<Eigen::Vector3d> &guide_pt);
@@ -116,6 +132,11 @@ namespace ego_planner
 
     AStar::Ptr a_star_;
     std::vector<Eigen::Vector3d> ref_pts_;
+    bool route_reference_mode_{false};
+    // Keep allocator-path tracking strong in free space, but let the rebound
+    // optimizer leave a blocked reference path far enough to go around an
+    // obstacle. It is recomputed for every new local trajectory.
+    double route_tracking_scale_{1.0};
 
     std::vector<ControlPoints> distinctiveTrajs(vector<std::pair<int, int>> segments);
     std::vector<std::pair<int, int>> initControlPoints(Eigen::MatrixXd &init_points, bool flag_first_init = true);
@@ -159,11 +180,13 @@ namespace ego_planner
     double lambda2_, new_lambda2_; // distance weight
     double lambda3_;               // feasibility weight
     double lambda4_;               // curve fitting
+    double lambda_route_tracking_; // route following during local replanning
 
     int a;
     //
     double dist0_, swarm_clearance_; // safe distance
     double max_vel_, max_acc_;       // dynamic limits
+    double a_star_resolution_{0.2};  // front-end grid spacing
 
     int variable_num_;              // optimization variables
     int iter_num_;                  // iteration of the solver

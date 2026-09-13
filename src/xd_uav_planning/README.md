@@ -28,8 +28,8 @@ roslaunch xd_uav_planning planning.launch \
 正式公共接口：
 
 ```text
-/<uav>/planning/goal          geometry_msgs/PoseStamped（多旋翼输入）
-/<uav>/planning/task_path     nav_msgs/Path（固定翼执行输入）
+/<uav>/planning/goal          geometry_msgs/PoseStamped（多旋翼兼容单点输入）
+/<uav>/planning/task_path     nav_msgs/Path（多旋翼/固定翼完整路径输入）
 /<uav>/planning/route_preview nav_msgs/Path（任务层原始路线预览）
 /<uav>/planning/adjusted_path nav_msgs/Path（固定翼禁飞区调整后路径）
 /planning/no_fly_zones         xd_uav_planning/NoFlyZoneArray（全机共享禁飞区输入）
@@ -40,7 +40,9 @@ roslaunch xd_uav_planning planning.launch \
 /<uav>/planning/diagnostics   diagnostic_msgs/DiagnosticArray
 ```
 
-任务包现已使用 `planning/route_preview` 作为纯预览，固定翼执行输入只使用 `planning/task_path`。
+任务包现已使用 `planning/route_preview` 作为纯预览；多旋翼路线和固定翼路线的执行输入都使用
+`planning/task_path`。多旋翼默认 `flight_type:=3`，EGO 会把完整 Path 生成一条连续全局轨迹，再
+结合局部点云进行滚动局部避障；需要旧单点接口时显式设置 `flight_type:=1`。
 任务层 publisher、状态入口、取消交接和 YAML 说明见
 [任务层接入手册](docs/TASK_PLANNING_INTEGRATION.md)。
 
@@ -48,7 +50,7 @@ roslaunch xd_uav_planning planning.launch \
 
 ### multirotor / EGO-Swarm
 
-规划包负责 EGO 的目标校验、状态/轨迹 bridge、点云适配、健康门、引用仲裁和
+规划包负责 EGO 的目标/路径校验、状态/轨迹 bridge、点云适配、健康门、引用仲裁和
 `PlannerStatus`。EGO 私有 `PositionCommand` 只有在 frame、时间戳、载机状态和健康条件有效后
 才进入 controller。
 
@@ -58,13 +60,22 @@ EGO 的内部 frame 固定为 `world`；规划层拒绝错误 frame 和非有限
 超时会明确上报失败。首次从 `none` 获取 EGO owner 可由 `allow_initial_ego_owner` 放行，后续
 SEAD/EGO owner 切换仍执行位置和速度跳变检查。
 
-EGO 地图大小、高度边界和动态约束可从正式入口配置。默认恢复为 `30×30×8 m`、
-`max_vel=3.5 m/s`、`max_acc=2.5 m/s²`，点云默认使用本工作区的 `fastlio/points` 话题；
-滚动地图默认开启，需要固定地图时可传入 `rolling_map_enabled:=false`。占据地图
-在飞机接近水平边界前重置有限体素缓存并将窗口中心移动到当前位置；任务目标、TF 和轨迹
-继续使用 `world` 坐标。`rolling_map_margin_m` 默认 6 m，局部更新范围恢复为
-18×18×10 m，障碍物膨胀半径为 0.65 m。重定位会清空旧占据缓存，必须依靠后续传感器数据
-重建，因此实机启用前需要验证重定位期间的障碍重建和轨迹安全性。
+EGO 地图大小、高度边界和动态约束可从正式入口配置。当前多旋翼工程配置默认使用
+`36×36×9 m`、`0.20 m` 栅格、`10 m` 规划前视距离、`max_vel=2.0 m/s` 和
+`max_acc=2.5 m/s²`。点云默认使用每架飞机命名空间下的原生
+`/<uav>/fastlio/points`，并由适配器转换到 `world`；如果现场话题确实是全局
+`/fastlio/points`，启动时传入 `cloud_input_topic:=/fastlio/points`，同时把
+`cloud_input_frame` 设为该消息真实的 `header.frame_id`。滚动地图默认开启，需要固定地图时
+可传入 `rolling_map_enabled:=false`。占据地图在飞机接近水平边界前重置有限体素缓存并将窗口中心
+移动到当前位置；任务目标、TF 和轨迹继续使用 `world` 坐标。`rolling_map_margin_m` 默认 12 m，
+点云更新半径为 `14×14×7.5 m`，障碍膨胀为 0.25 m、轨迹净距为 0.90 m。直接点云命中默认
+保持 0.5 s，防止静态障碍因单帧稀疏或遮挡瞬间从地图消失。重定位仍会清空旧占据缓存，必须依靠
+后续传感器数据重建，因此实机启用前需要验证重定位期间的障碍重建和轨迹安全性。
+
+局部 A* 默认使用 `0.20 m` 栅格、`20×20×12 m` 搜索体和 0.15 s 超时；地图外空间按占据处理。
+周期重规划从当前执行轨迹前方 0.12 s 的预测状态接续，用于补偿搜索、优化和 ROS 消息传递延迟。
+这些取值针对当前 10 Hz、60 m 仿真雷达和 1 m 障碍柱；实机应按测得的点云频率、制动距离和 CPU
+耗时重新做闭环验收。
 
 官方 sequential swarm 的瞬时 `MultiBsplines` 交接仍由本包 `swarm_handoff_relay.py` 外部增强：
 锁存并周期重发启动链，同时根据 `/broadcast_bspline` 更新完整前驱轨迹，避免后机因晚订阅或

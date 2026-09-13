@@ -83,7 +83,7 @@
     <node pkg="ego_planner" name="drone_$(arg drone_id)_traj_server" type="traj_server" output="screen">
         <remap from="position_cmd" to="drone_$(arg drone_id)_planning/pos_cmd"/>
         <remap from="~planning/bspline" to="drone_$(arg drone_id)_planning/bspline"/>
-        <param name="traj_server/time_forward" value="1.0" type="double"/>
+        <param name="traj_server/time_forward" value="0.8" type="double"/>
     </node>
     <!-- use simulator -->
     <include file="$(find ego_planner)/launch/simulator.xml">

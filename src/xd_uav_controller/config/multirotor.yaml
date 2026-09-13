@@ -8,22 +8,22 @@ multirotor:
 
   path_following:
     nominal_speed: 3.0
-    lookahead_distance: 2.0
-    terminal_slowdown_distance: 4.0
-    completion_position_tolerance: 0.50
-    completion_speed_tolerance: 0.30
-    reacquisition_distance: 4.0
+    # Iris的路径参考使用前视点；2 m会让飞机主动偏离外部路径。
+    lookahead_distance: 1.0
+    terminal_slowdown_distance: 3.0
+    completion_position_tolerance: 0.30
+    completion_speed_tolerance: 0.20
+    reacquisition_distance: 3.0
 
   # 期望姿态到body-rate的内环增益。
   attitude_control:
-    gain: [5.0, 5.0, 2.0]
+    gain: [5.0, 5.0, 3.0]
 
   position_control:
     # 状态为[position, velocity]，MPC直接输出期望加速度。
     mpc:
       horizon: 26
-      # EGO replans in flight.  Penalise aggressive control changes enough to
-      # track its continuous P/V/A reference without exciting lateral sway.
+      # 9月9日Iris长时日志使用的响应基准；相比当前配置提高P/V跟踪带宽。
       q: [500.0, 180.0]
       terminal_q: [1000.0, 400.0]
       r: 45.0

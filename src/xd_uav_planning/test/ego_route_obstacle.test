@@ -1,0 +1,53 @@
+<launch>
+  <!-- Software-only acceptance test for the production Path mode. The cloud
+       deliberately contains only the obstacle's visible front face. -->
+  <include file="$(find ego_planner)/launch/advanced_param.xml">
+    <arg name="drone_id" value="0"/>
+    <arg name="reference_path_topic" value="/route_obstacle/reference_path"/>
+    <arg name="frame_id" value="world"/>
+    <arg name="map_size_x_" value="20.0"/>
+    <arg name="map_size_y_" value="16.0"/>
+    <arg name="map_size_z_" value="5.0"/>
+    <arg name="ground_height_" value="-0.01"/>
+    <arg name="virtual_ceil_height_" value="2.9"/>
+    <arg name="visualization_truncate_height_" value="3.0"/>
+    <arg name="rolling_map_enabled_" value="false"/>
+    <arg name="odometry_topic" value="route_obstacle/odom"/>
+    <arg name="camera_pose_topic" value="unused/camera_pose"/>
+    <arg name="depth_topic" value="unused/depth"/>
+    <arg name="cloud_topic" value="route_obstacle/cloud"/>
+    <arg name="cx" value="321.0"/><arg name="cy" value="243.0"/>
+    <arg name="fx" value="387.0"/><arg name="fy" value="387.0"/>
+    <arg name="max_vel" value="1.5"/>
+    <arg name="max_acc" value="2.0"/>
+    <arg name="planning_horizon" value="7.0"/>
+    <arg name="replan_interval" value="0.25"/>
+    <arg name="replan_lookahead_time" value="0.12"/>
+    <arg name="map_resolution" value="0.20"/>
+    <arg name="local_update_range_x" value="8.0"/>
+    <arg name="local_update_range_y" value="7.0"/>
+    <arg name="local_update_range_z" value="4.0"/>
+    <arg name="astar_resolution" value="0.20"/>
+    <arg name="astar_search_time" value="0.15"/>
+    <arg name="astar_pool_size_xy" value="90"/>
+    <arg name="astar_pool_size_z" value="40"/>
+    <arg name="obstacle_clearance" value="0.8"/>
+    <arg name="obstacle_inflation" value="0.3"/>
+    <arg name="cloud_vertical_obstacle_guard" value="true"/>
+    <arg name="cloud_obstacle_height" value="2.9"/>
+    <arg name="cloud_obstacle_persistence" value="0.5"/>
+    <arg name="route_tracking_weight" value="8.0"/>
+    <arg name="use_distinctive_trajs" value="false"/>
+    <arg name="flight_type" value="3"/>
+    <arg name="obj_num_set" value="0"/>
+    <arg name="point_num" value="1"/>
+    <arg name="point0_x" value="6.0"/><arg name="point0_y" value="0.0"/><arg name="point0_z" value="1.5"/>
+    <arg name="point1_x" value="0.0"/><arg name="point1_y" value="0.0"/><arg name="point1_z" value="1.5"/>
+    <arg name="point2_x" value="0.0"/><arg name="point2_y" value="0.0"/><arg name="point2_z" value="1.5"/>
+    <arg name="point3_x" value="0.0"/><arg name="point3_y" value="0.0"/><arg name="point3_z" value="1.5"/>
+    <arg name="point4_x" value="0.0"/><arg name="point4_y" value="0.0"/><arg name="point4_z" value="1.5"/>
+  </include>
+
+  <test test-name="ego_route_obstacle" pkg="xd_uav_planning"
+        type="test_ego_route_obstacle.py" time-limit="30"/>
+</launch>

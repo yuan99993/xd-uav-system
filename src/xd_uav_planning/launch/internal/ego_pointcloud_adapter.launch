@@ -7,17 +7,24 @@
   <arg name="common_frame" default="world"/>
   <arg name="output_topic" default="ego/cloud_world"/>
   <arg name="cloud_timeout" default="0.30"/>
-  <arg name="minimum_sensor_range" default="0.60"/>
+  <arg name="minimum_sensor_range" default="0.35"/>
   <arg name="restamp_zero_timestamp" default="false"/>
   <arg name="calibrated_body_transform" default="false"/>
   <arg name="body_frame" default="$(arg uav_name)/base_link"/>
   <arg name="state_topic" default="control_manager/state"/>
   <arg name="body_to_sensor_translation_m" default="[0.0, 0.0, 0.0]"/>
+  <arg name="self_filter_enabled" default="true"/>
+  <arg name="self_filter_half_x" default="0.32"/>
+  <arg name="self_filter_half_y" default="0.32"/>
+  <arg name="self_filter_min_z" default="-0.20"/>
+  <arg name="self_filter_max_z" default="0.25"/>
   <group ns="$(arg uav_name)">
     <node pkg="xd_uav_planning"
           type="ego_pointcloud_adapter_node.py"
           name="ego_pointcloud_adapter"
           output="screen"
+          respawn="true"
+          respawn_delay="1.0"
           clear_params="true">
       <param name="input_topic" value="$(arg input_topic)"/>
       <param name="expected_input_frame" value="$(arg input_frame)"/>
@@ -33,6 +40,11 @@
              value="$(arg calibrated_body_transform)"/>
       <param name="body_frame" value="$(arg body_frame)"/>
       <param name="state_topic" value="$(arg state_topic)"/>
+      <param name="self_filter_enabled" value="$(arg self_filter_enabled)"/>
+      <param name="self_filter_half_x" value="$(arg self_filter_half_x)"/>
+      <param name="self_filter_half_y" value="$(arg self_filter_half_y)"/>
+      <param name="self_filter_min_z" value="$(arg self_filter_min_z)"/>
+      <param name="self_filter_max_z" value="$(arg self_filter_max_z)"/>
       <rosparam param="body_to_sensor_translation_m"
                 subst_value="true">$(arg body_to_sensor_translation_m)</rosparam>
     </node>
