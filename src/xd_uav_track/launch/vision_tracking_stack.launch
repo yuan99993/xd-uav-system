@@ -1,0 +1,85 @@
+<launch>
+  <!-- Configurable perception-to-tracker composition.  Each camera has its
+       own detector/bridge instance and input topic, but both use the existing
+       DetectionArray output contract. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="vehicle_type" default="multirotor"/> <!-- multirotor | fixedwing -->
+  <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
+  <arg name="world_frame" default="$(arg UAV_NAME)/local_origin"/>
+  <arg name="enable_fixed_camera" default="true"/>
+  <arg name="enable_gimbal_lrf" default="false"/>
+  <arg name="enable_sar_fixed" default="true"/>
+  <arg name="enable_sar_gimbal" default="false"/>
+  <arg name="fixed_detect_config" default="$(find xd_uav_detect)/config/multirotor_fixed_camera.yaml"/>
+  <arg name="gimbal_detect_config" default="$(find xd_uav_detect)/config/gimbal_lrf_camera.yaml"/>
+  <arg name="track_config" default="$(find xd_uav_track)/config/track.yaml"/>
+  <arg name="fixed_image_topic" default="fixed_camera/image_raw"/>
+  <arg name="fixed_camera_info_topic" default="fixed_camera/camera_info"/>
+  <arg name="gimbal_image_topic" default="gimbal_camera/image_raw"/>
+  <arg name="gimbal_camera_info_topic" default="gimbal_camera/camera_info"/>
+  <arg name="fixed_image_source" default="fixed_rgb"/>
+  <arg name="fixed_sensor_id" default="fixed_camera"/>
+  <arg name="gimbal_image_source" default="gimbal_rgb"/>
+  <arg name="gimbal_sensor_id" default="gimbal_camera"/>
+
+  <include if="$(arg enable_sar_fixed)"
+           file="$(find sar_yolo_detector)/launch/xd_smart_tracker_integration.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="instance_name" value="fixed"/>
+    <arg name="input_image_topic" value="$(arg fixed_image_topic)"/>
+    <arg name="camera_info_topic" value="$(arg fixed_camera_info_topic)"/>
+    <arg name="tracked_detections_topic" value="sar_yolo_detector/fixed/tracked_detections"/>
+    <arg name="output_detections_topic" value="detect/input/fixed/detections_2d"/>
+    <arg name="image_source" value="$(arg fixed_image_source)"/>
+    <arg name="sensor_id" value="$(arg fixed_sensor_id)"/>
+  </include>
+  <include if="$(arg enable_sar_gimbal)"
+           file="$(find sar_yolo_detector)/launch/xd_smart_tracker_integration.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="instance_name" value="gimbal"/>
+    <arg name="input_image_topic" value="$(arg gimbal_image_topic)"/>
+    <arg name="camera_info_topic" value="$(arg gimbal_camera_info_topic)"/>
+    <arg name="tracked_detections_topic" value="sar_yolo_detector/gimbal/tracked_detections"/>
+    <arg name="output_detections_topic" value="detect/input/gimbal/detections_2d"/>
+    <arg name="image_source" value="$(arg gimbal_image_source)"/>
+    <arg name="sensor_id" value="$(arg gimbal_sensor_id)"/>
+  </include>
+
+  <include if="$(arg enable_fixed_camera)" file="$(find xd_uav_track)/launch/detect_instance.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="node_name" value="detect_fixed"/>
+    <arg name="config" value="$(arg fixed_detect_config)"/>
+    <arg name="body_frame" value="$(arg body_frame)"/>
+    <arg name="world_frame" value="$(arg world_frame)"/>
+    <arg name="image_source" value="$(arg fixed_image_source)"/>
+    <arg name="sensor_id" value="$(arg fixed_sensor_id)"/>
+    <arg name="detector_name" value="fixed_camera_detector"/>
+    <arg name="image_topic" value="$(arg fixed_image_topic)"/>
+    <arg name="camera_info_topic" value="$(arg fixed_camera_info_topic)"/>
+    <arg name="detections_2d_topic" value="detect/input/fixed/detections_2d"/>
+  </include>
+  <include if="$(arg enable_gimbal_lrf)" file="$(find xd_uav_track)/launch/detect_instance.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="node_name" value="detect_gimbal_lrf"/>
+    <arg name="config" value="$(arg gimbal_detect_config)"/>
+    <arg name="body_frame" value="$(arg body_frame)"/>
+    <arg name="world_frame" value="$(arg world_frame)"/>
+    <arg name="image_source" value="$(arg gimbal_image_source)"/>
+    <arg name="sensor_id" value="$(arg gimbal_sensor_id)"/>
+    <arg name="detector_name" value="gimbal_lrf_detector"/>
+    <arg name="image_topic" value="$(arg gimbal_image_topic)"/>
+    <arg name="camera_info_topic" value="$(arg gimbal_camera_info_topic)"/>
+    <arg name="detections_2d_topic" value="detect/input/gimbal/detections_2d"/>
+  </include>
+
+  <include if="$(eval arg('vehicle_type') == 'multirotor')" file="$(find xd_uav_track)/launch/track.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="body_frame" value="$(arg body_frame)"/>
+    <arg name="config" value="$(arg track_config)"/>
+  </include>
+  <include if="$(eval arg('vehicle_type') == 'fixedwing')" file="$(find xd_uav_track)/launch/track_fixedwing_sitl.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="body_frame" value="$(arg body_frame)"/>
+    <arg name="config" value="$(arg track_config)"/>
+  </include>
+</launch>

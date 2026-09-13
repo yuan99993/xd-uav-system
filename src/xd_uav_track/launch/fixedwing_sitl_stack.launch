@@ -1,0 +1,72 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Integration launch: world -> PX4/Gazebo/MAVROS -> estimator -> control -> tracker. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <!-- PX4 is supplied by the environment or launch caller so this stack is
+       relocatable and supports parallel SITL instances. -->
+  <arg name="px4_autopilot_dir" default="$(optenv PX4_AUTOPILOT_DIR)"/>
+  <arg name="model_name" default="plane_catapult"/>
+  <arg name="vehicle" default="plane_catapult"/>
+  <arg name="sdf" default="$(find xd_uav_track)/models/plane_catapult/plane_catapult.sdf"/>
+  <!-- Keep the nested fixed-wing model clear of the ground before the
+       catapult impulse.  Expose the full pose so SITL scenarios can tune it
+       without editing the model file. -->
+  <arg name="x" default="0"/>
+  <arg name="y" default="0"/>
+  <arg name="z" default="1.5"/>
+  <arg name="R" default="0"/>
+  <arg name="P" default="0"/>
+  <arg name="Y" default="0"/>
+  <arg name="world" default="$(find mavlink_sitl_gazebo)/worlds/empty.world"/>
+  <arg name="gui" default="false"/>
+  <arg name="interactive" default="false"/>
+  <arg name="start_world_tf" default="true"/>
+  <arg name="configure_px4_params" default="true"/>
+  <arg name="world_config" default="$(find xd_uav_track)/config/world_sitl.yaml"/>
+  <arg name="tf_config" default="$(find xd_uav_single_tf_manager)/config/fixedwing_single_tf.yaml"/>
+  <arg name="airspeed_topic" default="mavros/vfr_hud"/>
+  <arg name="tracker_config" default="$(find xd_uav_track)/config/fixedwing_metric_orbit.yaml"/>
+
+  <include if="$(arg start_world_tf)"
+           file="$(find xd_uav_world_tf_manager)/launch/world_tf.launch">
+    <arg name="config" value="$(arg world_config)"/>
+  </include>
+
+  <include file="$(find xd_uav_track)/launch/px4_mavros_uav1_sitl.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="px4_autopilot_dir" value="$(arg px4_autopilot_dir)"/>
+    <arg name="vehicle" value="$(arg vehicle)"/>
+    <arg name="model_name" value="$(arg model_name)"/>
+    <arg name="sdf" value="$(arg sdf)"/>
+    <arg name="x" value="$(arg x)"/>
+    <arg name="y" value="$(arg y)"/>
+    <arg name="z" value="$(arg z)"/>
+    <arg name="R" value="$(arg R)"/>
+    <arg name="P" value="$(arg P)"/>
+    <arg name="Y" value="$(arg Y)"/>
+    <arg name="world" value="$(arg world)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="interactive" value="$(arg interactive)"/>
+  </include>
+
+  <include file="$(find xd_uav_state_estimators)/launch/uav_localization_stack.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="tf_config" value="$(arg tf_config)"/>
+  </include>
+
+  <include file="$(find xd_uav_control_manager)/launch/fixedwing_system.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+  </include>
+
+  <include file="$(find xd_uav_track)/launch/track_fixedwing_sitl.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="config" value="$(arg tracker_config)"/>
+  </include>
+
+  <!-- Waits for MAVROS and applies the fixed-wing SITL airspeed/failsafe
+       parameters. Set configure_px4_params:=false to preserve a lab setup. -->
+  <node if="$(arg configure_px4_params)"
+        pkg="xd_uav_track" type="configure_px4_sitl.py"
+        name="configure_px4_sitl" output="screen"
+        args="--namespace $(arg UAV_NAME)"/>
+</launch>

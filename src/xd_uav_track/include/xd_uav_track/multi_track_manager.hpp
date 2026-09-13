@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include <std_msgs/Header.h>
 #include <xd_uav_track/DetectionArray.h>
@@ -56,6 +57,11 @@ class MultiTrackManager {
 
   ManagedDetectionFrame update(const xd_uav_track::DetectionArray& detections,
                                int image_width, int image_height);
+  // Source-aware overload keeps independent ROS image streams observable
+  // without changing the legacy three-argument API.
+  ManagedDetectionFrame update(const xd_uav_track::DetectionArray& detections,
+                               int image_width, int image_height,
+                               const std::string& image_source);
   bool latestCandidate(int track_id, xd_uav_track::DetectionCandidate* candidate,
                        std_msgs::Header* header = nullptr) const;
   void setSelectedTrackId(int track_id);
@@ -69,4 +75,3 @@ class MultiTrackManager {
 };
 
 }  // namespace xd_uav_track
-

@@ -12,11 +12,13 @@ post_arrival:
   server_wait_timeout_sec: 2.0
   failure_policy: fail
   retry_delay_sec: 5.0
+  # Applies to both direct_controller_test and planning backends.
+  control_handoff_settle_sec: 0.5
   default_task:
     task_type: track
     local_track_id: -1
     follower_profile: gm_velocity_chase
-    required_execution_sec: 10.0
+    required_execution_sec: 5.0
     maximum_duration_sec: 60.0
   mobility_profile_overrides:
     hover:
@@ -24,4 +26,12 @@ post_arrival:
     fixedwing:
       follower_profile: fw_velocity_vector
   class_overrides: {}
-  worker_overrides: {}
+  # These workers currently both execute TRACK. Profiles may be changed
+  # independently later without coupling the choice to mobility_profile.
+  worker_overrides:
+    uav3:
+      task_type: track
+      follower_profile: gm_velocity_chase
+    uav4:
+      task_type: track
+      follower_profile: gm_velocity_chase

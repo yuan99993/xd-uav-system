@@ -14,10 +14,20 @@
   <depend>mavros_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>roscpp</depend>
+  <depend>rospy</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <build_depend>message_generation</build_depend>
   <exec_depend>message_runtime</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>gazebo_msgs</exec_depend>
+  <exec_depend>mavros</exec_depend>
+  <exec_depend>rosnode</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>xd_uav_state_estimators</exec_depend>
+  <exec_depend>xd_uav_control_manager</exec_depend>
+  <exec_depend>xd_uav_world_tf_manager</exec_depend>
+  <exec_depend>xd_uav_single_tf_manager</exec_depend>
 
   <test_depend>gtest</test_depend>
 

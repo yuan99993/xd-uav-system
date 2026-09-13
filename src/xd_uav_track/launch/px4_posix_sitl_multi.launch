@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Local copy of PX4's small posix SITL wrapper with model-name and SDF
+       parameterization. It removes the old hard-coded PX4 checkout path. -->
+  <!-- PX4_AUTOPILOT_DIR is mandatory for this launch wrapper. -->
+  <arg name="px4_autopilot_dir" default="$(optenv PX4_AUTOPILOT_DIR)"/>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="vehicle" default="plane_catapult"/>
+  <arg name="model_name" default="$(arg UAV_NAME)"/>
+  <arg name="sdf" default="$(find xd_uav_track)/models/plane_catapult/plane_catapult.sdf"/>
+  <arg name="base_plane_sdf"
+       default="$(arg px4_autopilot_dir)/Tools/sitl_gazebo/models/plane/plane.sdf"/>
+  <arg name="world" default="$(find mavlink_sitl_gazebo)/worlds/empty.world"/>
+  <arg name="x" default="0"/><arg name="y" default="0"/><arg name="z" default="0"/>
+  <arg name="R" default="0"/><arg name="P" default="0"/><arg name="Y" default="0"/>
+  <arg name="gui" default="true"/><arg name="interactive" default="true"/>
+  <arg name="verbose" default="false"/>
+
+  <env name="PX4_SIM_MODEL" value="$(arg vehicle)"/>
+  <env name="PX4_ESTIMATOR" value="ekf2"/>
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find xd_uav_track)/models:$(arg px4_autopilot_dir)/Tools/sitl_gazebo/models:$(optenv GAZEBO_MODEL_PATH)"/>
+  <!-- PX4's SITL-only sensor, catapult and visual plugins are built here but
+       are not installed into the system Gazebo plugin directory. -->
+  <env name="GAZEBO_PLUGIN_PATH"
+       value="$(arg px4_autopilot_dir)/build/px4_sitl_default/build_gazebo:$(optenv GAZEBO_PLUGIN_PATH)"/>
+
+  <arg if="$(eval arg('interactive'))" name="px4_command_arg1" value=""/>
+  <arg unless="$(eval arg('interactive'))" name="px4_command_arg1" value="-d"/>
+  <!-- roslaunch resolves node types inside a ROS package and therefore cannot
+       execute an absolute PX4 binary as a px4-package node. The local wrapper
+       validates the checkout argument and execs its SITL binary directly. -->
+  <node name="sitl" pkg="xd_uav_track" type="run_px4_sitl.py"
+        output="screen" required="true"
+        args="--px4-autopilot-dir $(arg px4_autopilot_dir) $(arg px4_command_arg1)"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="gui" value="$(arg gui)"/><arg name="world_name" value="$(arg world)"/>
+    <arg name="verbose" value="$(arg verbose)"/>
+  </include>
+
+  <!-- The parameter command is synchronous during launch parsing, so the
+       generated SDF exists before spawn_model starts. A user-supplied sdf is
+       still honored for non-catapult PX4 models. -->
+  <param if="$(eval arg('vehicle') == 'plane_catapult')"
+         name="/xd_uav_track/plane_catapult_sdf"
+         command="$(find xd_uav_track)/scripts/render_plane_catapult_sdf.py --template $(find xd_uav_track)/models/plane_catapult/plane_catapult.sdf.template --base-sdf $(arg base_plane_sdf) --uav-name $(arg UAV_NAME)"/>
+  <node if="$(eval arg('vehicle') == 'plane_catapult')"
+        name="$(anon catapult_spawn)" pkg="gazebo_ros" type="spawn_model"
+        output="screen" args="-sdf -param /xd_uav_track/plane_catapult_sdf -model $(arg model_name) -x $(arg x) -y $(arg y) -z $(arg z) -R $(arg R) -P $(arg P) -Y $(arg Y)"/>
+  <node unless="$(eval arg('vehicle') == 'plane_catapult')"
+        name="$(anon vehicle_spawn)" pkg="gazebo_ros" type="spawn_model"
+        output="screen" args="-sdf -file $(arg sdf) -model $(arg model_name) -x $(arg x) -y $(arg y) -z $(arg z) -R $(arg R) -P $(arg P) -Y $(arg Y)"/>
+</launch>

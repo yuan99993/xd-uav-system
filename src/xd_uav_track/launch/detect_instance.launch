@@ -1,0 +1,42 @@
+<launch>
+  <!-- Local composition wrapper. It keeps xd_uav_detect's output contract,
+       while making per-camera metadata and input topics real launch params. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="config"/>
+  <arg name="node_name" default="detect"/>
+  <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
+  <arg name="world_frame" default="$(arg UAV_NAME)/local_origin"/>
+  <arg name="image_source" default=""/>
+  <arg name="sensor_id" default=""/>
+  <arg name="detector_name" default=""/>
+  <arg name="image_topic" default=""/>
+  <arg name="camera_info_topic" default=""/>
+  <arg name="detections_2d_topic" default=""/>
+  <arg name="gimbal_state_topic" default=""/>
+  <arg name="gimbal_range_topic" default=""/>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_detect" type="xd_uav_detect_node"
+          name="$(arg node_name)" output="screen" clear_params="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="frames/body" value="$(arg body_frame)"/>
+      <param name="frames/world" value="$(arg world_frame)"/>
+      <param if="$(eval arg('image_source') != '')"
+             name="metadata/image_source" value="$(arg image_source)"/>
+      <param if="$(eval arg('sensor_id') != '')"
+             name="metadata/sensor_id" value="$(arg sensor_id)"/>
+      <param if="$(eval arg('detector_name') != '')"
+             name="metadata/detector_name" value="$(arg detector_name)"/>
+      <param if="$(eval arg('image_topic') != '')"
+             name="interfaces/input/image" value="$(arg image_topic)"/>
+      <param if="$(eval arg('camera_info_topic') != '')"
+             name="interfaces/input/camera_info" value="$(arg camera_info_topic)"/>
+      <param if="$(eval arg('detections_2d_topic') != '')"
+             name="interfaces/input/detections_2d" value="$(arg detections_2d_topic)"/>
+      <param if="$(eval arg('gimbal_state_topic') != '')"
+             name="interfaces/input/gimbal_state" value="$(arg gimbal_state_topic)"/>
+      <param if="$(eval arg('gimbal_range_topic') != '')"
+             name="interfaces/input/gimbal_range" value="$(arg gimbal_range_topic)"/>
+    </node>
+  </group>
+</launch>

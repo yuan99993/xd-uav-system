@@ -13,11 +13,18 @@ interfaces:
 
 track:
   service_wait_timeout_sec: 2.0
+  # task_allocate and xd_uav_track consume the same detection message. Give
+  # track a short window to create the requested persistent ID before failing.
+  selection_wait_timeout_sec: 1.0
+  selection_retry_rate_hz: 20.0
   acquisition_timeout_sec: 10.0
-  required_tracking_sec: 30.0
+  required_tracking_sec: 10.0
   target_loss_timeout_sec: 3.0
   status_timeout_sec: 1.0
   maximum_duration_sec: 120.0
   minimum_tracking_quality: 0.0
+  # Do not count recognition time unless xd_uav_track is actually publishing
+  # the selected follower's control reference.
+  require_control_reference: true
   # false means Kalman-only prediction cannot contribute to task completion.
   allow_predicted: false

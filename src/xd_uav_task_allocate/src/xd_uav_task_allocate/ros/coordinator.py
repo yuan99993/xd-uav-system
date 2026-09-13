@@ -213,6 +213,10 @@ class TaskAllocateCoordinator:
         self.task_execute_retry_delay = max(
             0.0, float(post_arrival.get("retry_delay_sec", 5.0))
         )
+        self.task_execute_control_handoff_settle = max(
+            0.0,
+            float(post_arrival.get("control_handoff_settle_sec", 0.5)),
+        )
         self.task_execute_defaults = dict(post_arrival.get("default_task", {}))
         self.task_execute_mobility_profile_overrides = dict(
             post_arrival.get("mobility_profile_overrides", {})
@@ -368,6 +372,9 @@ class TaskAllocateCoordinator:
             ),
             position_history_size=rospy.get_param(
                 "~target_registry/position_history_size", 30
+            ),
+            duplicate_bbox_iou_threshold=rospy.get_param(
+                "~target_registry/duplicate_bbox_iou_threshold", 0.50
             ),
         )
         self.allocator = RescueTaskAllocator()
@@ -704,7 +711,7 @@ class TaskAllocateCoordinator:
         return task_type
 
     def _task_execute_options(self, task, worker: str) -> dict:
-        """Merge defaults with vehicle, class and worker-specific overrides."""
+        """Resolve execution by worker ID, with target class taking priority."""
 
         options = dict(self.task_execute_defaults)
         options.update(
@@ -714,12 +721,14 @@ class TaskAllocateCoordinator:
                 )
             )
         )
+        options.update(dict(self.task_execute_worker_overrides.get(str(worker), {})))
         class_options = self.task_execute_class_overrides.get(
             str(task.class_id),
             self.task_execute_class_overrides.get(int(task.class_id), {}),
         )
+        # A target-specific requirement is authoritative. For example, a fire
+        # target may require observation even if this aircraft normally tracks.
         options.update(dict(class_options))
-        options.update(dict(self.task_execute_worker_overrides.get(str(worker), {})))
         return options
 
     def _build_task_execute_goal(
@@ -768,6 +777,27 @@ class TaskAllocateCoordinator:
             self._mobility_profile(worker),
             detail,
         )
+
+    def _defer_worker_navigation_after_execution(
+        self, worker: str, now: float
+    ) -> None:
+        """Leave time for Track shutdown before either navigation backend resumes."""
+
+        delay = max(
+            0.0,
+            float(getattr(self, "task_execute_control_handoff_settle", 0.5)),
+        )
+        if delay <= 0.0:
+            return
+        self.worker_retry_after[worker] = max(
+            self.worker_retry_after.get(worker, 0.0), float(now) + delay
+        )
+        record = self.allocator.workers.get(worker)
+        if record is not None:
+            # _refresh_worker restores this from fresh odometry after the
+            # deadline. Until then assign_pending cannot give this aircraft a
+            # direct-controller goal or a planning path.
+            record.online = False
 
     def _handle_task_execute_failure(self, task, worker: str, detail: str) -> None:
         message = f"post-arrival task failed: {detail}"
@@ -843,6 +873,14 @@ class TaskAllocateCoordinator:
             if succeeded:
                 self._complete_worker_task(
                     task, worker, f"task_execute succeeded: {result_message}"
+                )
+                # start_tracker(false) has returned, but the final Track
+                # PositionTarget can still be queued. Apply the same handoff
+                # barrier to direct and planning backends before assigning the
+                # aircraft again. Planning then starts from a fresh EGO path
+                # and candidate instead of overlapping Track shutdown.
+                self._defer_worker_navigation_after_execution(
+                    worker, rospy.Time.now().to_sec()
                 )
             else:
                 error_code = (
@@ -2530,6 +2568,16 @@ class TaskAllocateCoordinator:
     ) -> None:
         """Start execution only when the worker is in radius and sees the target."""
 
+        if int(message.image_width) <= 0 or int(message.image_height) <= 0:
+            rospy.logwarn_throttle(
+                2.0,
+                "[task_allocate] ignoring %s handoff detections with invalid "
+                "image size %dx%d; xd_uav_track would reject the same frame",
+                worker,
+                int(message.image_width),
+                int(message.image_height),
+            )
+            return
         with self._lock:
             if (
                 self.mission_state != MISSION_ACTIVE
@@ -2661,6 +2709,38 @@ class TaskAllocateCoordinator:
                     track_id=int(candidate.track_id),
                     track_id_is_stable=bool(candidate.track_id_is_stable),
                     sensor_id=str(message.sensor_id),
+                    normalized_bbox=(
+                        tuple(float(value) for value in candidate.normalized_bbox)
+                        if bool(candidate.has_normalized_bbox)
+                        else (
+                            (
+                                (
+                                    float(candidate.bbox[0])
+                                    + float(candidate.bbox[2])
+                                )
+                                / (2.0 * float(message.image_width)),
+                                (
+                                    float(candidate.bbox[1])
+                                    + float(candidate.bbox[3])
+                                )
+                                / (2.0 * float(message.image_height)),
+                                (
+                                    float(candidate.bbox[2])
+                                    - float(candidate.bbox[0])
+                                )
+                                / float(message.image_width),
+                                (
+                                    float(candidate.bbox[3])
+                                    - float(candidate.bbox[1])
+                                )
+                                / float(message.image_height),
+                            )
+                            if bool(candidate.has_bbox)
+                            and int(message.image_width) > 0
+                            and int(message.image_height) > 0
+                            else None
+                        )
+                    ),
                 )
                 update = self.registry.observe(observation)
                 changed = True
@@ -2930,6 +3010,38 @@ class TaskAllocateCoordinator:
             point = self.active_goal_points.get(vehicle)
             if point is None:
                 continue
+            goal = PoseStamped()
+            goal.header.seq = int(active[0])
+            goal.header.stamp = rospy.Time.now()
+            goal.header.frame_id = self.shared_frame
+            goal.pose.position.x = float(point[0])
+            goal.pose.position.y = float(point[1])
+            goal.pose.position.z = float(point[2])
+            goal.pose.orientation.w = 1.0
+            self._publish_direct_controller_goal(vehicle, goal)
+
+    def _refresh_multirotor_direct_goals(self) -> None:
+        """Keep active direct-controller multirotor position goals current.
+
+        Track publishes streaming velocity PositionTargets.  During visual-task
+        shutdown, a final queued velocity sample can arrive after the next
+        rescue position goal and make the controller's non-latched reference
+        time out into idle.  Re-publish only while the allocator owns an active
+        navigation goal; visual handoff clears that goal before task_execute
+        starts Track, so this stream cannot compete with task execution.
+        """
+        for vehicle, active in list(self.active_goals.items()):
+            if (
+                self._mobility_profile(vehicle) != "hover"
+                or not self._uses_direct_controller(vehicle)
+                or active[1] not in ("search", "verification", "rescue")
+            ):
+                continue
+
+            point = self.active_goal_points.get(vehicle)
+            if point is None:
+                continue
+
             goal = PoseStamped()
             goal.header.seq = int(active[0])
             goal.header.stamp = rospy.Time.now()
@@ -3619,6 +3731,7 @@ class TaskAllocateCoordinator:
             self._assign_pending_verifications()
             self._dispatch_assignments()
             self._refresh_fixedwing_direct_goals()
+            self._refresh_multirotor_direct_goals()
             self._check_direct_goal_arrivals(now)
             self._check_planning_multirotor_waypoint_arrivals(now)
             self._check_mission_completed(now)

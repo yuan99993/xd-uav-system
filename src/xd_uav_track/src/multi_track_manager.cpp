@@ -287,11 +287,19 @@ MultiTrackManager& MultiTrackManager::operator=(MultiTrackManager&&) noexcept = 
 ManagedDetectionFrame MultiTrackManager::update(
     const xd_uav_track::DetectionArray& detections, const int image_width,
     const int image_height) {
+  const std::string source = detections.image_source.empty()
+      ? detections.header.frame_id : detections.image_source;
+  return update(detections, image_width, image_height, source);
+}
+
+ManagedDetectionFrame MultiTrackManager::update(
+    const xd_uav_track::DetectionArray& detections, const int image_width,
+    const int image_height, const std::string& image_source) {
   ManagedDetectionFrame output;
   output.candidates.header = detections.header;
   output.candidates.command = detections.command;
   output.tracks.header = detections.header;
-  output.tracks.image_source = detections.header.frame_id;
+  output.tracks.image_source = image_source;
   ++impl_->stats.input_frames;
 
   std::vector<PreparedDetection> prepared;
@@ -572,4 +580,3 @@ MultiTrackStatistics MultiTrackManager::statistics() const {
 }
 
 }  // namespace xd_uav_track
-

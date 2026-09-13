@@ -105,6 +105,10 @@ target_registry:
   # Reject confirmation while recent world positions are still widely spread.
   maximum_confirmation_position_spread_m: 3.0
   position_history_size: 30
+  # Same-frame same-class boxes with this much normalized-box overlap are one
+  # detector duplicate even if their independent range projection differs.
+  # This prevents two local track IDs on one physical object creating tasks.
+  duplicate_bbox_iou_threshold: 0.50
   # Applies only to unconfirmed candidates. Confirmed/task-linked targets stay
   # available for spatial deduplication while they wait for a worker.
   stale_timeout_sec: 15.0
@@ -152,7 +156,7 @@ allocation:
   worker_execution:
     # task_execute has exactly two gates: the worker is horizontally within
     # this radius of its assigned target, and its camera reports that class.
-    target_radius_m: 10.0
+    target_radius_m: 20.0
   # Larger value is dispatched first. class_id 0 is the red-marker test target.
   class_priorities:
     "0": 10
@@ -160,7 +164,7 @@ allocation:
 planner:
   # Production navigation always enters xd_uav_planning. The direct controller
   # backend remains below only as an explicit clear-area test fallback.
-  backend: planning  # planning | direct_controller_test
+  backend: direct_controller_test  # planning | direct_controller_test
   direct_controller_test:
     # Mandatory acknowledgement: this backend sends multirotor mission points
     # and complete fixed-wing geometric paths directly to the controller;

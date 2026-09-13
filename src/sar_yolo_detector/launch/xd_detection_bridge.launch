@@ -9,6 +9,10 @@
   <arg name="output_detections_topic"
        default="detect/input/detections_2d" />
   <arg name="camera_info_topic" default="down_camera/camera_info" />
+  <!-- Used when the camera driver does not publish CameraInfo. A later valid
+       CameraInfo message still replaces these initial dimensions. -->
+  <arg name="image_width" default="0" />
+  <arg name="image_height" default="0" />
   <arg name="image_source" default="eo" />
   <arg name="sensor_id" default="down_camera" />
   <arg name="detector_name" default="sar_yolo_detector" />
@@ -23,6 +27,8 @@
       <param name="output_detections_topic"
              value="$(arg output_detections_topic)" />
       <param name="camera_info_topic" value="$(arg camera_info_topic)" />
+      <param name="image_width" value="$(arg image_width)" />
+      <param name="image_height" value="$(arg image_height)" />
       <param name="image_source" value="$(arg image_source)" />
       <param name="sensor_id" value="$(arg sensor_id)" />
       <param name="detector_name" value="$(arg detector_name)" />

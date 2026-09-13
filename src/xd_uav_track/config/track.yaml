@@ -18,6 +18,7 @@ interfaces:
     detections: "detect/detections"
     vehicle_state: "state_estimator/main/odom"
     gimbal_state: "track/gimbal_state"
+    gimbal_status: "track/gimbal_status"
   output:
     # 真正送给现有控制器的速度参考。
     control_reference: "control/reference/setpoint"
@@ -148,8 +149,8 @@ follower:
   gm_velocity_chase:
     lateral_guidance_mode: "coordinated_turn"
     forward_mode: "CONSTANT"       # CONSTANT | PITCH_BASED
-    base_forward_speed: 2.0
-    forward_acceleration: 2.0
+    base_forward_speed: 0.0
+    forward_acceleration: 1.0
     pitch_velocity_scaling: 0.15
     pitch_deadzone: 0.035
     maximum_lateral_angle: 1.57

@@ -1,0 +1,24 @@
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
+  <!-- Keep the fixed-wing profile as an overlay on the complete, shared
+       tracker/follower configuration.  This guarantees that association,
+       filtering, gimbal, loss handling and safety parameters added for the
+       multicopter path are inherited instead of silently falling back to
+       potentially different C++ defaults. -->
+  <arg name="base_config" default="$(find xd_uav_track)/config/track.yaml"/>
+  <arg name="config" default="$(find xd_uav_track)/config/fixedwing_metric_orbit.yaml"/>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_track"
+          type="run_with_config_preflight.py"
+          name="track"
+          output="screen"
+          args="--track-config $(arg base_config) --track-config $(arg config) --node-package xd_uav_track --node-type xd_uav_track_node"
+          clear_params="true">
+      <rosparam command="load" file="$(arg base_config)"/>
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="frames/body" value="$(arg body_frame)"/>
+    </node>
+  </group>
+</launch>

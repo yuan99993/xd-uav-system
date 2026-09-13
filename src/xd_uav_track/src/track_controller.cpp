@@ -8,13 +8,95 @@ namespace xd_uav_track {
 namespace {
 
 bool finiteMeasurement(const TargetMeasurement& value) {
-  return std::isfinite(value.receive_time) && std::isfinite(value.x_min) &&
+  return std::isfinite(value.receive_time) &&
+      std::isfinite(value.observation_time) && std::isfinite(value.x_min) &&
          std::isfinite(value.y_min) && std::isfinite(value.x_max) &&
          std::isfinite(value.y_max) && std::isfinite(value.confidence) &&
          std::isfinite(value.tracking_quality) &&
          std::all_of(value.state_covariance.begin(),
                      value.state_covariance.end(),
                      [](double v) { return std::isfinite(v); });
+}
+
+std::array<double, 3> bodyFrdToWorldEnu(
+    const std::array<double, 3>& body_frd, const VehicleState& state) {
+  // Body FRD -> body FLU, then rotate with the complete vehicle attitude.
+  // A fixed-wing orbit can carry 30--35 deg of bank; using yaw only here
+  // projects the target onto the wrong ground point and slowly drifts the
+  // world-frame orbit centre away from the real target.
+  const double forward = body_frd[0];
+  const double left = -body_frd[1];
+  const double up = -body_frd[2];
+  const double cr = std::cos(state.roll);
+  const double sr = std::sin(state.roll);
+  const double cp = std::cos(state.pitch);
+  const double sp = std::sin(state.pitch);
+  const double cy = std::cos(state.yaw);
+  const double sy = std::sin(state.yaw);
+  return {{state.x + cy * cp * forward +
+                    (cy * sp * sr - sy * cr) * left +
+                    (cy * sp * cr + sy * sr) * up,
+           state.y + sy * cp * forward +
+                    (sy * sp * sr + cy * cr) * left +
+                    (sy * sp * cr - cy * sr) * up,
+           state.z - sp * forward + cp * sr * left + cp * cr * up}};
+}
+
+std::array<double, 3> worldEnuToBodyFrd(
+    const std::array<double, 3>& world, const VehicleState& state) {
+  const double dx = world[0] - state.x;
+  const double dy = world[1] - state.y;
+  const double dz = world[2] - state.z;
+  const double cr = std::cos(state.roll);
+  const double sr = std::sin(state.roll);
+  const double cp = std::cos(state.pitch);
+  const double sp = std::sin(state.pitch);
+  const double cy = std::cos(state.yaw);
+  const double sy = std::sin(state.yaw);
+  // R(roll,pitch,yaw)^T * (world - vehicle), then FLU -> FRD.
+  const double forward = cy * cp * dx + sy * cp * dy - sp * dz;
+  const double left = (cy * sp * sr - sy * cr) * dx +
+      (sy * sp * sr + cy * cr) * dy + cp * sr * dz;
+  const double up = (cy * sp * cr + sy * sr) * dx +
+      (sy * sp * cr - cy * sr) * dy + cp * cr * dz;
+  return {{forward, -left, -up}};
+}
+
+std::array<double, 3> bodyFrdVectorToWorldEnu(
+    const std::array<double, 3>& body_frd, const VehicleState& state) {
+  const double forward = body_frd[0];
+  const double left = -body_frd[1];
+  const double up = -body_frd[2];
+  const double cr = std::cos(state.roll);
+  const double sr = std::sin(state.roll);
+  const double cp = std::cos(state.pitch);
+  const double sp = std::sin(state.pitch);
+  const double cy = std::cos(state.yaw);
+  const double sy = std::sin(state.yaw);
+  return {{cy * cp * forward +
+                (cy * sp * sr - sy * cr) * left +
+                (cy * sp * cr + sy * sr) * up,
+           sy * cp * forward +
+                (sy * sp * sr + cy * cr) * left +
+                (sy * sp * cr - cy * sr) * up,
+           -sp * forward + cp * sr * left + cp * cr * up}};
+}
+
+std::array<double, 3> worldEnuVectorToBodyFrd(
+    const std::array<double, 3>& world, const VehicleState& state) {
+  const double cr = std::cos(state.roll);
+  const double sr = std::sin(state.roll);
+  const double cp = std::cos(state.pitch);
+  const double sp = std::sin(state.pitch);
+  const double cy = std::cos(state.yaw);
+  const double sy = std::sin(state.yaw);
+  const double forward = cy * cp * world[0] + sy * cp * world[1] -
+      sp * world[2];
+  const double left = (cy * sp * sr - sy * cr) * world[0] +
+      (sy * sp * sr + cy * cr) * world[1] + cp * sr * world[2];
+  const double up = (cy * sp * cr + sy * sr) * world[0] +
+      (sy * sp * cr - cy * sr) * world[1] + cp * cr * world[2];
+  return {{forward, -left, -up}};
 }
 
 }  // namespace
@@ -264,6 +346,7 @@ TrackController::TrackController(const TrackControllerConfig& requested)
                            config_.fw_maximum_course_offset);
   fw_climb_rate_pid_.configure(config_.fw_climb_rate_pid,
                                config_.fw_maximum_climb_rate);
+  target_guidance_.reset(new TargetGuidance(config_.target_guidance));
   forward_velocity_ = config_.initial_forward_velocity;
   gm_chase_forward_velocity_ = 0.0;
   gm_vector_velocity_ = 0.0;
@@ -275,7 +358,37 @@ void TrackController::setVehicleState(const VehicleState& state) {
     vehicle_state_.valid = false;
     return;
   }
-  vehicle_state_ = state;
+  VehicleState sanitized = state;
+  if (sanitized.pose_valid &&
+      (!std::isfinite(sanitized.x) || !std::isfinite(sanitized.y) ||
+       !std::isfinite(sanitized.z) || !std::isfinite(sanitized.yaw) ||
+       !std::isfinite(sanitized.receive_time) ||
+       !std::isfinite(sanitized.observation_time))) {
+    sanitized.pose_valid = false;
+  }
+  vehicle_state_ = sanitized;
+  if (!sanitized.pose_valid) return;
+  const double stamp = sanitized.observation_time > 0.0
+      ? sanitized.observation_time : sanitized.receive_time;
+  if (!std::isfinite(stamp) || stamp <= 0.0) return;
+  if (!vehicle_state_history_.empty() &&
+      stamp < (vehicle_state_history_.back().observation_time > 0.0
+          ? vehicle_state_history_.back().observation_time
+          : vehicle_state_history_.back().receive_time)) {
+    // A restarted odometry clock must not corrupt a usable capture-time pose
+    // history. The newest state remains available for legacy metric input.
+    return;
+  }
+  vehicle_state_history_.push_back(sanitized);
+  const double keep_sec = std::max(2.0,
+      config_.target_guidance.world_filter_pose_history_sec);
+  while (vehicle_state_history_.size() > 2) {
+    const VehicleState& oldest = vehicle_state_history_.front();
+    const double oldest_stamp = oldest.observation_time > 0.0
+        ? oldest.observation_time : oldest.receive_time;
+    if (stamp - oldest_stamp <= keep_sec) break;
+    vehicle_state_history_.pop_front();
+  }
 }
 
 void TrackController::setGimbalState(const GimbalStateData& state) {
@@ -286,6 +399,654 @@ void TrackController::setGimbalState(const GimbalStateData& state) {
     return;
   }
   gimbal_state_ = state;
+}
+
+bool TrackController::vehicleStateAtObservationTime(
+    const double stamp, VehicleState* state) const {
+  if (state == nullptr || !vehicle_state_.valid || !vehicle_state_.pose_valid) {
+    return false;
+  }
+  if (!std::isfinite(stamp) || stamp <= 0.0 || vehicle_state_history_.empty()) {
+    *state = vehicle_state_;
+    return true;
+  }
+  const double maximum_gap = std::max(0.02,
+      config_.target_guidance.world_filter_pose_history_sec);
+  auto state_stamp = [](const VehicleState& value) {
+    return value.observation_time > 0.0 ? value.observation_time
+                                        : value.receive_time;
+  };
+  auto upper = std::lower_bound(
+      vehicle_state_history_.begin(), vehicle_state_history_.end(), stamp,
+      [&](const VehicleState& value, const double value_stamp) {
+        return state_stamp(value) < value_stamp;
+      });
+  if (upper == vehicle_state_history_.begin()) {
+    if (std::abs(state_stamp(*upper) - stamp) > maximum_gap) return false;
+    *state = *upper;
+    return true;
+  }
+  if (upper == vehicle_state_history_.end()) {
+    const VehicleState& newest = vehicle_state_history_.back();
+    if (std::abs(state_stamp(newest) - stamp) > maximum_gap) return false;
+    *state = newest;
+    return true;
+  }
+  const VehicleState& after = *upper;
+  const VehicleState& before = *std::prev(upper);
+  const double before_stamp = state_stamp(before);
+  const double after_stamp = state_stamp(after);
+  if (stamp - before_stamp > maximum_gap || after_stamp - stamp > maximum_gap ||
+      after_stamp <= before_stamp) {
+    return false;
+  }
+  const double ratio = clamp((stamp - before_stamp) /
+      (after_stamp - before_stamp), 0.0, 1.0);
+  *state = before;
+  state->roll = before.roll + ratio * (after.roll - before.roll);
+  state->pitch = before.pitch + ratio * (after.pitch - before.pitch);
+  const double yaw_delta = std::atan2(std::sin(after.yaw - before.yaw),
+                                      std::cos(after.yaw - before.yaw));
+  state->yaw = before.yaw + ratio * yaw_delta;
+  state->x = before.x + ratio * (after.x - before.x);
+  state->y = before.y + ratio * (after.y - before.y);
+  state->z = before.z + ratio * (after.z - before.z);
+  state->altitude = before.altitude + ratio * (after.altitude - before.altitude);
+  state->observation_time = stamp;
+  state->pose_valid = true;
+  state->valid = true;
+  return true;
+}
+
+bool TrackController::metricObservationFromMeasurement(
+    const TargetMeasurement& incoming, MetricObservation* observation,
+    std::string* rejection_reason) const {
+  auto reject = [&](const std::string& reason) {
+    if (rejection_reason != nullptr) *rejection_reason = reason;
+    return false;
+  };
+  if (observation == nullptr || !incoming.has_relative_position_body ||
+      !incoming.range_valid) {
+    return reject("metric position/range is unavailable");
+  }
+  const double timestamp = incoming.observation_time > 0.0 &&
+          std::isfinite(incoming.observation_time)
+      ? incoming.observation_time : incoming.receive_time;
+  VehicleState capture_state;
+  if (!vehicleStateAtObservationTime(timestamp, &capture_state)) {
+    return reject("vehicle pose is unavailable at metric capture time");
+  }
+  observation->world_position = bodyFrdToWorldEnu(
+      incoming.relative_position_body, capture_state);
+  if (!std::all_of(observation->world_position.begin(),
+                   observation->world_position.end(),
+                   [](double value) { return std::isfinite(value); })) {
+    return reject("metric world position is non-finite");
+  }
+  observation->sigma_m = incoming.position_sigma_m > 1e-3 &&
+          std::isfinite(incoming.position_sigma_m)
+      ? incoming.position_sigma_m : 1.0;
+  observation->world_velocity = incoming.has_relative_velocity_body
+      ? bodyFrdVectorToWorldEnu(incoming.relative_velocity_body, capture_state)
+      : std::array<double, 3>{{0.0, 0.0, 0.0}};
+  observation->velocity_valid = incoming.has_relative_velocity_body &&
+      std::all_of(observation->world_velocity.begin(),
+                  observation->world_velocity.end(),
+                  [](double value) { return std::isfinite(value); });
+  observation->stamp = timestamp;
+  observation->class_id = incoming.class_id;
+  observation->image_source = incoming.image_source;
+  return true;
+}
+
+void TrackController::updateMetricStateFromWorldFilter() {
+  const bool use_imm = config_.target_guidance.world_filter_model == "imm";
+  last_metric_world_position_ = {{0.0, 0.0, 0.0}};
+  last_metric_world_velocity_ = {{0.0, 0.0, 0.0}};
+  double variance = 0.0;
+  for (std::size_t model_index = 0;
+       model_index < kWorldFilterModelCount; ++model_index) {
+    const double weight = use_imm ? world_filter_probabilities_[model_index]
+                                  : (model_index == 1 ? 1.0 : 0.0);
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      last_metric_world_position_[axis] +=
+          weight * world_filter_models_[model_index].position[axis];
+      last_metric_world_velocity_[axis] +=
+          weight * world_filter_models_[model_index].velocity[axis];
+      variance += weight * world_filter_models_[model_index].p_position[axis];
+    }
+  }
+  last_metric_world_sigma_m_ = std::sqrt(std::max(1e-9, variance / 3.0));
+  last_metric_world_velocity_valid_ = true;
+  have_metric_world_state_ = true;
+}
+
+bool TrackController::applyMetricObservation(
+    const MetricObservation& observation, const bool enforce_gate,
+    std::string* rejection_reason) {
+  auto reject = [&](const std::string& reason) {
+    if (rejection_reason != nullptr) *rejection_reason = reason;
+    return false;
+  };
+  const TargetGuidanceConfig& guidance = config_.target_guidance;
+  const bool filter_enabled = guidance.world_filter_enabled ||
+      guidance.multi_source_fusion_enabled || guidance.world_filter_oosm_enabled ||
+      guidance.world_filter_model == "imm";
+
+  // Keep the legacy direct metric path available for low-compute profiles.
+  if (!filter_enabled) {
+    if (have_metric_world_state_ && observation.stamp <= metric_world_time_) {
+      return reject("metric timestamp is out of order");
+    }
+    if (have_metric_world_state_ && guidance.world_filter_max_innovation_m > 0.0) {
+      const double innovation = std::sqrt(
+          (observation.world_position[0] - last_metric_world_position_[0]) *
+              (observation.world_position[0] - last_metric_world_position_[0]) +
+          (observation.world_position[1] - last_metric_world_position_[1]) *
+              (observation.world_position[1] - last_metric_world_position_[1]) +
+          (observation.world_position[2] - last_metric_world_position_[2]) *
+              (observation.world_position[2] - last_metric_world_position_[2]));
+      if (!std::isfinite(innovation) ||
+          innovation > guidance.world_filter_max_innovation_m) {
+        return reject("metric innovation exceeds configured gate");
+      }
+    }
+    const double dt = have_metric_world_state_
+        ? observation.stamp - metric_world_time_ : 0.0;
+    if (observation.velocity_valid) {
+      last_metric_world_velocity_ = observation.world_velocity;
+      last_metric_world_velocity_valid_ = true;
+    } else if (have_metric_world_state_ && dt > 1e-3 && dt <= 2.0) {
+      for (std::size_t i = 0; i < 3; ++i) {
+        last_metric_world_velocity_[i] =
+            (observation.world_position[i] - last_metric_world_position_[i]) / dt;
+      }
+      last_metric_world_velocity_valid_ = true;
+    }
+    last_metric_world_position_ = observation.world_position;
+    metric_world_time_ = observation.stamp;
+    last_metric_world_sigma_m_ = observation.sigma_m;
+    have_metric_world_state_ = true;
+    return true;
+  }
+
+  const bool use_imm = guidance.world_filter_model == "imm";
+  const double model_accel[kWorldFilterModelCount] = {
+      std::max(0.0, guidance.world_filter_imm_static_accel_stddev_mps2),
+      std::max(0.0, guidance.world_filter_process_accel_stddev_mps2),
+      std::max(guidance.world_filter_imm_static_accel_stddev_mps2,
+               guidance.world_filter_imm_maneuver_accel_stddev_mps2)};
+  const double minimum_probability = clamp(
+      guidance.world_filter_imm_min_probability, 0.0, 0.30);
+
+  auto initialize_model = [&](WorldFilterModel* model,
+                              const WorldMotionModel motion_model) {
+    model->initialized = true;
+    model->motion_model = motion_model;
+    model->stamp = observation.stamp;
+    model->position = observation.world_position;
+    model->velocity = observation.velocity_valid ? observation.world_velocity
+                                     : std::array<double, 3>{{0.0, 0.0, 0.0}};
+    if (motion_model == WorldMotionModel::kStationary) {
+      model->velocity = {{0.0, 0.0, 0.0}};
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+      model->p_position[i] = observation.sigma_m * observation.sigma_m;
+      model->p_position_velocity[i] = 0.0;
+      model->p_velocity[i] = observation.velocity_valid ? 4.0 : 100.0;
+    }
+    model->turn_rate_radps = 0.0;
+    model->p_turn_rate = 0.25;
+  };
+  auto predict_model = [&](WorldFilterModel* model, double dt,
+                           double accel_sigma) {
+    if (model == nullptr || !model->initialized) return;
+    dt = std::max(0.0, std::min(dt, 2.0));
+    const double accel_var = accel_sigma * accel_sigma;
+    const double dt2 = dt * dt;
+    const double dt3 = dt2 * dt;
+    const double dt4 = dt2 * dt2;
+    if (model->motion_model == WorldMotionModel::kCoordinatedTurn &&
+        std::abs(model->turn_rate_radps) > 1e-4) {
+      const double turn = model->turn_rate_radps;
+      const double angle = turn * dt;
+      const double sine = std::sin(angle);
+      const double cosine = std::cos(angle);
+      const double vx = model->velocity[0];
+      const double vy = model->velocity[1];
+      model->position[0] += (sine * vx - (1.0 - cosine) * vy) / turn;
+      model->position[1] += ((1.0 - cosine) * vx + sine * vy) / turn;
+      model->velocity[0] = cosine * vx - sine * vy;
+      model->velocity[1] = sine * vx + cosine * vy;
+    } else if (model->motion_model != WorldMotionModel::kStationary) {
+      model->position[0] += dt * model->velocity[0];
+      model->position[1] += dt * model->velocity[1];
+    }
+    if (model->motion_model != WorldMotionModel::kStationary) {
+      model->position[2] += dt * model->velocity[2];
+    } else {
+      const double decay = std::exp(-4.0 * dt);
+      for (std::size_t i = 0; i < 3; ++i) model->velocity[i] *= decay;
+    }
+    for (std::size_t i = 0; i < 3; ++i) {
+      const double p00 = model->p_position[i];
+      const double p01 = model->p_position_velocity[i];
+      const double p11 = model->p_velocity[i];
+      const double motion_dt = model->motion_model == WorldMotionModel::kStationary
+          ? 0.0 : dt;
+      model->p_position[i] = p00 + 2.0 * motion_dt * p01 + motion_dt * motion_dt * p11 +
+          0.25 * dt4 * accel_var;
+      model->p_position_velocity[i] = p01 + motion_dt * p11 +
+          0.5 * dt3 * accel_var;
+      model->p_velocity[i] = p11 + dt2 * accel_var;
+    }
+    if (model->motion_model == WorldMotionModel::kCoordinatedTurn) {
+      model->p_turn_rate += dt * guidance.world_filter_imm_turn_rate_stddev_radps2 *
+          guidance.world_filter_imm_turn_rate_stddev_radps2;
+    }
+    model->stamp += dt;
+  };
+  auto update_model = [&](WorldFilterModel* model, const double prediction_dt) {
+    double log_likelihood = 0.0;
+    if (model == nullptr || !model->initialized) return log_likelihood;
+    for (std::size_t i = 0; i < 3; ++i) {
+      const double prior_p01 = model->p_position_velocity[i];
+      const double innovation = observation.world_position[i] - model->position[i];
+      const double innovation_variance = std::max(
+          1e-9, model->p_position[i] + observation.sigma_m * observation.sigma_m);
+      const double kp = model->p_position[i] / innovation_variance;
+      const double kv = prior_p01 / innovation_variance;
+      model->position[i] += kp * innovation;
+      model->velocity[i] += kv * innovation;
+      model->p_position[i] = std::max(1e-9,
+          (1.0 - kp) * model->p_position[i]);
+      model->p_position_velocity[i] = (1.0 - kp) * prior_p01;
+      model->p_velocity[i] = std::max(1e-9,
+          model->p_velocity[i] - kv * prior_p01);
+      log_likelihood += -0.5 *
+          (std::log(2.0 * 3.14159265358979323846 * innovation_variance) +
+           innovation * innovation / innovation_variance);
+    }
+    if (observation.velocity_valid &&
+        model->motion_model != WorldMotionModel::kStationary) {
+      constexpr double kVelocityVariance = 4.0;
+      const double previous_heading = std::atan2(model->velocity[1],
+                                                 model->velocity[0]);
+      for (std::size_t i = 0; i < 3; ++i) {
+        const double variance = std::max(1e-9, model->p_velocity[i] +
+                                         kVelocityVariance);
+        const double gain = model->p_velocity[i] / variance;
+        model->velocity[i] += gain *
+            (observation.world_velocity[i] - model->velocity[i]);
+        model->p_velocity[i] = std::max(1e-9,
+            (1.0 - gain) * model->p_velocity[i]);
+      }
+      if (model->motion_model == WorldMotionModel::kCoordinatedTurn &&
+          model->stamp > 0.0) {
+        const double heading = std::atan2(model->velocity[1], model->velocity[0]);
+        const double speed = std::hypot(model->velocity[0], model->velocity[1]);
+        if (speed > 0.3) {
+          // Heading difference is an angle.  Convert it to rad/s before it
+          // is used by the coordinated-turn predictor; treating the angle as
+          // a rate made the model depend on camera FPS.
+          const double inferred = std::atan2(std::sin(heading - previous_heading),
+                                             std::cos(heading - previous_heading)) /
+              std::max(1e-3, prediction_dt);
+          model->turn_rate_radps = clamp(0.75 * model->turn_rate_radps +
+              0.25 * inferred, -guidance.world_filter_imm_max_turn_rate_radps,
+              guidance.world_filter_imm_max_turn_rate_radps);
+        }
+      }
+    }
+    return log_likelihood;
+  };
+  auto fused_position = [&]() {
+    std::array<double, 3> result{{0.0, 0.0, 0.0}};
+    for (std::size_t model_index = 0;
+         model_index < kWorldFilterModelCount; ++model_index) {
+      const double weight = use_imm ? world_filter_probabilities_[model_index]
+                                    : (model_index == 1 ? 1.0 : 0.0);
+      for (std::size_t i = 0; i < 3; ++i) {
+        result[i] += weight * world_filter_models_[model_index].position[i];
+      }
+    }
+    return result;
+  };
+  auto fused_velocity = [&]() {
+    std::array<double, 3> result{{0.0, 0.0, 0.0}};
+    for (std::size_t model_index = 0;
+         model_index < kWorldFilterModelCount; ++model_index) {
+      const double weight = use_imm ? world_filter_probabilities_[model_index]
+                                    : (model_index == 1 ? 1.0 : 0.0);
+      for (std::size_t i = 0; i < 3; ++i) {
+        result[i] += weight * world_filter_models_[model_index].velocity[i];
+      }
+    }
+    return result;
+  };
+  auto update_probabilities = [&](const std::array<double,
+                                      kWorldFilterModelCount>& likelihoods) {
+    if (!use_imm) {
+      world_filter_probabilities_ = {{0.0, 1.0, 0.0}};
+      return;
+    }
+    const double maximum = *std::max_element(likelihoods.begin(), likelihoods.end());
+    double total = 0.0;
+    for (std::size_t i = 0; i < kWorldFilterModelCount; ++i) {
+      world_filter_probabilities_[i] = std::max(minimum_probability,
+          world_filter_probabilities_[i] * std::exp(likelihoods[i] - maximum));
+      total += world_filter_probabilities_[i];
+    }
+    for (double& probability : world_filter_probabilities_) probability /= total;
+  };
+
+  if (!have_metric_world_state_ || !world_filter_models_[0].initialized) {
+    initialize_model(&world_filter_models_[0], WorldMotionModel::kStationary);
+    initialize_model(&world_filter_models_[1], WorldMotionModel::kConstantVelocity);
+    initialize_model(&world_filter_models_[2], WorldMotionModel::kCoordinatedTurn);
+    world_filter_probabilities_ = use_imm
+        ? std::array<double, kWorldFilterModelCount>{{1.0 / 3.0, 1.0 / 3.0,
+                                                       1.0 / 3.0}}
+        : std::array<double, kWorldFilterModelCount>{{0.0, 1.0, 0.0}};
+    last_metric_world_position_ = observation.world_position;
+    last_metric_world_velocity_ = observation.velocity_valid ? observation.world_velocity
+                                                 : std::array<double, 3>{{0.0, 0.0, 0.0}};
+    last_metric_world_velocity_valid_ = observation.velocity_valid;
+    last_metric_world_sigma_m_ = observation.sigma_m;
+    metric_world_time_ = observation.stamp;
+    have_metric_world_state_ = true;
+    return true;
+  }
+  if (observation.stamp < metric_world_time_ - 1e-9) {
+    return reject("metric observations must be replayed in timestamp order");
+  }
+  const double dt = std::max(0.0, observation.stamp - metric_world_time_);
+  if (use_imm && dt > 0.0) {
+    const std::array<double, kWorldFilterModelCount> persistence{{
+        guidance.world_filter_imm_static_persistence,
+        guidance.world_filter_imm_cv_persistence,
+        guidance.world_filter_imm_turn_persistence}};
+    std::array<WorldFilterModel, kWorldFilterModelCount> mixed;
+    std::array<double, kWorldFilterModelCount> predicted_probability{{0.0, 0.0, 0.0}};
+    for (std::size_t destination = 0; destination < kWorldFilterModelCount;
+         ++destination) {
+      for (std::size_t source = 0; source < kWorldFilterModelCount; ++source) {
+        const double transition = source == destination ? persistence[source]
+            : (1.0 - persistence[source]) /
+                static_cast<double>(kWorldFilterModelCount - 1);
+        predicted_probability[destination] +=
+            world_filter_probabilities_[source] * transition;
+      }
+      mixed[destination] = world_filter_models_[destination];
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        mixed[destination].position[axis] = 0.0;
+        mixed[destination].velocity[axis] = 0.0;
+      }
+      mixed[destination].turn_rate_radps = 0.0;
+      for (std::size_t source = 0; source < kWorldFilterModelCount; ++source) {
+        const double transition = source == destination ? persistence[source]
+            : (1.0 - persistence[source]) /
+                static_cast<double>(kWorldFilterModelCount - 1);
+        const double weight = world_filter_probabilities_[source] * transition /
+            std::max(1e-12, predicted_probability[destination]);
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+          mixed[destination].position[axis] +=
+              weight * world_filter_models_[source].position[axis];
+          mixed[destination].velocity[axis] +=
+              weight * world_filter_models_[source].velocity[axis];
+        }
+        mixed[destination].turn_rate_radps +=
+            weight * world_filter_models_[source].turn_rate_radps;
+      }
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        mixed[destination].p_position[axis] = 0.0;
+        mixed[destination].p_position_velocity[axis] = 0.0;
+        mixed[destination].p_velocity[axis] = 0.0;
+        for (std::size_t source = 0; source < kWorldFilterModelCount; ++source) {
+          const double transition = source == destination ? persistence[source]
+              : (1.0 - persistence[source]) /
+                  static_cast<double>(kWorldFilterModelCount - 1);
+          const double weight = world_filter_probabilities_[source] * transition /
+              std::max(1e-12, predicted_probability[destination]);
+          const double dp = world_filter_models_[source].position[axis] -
+              mixed[destination].position[axis];
+          const double dv = world_filter_models_[source].velocity[axis] -
+              mixed[destination].velocity[axis];
+          mixed[destination].p_position[axis] += weight *
+              (world_filter_models_[source].p_position[axis] + dp * dp);
+          mixed[destination].p_position_velocity[axis] += weight *
+              (world_filter_models_[source].p_position_velocity[axis] + dp * dv);
+          mixed[destination].p_velocity[axis] += weight *
+              (world_filter_models_[source].p_velocity[axis] + dv * dv);
+        }
+      }
+    }
+    world_filter_models_ = mixed;
+    world_filter_probabilities_ = predicted_probability;
+  }
+  for (std::size_t index = 0; index < kWorldFilterModelCount; ++index) {
+    if (use_imm || index == 1) predict_model(&world_filter_models_[index], dt,
+                                               model_accel[index]);
+  }
+  const std::array<double, 3> predicted = fused_position();
+  double mahalanobis = 0.0;
+  double euclidean_innovation = 0.0;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    double predicted_variance = 0.0;
+    for (std::size_t index = 0; index < kWorldFilterModelCount; ++index) {
+      const double weight = use_imm ? world_filter_probabilities_[index]
+                                    : (index == 1 ? 1.0 : 0.0);
+      predicted_variance += weight * world_filter_models_[index].p_position[axis];
+    }
+    const double innovation = observation.world_position[axis] - predicted[axis];
+    euclidean_innovation += innovation * innovation;
+    mahalanobis += innovation * innovation / std::max(1e-6,
+        predicted_variance + observation.sigma_m * observation.sigma_m);
+  }
+  if (enforce_gate && guidance.world_filter_max_innovation_m > 0.0 &&
+      std::sqrt(euclidean_innovation) > guidance.world_filter_max_innovation_m) {
+    return reject("metric innovation exceeds configured gate");
+  }
+  if (enforce_gate && guidance.world_filter_mahalanobis_gate > 0.0 &&
+      mahalanobis > guidance.world_filter_mahalanobis_gate) {
+    return reject("metric innovation exceeds Mahalanobis gate");
+  }
+  std::array<double, kWorldFilterModelCount> likelihoods{{0.0, 0.0, 0.0}};
+  for (std::size_t index = 0; index < kWorldFilterModelCount; ++index) {
+    if (use_imm || index == 1) {
+      likelihoods[index] = update_model(&world_filter_models_[index], dt);
+    }
+  }
+  update_probabilities(likelihoods);
+  metric_world_time_ = observation.stamp;
+  updateMetricStateFromWorldFilter();
+  if (rejection_reason != nullptr) rejection_reason->clear();
+  return true;
+}
+
+bool TrackController::integrateMetricMeasurement(
+    const TargetMeasurement& incoming, std::array<double, 3>* filtered_world,
+    std::string* rejection_reason) {
+  auto reject = [&](const std::string& reason) {
+    if (rejection_reason != nullptr) *rejection_reason = reason;
+    return false;
+  };
+  if (filtered_world == nullptr) return reject("metric output is unavailable");
+  MetricObservation observation;
+  if (!metricObservationFromMeasurement(incoming, &observation, rejection_reason)) {
+    return false;
+  }
+  const bool filter_enabled = config_.target_guidance.world_filter_enabled ||
+      config_.target_guidance.multi_source_fusion_enabled ||
+      config_.target_guidance.world_filter_oosm_enabled ||
+      config_.target_guidance.world_filter_model == "imm";
+  if (!filter_enabled) {
+    if (!applyMetricObservation(observation, true, rejection_reason)) return false;
+    *filtered_world = last_metric_world_position_;
+    return true;
+  }
+  const WorldFilterState saved_state{have_metric_world_state_, metric_world_time_,
+      world_filter_models_, world_filter_probabilities_};
+  const auto saved_history = world_filter_history_;
+  const WorldFilterState saved_baseline = world_filter_baseline_;
+  const bool delayed = have_metric_world_state_ &&
+      observation.stamp < metric_world_time_ - 1e-9;
+  if (delayed && (!config_.target_guidance.world_filter_oosm_enabled ||
+      metric_world_time_ - observation.stamp >
+          config_.target_guidance.world_filter_oosm_window_sec ||
+      (world_filter_baseline_.initialized &&
+       observation.stamp <= world_filter_baseline_.stamp))) {
+    return reject("metric timestamp is outside the OOSM replay window");
+  }
+  if (!delayed) {
+    // Prediction, IMM mixing and innovation gating are implemented together
+    // in applyMetricObservation().  Keep that operation transactional: an
+    // outlier must not leave a predicted-but-uncommitted filter state behind
+    // and then be predicted a second time by the next frame.
+    if (!applyMetricObservation(observation, true, rejection_reason)) {
+      have_metric_world_state_ = saved_state.initialized;
+      metric_world_time_ = saved_state.stamp;
+      world_filter_models_ = saved_state.models;
+      world_filter_probabilities_ = saved_state.probabilities;
+      world_filter_history_ = saved_history;
+      world_filter_baseline_ = saved_baseline;
+      return false;
+    }
+    WorldFilterHistory history;
+    history.observation = observation;
+    history.state_after = {have_metric_world_state_, metric_world_time_,
+                           world_filter_models_, world_filter_probabilities_};
+    world_filter_history_.push_back(history);
+  } else {
+    MetricObservation delayed_observation = observation;
+    const double age = std::max(0.0, metric_world_time_ - observation.stamp);
+    delayed_observation.sigma_m *= std::sqrt(std::max(1.0,
+        config_.target_guidance.world_filter_oosm_covariance_inflation) *
+        (1.0 + age));
+    auto insertion = std::upper_bound(world_filter_history_.begin(),
+                                      world_filter_history_.end(),
+                                      delayed_observation.stamp,
+        [](const double stamp, const WorldFilterHistory& history) {
+          return stamp < history.observation.stamp;
+        });
+    WorldFilterHistory delayed_history;
+    delayed_history.observation = delayed_observation;
+    const std::size_t delayed_index = static_cast<std::size_t>(
+        std::distance(world_filter_history_.begin(), insertion));
+    world_filter_history_.insert(insertion, delayed_history);
+    const WorldFilterState restore = delayed_index == 0
+        ? world_filter_baseline_ : world_filter_history_[delayed_index - 1].state_after;
+    have_metric_world_state_ = restore.initialized;
+    metric_world_time_ = restore.stamp;
+    world_filter_models_ = restore.models;
+    world_filter_probabilities_ = restore.probabilities;
+    bool replay_ok = true;
+    std::string replay_reason;
+    for (std::size_t index = delayed_index; index < world_filter_history_.size(); ++index) {
+      const bool gate = index == delayed_index;
+      if (!applyMetricObservation(world_filter_history_[index].observation, gate,
+                                  &replay_reason)) {
+        replay_ok = false;
+        break;
+      }
+      world_filter_history_[index].state_after = {
+          have_metric_world_state_, metric_world_time_, world_filter_models_,
+          world_filter_probabilities_};
+    }
+    if (!replay_ok) {
+      have_metric_world_state_ = saved_state.initialized;
+      metric_world_time_ = saved_state.stamp;
+      world_filter_models_ = saved_state.models;
+      world_filter_probabilities_ = saved_state.probabilities;
+      world_filter_history_ = saved_history;
+      world_filter_baseline_ = saved_baseline;
+      return reject(replay_reason.empty() ? "OOSM replay failed" : replay_reason);
+    }
+  }
+  while (!world_filter_history_.empty() &&
+         metric_world_time_ - world_filter_history_.front().observation.stamp >
+             std::max(0.0, config_.target_guidance.world_filter_oosm_window_sec)) {
+    world_filter_baseline_ = world_filter_history_.front().state_after;
+    world_filter_history_.pop_front();
+  }
+  *filtered_world = last_metric_world_position_;
+  if (rejection_reason != nullptr) rejection_reason->clear();
+  return true;
+}
+
+bool TrackController::updateMetricMeasurement(
+    const TargetMeasurement& incoming, std::string* rejection_reason) {
+  if (!finiteMeasurement(incoming)) {
+    if (rejection_reason != nullptr) *rejection_reason =
+        "metric measurement contains non-finite values";
+    return false;
+  }
+  if (incoming.receive_time < 0.0 || incoming.observation_time < 0.0) {
+    if (rejection_reason != nullptr) *rejection_reason =
+        "metric measurement time is invalid";
+    return false;
+  }
+  std::array<double, 3> filtered_world{{0.0, 0.0, 0.0}};
+  if (!integrateMetricMeasurement(incoming, &filtered_world,
+                                  rejection_reason)) {
+    return false;
+  }
+  // A standby source contributes to the same coast state as the active
+  // source. Re-express the fused world estimate in the current body frame so
+  // a subsequent image gap does not fall back to an older source position.
+  if (vehicle_state_.valid && vehicle_state_.pose_valid) {
+    last_metric_position_frd_ = worldEnuToBodyFrd(
+        last_metric_world_position_, vehicle_state_);
+    last_metric_velocity_frd_ = worldEnuVectorToBodyFrd(
+        last_metric_world_velocity_, vehicle_state_);
+    last_metric_velocity_valid_ = last_metric_world_velocity_valid_;
+    last_metric_sigma_m_ = last_metric_world_sigma_m_;
+  } else {
+    last_metric_position_frd_ = incoming.relative_position_body;
+    last_metric_velocity_frd_ = incoming.relative_velocity_body;
+    last_metric_velocity_valid_ = incoming.has_relative_velocity_body;
+    last_metric_sigma_m_ = incoming.position_sigma_m > 1e-3 &&
+            std::isfinite(incoming.position_sigma_m)
+        ? incoming.position_sigma_m : 1.0;
+  }
+  have_metric_state_ = true;
+  metric_state_time_ = incoming.receive_time;
+  return true;
+}
+
+bool TrackController::metricMeasurementCompatible(
+    const TargetMeasurement& incoming, const double maximum_distance_m,
+    std::string* rejection_reason) const {
+  auto reject = [&](const std::string& reason) {
+    if (rejection_reason != nullptr) *rejection_reason = reason;
+    return false;
+  };
+  if (maximum_distance_m <= 0.0 || !have_metric_world_state_) return true;
+  MetricObservation observation;
+  if (!metricObservationFromMeasurement(incoming, &observation,
+                                        rejection_reason)) {
+    return false;
+  }
+  std::array<double, 3> predicted = last_metric_world_position_;
+  const double dt = observation.stamp - metric_world_time_;
+  if (last_metric_world_velocity_valid_ && std::isfinite(dt) &&
+      std::abs(dt) <= std::max(2.0,
+          config_.target_guidance.multi_source_max_age_sec)) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      predicted[axis] += last_metric_world_velocity_[axis] * dt;
+    }
+  }
+  double squared = 0.0;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    const double error = observation.world_position[axis] - predicted[axis];
+    squared += error * error;
+  }
+  const double gate = maximum_distance_m + std::max(0.0, observation.sigma_m) +
+      std::max(0.0, last_metric_world_sigma_m_);
+  if (!std::isfinite(squared) || std::sqrt(squared) > gate) {
+    return reject("cross-source metric position is outside the identity gate");
+  }
+  return true;
 }
 
 bool TrackController::updateMeasurement(
@@ -302,6 +1063,9 @@ bool TrackController::updateMeasurement(
   }
   if (incoming.receive_time < 0.0) {
     return reject("target box receive time is invalid");
+  }
+  if (incoming.observation_time < 0.0) {
+    return reject("target observation time is invalid");
   }
 
   const double confidence_threshold = confidence_locked_
@@ -356,6 +1120,62 @@ bool TrackController::updateMeasurement(
 
   measurement_ = incoming;
   measurement_.tracking_quality = clamp(incoming.tracking_quality, 0.0, 1.0);
+  last_metric_measurement_accepted_ = false;
+  bool metric_accepted = incoming.has_relative_position_body &&
+      incoming.range_valid;
+  std::array<double, 3> filtered_world_position{{0.0, 0.0, 0.0}};
+  bool filtered_world_valid = false;
+  if (metric_accepted && vehicle_state_.valid && vehicle_state_.pose_valid) {
+    std::string metric_reason;
+    metric_accepted = integrateMetricMeasurement(
+        incoming, &filtered_world_position, &metric_reason);
+    filtered_world_valid = metric_accepted;
+  }
+  if (metric_accepted && incoming.has_relative_position_body && incoming.range_valid) {
+    last_metric_measurement_accepted_ = true;
+    have_metric_state_ = true;
+    metric_state_time_ = incoming.receive_time;
+    last_metric_position_frd_ = incoming.relative_position_body;
+    last_metric_velocity_valid_ = incoming.has_relative_velocity_body;
+    if (last_metric_velocity_valid_) {
+      last_metric_velocity_frd_ = incoming.relative_velocity_body;
+    } else {
+      last_metric_velocity_frd_ = {{0.0, 0.0, 0.0}};
+    }
+    last_metric_sigma_m_ = incoming.position_sigma_m > 1e-3 &&
+            std::isfinite(incoming.position_sigma_m)
+        ? incoming.position_sigma_m : 1.0;
+    if (filtered_world_valid) {
+      const std::array<double, 3>& world = filtered_world_position;
+      if (last_metric_world_velocity_valid_ &&
+          config_.target_guidance.world_filter_max_speed_mps > 0.0) {
+        const double speed = std::sqrt(
+            last_metric_world_velocity_[0] * last_metric_world_velocity_[0] +
+            last_metric_world_velocity_[1] * last_metric_world_velocity_[1] +
+            last_metric_world_velocity_[2] * last_metric_world_velocity_[2]);
+        if (speed > config_.target_guidance.world_filter_max_speed_mps) {
+          const double scale = config_.target_guidance.world_filter_max_speed_mps /
+              std::max(1e-6, speed);
+          for (double& value : last_metric_world_velocity_) value *= scale;
+        }
+      }
+      if (config_.target_guidance.world_filter_enabled) {
+        measurement_.relative_position_body = worldEnuToBodyFrd(
+            last_metric_world_position_, vehicle_state_);
+        last_metric_position_frd_ = measurement_.relative_position_body;
+        last_metric_velocity_frd_ = worldEnuVectorToBodyFrd(
+            last_metric_world_velocity_, vehicle_state_);
+        last_metric_velocity_valid_ = last_metric_world_velocity_valid_;
+        last_metric_sigma_m_ = last_metric_world_sigma_m_;
+      }
+    }
+  } else if (incoming.has_relative_position_body && incoming.range_valid) {
+    // Keep the image track, but never expose a rejected metric innovation to
+    // guidance.  The previous world state remains available for bounded coast.
+    measurement_.has_relative_position_body = false;
+    measurement_.has_relative_velocity_body = false;
+    measurement_.range_valid = false;
+  }
   if (incoming.reidentification_match) {
     reidentification_time_ = incoming.receive_time;
   }
@@ -369,6 +1189,10 @@ bool TrackController::updateMeasurement(
   cleared_reason_.clear();
   if (rejection_reason != nullptr) rejection_reason->clear();
   return true;
+}
+
+bool TrackController::lastMetricMeasurementAccepted() const {
+  return last_metric_measurement_accepted_;
 }
 
 TrackVelocity TrackController::baseOutput(const double now) const {
@@ -410,6 +1234,18 @@ bool TrackController::filteredGimbalAngles(const double now, double* yaw,
       !gimbal_state_.valid || now - gimbal_state_.receive_time < -1e-6 ||
       now - gimbal_state_.receive_time > config_.gimbal_input_timeout_sec) {
     return false;
+  }
+  if (gimbal_state_.status_valid) {
+    if (gimbal_state_.status_receive_time > 0.0 &&
+        (now - gimbal_state_.status_receive_time < -1e-6 ||
+         now - gimbal_state_.status_receive_time >
+             config_.gimbal_input_timeout_sec)) {
+      return false;
+    }
+    if (!gimbal_state_.healthy || !gimbal_state_.tracking_active ||
+        !gimbal_state_.control_authority_available) {
+      return false;
+    }
   }
   if (!gimbal_filter_initialized_) {
     filtered_gimbal_yaw_ = gimbal_state_.yaw;
@@ -508,14 +1344,236 @@ TrackVelocity TrackController::compute(const double now) {
   previous_compute_time_ = now;
 
   bool fresh = have_measurement_;
+  double measurement_age = 0.0;
   if (fresh) {
-    const double age = now - measurement_.receive_time;
-    if (age < -1e-6) {
+    measurement_age = now - measurement_.receive_time;
+    if (measurement_age < -1e-6) {
       fresh = false;
       cleared_reason_ = "target box time is in the future";
-    } else if (age > config_.input_timeout_sec) {
+    } else if (measurement_age > config_.input_timeout_sec) {
       fresh = false;
       cleared_reason_ = "target box is stale";
+    }
+  }
+
+  // Optional metric guidance is evaluated before the legacy loss path.  This
+  // lets a fixed-wing keep the captured inertial orbit during a bounded
+  // detector gap while preserving the existing TrackVelocity interface.
+  const bool guidance_enabled = target_guidance_ != nullptr &&
+      config_.target_guidance.enabled &&
+      config_.target_guidance.mode != TargetGuidanceMode::kLegacyVisual;
+  if (guidance_enabled && (have_measurement_ || have_metric_state_)) {
+    const bool metric_mode_requested = config_.target_guidance.mode ==
+            TargetGuidanceMode::kMetricPursuit ||
+        config_.target_guidance.mode == TargetGuidanceMode::kMetricOrbit;
+    const bool metric_observation = fresh &&
+        measurement_.has_relative_position_body && measurement_.range_valid;
+    const double metric_elapsed = have_metric_state_
+        ? std::max(0.0, now - metric_state_time_) : 0.0;
+    const double coast_limit = config_.input_timeout_sec +
+        config_.target_guidance.target_loss_coast_sec +
+        config_.target_guidance.target_loss_orbit_sec +
+        (config_.target_guidance.target_loss_center_hold_enabled
+             ? config_.target_guidance.target_loss_center_hold_sec : 0.0);
+    const bool metric_coast = !metric_observation && have_metric_state_ &&
+        metric_elapsed <= coast_limit && metric_elapsed >= -1e-6;
+    if (metric_observation || metric_coast || (fresh && metric_mode_requested)) {
+      TargetGuidanceInput input;
+      input.now = now;
+      input.dt = dt;
+      // ``now`` is intentionally wall-clock based: control watchdogs must
+      // continue working when /clock stalls or is reset.  The capture stamp
+      // is still used by the inertial filter/OOSM path, but it may be in a
+      // different epoch (Gazebo simulation time versus wall time), so it
+      // must never be used for this freshness comparison.
+      input.observation_time = metric_coast ? now : measurement_.receive_time;
+      input.image_error_x = filtered_center_x_ - config_.target_x;
+      input.image_error_y = filtered_center_y_ - config_.target_y;
+      input.metric_valid = metric_observation || metric_coast;
+      input.range_valid = metric_observation || metric_coast;
+      input.position_sigma_m = !(metric_observation || metric_coast) ? 0.0
+          : metric_coast
+          ? last_metric_sigma_m_ +
+              ((metric_elapsed <= config_.target_guidance.target_loss_coast_sec)
+                   ? config_.target_guidance.prediction_process_sigma_mps
+                   : config_.target_guidance.target_loss_hold_process_sigma_mps) *
+                  std::max(0.0, metric_elapsed)
+          : (measurement_.position_sigma_m > 1e-3
+                 ? measurement_.position_sigma_m : last_metric_sigma_m_);
+      input.relative_position_body_frd = metric_coast
+          ? last_metric_position_frd_
+          : (metric_observation ? measurement_.relative_position_body
+                                 : std::array<double, 3>{{0.0, 0.0, 0.0}});
+      input.relative_velocity_valid = metric_coast
+          ? last_metric_velocity_valid_
+          : (metric_observation && measurement_.has_relative_velocity_body);
+      input.relative_velocity_body_frd = metric_coast
+          ? last_metric_velocity_frd_
+          : (metric_observation ? measurement_.relative_velocity_body
+                                 : std::array<double, 3>{{0.0, 0.0, 0.0}});
+      if (metric_coast && input.relative_velocity_valid) {
+        for (std::size_t i = 0; i < 3; ++i) {
+          input.relative_position_body_frd[i] +=
+              input.relative_velocity_body_frd[i] * metric_elapsed;
+        }
+      }
+      const bool pose_fresh = vehicle_state_.valid &&
+          vehicle_state_.pose_valid &&
+          (vehicle_state_.receive_time <= 0.0 ||
+           now - vehicle_state_.receive_time <=
+               config_.target_guidance.inertial_coast_state_timeout_sec);
+      if (metric_coast && have_metric_world_state_ && pose_fresh) {
+        std::array<double, 3> world = last_metric_world_position_;
+        if (last_metric_world_velocity_valid_) {
+          for (std::size_t i = 0; i < 3; ++i) {
+            world[i] += last_metric_world_velocity_[i] * metric_elapsed;
+          }
+        }
+        input.relative_position_body_frd = worldEnuToBodyFrd(
+            world, vehicle_state_);
+        if (last_metric_world_velocity_valid_) {
+          input.relative_velocity_body_frd = worldEnuVectorToBodyFrd(
+              last_metric_world_velocity_, vehicle_state_);
+          input.relative_velocity_valid = true;
+        }
+      }
+      const std::string source = measurement_.image_source;
+      input.source_is_gimbal = source.find("gimbal") != std::string::npos ||
+          source.find("lrf") != std::string::npos ||
+          source.find("pod") != std::string::npos;
+      input.source_is_fixed_camera = !input.source_is_gimbal;
+      input.vehicle_altitude_valid = vehicle_state_.valid;
+      input.vehicle_altitude_m = vehicle_state_.altitude;
+      input.vehicle_roll = vehicle_state_.roll;
+      input.vehicle_pitch = vehicle_state_.pitch;
+      const double guidance_speed = config_.target_guidance.commanded_speed > 0.1
+          ? config_.target_guidance.commanded_speed
+          : config_.fw_commanded_airspeed;
+      input.commanded_speed = config_.profile ==
+              FollowerProfile::kFixedWingVelocityVector
+          ? guidance_speed : std::min(guidance_speed,
+                                      config_.maximum_forward_velocity);
+      double gimbal_yaw = 0.0;
+      double gimbal_pitch = 0.0;
+      double gimbal_roll = 0.0;
+      if (input.source_is_gimbal && filteredGimbalAngles(
+              now, &gimbal_yaw, &gimbal_pitch, &gimbal_roll)) {
+        input.bearing_valid = true;
+        input.bearing_yaw = gimbal_yaw;
+        input.bearing_pitch = gimbal_pitch;
+      }
+      if (gimbal_state_.status_valid && input.source_is_gimbal) {
+        input.gimbal_fov_valid = gimbal_state_.healthy &&
+            gimbal_state_.tracking_active &&
+            gimbal_state_.control_authority_available &&
+            gimbal_state_.horizontal_fov_rad > 0.0 &&
+            gimbal_state_.vertical_fov_rad > 0.0;
+        input.gimbal_horizontal_fov_rad = gimbal_state_.horizontal_fov_rad;
+        input.gimbal_vertical_fov_rad = gimbal_state_.vertical_fov_rad;
+        input.gimbal_zoom_ratio = gimbal_state_.zoom_ratio;
+      }
+      TargetGuidanceOutput guidance = target_guidance_->update(input);
+      if (gimbal_state_.status_valid && input.source_is_gimbal &&
+          (!gimbal_state_.healthy || !gimbal_state_.tracking_active ||
+           !gimbal_state_.control_authority_available)) {
+        guidance.active = false;
+        guidance.invalid_reason =
+            "gimbal status reports unhealthy, unlocked or no control authority";
+        guidance.state = "gimbal_unavailable";
+      }
+      if (guidance.active) {
+        output.forward = guidance.forward;
+        output.left = guidance.left;
+        output.up = guidance.up;
+        if (config_.profile != FollowerProfile::kFixedWingVelocityVector) {
+          output.forward = clamp(output.forward,
+                                 -config_.maximum_reverse_velocity,
+                                 config_.maximum_forward_velocity);
+          output.left = clamp(output.left, -config_.maximum_lateral_velocity,
+                              config_.maximum_lateral_velocity);
+          output.up = clamp(output.up, -config_.maximum_vertical_velocity,
+                            config_.maximum_vertical_velocity);
+        }
+        output.yaw_rate = config_.profile ==
+                FollowerProfile::kFixedWingVelocityVector
+            ? (config_.target_guidance.publish_course_rate_feedforward
+                   ? guidance.course_rate : 0.0)
+            : guidance.course_rate;
+        output.use_yaw_rate = config_.profile !=
+            FollowerProfile::kFixedWingVelocityVector ||
+            config_.target_guidance.publish_course_rate_feedforward;
+        // The fixed-wing controller can combine a tangent velocity with a
+        // position anchor.  Anchoring the reference on the requested orbit
+        // circumference prevents a velocity-only handoff from cutting across
+        // the target during entry, while keeping the public ROS messages
+        // unchanged.  The anchor is recomputed in the same odometry frame as
+        // the vehicle state, so it remains valid through yaw changes.
+        if (config_.target_guidance.publish_position_reference &&
+            config_.profile == FollowerProfile::kFixedWingVelocityVector &&
+            have_metric_world_state_ && vehicle_state_.pose_valid &&
+            vehicle_state_.valid) {
+          // Publish the circumference anchor during both pursuit and orbit.
+          // Waiting until orbit_active lets a fast fixed-wing cross the target
+          // before the first position reference is accepted; the resulting
+          // capture overshoot is then counted as an out-of-tolerance radius
+          // interval.  The target world estimate is already gated by the
+          // metric filter, so using it here is safe before capture as well.
+          const double dx = vehicle_state_.x - last_metric_world_position_[0];
+          const double dy = vehicle_state_.y - last_metric_world_position_[1];
+          const double distance = std::hypot(dx, dy);
+          const double anchor_radius = guidance.effective_radius_m > 1.0
+              ? guidance.effective_radius_m
+              : config_.target_guidance.orbit_radius_m;
+          if (std::isfinite(distance) && distance > 1e-3 &&
+              std::isfinite(anchor_radius)) {
+            output.position_reference_valid = true;
+            output.position_reference[0] = last_metric_world_position_[0] +
+                anchor_radius * dx / distance;
+            output.position_reference[1] = last_metric_world_position_[1] +
+                anchor_radius * dy / distance;
+            // The metric target depth is not an altitude measurement.  When
+            // a fixed-wing entry altitude is configured, use that odometry-Z
+            // setpoint for the whole orbit instead of chasing the current
+            // height (which would make the altitude loop blind to a climb).
+            // A negative value preserves the deployment-safe current-height
+            // fallback for vehicles without a calibrated altitude reference.
+            output.position_reference[2] =
+                config_.target_guidance.fixed_wing_entry_altitude_reference_m >= 0.0
+                    ? config_.target_guidance.fixed_wing_entry_altitude_reference_m
+                    : vehicle_state_.z;
+          }
+        }
+        if (!config_.enable_vertical_control) output.up = 0.0;
+        output.release_reference_on_invalid = false;
+        output.valid = true;
+        output.target_visible = fresh && !measurement_.predicted;
+        output.target_predicted = !fresh || measurement_.predicted;
+        output.tracking_state = guidance.state;
+        if (metric_coast) {
+          const double coast_age = std::max(0.0, metric_elapsed -
+              config_.input_timeout_sec);
+          if (coast_age <= config_.target_guidance.target_loss_coast_sec) {
+            output.tracking_state = "coast";
+          } else if (coast_age <= config_.target_guidance.target_loss_coast_sec +
+                     config_.target_guidance.target_loss_orbit_sec) {
+            output.tracking_state = "orbit_coast";
+          } else {
+            output.tracking_state = "center_hold";
+          }
+          output.target_loss_duration_sec = coast_age;
+        }
+        output.invalid_reason.clear();
+        return output;
+      }
+      if (metric_mode_requested && !guidance.invalid_reason.empty()) {
+        output.valid = false;
+        output.target_visible = false;
+        output.tracking_state = guidance.state;
+        output.invalid_reason = guidance.invalid_reason;
+        output.release_reference_on_invalid =
+            config_.profile == FollowerProfile::kFixedWingVelocityVector;
+        return output;
+      }
     }
   }
 
@@ -938,6 +1996,26 @@ void TrackController::reset() {
   previous_measurement_time_ = 0.0;
   filtered_track_id_ = -1;
   reidentification_time_ = -1.0;
+  have_metric_state_ = false;
+  last_metric_measurement_accepted_ = false;
+  metric_state_time_ = 0.0;
+  last_metric_position_frd_ = {{0.0, 0.0, 0.0}};
+  last_metric_velocity_frd_ = {{0.0, 0.0, 0.0}};
+  last_metric_velocity_valid_ = false;
+  last_metric_sigma_m_ = 1.0;
+  have_metric_world_state_ = false;
+  metric_world_time_ = 0.0;
+  last_metric_world_position_ = {{0.0, 0.0, 0.0}};
+  last_metric_world_velocity_ = {{0.0, 0.0, 0.0}};
+  last_metric_world_velocity_valid_ = false;
+  last_metric_world_sigma_m_ = 1.0;
+  world_filter_models_ = {{WorldFilterModel(), WorldFilterModel(),
+                           WorldFilterModel()}};
+  world_filter_probabilities_ = {{1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0}};
+  world_filter_baseline_ = WorldFilterState();
+  world_filter_history_.clear();
+  vehicle_state_history_.clear();
+  if (target_guidance_) target_guidance_->reset();
   gimbal_state_ = GimbalStateData();
   gimbal_filter_initialized_ = false;
   filtered_gimbal_yaw_ = 0.0;

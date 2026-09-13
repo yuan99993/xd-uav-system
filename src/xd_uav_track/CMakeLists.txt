@@ -7,6 +7,7 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   nav_msgs
   roscpp
+  rospy
   std_msgs
   std_srvs
 )
@@ -21,6 +22,7 @@ add_message_files(
   TrackState.msg
   TrackStateArray.msg
   TrackStatus.msg
+  GimbalStatus.msg
 )
 
 add_service_files(
@@ -45,6 +47,7 @@ catkin_package(
     message_runtime
     nav_msgs
     roscpp
+    rospy
     std_msgs
     std_srvs
 )
@@ -57,6 +60,7 @@ include_directories(
 
 add_library(xd_uav_track_core
   src/multi_track_manager.cpp
+  src/target_guidance.cpp
   src/track_controller.cpp
 )
 target_compile_features(xd_uav_track_core PUBLIC cxx_std_14)
@@ -89,8 +93,21 @@ install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
-install(DIRECTORY config launch
+install(DIRECTORY config launch models docs
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+catkin_install_python(PROGRAMS
+  scripts/configure_px4_sitl.py
+  scripts/record_tracking_decisions.py
+  scripts/render_plane_catapult_sdf.py
+  scripts/replay_tracking_faults.py
+  scripts/run_px4_sitl.py
+  scripts/run_with_config_preflight.py
+  scripts/sitl_metric_input.py
+  scripts/validate_tracking_config.py
+  scripts/verify_fixedwing_sitl.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 install(FILES README.md

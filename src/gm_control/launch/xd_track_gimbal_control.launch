@@ -9,6 +9,7 @@
   <arg name="command_topic" default="gm_control/gimbal_cmd"/>
   <arg name="gm_state_topic" default="gm_control/gimbal_state"/>
   <arg name="track_gimbal_state_topic" default="track/gimbal_state"/>
+  <arg name="track_status_topic" default="track/status"/>
   <arg name="start_service" default="gm_control/start_tracking"/>
   <arg name="search_service" default="gm_control/start_search"/>
 
@@ -23,6 +24,10 @@
       <param name="bbox_topic" value="$(arg bbox_topic)"/>
       <param name="gm_gimbal_state_topic" value="$(arg gm_state_topic)"/>
       <param name="track_gimbal_state_topic" value="$(arg track_gimbal_state_topic)"/>
+      <param name="track_status_topic" value="$(arg track_status_topic)"/>
+      <param name="gimbal_tracking_service" value="$(arg start_service)"/>
+      <param name="gimbal_search_service" value="$(arg search_service)"/>
+      <param name="worker_name" value="$(arg UAV_NAME)"/>
     </node>
 
     <node pkg="gm_control"

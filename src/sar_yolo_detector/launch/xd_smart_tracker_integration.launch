@@ -17,6 +17,8 @@
   <arg name="use_gpu" default="true" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
   <arg name="camera_info_topic" default="down_camera/camera_info" />
+  <arg name="image_width" default="0" />
+  <arg name="image_height" default="0" />
   <arg name="tracked_detections_topic"
        default="sar_yolo_detector/coco/tracked_detections" />
   <arg name="output_detections_topic"
@@ -60,6 +62,8 @@
     <arg name="output_detections_topic"
          value="$(arg output_detections_topic)" />
     <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+    <arg name="image_width" value="$(arg image_width)" />
+    <arg name="image_height" value="$(arg image_height)" />
     <arg name="image_source" value="$(arg image_source)" />
     <arg name="sensor_id" value="$(arg sensor_id)" />
     <arg name="detector_name" value="sar_yolo_smart_tracker" />

@@ -1,0 +1,218 @@
+# Fixed-wing metric pursuit/orbit overlay. track_fixedwing_sitl.launch first
+# loads track.yaml and then this file, so all vehicle-independent tracking,
+# filtering, gimbal and safety settings are shared with the multicopter path.
+# Do not load this overlay by itself: unspecified keys intentionally inherit
+# from the common configuration instead of relying on C++ defaults.
+runtime:
+  publish_rate_hz: 30.0
+  publish_control_reference: true
+  # Gazebo/PX4 can briefly delay odometry while rendering a camera frame.
+  # A genuine estimator outage still releases the reference after this limit.
+  state_timeout_sec: 1.0
+
+interfaces:
+  input:
+    detections: "detect/detections"
+    vehicle_state: "state_estimator/main/odom"
+    gimbal_state: "track/gimbal_state"
+    gimbal_status: "track/gimbal_status"
+  output:
+    control_reference: "control/reference/setpoint"
+    tracks: "track/tracks"
+    status: "track/status"
+
+frames:
+  body: "base_link"
+
+tracker:
+  enabled_at_startup: false
+  input_timeout_sec: 0.25
+  minimum_confidence: 0.20
+  source_policy: "auto_handover"
+  source_handover_timeout_sec: 0.75
+  # In the dual-sensor fixed-wing profile, move to a fresh high-confidence
+  # standby source before the timeout when the active camera degrades.
+  source_quality_handover:
+    enabled: true
+    min_active_quality: 0.25
+    min_incoming_quality: 0.55
+    quality_margin: 0.10
+    cooldown_sec: 1.0
+  source_aware: true
+  # Cross-source metric updates must still describe the selected object. A
+  # fresh class conflict is rejected before it can move the shared orbit
+  # centre; spatial/covariance consistency is additionally checked by IMM.
+  source_cross_class_reject: true
+  source_identity_max_age_sec: 0.50
+  source_handover_distance_m: 25.0
+  # Keep the selected public track through the longest expected fixed-camera
+  # gap; metric re-identification below still gates each reappearance.
+  source_track_timeout_sec: 40.0
+  select_capture_tolerance_sec: 0.10
+  reject_out_of_order_timestamps: true
+  source_clock_reset_jump_sec: 5.0
+  emit_candidates: false
+  selection:
+    auto_select: true
+  lifecycle:
+    confirmation_hits: 2
+    occlusion_frames: 5
+    # Must cover target_loss/orbit_time_sec. A lost image remains explicitly
+    # non-metric, but its public ID is retained for metric re-identification.
+    # 40 s at the 30 Hz tracker input rate, covering the 35 s orbit hold and
+    # a small re-acquisition margin before a public ID is retired.
+    removal_frames: 1200
+  association:
+    metric_distance_m: 35.0
+
+follower:
+  profile: "fw_velocity_vector"
+  enable_vertical_control: false
+  fw_velocity_vector:
+    airspeed: 15.0
+    maximum_course_offset: 0.70
+    maximum_course_rate_radps: 0.35
+    maximum_climb_rate: 3.0
+  target_guidance:
+    enabled: true
+    source_policy:
+      enabled: true
+      fixed_camera_token: "fixed"
+      gimbal_token: "gimbal"
+      unknown_as_fixed_camera: true
+    mode: "metric_orbit"
+    observation:
+      policy: "metric_required"
+      metric_timeout_sec: 0.30
+      max_position_sigma_m: 12.0
+    orbit:
+      radius_m: 80.0
+      direction: "auto"
+      capture_hysteresis_m: 12.0
+      minimum_turn_radius_m: 45.0
+      # Entry can start well outside the orbit.  Allow a larger course
+      # offset during capture; once on the circle the course-rate feedforward
+      # limits the coordinated turn to the configured bank envelope.
+      # The downstream fixed-wing path adapter has a 40 m nominal lookahead.
+      # The fixed-wing course loop adds roughly 0.9 s of lag.  Keep the
+      # radial loop fast enough to capture the 80 m ring, but use damping on
+      # the measured radial rate (rather than a large derivative gain that
+      # amplifies 20 Hz metric-frame jitter).  The resulting correction is
+      # bounded by maximum_course_offset in the guidance core.
+      radial_gain: 0.55
+      radial_damping: 0.30
+      target_velocity_feedforward: true
+      # Pass the coordinated-turn curvature to xd_uav_controller so the
+      # fixed-wing does not wait several seconds for the velocity vector to
+      # rotate before banking.
+      publish_course_rate_feedforward: true
+      publish_position_reference: true
+    # A fixed-wing needs up to about 70 degrees of heading offset while
+    # joining an 80 m orbit from an arbitrary approach direction.  The
+    # controller's bank/rate limits remain the final physical constraint.
+    maximum_course_offset: 1.20
+    fixed_camera:
+      fov_constraint_enabled: true
+      fov_margin_ratio: 0.10
+      # Keep the captured inertial orbit through short edge/occlusion gaps;
+      # bounded coast prediction, not a new current-position loiter, handles
+      # the missing image frames.
+      preserve_orbit_on_fov_loss: true
+      # Choose CW/CCW from a banked-turn camera projection instead of only
+      # using the current horizontal pixel sign.
+      visibility_direction_selection_enabled: true
+    gimbal:
+      # Consume GimbalStatus zoom/FOV when the optical payload publishes it.
+      # Set false for deployments where the fixed camera is the only metric
+      # source; no new control interface is required.
+      dynamic_fov_enabled: true
+      dynamic_fov_margin_ratio: 0.12
+      min_fov_rad: 0.10
+      zoom_reference_ratio: 1.0
+      zoom_margin_gain: 0.05
+      # Keep a fixed downward camera inside its usable cone during a banked
+      # turn.  These are the calibrated intrinsics of the Gazebo 640x480,
+      # 2.85 rad horizontal-FOV sensor and the optical->body-FLU mount.
+    predictive_fov:
+      enabled: true
+      fx: 46.9882335
+      fy: 46.9882335
+      cx: 320.5
+      cy: 240.5
+      width: 640.0
+      height: 480.0
+      horizon_sec: 0.6
+      optical_to_body_rpy: [3.14159265359, 0.0, -1.57079632679]
+      translation: [0.0, 0.0, 0.2]
+    fixed_wing:
+      kinematics_enabled: true
+      airspeed_mps: 15.0
+      maximum_bank_angle_deg: 35.0
+      gravity_mps2: 9.81
+      entry_altitude_hold_enabled: true
+      # Latch the aircraft altitude on first valid metric entry and hold it.
+      entry_altitude_offset_m: 0.0
+      # A catapult can reveal the target before takeoff climb is complete.
+      # Use the planned local altitude here so that early visual acquisition
+      # cannot latch a low orbit at the edge of the fixed down-camera FOV.
+      # The SITL takeoff reference is 35 m AGL; keeping the orbit at this
+      # calibrated value prevents the entry-height transient from becoming a
+      # climb command once the aircraft is banked into the ring.
+      entry_altitude_reference_m: 35.0
+      # Deprecated compatibility key; target-relative down is not used for
+      # aircraft altitude control.
+      entry_target_down_m: 0.0
+      altitude_gain: 0.35
+    maximum_course_rate_radps: 0.35
+    target_loss:
+      # A fixed-wing at 15 m/s needs roughly 34 s for an 80 m orbit. Keep
+      # the inertial target centre through a complete turn before releasing
+      # the reference to the downstream safety loiter.
+      coast_time_sec: 2.0
+      orbit_time_sec: 35.0
+      hold_process_sigma_mps: 0.20
+      # Keep tracker ownership of the same world-frame orbit centre after the
+      # one-turn prediction window. This avoids a timeout hand-off creating a
+      # new aircraft-centred waiting circle. The total bounded loss window is
+      # 35 + 85 = 120 s; after that the normal safety release still applies.
+      center_hold_enabled: true
+      center_hold_time_sec: 85.0
+      center_hold_process_sigma_mps: 0.05
+      # Match the bounded SITL state freshness above, but retain strict
+      # rejection for a genuine estimator outage.
+      inertial_coast_state_timeout_sec: 1.0
+    metric_velocity_estimation:
+      enabled: true
+      # Keep the same inertial target centre through intermittent fixed-camera
+      # detections.  The gate rejects a one-frame ground-projection jump
+      # rather than allowing it to reverse/translate the captured orbit.
+      position_filter_enabled: true
+      position_filter_alpha: 0.30
+      position_maximum_innovation_m: 18.0
+      filter_alpha: 0.35
+      maximum_speed_mps: 40.0
+      stddev_mps: 3.0
+      # World-frame CV filter with detector covariance and innovation gate.
+      # It rejects delayed/outlier ground projections before they can move the
+      # captured orbit centre.
+      world_filter_enabled: true
+      world_filter_model: "imm"
+      world_filter_process_accel_stddev_mps2: 1.5
+      world_filter_mahalanobis_gate: 16.27
+      world_filter_imm_static_accel_stddev_mps2: 0.20
+      world_filter_imm_maneuver_accel_stddev_mps2: 4.0
+      world_filter_imm_min_probability: 0.02
+      # Complete IMM: stationary / CV / coordinated-turn. Persistence values
+      # define the Markov transition diagonal; lower values react faster at
+      # the cost of more mode switching.
+      world_filter_imm_turn_rate_stddev_radps2: 0.35
+      world_filter_imm_static_persistence: 0.96
+      world_filter_imm_cv_persistence: 0.92
+      world_filter_imm_turn_persistence: 0.90
+      world_filter_imm_max_turn_rate_radps: 1.20
+      world_filter_oosm_enabled: true
+      world_filter_oosm_window_sec: 0.50
+      world_filter_oosm_covariance_inflation: 4.0
+      world_filter_pose_history_sec: 2.0
+      multi_source_fusion_enabled: true
+      multi_source_max_age_sec: 0.50

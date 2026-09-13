@@ -4,6 +4,29 @@ tracks_topic: "track/tracks"
 bbox_topic: "gm_control/target_bbox"
 gm_gimbal_state_topic: "gm_control/gimbal_state"
 track_gimbal_state_topic: "track/gimbal_state"
+track_status_topic: "track/status"
+
+# Couple the existing xd_uav_track lifecycle to the existing gm_control gate.
+# No task executor dependency is needed: gm_velocity_* + active tracker enables
+# the gimbal, while tracker stop/profile change/emergency stop disables it.
+auto_gimbal_tracking: true
+gimbal_tracking_service: "gm_control/start_tracking"
+# After start_tracking succeeds, arm the existing manual search service. A
+# valid bbox always takes priority inside gm_control, so search automatically
+# yields to target tracking and becomes useful again if the target is lost.
+auto_gimbal_search: true
+gimbal_search_service: "gm_control/start_search"
+gimbal_service_retry_s: 0.5
+
+# Start the existing gm_control search before visual handoff.  The bridge reads
+# the already-published rescue task and this worker's world odometry; no new ROS
+# interface is introduced. Keep radius_m aligned with task_allocate's
+# allocation/worker_execution/target_radius_m.
+proximity_search:
+  enabled: true
+  radius_m: 20.0
+  rescue_tasks_topic: "/task_allocate/rescue_tasks"
+  worker_odometry_topic: "state_estimator/main/odom"
 
 # Invalidate the gimbal target when the track stream stops updating.
 track_timeout_s: 0.35

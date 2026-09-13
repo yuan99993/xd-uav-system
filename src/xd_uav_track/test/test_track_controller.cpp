@@ -47,6 +47,17 @@ xd_uav_track::VehicleState vehicleState() {
   return state;
 }
 
+xd_uav_track::VehicleState metricVehicleState() {
+  xd_uav_track::VehicleState state = vehicleState();
+  state.pose_valid = true;
+  state.receive_time = 10.0;
+  state.x = 0.0;
+  state.y = 0.0;
+  state.z = 20.0;
+  state.yaw = 0.0;
+  return state;
+}
+
 xd_uav_track::GimbalStateData gimbalState(
     const double yaw, const double pitch, const double roll = 0.0,
     const double time = 10.0) {
@@ -384,6 +395,341 @@ TEST(TrackController, RelativeStateAddsMetricChaseCorrection) {
   EXPECT_NEAR(output.forward, 2.5, 1e-9);
   EXPECT_NEAR(output.left, -0.5, 1e-9);
   EXPECT_NEAR(output.up, 0.5, 1e-9);
+}
+
+TEST(TrackController, MetricOrbitAdapterIsActiveForAnyVehicleProfile) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+  config.target_guidance.enabled = true;
+  config.target_guidance.mode = xd_uav_track::TargetGuidanceMode::kMetricOrbit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.orbit_radius_m = 80.0;
+  config.target_guidance.minimum_turn_radius_m = 20.0;
+  config.target_guidance.commanded_speed = 15.0;
+  auto measurement = box(280, 200, 360, 280);
+  measurement.image_source = "fixed_rgb";
+  measurement.has_relative_position_body = true;
+  measurement.range_valid = true;
+  measurement.relative_position_body = {{80.0, 0.0, 0.0}};
+  xd_uav_track::TrackController controller(config);
+  ASSERT_TRUE(controller.updateMeasurement(measurement));
+  const auto output = controller.compute(10.01);
+  EXPECT_TRUE(output.valid);
+  EXPECT_TRUE(output.target_visible);
+  EXPECT_EQ(output.tracking_state, "orbit");
+  EXPECT_FALSE(output.use_yaw_rate);
+  EXPECT_NEAR(std::hypot(output.forward, output.left), 15.0, 1e-6);
+}
+
+TEST(TrackController, MetricOrbitKeepsBoundedCoastAfterDetectorTimeout) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+  config.target_guidance.enabled = true;
+  config.target_guidance.mode = xd_uav_track::TargetGuidanceMode::kMetricOrbit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.target_loss_coast_sec = 1.0;
+  config.target_guidance.target_loss_orbit_sec = 5.0;
+  config.target_guidance.commanded_speed = 15.0;
+  auto measurement = box(280, 200, 360, 280);
+  measurement.image_source = "fixed_rgb";
+  measurement.has_relative_position_body = true;
+  measurement.range_valid = true;
+  measurement.relative_position_body = {{80.0, 0.0, 0.0}};
+  xd_uav_track::TrackController controller(config);
+  ASSERT_TRUE(controller.updateMeasurement(measurement));
+  ASSERT_TRUE(controller.compute(10.01).valid);
+  const auto output = controller.compute(10.80);
+  EXPECT_TRUE(output.valid);
+  EXPECT_TRUE(output.target_predicted);
+  EXPECT_EQ(output.tracking_state, "coast");
+  EXPECT_FALSE(output.release_reference_on_invalid);
+}
+
+TEST(TrackController, CoastReexpressesMetricCentreWithCurrentWorldPose) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+  config.target_guidance.enabled = true;
+  config.target_guidance.mode = xd_uav_track::TargetGuidanceMode::kMetricOrbit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.target_loss_coast_sec = 1.0;
+  config.target_guidance.target_loss_orbit_sec = 5.0;
+  config.target_guidance.commanded_speed = 15.0;
+  xd_uav_track::VehicleState state;
+  state.valid = true;
+  state.pose_valid = true;
+  state.receive_time = 10.0;
+  state.x = 0.0;
+  state.y = 0.0;
+  state.z = 20.0;
+  state.yaw = 0.0;
+  state.altitude = 20.0;
+  auto measurement = box(280, 200, 360, 280);
+  measurement.has_relative_position_body = true;
+  measurement.range_valid = true;
+  measurement.relative_position_body = {{80.0, 0.0, 0.0}};
+  xd_uav_track::TrackController controller(config);
+  controller.setVehicleState(state);
+  ASSERT_TRUE(controller.updateMeasurement(measurement));
+  ASSERT_TRUE(controller.compute(10.01).valid);
+  state.receive_time = 10.8;
+  state.x = 20.0;
+  state.yaw = 1.5707963267948966;
+  controller.setVehicleState(state);
+  const auto output = controller.compute(10.8);
+  EXPECT_TRUE(output.valid);
+  EXPECT_EQ(output.tracking_state, "coast");
+}
+
+TEST(TrackController, ImmMetricFilterAcceptsFreshAndDelayedSources) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+  config.target_guidance.enabled = true;
+  config.target_guidance.mode = xd_uav_track::TargetGuidanceMode::kMetricOrbit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.world_filter_enabled = true;
+  config.target_guidance.world_filter_model = "imm";
+  config.target_guidance.world_filter_oosm_enabled = true;
+  config.target_guidance.world_filter_oosm_window_sec = 0.5;
+  config.target_guidance.commanded_speed = 15.0;
+  xd_uav_track::TrackController controller(config);
+  controller.setVehicleState(metricVehicleState());
+  auto first = box(280, 200, 360, 280, 1.0, 10.0);
+  first.has_relative_position_body = true;
+  first.range_valid = true;
+  first.position_sigma_m = 0.5;
+  first.relative_position_body = {{80.0, 0.0, 0.0}};
+  first.observation_time = 10.0;
+  ASSERT_TRUE(controller.updateMeasurement(first));
+  auto fresh = first;
+  fresh.receive_time = 10.1;
+  fresh.observation_time = 10.1;
+  fresh.relative_position_body[0] = 81.0;
+  ASSERT_TRUE(controller.updateMetricMeasurement(fresh));
+  auto delayed = first;
+  delayed.receive_time = 10.2;
+  delayed.observation_time = 10.05;
+  delayed.relative_position_body[0] = 80.5;
+  EXPECT_TRUE(controller.updateMetricMeasurement(delayed));
+  EXPECT_TRUE(controller.compute(10.2).valid);
+}
+
+TEST(TrackController, ImmMetricFilterRejectsDelayedMeasurementOutsideWindow) {
+  auto config = deterministicConfig();
+  config.target_guidance.enabled = true;
+  config.target_guidance.mode = xd_uav_track::TargetGuidanceMode::kMetricPursuit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.world_filter_enabled = true;
+  config.target_guidance.world_filter_model = "imm";
+  config.target_guidance.world_filter_oosm_enabled = true;
+  config.target_guidance.world_filter_oosm_window_sec = 0.2;
+  xd_uav_track::TrackController controller(config);
+  controller.setVehicleState(metricVehicleState());
+  auto first = box(280, 200, 360, 280, 1.0, 10.0);
+  first.has_relative_position_body = true;
+  first.range_valid = true;
+  first.relative_position_body = {{80.0, 0.0, 0.0}};
+  first.observation_time = 10.0;
+  ASSERT_TRUE(controller.updateMeasurement(first));
+  auto fresh = first;
+  fresh.receive_time = 10.4;
+  fresh.observation_time = 10.4;
+  ASSERT_TRUE(controller.updateMetricMeasurement(fresh));
+  auto delayed = first;
+  delayed.receive_time = 10.5;
+  delayed.observation_time = 9.0;
+  std::string reason;
+  EXPECT_FALSE(controller.updateMetricMeasurement(delayed, &reason));
+  EXPECT_NE(reason.find("OOSM"), std::string::npos);
+}
+
+TEST(TrackController, OosmReplayMatchesChronologicalMetricUpdates) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+  config.target_guidance.enabled = true;
+  config.target_guidance.mode = xd_uav_track::TargetGuidanceMode::kMetricOrbit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.world_filter_enabled = true;
+  config.target_guidance.world_filter_model = "imm";
+  config.target_guidance.world_filter_oosm_enabled = true;
+  config.target_guidance.world_filter_oosm_window_sec = 0.5;
+  config.target_guidance.commanded_speed = 15.0;
+  auto first = box(280, 200, 360, 280, 1.0, 10.0);
+  first.has_relative_position_body = true;
+  first.range_valid = true;
+  first.position_sigma_m = 0.5;
+  first.relative_position_body = {{80.0, 0.0, 0.0}};
+  first.observation_time = 10.0;
+  auto middle = first;
+  middle.receive_time = 10.05;
+  middle.observation_time = 10.05;
+  middle.relative_position_body = {{80.5, 0.0, 0.0}};
+  auto latest = first;
+  latest.receive_time = 10.10;
+  latest.observation_time = 10.10;
+  latest.relative_position_body = {{81.0, 0.0, 0.0}};
+
+  xd_uav_track::TrackController chronological(config);
+  chronological.setVehicleState(metricVehicleState());
+  ASSERT_TRUE(chronological.updateMeasurement(first));
+  ASSERT_TRUE(chronological.updateMetricMeasurement(middle));
+  ASSERT_TRUE(chronological.updateMetricMeasurement(latest));
+  const auto expected = chronological.compute(10.2);
+
+  xd_uav_track::TrackController replayed(config);
+  replayed.setVehicleState(metricVehicleState());
+  ASSERT_TRUE(replayed.updateMeasurement(first));
+  ASSERT_TRUE(replayed.updateMetricMeasurement(latest));
+  ASSERT_TRUE(replayed.updateMetricMeasurement(middle));
+  const auto actual = replayed.compute(10.2);
+
+  EXPECT_TRUE(expected.valid);
+  EXPECT_TRUE(actual.valid);
+  EXPECT_NEAR(actual.forward, expected.forward, 1e-6);
+  EXPECT_NEAR(actual.left, expected.left, 1e-6);
+  EXPECT_NEAR(actual.up, expected.up, 1e-6);
+}
+
+TEST(TrackController, CrossSourceMetricGateRejectsDistantCandidate) {
+  auto config = deterministicConfig();
+  config.target_guidance.enabled = true;
+  config.target_guidance.mode = xd_uav_track::TargetGuidanceMode::kMetricPursuit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.world_filter_enabled = true;
+  config.target_guidance.world_filter_model = "imm";
+  xd_uav_track::TrackController controller(config);
+  controller.setVehicleState(metricVehicleState());
+  auto first = box(280, 200, 360, 280, 1.0, 10.0);
+  first.has_relative_position_body = true;
+  first.range_valid = true;
+  first.position_sigma_m = 0.5;
+  first.relative_position_body = {{80.0, 0.0, 0.0}};
+  first.observation_time = 10.0;
+  ASSERT_TRUE(controller.updateMeasurement(first));
+  auto nearby = first;
+  nearby.observation_time = 10.1;
+  nearby.receive_time = 10.1;
+  nearby.relative_position_body = {{83.0, 0.0, 0.0}};
+  EXPECT_TRUE(controller.metricMeasurementCompatible(nearby, 10.0));
+  auto distant = nearby;
+  distant.relative_position_body = {{130.0, 0.0, 0.0}};
+  std::string reason;
+  EXPECT_FALSE(controller.metricMeasurementCompatible(distant, 10.0, &reason));
+  EXPECT_NE(reason.find("identity gate"), std::string::npos);
+}
+
+TEST(TrackController, RejectedMetricOutlierDoesNotAdvanceWorldFilter) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+  config.target_guidance.enabled = true;
+  config.target_guidance.mode = xd_uav_track::TargetGuidanceMode::kMetricOrbit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.world_filter_enabled = true;
+  config.target_guidance.world_filter_model = "imm";
+  config.target_guidance.world_filter_max_innovation_m = 10.0;
+  config.target_guidance.world_filter_mahalanobis_gate = 100.0;
+
+  auto first = box(280, 200, 360, 280, 1.0, 10.0);
+  first.has_relative_position_body = true;
+  first.range_valid = true;
+  first.position_sigma_m = 0.5;
+  first.relative_position_body = {{80.0, 0.0, 0.0}};
+  first.observation_time = 10.0;
+  auto valid = first;
+  valid.receive_time = 10.1;
+  valid.observation_time = 10.1;
+  valid.relative_position_body = {{81.0, 0.0, 0.0}};
+  auto outlier = valid;
+  outlier.relative_position_body = {{160.0, 0.0, 0.0}};
+
+  xd_uav_track::TrackController reference(config);
+  reference.setVehicleState(metricVehicleState());
+  ASSERT_TRUE(reference.updateMeasurement(first));
+  ASSERT_TRUE(reference.updateMetricMeasurement(valid));
+  const auto expected = reference.compute(10.2);
+
+  xd_uav_track::TrackController tested(config);
+  tested.setVehicleState(metricVehicleState());
+  ASSERT_TRUE(tested.updateMeasurement(first));
+  std::string reason;
+  EXPECT_FALSE(tested.updateMetricMeasurement(outlier, &reason));
+  EXPECT_NE(reason.find("innovation"), std::string::npos);
+  ASSERT_TRUE(tested.updateMetricMeasurement(valid));
+  const auto actual = tested.compute(10.2);
+  EXPECT_TRUE(actual.valid);
+  EXPECT_NEAR(actual.forward, expected.forward, 1e-6);
+  EXPECT_NEAR(actual.left, expected.left, 1e-6);
+}
+
+TEST(TrackController, RejectedMetricDoesNotClaimMetricAcceptance) {
+  auto config = deterministicConfig();
+  config.target_guidance.world_filter_enabled = true;
+  config.target_guidance.world_filter_model = "imm";
+  config.target_guidance.world_filter_max_innovation_m = 10.0;
+  config.target_guidance.world_filter_mahalanobis_gate = 100.0;
+  xd_uav_track::TrackController controller(config);
+  controller.setVehicleState(metricVehicleState());
+  auto first = box(280, 200, 360, 280, 1.0, 10.0);
+  first.has_relative_position_body = true;
+  first.range_valid = true;
+  first.position_sigma_m = 0.5;
+  first.relative_position_body = {{80.0, 0.0, 0.0}};
+  first.observation_time = 10.0;
+  ASSERT_TRUE(controller.updateMeasurement(first));
+  EXPECT_TRUE(controller.lastMetricMeasurementAccepted());
+  auto outlier = first;
+  outlier.receive_time = 10.1;
+  outlier.observation_time = 10.1;
+  outlier.relative_position_body = {{160.0, 0.0, 0.0}};
+  // The visual track remains usable, but its metric part is intentionally
+  // rejected and must not refresh a cross-source identity anchor.
+  EXPECT_TRUE(controller.updateMeasurement(outlier));
+  EXPECT_FALSE(controller.lastMetricMeasurementAccepted());
+}
+
+TEST(TrackController, GimbalStatusRemainsARequiredFreshSafetyGate) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kGimbalVelocityChase;
+  config.gimbal_input_timeout_sec = 0.2;
+  config.gimbal_angle_filter_previous_weight = 0.0;
+  config.gimbal_angle_deadzone = 0.0;
+  xd_uav_track::TrackController controller(config);
+  auto gimbal = gimbalState(0.1, 0.0, 0.0, 10.0);
+  gimbal.status_valid = true;
+  gimbal.status_receive_time = 10.0;
+  gimbal.healthy = false;
+  gimbal.tracking_active = true;
+  gimbal.control_authority_available = true;
+  controller.setGimbalState(gimbal);
+  ASSERT_TRUE(controller.updateMeasurement(box(280, 200, 360, 280)));
+  EXPECT_FALSE(controller.compute(10.01).valid);
+  gimbal.healthy = true;
+  gimbal.status_receive_time = 9.0;
+  controller.setGimbalState(gimbal);
+  EXPECT_FALSE(controller.compute(10.01).valid);
+  gimbal.status_receive_time = 10.01;
+  controller.setGimbalState(gimbal);
+  EXPECT_TRUE(controller.compute(10.02).valid);
+}
+
+TEST(TrackController, FirstMetricCourseCommandIsRateLimited) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+  config.target_guidance.enabled = true;
+  config.target_guidance.mode = xd_uav_track::TargetGuidanceMode::kMetricOrbit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.commanded_speed = 15.0;
+  config.target_guidance.maximum_course_rate_radps = 0.35;
+  auto measurement = box(280, 200, 360, 280);
+  measurement.image_source = "fixed_rgb";
+  measurement.has_relative_position_body = true;
+  measurement.range_valid = true;
+  measurement.relative_position_body = {{80.0, 0.0, 0.0}};
+  xd_uav_track::TrackController controller(config);
+  controller.setVehicleState(metricVehicleState());
+  ASSERT_TRUE(controller.updateMeasurement(measurement));
+  const auto output = controller.compute(10.01);
+  EXPECT_TRUE(output.valid);
+  EXPECT_LE(std::abs(output.yaw_rate), 0.35 + 1e-9);
 }
 
 }  // namespace

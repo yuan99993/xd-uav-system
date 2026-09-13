@@ -15,7 +15,9 @@ task_allocate / 上级任务管理器
 - `ARRIVE`：兼容“到达即完成”，收到 action 后立即成功；
 - `TRACK`：可选切换 follower profile、可选选择本机 `local_track_id`，启动
   `xd_uav_track` 并监听 `TrackStatus`；
-- 成功要求目标可见、非纯预测、控制命令有效、估计器有效且状态为 `tracking`，连续保持配置时长；
+- 成功要求目标可见、非纯预测、目标 ID 未发生切换、请求的 follower profile 真正生效、
+  控制参考已发布、估计器有效且状态为 `tracking`，连续保持配置时长；
+- 指定 `local_track_id` 时会短暂重试选择，避免分配回调先于 track 回调而造成瞬时启动失败；
 - 捕获超时、目标丢失、状态超时、总执行超时和 action 取消都有明确结果；
 - TRACK 无论成功、失败还是取消都会先调用 `StartTracker(false)`，停止失败会覆盖原结果并报告
   `STOP_FAILED`，防止上层误以为控制权已释放。

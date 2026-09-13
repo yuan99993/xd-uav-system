@@ -1,14 +1,21 @@
 """Adapter from ExecuteTask goals to xd_uav_track services and status."""
 
 import threading
+import time
 
 import rospy
 
 from xd_uav_task_execute.core.track_monitor import (
     ERROR_ACQUISITION_TIMEOUT,
+    ERROR_CONTROL_UNAVAILABLE,
     ERROR_EXECUTION_TIMEOUT,
+    ERROR_GIMBAL_UNAVAILABLE,
+    ERROR_PROFILE_MISMATCH,
     ERROR_STATUS_TIMEOUT,
+    ERROR_TARGET_MISMATCH,
     ERROR_TARGET_LOST,
+    ERROR_EMERGENCY_STOP,
+    ERROR_TRACKER_STOPPED,
     STATE_FAILED,
     STATE_RUNNING,
     STATE_SUCCEEDED,
@@ -82,6 +89,11 @@ class TrackHandler:
                 self._config.get("minimum_tracking_quality", 0.0)
             ),
             allow_predicted=bool(self._config.get("allow_predicted", False)),
+            required_track_id=int(goal.local_track_id),
+            required_profile=str(goal.follower_profile).strip(),
+            require_control_reference=bool(
+                self._config.get("require_control_reference", True)
+            ),
         )
 
     def _wait_for_service(self, name):
@@ -90,7 +102,7 @@ class TrackHandler:
             timeout=max(0.1, float(self._config.get("service_wait_timeout_sec", 2.0))),
         )
 
-    def _start(self, goal):
+    def _start(self, goal, should_stop):
         if str(goal.follower_profile).strip():
             self._wait_for_service(self._profile_service_name)
             response = self._profile_client(str(goal.follower_profile).strip())
@@ -98,17 +110,32 @@ class TrackHandler:
                 raise RuntimeError("track profile rejected: " + response.message)
         if int(goal.local_track_id) >= 0:
             self._wait_for_service(self._select_service_name)
-            response = self._select_client(
-                target_id=int(goal.local_track_id),
-                start_tracking=True,
-                use_normalized_roi=False,
-                normalized_roi=[0.0, 0.0, 0.0, 0.0],
-                image_source="",
-                capture_timestamp=rospy.Time(),
+            timeout = max(
+                0.0, float(self._config.get("selection_wait_timeout_sec", 1.0))
             )
-            if not response.success:
-                raise RuntimeError("track selection rejected: " + response.message)
-            return
+            retry_hz = max(
+                1.0, float(self._config.get("selection_retry_rate_hz", 20.0))
+            )
+            deadline = time.monotonic() + timeout
+            while True:
+                response = self._select_client(
+                    target_id=int(goal.local_track_id),
+                    start_tracking=True,
+                    use_normalized_roi=False,
+                    normalized_roi=[0.0, 0.0, 0.0, 0.0],
+                    image_source="",
+                    capture_timestamp=rospy.Time(),
+                )
+                if response.success:
+                    return
+                if should_stop():
+                    raise RuntimeError("track selection interrupted by preemption")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "track selection rejected after waiting for the detection: "
+                        + response.message
+                    )
+                time.sleep(1.0 / retry_hz)
         self._wait_for_service(self._start_service_name)
         response = self._start_client(True)
         if not response.success or not response.active:
@@ -127,6 +154,12 @@ class TrackHandler:
             ERROR_TARGET_LOST: result_type.TARGET_LOST,
             ERROR_STATUS_TIMEOUT: result_type.STATUS_TIMEOUT,
             ERROR_EXECUTION_TIMEOUT: result_type.EXECUTION_TIMEOUT,
+            ERROR_TARGET_MISMATCH: result_type.TARGET_LOST,
+            ERROR_PROFILE_MISMATCH: result_type.START_REJECTED,
+            ERROR_CONTROL_UNAVAILABLE: result_type.DEPENDENCY_UNAVAILABLE,
+            ERROR_GIMBAL_UNAVAILABLE: result_type.DEPENDENCY_UNAVAILABLE,
+            ERROR_TRACKER_STOPPED: result_type.START_REJECTED,
+            ERROR_EMERGENCY_STOP: result_type.START_REJECTED,
         }.get(error, result_type.INTERNAL_ERROR)
 
     def execute(self, goal, should_stop, feedback, result_type):
@@ -141,7 +174,7 @@ class TrackHandler:
             with self._condition:
                 observed_sequence = self._status_sequence
             feedback("starting", 0.0, "starting xd_uav_track")
-            self._start(goal)
+            self._start(goal, should_stop)
             tracker_started = True
             monitor = TrackMonitor(rospy.Time.now().to_sec(), policy)
             rate = rospy.Rate(self._feedback_rate_hz)
@@ -167,6 +200,14 @@ class TrackHandler:
                         emergency_stop_active=status.emergency_stop_active,
                         tracking_state=status.tracking_state,
                         tracking_quality=status.tracking_quality,
+                        track_id=status.track_id,
+                        follower_profile=status.follower_profile,
+                        requested_profile=status.requested_profile,
+                        control_reference_published=(
+                            status.control_reference_published
+                        ),
+                        gimbal_state_valid=status.gimbal_state_valid,
+                        gimbal_fallback_active=status.gimbal_fallback_active,
                         invalid_reason=status.invalid_reason,
                     )
                 else:

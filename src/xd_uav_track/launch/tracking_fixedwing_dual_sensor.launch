@@ -1,0 +1,9 @@
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <include file="$(find xd_uav_track)/launch/vision_tracking_stack.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/><arg name="vehicle_type" value="fixedwing"/>
+    <arg name="track_config" value="$(find xd_uav_track)/config/fixedwing_metric_orbit.yaml"/>
+    <arg name="fixed_detect_config" value="$(find xd_uav_detect)/config/fixedwing_fixed_camera.yaml"/>
+    <arg name="enable_gimbal_lrf" value="true"/><arg name="enable_sar_gimbal" value="true"/>
+  </include>
+</launch>
