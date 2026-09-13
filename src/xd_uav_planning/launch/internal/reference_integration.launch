@@ -26,6 +26,11 @@
     <node pkg="xd_uav_planning" type="reference_mux_node.py"
           name="reference_mux" output="screen" clear_params="true">
       <param name="common_frame" value="$(arg common_frame)"/>
+      <!-- Normalize the selected candidate in the frame requested by the
+           integration launch.  The controller can also perform this TF
+           conversion, but keeping the mux output contract explicit avoids
+           an accidental fallback to common_frame. -->
+      <param name="output_frame" value="$(arg output_frame)"/>
       <param name="initial_owner" value="$(arg initial_owner)"/>
       <param name="allow_initial_ego_owner" value="$(arg allow_initial_ego_owner)"/>
       <param name="candidate_timeout" value="0.20"/>

@@ -834,6 +834,110 @@ class CoverageTest(unittest.TestCase):
 
 
 class DirectExecutionTest(unittest.TestCase):
+    def test_direct_hover_scout_follows_route_with_sequential_setpoints(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator._next_goal_id = 20
+        coordinator.shared_frame = "world"
+        coordinator.search_completed_at = 0.0
+        coordinator.vehicle_backends = {"uav1": "direct_controller_test"}
+        coordinator.mobility_profiles = {"uav1": "hover"}
+        coordinator.routes = {
+            "uav1": [
+                (5.0, 0.0, 4.0),
+                (5.0, 10.0, 4.0),
+                (15.0, 10.0, 4.0),
+            ]
+        }
+        coordinator.route_indices = {"uav1": 0}
+        coordinator.verification_target_by_scout = {}
+        coordinator.vehicle_world_positions = {
+            "uav1": (1.0, (0.0, 0.0, 4.0))
+        }
+        coordinator.active_goals = {}
+        coordinator.active_goal_points = {}
+        coordinator.active_goal_origins = {}
+        coordinator.active_trajectory_end_times = {}
+        coordinator.active_trajectory_route_progress = {}
+        coordinator.active_controller_paths = set()
+        coordinator.active_route_paths = set()
+        coordinator.worker_visual_handoff_waiting = {}
+        coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.5)
+        published = []
+        coordinator._publish_direct_controller_goal = (
+            lambda vehicle, goal: published.append((vehicle, goal))
+        )
+        coordinator._publish_direct_status = lambda *_args: None
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(10),
+        ):
+            coordinator._publish_next_scout_goal("uav1")
+
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0][0], "uav1")
+        self.assertEqual(published[0][1].pose.position.x, 5.0)
+        self.assertEqual(published[0][1].pose.position.y, 0.0)
+        self.assertEqual(published[0][1].pose.position.z, 4.0)
+        self.assertEqual(coordinator.active_goals["uav1"], (20, "search", 0))
+        self.assertNotIn("uav1", coordinator.active_route_paths)
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(11),
+        ):
+            coordinator._handle_goal_status(
+                "uav1", 20, PlannerStatus.REACHED, "waypoint reached"
+            )
+
+        self.assertEqual(coordinator.route_indices["uav1"], 1)
+        self.assertEqual(len(published), 2)
+        self.assertEqual(published[1][1].pose.position.x, 5.0)
+        self.assertEqual(published[1][1].pose.position.y, 10.0)
+        self.assertEqual(coordinator.active_goals["uav1"], (21, "search", 1))
+
+    def test_planning_hover_receives_complete_remaining_path(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator._next_goal_id = 12
+        coordinator.shared_frame = "world"
+        coordinator.vehicle_backends = {"uav1": "planning"}
+        coordinator.mobility_profiles = {"uav1": "hover"}
+        coordinator.vehicle_world_positions = {
+            "uav1": (1.0, (0.0, 0.0, 2.0))
+        }
+        coordinator.active_goals = {}
+        coordinator.active_goal_points = {}
+        coordinator.active_goal_origins = {}
+        coordinator.active_controller_paths = set()
+        coordinator.active_route_paths = set()
+        coordinator.worker_visual_handoff_waiting = {}
+        coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.5)
+        coordinator.planning_path_publishers = {
+            "uav1": type("Publisher", (), {"publish": lambda self, value: published.append(value)})()
+        }
+        coordinator._coverage_speed = lambda _vehicle: 4.0
+        published = []
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(10),
+        ):
+            goal_id = coordinator._publish_planning_route_goal(
+                "uav1",
+                [(1.0, 0.0, 2.0), (2.0, 0.0, 2.0), (2.0, 5.0, 2.0)],
+                0,
+                "search",
+                2,
+            )
+
+        self.assertEqual(12, goal_id)
+        self.assertEqual((12, "search", 2), coordinator.active_goals["uav1"])
+        self.assertEqual(1, len(published))
+        self.assertEqual(4, len(published[0].poses))
+        self.assertEqual(2.0, published[0].poses[-1].pose.position.x)
+        self.assertEqual(5.0, published[0].poses[-1].pose.position.y)
+
     def test_planning_multirotor_advances_inside_configured_radius(self):
         coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
         coordinator.mission_state = MISSION_ACTIVE

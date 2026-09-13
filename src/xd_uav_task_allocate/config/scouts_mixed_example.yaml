@@ -50,11 +50,12 @@ scouts:
     coverage:
       nominal_speed_mps: 4.0
     multirotor:
-      # Maximum distance of each local EGO goal in metres.
+      # Legacy single-goal spacing; complete routes use planner_task_path.
       waypoint_gap: 10.0
     topics:
       detections: /uav2/detect/detections
       planner_goal: /uav2/planning/goal
+      planner_task_path: /uav2/planning/task_path
       planner_cancel: /uav2/planning/cancel
       route_preview: /uav2/planning/route_preview
       planner_status: /uav2/planning/status

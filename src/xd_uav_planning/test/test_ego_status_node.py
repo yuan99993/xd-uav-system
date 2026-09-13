@@ -7,6 +7,7 @@ import rospy
 import rostest
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import PositionTarget
+from nav_msgs.msg import Path
 from std_srvs.srv import SetBool, SetBoolResponse
 from xd_uav_task_allocate.msg import PlannerStatus
 from xd_uav_task_allocate.srv import CancelPlanning
@@ -17,6 +18,7 @@ class EgoStatusNodeTest(unittest.TestCase):
         self.lock = threading.Lock()
         self.statuses = []
         self.forwarded = []
+        self.forwarded_paths = []
         self.gate_calls = []
         self.owner_calls = []
         self.gate_service = rospy.Service(
@@ -27,10 +29,14 @@ class EgoStatusNodeTest(unittest.TestCase):
             "/uav1/planning/goal", PoseStamped, queue_size=1)
         self.candidate_publisher = rospy.Publisher(
             "/uav1/ego/reference_candidate", PositionTarget, queue_size=1)
+        self.path_publisher = rospy.Publisher(
+            "/uav1/planning/task_path", Path, queue_size=1)
         rospy.Subscriber("/uav1/planning/status", PlannerStatus,
                          self._status_callback, queue_size=10)
         rospy.Subscriber("/uav1/ego/validated_goal", PoseStamped,
                          self._forwarded_callback, queue_size=10)
+        rospy.Subscriber("/uav1/ego/validated_path", Path,
+                         self._forwarded_path_callback, queue_size=10)
 
     def _status_callback(self, message):
         with self.lock:
@@ -39,6 +45,11 @@ class EgoStatusNodeTest(unittest.TestCase):
     def _forwarded_callback(self, message):
         with self.lock:
             self.forwarded.append(message)
+
+    def _forwarded_path_callback(self, message):
+        with self.lock:
+            if message.poses:
+                self.forwarded_paths.append(message)
 
     def _set_enabled(self, request):
         with self.lock:
@@ -105,6 +116,30 @@ class EgoStatusNodeTest(unittest.TestCase):
         self.assertTrue(response.success)
         self._wait(lambda: self.statuses[-1].state == PlannerStatus.IDLE,
                    3.0, "cancelled status")
+
+        # A route that makes no progress must be reattached instead of being
+        # terminally marked FAILED. This covers the production recovery path
+        # without assuming any particular route shape.
+        self._wait(lambda: self.path_publisher.get_num_connections() > 0,
+                   3.0, "path subscriber")
+        route = Path()
+        route.header.stamp = rospy.Time.now()
+        route.header.frame_id = "world"
+        for x, y in ((0.0, 0.0), (2.0, 1.0), (4.0, -1.0)):
+            pose = PoseStamped()
+            pose.header = route.header
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = 2.0
+            pose.pose.orientation.w = 1.0
+            route.poses.append(pose)
+        self.path_publisher.publish(route)
+        self._wait(lambda: len(self.forwarded_paths) >= 2, 3.0,
+                   "stalled route recovery republish")
+        with self.lock:
+            self.assertNotEqual(PlannerStatus.FAILED, self.statuses[-1].state)
+            self.assertIn("recovering from measured state",
+                          self.statuses[-1].detail)
 
 
 if __name__ == "__main__":

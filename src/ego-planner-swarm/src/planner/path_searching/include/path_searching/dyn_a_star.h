@@ -6,6 +6,7 @@
 #include <ros/console.h>
 #include <Eigen/Eigen>
 #include <plan_env/grid_map.h>
+#include <algorithm>
 #include <queue>
 
 constexpr double inf = 1 >> 20;
@@ -60,7 +61,11 @@ private:
 
 	//bool (*checkOccupancyPtr)( const Eigen::Vector3d &pos );
 
-	inline bool checkOccupancy(const Eigen::Vector3d &pos) { return (bool)grid_map_->getInflateOccupancy(pos); }
+	// GridMap returns -1 only outside its finite backing store. Unknown voxels
+	// inside the rolling map have an empty inflated layer and remain traversable,
+	// while leaving the map must stay forbidden: otherwise a local detour can be
+	// optimized through space for which no collision checks are available.
+	inline bool checkOccupancy(const Eigen::Vector3d &pos) { return grid_map_->getInflateOccupancy(pos) != 0; }
 
 	std::vector<GridNodePtr> retrievePath(GridNodePtr current);
 
@@ -75,6 +80,7 @@ private:
 	std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSet_;
 
 	int rounds_{0};
+	double max_search_time_{0.2};
 
 public:
 	typedef std::shared_ptr<AStar> Ptr;
@@ -83,6 +89,10 @@ public:
 	~AStar();
 
 	void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size);
+	void setSearchTimeLimit(const double seconds)
+	{
+		max_search_time_ = std::max(0.01, seconds);
+	}
 
 	bool AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt);
 

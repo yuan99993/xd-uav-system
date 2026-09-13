@@ -19,6 +19,16 @@ void GridMap::initMap(ros::NodeHandle &nh)
   node_.param("grid_map/local_update_range_y", mp_.local_update_range_(1), -1.0);
   node_.param("grid_map/local_update_range_z", mp_.local_update_range_(2), -1.0);
   node_.param("grid_map/obstacles_inflation", mp_.obstacles_inflation_, -1.0);
+  node_.param("grid_map/cloud_vertical_obstacle_guard",
+              mp_.cloud_vertical_obstacle_guard_, false);
+  node_.param("grid_map/cloud_obstacle_min_height",
+              mp_.cloud_obstacle_min_height_, 0.20);
+  node_.param("grid_map/cloud_obstacle_height",
+              mp_.cloud_obstacle_height_, -1.0);
+  node_.param("grid_map/cloud_obstacle_persistence",
+              mp_.cloud_obstacle_persistence_, 0.5);
+  mp_.cloud_obstacle_persistence_ =
+      std::max(0.0, mp_.cloud_obstacle_persistence_);
 
   node_.param("grid_map/fx", mp_.fx_, -1.0);
   node_.param("grid_map/fy", mp_.fy_, -1.0);
@@ -54,8 +64,6 @@ void GridMap::initMap(ros::NodeHandle &nh)
   node_.param("grid_map/rolling_map_enabled", mp_.rolling_map_enabled_, false);
   node_.param("grid_map/rolling_map_margin_m", mp_.rolling_map_margin_m_, 6.0);
   node_.param("grid_map/ground_height", mp_.ground_height_, 1.0);
-  node_.param("grid_map/minimum_obstacle_height_above_ground",
-              mp_.minimum_obstacle_height_above_ground_, 0.0);
 
   node_.param("grid_map/odom_depth_timeout", mp_.odom_depth_timeout_, 1.0);
 
@@ -67,6 +75,15 @@ void GridMap::initMap(ros::NodeHandle &nh)
   mp_.resolution_inv_ = 1 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
+  const double maximum_guard_height =
+      mp_.virtual_ceil_height_ > mp_.ground_height_
+          ? mp_.virtual_ceil_height_
+          : mp_.map_origin_(2) + z_size;
+  if (mp_.cloud_obstacle_height_ <= mp_.ground_height_)
+    mp_.cloud_obstacle_height_ = maximum_guard_height;
+  else
+    mp_.cloud_obstacle_height_ =
+        std::min(mp_.cloud_obstacle_height_, maximum_guard_height);
   const double max_rolling_margin =
       std::max(0.0, 0.5 * std::min(x_size, y_size) - mp_.resolution_);
   mp_.rolling_map_margin_m_ = std::max(
@@ -97,6 +114,7 @@ void GridMap::initMap(ros::NodeHandle &nh)
 
   md_.occupancy_buffer_ = vector<double>(buffer_size, mp_.clamp_min_log_ - mp_.unknown_flag_);
   md_.occupancy_buffer_inflate_ = vector<char>(buffer_size, 0);
+  md_.cloud_observation_time_ = vector<double>(buffer_size, 0.0);
 
   md_.count_hit_and_miss_ = vector<short>(buffer_size, 0);
   md_.count_hit_ = vector<short>(buffer_size, 0);
@@ -197,6 +215,37 @@ void GridMap::resetBuffer(Eigen::Vector3d min_pos, Eigen::Vector3d max_pos)
       for (int z = min_id(2); z <= max_id(2); ++z)
       {
         md_.occupancy_buffer_inflate_[toAddress(x, y, z)] = 0;
+        md_.cloud_observation_time_[toAddress(x, y, z)] = 0.0;
+      }
+}
+
+void GridMap::expireCloudObstacles(const Eigen::Vector3d& min_pos,
+                                   const Eigen::Vector3d& max_pos,
+                                   double now_sec)
+{
+  if (mp_.cloud_obstacle_persistence_ <= 0.0)
+  {
+    resetBuffer(min_pos, max_pos);
+    return;
+  }
+
+  Eigen::Vector3i min_id, max_id;
+  posToIndex(min_pos, min_id);
+  posToIndex(max_pos, max_id);
+  boundIndex(min_id);
+  boundIndex(max_id);
+  const double oldest = now_sec - mp_.cloud_obstacle_persistence_;
+  for (int x = min_id(0); x <= max_id(0); ++x)
+    for (int y = min_id(1); y <= max_id(1); ++y)
+      for (int z = min_id(2); z <= max_id(2); ++z)
+      {
+        const int address = toAddress(x, y, z);
+        const double observed = md_.cloud_observation_time_[address];
+        if (observed <= 0.0 || observed < oldest)
+        {
+          md_.occupancy_buffer_inflate_[address] = 0;
+          md_.cloud_observation_time_[address] = 0.0;
+        }
       }
 }
 
@@ -218,6 +267,8 @@ void GridMap::clearRollingMapBuffers()
             mp_.clamp_min_log_ - mp_.unknown_flag_);
   std::fill(md_.occupancy_buffer_inflate_.begin(),
             md_.occupancy_buffer_inflate_.end(), 0);
+  std::fill(md_.cloud_observation_time_.begin(),
+            md_.cloud_observation_time_.end(), 0.0);
   std::fill(md_.count_hit_and_miss_.begin(), md_.count_hit_and_miss_.end(), 0);
   std::fill(md_.count_hit_.begin(), md_.count_hit_.end(), 0);
   std::fill(md_.flag_rayend_.begin(), md_.flag_rayend_.end(), -1);
@@ -708,10 +759,10 @@ void GridMap::clearAndInflateLocalMap()
   // add virtual ceiling to limit flight height
   if (mp_.virtual_ceil_height_ > -0.5) {
     int ceil_id = floor((mp_.virtual_ceil_height_ - mp_.map_origin_(2)) * mp_.resolution_inv_) - 1;
-    for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
-      for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y) {
-        md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
-      }
+    if (ceil_id >= 0 && ceil_id < mp_.map_voxel_num_(2))
+      for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
+        for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y)
+          md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
   }
 }
 
@@ -737,6 +788,10 @@ void GridMap::updateOccupancyCallback(const ros::TimerEvent & /*event*/)
     return;
   }
   md_.last_occ_update_time_ = ros::Time::now();
+  // A fresh sensor update clears the one-shot timeout latch. Without this,
+  // one delayed depth frame permanently forces EGO into EMERGENCY_STOP even
+  // after sensing has recovered.
+  md_.flag_depth_odom_timeout_ = false;
 
   /* update occupancy */
   // ros::Time t1, t2, t3, t4;
@@ -824,6 +879,11 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   pcl::fromROSMsg(*img, latest_cloud);
 
   md_.has_cloud_ = true;
+  // Native point-cloud mode is a valid alternative to depth-image fusion.
+  // Do not let a stale depth callback keep tripping the safety latch while a
+  // fresh cloud is arriving.
+  md_.flag_use_depth_fusion = false;
+  md_.flag_depth_odom_timeout_ = false;
 
   if (!md_.has_odom_)
   {
@@ -837,8 +897,10 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   if (isnan(md_.camera_pos_(0)) || isnan(md_.camera_pos_(1)) || isnan(md_.camera_pos_(2)))
     return;
 
-  this->resetBuffer(md_.camera_pos_ - mp_.local_update_range_,
-                    md_.camera_pos_ + mp_.local_update_range_);
+  const double cloud_time = ros::Time::now().toSec();
+  this->expireCloudObstacles(md_.camera_pos_ - mp_.local_update_range_,
+                             md_.camera_pos_ + mp_.local_update_range_,
+                             cloud_time);
 
   pcl::PointXYZ pt;
   Eigen::Vector3d p3d, p3d_inf;
@@ -847,6 +909,7 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   int inf_step_z = 1;
 
   double max_x, max_y, max_z, min_x, min_y, min_z;
+  std::vector<std::pair<int, int>> vertical_obstacle_columns;
 
   min_x = mp_.map_max_boundary_(0);
   min_y = mp_.map_max_boundary_(1);
@@ -861,10 +924,6 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
     pt = latest_cloud.points[i];
     p3d(0) = pt.x, p3d(1) = pt.y, p3d(2) = pt.z;
 
-    if (p3d(2) <= mp_.ground_height_ +
-                    mp_.minimum_obstacle_height_above_ground_)
-      continue;
-
     /* point inside update range */
     Eigen::Vector3d devi = p3d - md_.camera_pos_;
     Eigen::Vector3i inf_pt;
@@ -872,6 +931,15 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
     if (fabs(devi(0)) < mp_.local_update_range_(0) && fabs(devi(1)) < mp_.local_update_range_(1) &&
         fabs(devi(2)) < mp_.local_update_range_(2))
     {
+      if (mp_.cloud_vertical_obstacle_guard_ &&
+          std::isfinite(pt.z) &&
+          pt.z >= mp_.ground_height_ + mp_.cloud_obstacle_min_height_)
+      {
+        Eigen::Vector3i point_id;
+        posToIndex(p3d, point_id);
+        if (isInMap(point_id))
+          vertical_obstacle_columns.emplace_back(point_id(0), point_id(1));
+      }
 
       /* inflate the point */
       for (int x = -inf_step; x <= inf_step; ++x)
@@ -899,8 +967,51 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
             int idx_inf = toAddress(inf_pt);
 
             md_.occupancy_buffer_inflate_[idx_inf] = 1;
+            md_.cloud_observation_time_[idx_inf] = cloud_time;
           }
     }
+  }
+
+  if (mp_.cloud_vertical_obstacle_guard_ && !vertical_obstacle_columns.empty())
+  {
+    std::sort(vertical_obstacle_columns.begin(), vertical_obstacle_columns.end());
+    vertical_obstacle_columns.erase(
+        std::unique(vertical_obstacle_columns.begin(), vertical_obstacle_columns.end()),
+        vertical_obstacle_columns.end());
+
+    // The XY column is deliberately built only from returns above the ground
+    // guard. This avoids turning the normal ground scan into a solid ceiling,
+    // while still protecting against a wall whose top is outside lidar FOV.
+    const double guard_top = std::min(
+        mp_.cloud_obstacle_height_, mp_.map_max_boundary_(2) - 1.0e-4);
+    Eigen::Vector3i guard_min_id, guard_max_id;
+    posToIndex(Eigen::Vector3d(mp_.map_min_boundary_(0),
+                               mp_.map_min_boundary_(1),
+                               mp_.ground_height_ + 1.0e-4),
+               guard_min_id);
+    posToIndex(Eigen::Vector3d(mp_.map_min_boundary_(0),
+                               mp_.map_min_boundary_(1), guard_top),
+               guard_max_id);
+    guard_min_id(2) = std::max(0, guard_min_id(2));
+    guard_max_id(2) = std::min(mp_.map_voxel_num_(2) - 1, guard_max_id(2));
+
+    for (const auto &column : vertical_obstacle_columns)
+    {
+      for (int x = -inf_step; x <= inf_step; ++x)
+        for (int y = -inf_step; y <= inf_step; ++y)
+          for (int z = guard_min_id(2); z <= guard_max_id(2); ++z)
+          {
+            Eigen::Vector3i guard_id(column.first + x, column.second + y, z);
+            if (isInMap(guard_id))
+            {
+              const int address = toAddress(guard_id);
+              md_.occupancy_buffer_inflate_[address] = 1;
+              md_.cloud_observation_time_[address] = cloud_time;
+            }
+          }
+    }
+
+    max_z = max(max_z, guard_top);
   }
 
   min_x = min(min_x, md_.camera_pos_(0));
@@ -922,10 +1033,10 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   // add virtual ceiling to limit flight height
   if (mp_.virtual_ceil_height_ > -0.5) {
     int ceil_id = floor((mp_.virtual_ceil_height_ - mp_.map_origin_(2)) * mp_.resolution_inv_) - 1;
-    for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
-      for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y) {
-        md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
-      }
+    if (ceil_id >= 0 && ceil_id < mp_.map_voxel_num_(2))
+      for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
+        for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y)
+          md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
   }
 }
 

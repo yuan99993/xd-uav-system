@@ -152,7 +152,10 @@ class SingleChainTest(unittest.TestCase):
         goal.header.stamp = rospy.Time.now()
         goal.header.frame_id = "world"
         goal.pose.position.x = 6.0
-        goal.pose.position.y = 0.0
+        # A diagonal goal makes a fixed-yaw trajectory observable. The
+        # traj_server must derive yaw from the B-spline velocity even when
+        # this test deliberately configures time_forward=0.0 below.
+        goal.pose.position.y = 6.0
         goal.pose.position.z = 2.0
         goal.pose.orientation.w = 1.0
         self.goal_pub.publish(goal)
@@ -185,6 +188,7 @@ class SingleChainTest(unittest.TestCase):
             candidate.acceleration_or_force.y,
             candidate.acceleration_or_force.z,
             candidate.yaw, candidate.yaw_rate)))
+        self.assertGreater(abs(candidate.yaw), 0.2)
         self.assertGreaterEqual(cloud_count, 5)
 
         # With the 20 m map and 6 m margin, x > 4 m forces a rolling-map

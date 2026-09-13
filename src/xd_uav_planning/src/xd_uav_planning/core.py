@@ -277,6 +277,81 @@ def validate_path(sample: PathSample, now: float, expected_frame: str,
     return Validation(True, "ok")
 
 
+def path_length(points: Sequence[Vector3]) -> float:
+    """Return the polyline length of a 3-D reference path."""
+    return sum(math.sqrt(sum(
+        (current[index] - previous[index]) ** 2 for index in range(3)))
+        for previous, current in zip(points, points[1:]))
+
+
+def project_path_progress(points: Sequence[Vector3], position: Vector3,
+                          previous_progress: float = 0.0,
+                          max_backtrack: float = 1.0,
+                          max_forward_search: float = 25.0) -> float:
+    """Project position onto a path while keeping progress monotonic.
+
+    The search window prevents a self-crossing path from jumping to a later
+    crossing.  ``previous_progress`` is arc length, not a point index, so the
+    helper also works when the path samples are non-uniformly spaced.
+    """
+    if len(points) < 2 or not _finite(position):
+        return max(0.0, float(previous_progress))
+    if not _finite(value for point in points for value in point):
+        return max(0.0, float(previous_progress))
+
+    cumulative = [0.0]
+    for previous, current in zip(points, points[1:]):
+        cumulative.append(cumulative[-1] + math.sqrt(sum(
+            (current[index] - previous[index]) ** 2
+            for index in range(3))))
+    total = cumulative[-1]
+    if total <= 1.0e-9:
+        return max(0.0, float(previous_progress))
+
+    previous_value = float(previous_progress)
+    if not math.isfinite(previous_value):
+        previous_value = 0.0
+    previous_s = min(total, max(0.0, previous_value))
+    lower = max(0.0, previous_s - max(0.0, float(max_backtrack)))
+    upper = min(total, previous_s + max(0.0, float(max_forward_search)))
+    best_distance = float("inf")
+    best_s = previous_s
+
+    for index, (start, end) in enumerate(zip(points, points[1:])):
+        segment = tuple(end[axis] - start[axis] for axis in range(3))
+        segment_length_sq = sum(value * value for value in segment)
+        if segment_length_sq <= 1.0e-12:
+            continue
+        segment_start = cumulative[index]
+        segment_end = cumulative[index + 1]
+        if segment_end < lower or segment_start > upper:
+            continue
+        search_start = max(lower, segment_start)
+        search_end = min(upper, segment_end)
+        ratio_min = ((search_start - segment_start) /
+                     (segment_end - segment_start))
+        ratio_max = ((search_end - segment_start) /
+                     (segment_end - segment_start))
+        offset = tuple(position[axis] - start[axis] for axis in range(3))
+        ratio = sum(offset[axis] * segment[axis] for axis in range(3))
+        ratio = min(ratio_max, max(ratio_min, ratio / segment_length_sq))
+        projected = tuple(start[axis] + ratio * segment[axis]
+                          for axis in range(3))
+        distance_sq = sum((position[axis] - projected[axis]) ** 2
+                          for axis in range(3))
+        progress = segment_start + ratio * (segment_end - segment_start)
+        # On an exact tie, prefer the later point only inside the forward
+        # window; this removes jitter at shared vertices without skipping a
+        # self-crossing route.
+        if (distance_sq < best_distance - 1.0e-10 or
+                (abs(distance_sq - best_distance) <= 1.0e-10 and
+                 progress > best_s)):
+            best_distance = distance_sq
+            best_s = progress
+
+    return max(previous_s, min(total, best_s))
+
+
 def arrival_reached(position: Vector3, velocity: Vector3, goal: Vector3,
                     position_tolerance: float,
                     speed_tolerance: float) -> bool:

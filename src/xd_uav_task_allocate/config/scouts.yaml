@@ -10,29 +10,30 @@ scouts:
     coverage:
       nominal_speed_mps: 4.0
     multirotor:
-      # Maximum distance of each local EGO goal; the route is split before
-      # dispatch so long world-frame routes stay inside EGO's local map.
+      # Legacy single-goal spacing; complete routes use planner_task_path.
       waypoint_gap: 10.0
     topics:
       detections: /uav1/detect/detections
       planner_goal: /uav1/planning/goal
+      planner_task_path: /uav1/planning/task_path
       planner_cancel: /uav1/planning/cancel
       route_preview: /uav1/planning/route_preview
       planner_status: /uav1/planning/status
 
-  uav2:
-    mobility_profile: hover
-    localization:
-      world_odometry_topic: /uav2/state_estimator/main/frames/world/odom
-    health:
-      control_state_topic: /uav2/control_manager/state
-    coverage:
-      nominal_speed_mps: 4.0
-    multirotor:
-      waypoint_gap: 10.0
-    topics:
-      detections: /uav2/detect/detections
-      planner_goal: /uav2/planning/goal
-      planner_cancel: /uav2/planning/cancel
-      route_preview: /uav2/planning/route_preview
-      planner_status: /uav2/planning/status
+  # uav2:
+  #   mobility_profile: hover
+  #   localization:
+  #     world_odometry_topic: /uav2/state_estimator/main/frames/world/odom
+  #   health:
+  #     control_state_topic: /uav2/control_manager/state
+  #   coverage:
+  #     nominal_speed_mps: 4.0
+  #   multirotor:
+  #     waypoint_gap: 10.0
+  #   topics:
+  #     detections: /uav2/detect/detections
+  #     planner_goal: /uav2/planning/goal
+  #     planner_task_path: /uav2/planning/task_path
+  #     planner_cancel: /uav2/planning/cancel
+  #     route_preview: /uav2/planning/route_preview
+  #     planner_status: /uav2/planning/status
