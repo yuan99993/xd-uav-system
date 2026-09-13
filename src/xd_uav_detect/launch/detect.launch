@@ -1,7 +1,9 @@
 <launch>
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
-  <arg name="config" default="$(find xd_uav_detect)/config/detect.yaml"/>
+  <arg name="config" default="$(find xd_uav_detect)/config/lidar_camera.yaml"/>
   <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
+  <arg name="world_frame" default="$(arg UAV_NAME)/local_origin"/>
+  <arg name="detections_compat" default=""/>
 
   <group ns="$(arg UAV_NAME)">
     <node pkg="xd_uav_detect"
@@ -11,6 +13,8 @@
           clear_params="true">
       <rosparam command="load" file="$(arg config)"/>
       <param name="frames/body" value="$(arg body_frame)"/>
+      <param name="frames/world" value="$(arg world_frame)"/>
+      <param name="interfaces/output/detections_compat" value="$(arg detections_compat)"/>
     </node>
   </group>
 </launch>

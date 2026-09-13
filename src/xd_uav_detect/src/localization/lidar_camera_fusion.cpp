@@ -1,4 +1,4 @@
-#include <xd_uav_detect/lidar_camera_fusion.hpp>
+#include <xd_uav_detect/localization/lidar_camera_fusion.hpp>
 
 #include <algorithm>
 #include <cmath>

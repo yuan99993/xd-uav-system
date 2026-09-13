@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include <xd_uav_detect/lidar_camera_fusion.hpp>
+#include <xd_uav_detect/localization/lidar_camera_fusion.hpp>
 
 namespace {
 

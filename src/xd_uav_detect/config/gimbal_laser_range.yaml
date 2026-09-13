@@ -1,0 +1,36 @@
+# Vehicle-independent gimbal camera + single-beam laser range localization.
+localization:
+  enabled: true
+  method: "gimbal_laser_range"
+
+interfaces:
+  input:
+    detections_2d: "detect/input/detections_2d"
+    image: "gimbal_camera/image_raw"
+    camera_info: "gimbal_camera/camera_info"
+    laser_range: "gimbal/range"
+  output:
+    detections_3d: "detect/detections"
+    detections_world: "detect/detections_world"
+    status: "detect/status"
+    debug_image: "detect/debug/image"
+
+frames:
+  camera: ""
+  laser: ""
+
+gimbal_range:
+  maximum_time_difference_sec: 0.05
+  range_buffer_size: 20
+  tf_timeout_sec: 0.03
+  require_detection_timestamp: true
+  require_matching_camera_frame: true
+  require_laser_axis_in_bbox: true
+  bbox_gate_margin_px: 4.0
+  # Generic conservative simulation defaults, not hardware calibration.
+  range_stddev_m: 0.20
+  angular_stddev_rad: 0.003
+  position_stddev_m: 0.10
+
+visualization:
+  enabled: true

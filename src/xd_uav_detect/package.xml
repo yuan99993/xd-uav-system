@@ -2,7 +2,7 @@
 <package format="2">
   <name>xd_uav_detect</name>
   <version>1.0.0</version>
-  <description>External 2D detection and LiDAR-camera fusion for XD UAV tracking.</description>
+  <description>Vehicle-independent metric target localization from configurable sensor rigs.</description>
 
   <maintainer email="kzy@example.com">kzy</maintainer>
   <license>BSD-3-Clause</license>
@@ -11,18 +11,35 @@
 
   <depend>cv_bridge</depend>
   <depend>eigen</depend>
+  <depend>geometry_msgs</depend>
+  <build_depend>gazebo_dev</build_depend>
   <depend>image_geometry</depend>
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
   <depend>roscpp</depend>
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
+  <depend>trajectory_msgs</depend>
   <depend>xd_uav_track</depend>
 
+  <exec_depend>tf</exec_depend>
+  <exec_depend>mrs_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-jinja2</exec_depend>
+  <exec_depend>gazebo_plugins</exec_depend>
+  <exec_depend>gazebo_msgs</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
   <test_depend>gtest</test_depend>
+  <test_depend>gazebo_plugins</test_depend>
+  <test_depend>gazebo_msgs</test_depend>
+  <test_depend>gazebo_ros</test_depend>
+  <test_depend>rostest</test_depend>
+  <test_depend>python3-jinja2</test_depend>
 
   <export/>
 </package>
