@@ -505,6 +505,14 @@ frame，将中心点/宽高框转换为 `[x_min, y_min, x_max, y_max]`，并从 
 补充原图尺寸。二维检测进入 `xd_uav_detect` 前保持 `range_valid=false`，由地面投影或
 雷达相机融合成功后填写三维相对位置。
 
+如果相机驱动没有发布 CameraInfo，启动时必须传入 `image_width` 和 `image_height`；
+尺寸为 0 的 DetectionArray 会被 `xd_uav_track` 拒绝。例如：
+
+```bash
+roslaunch sar_yolo_detector xd_smart_tracker_integration.launch \
+  UAV_NAME:=uav3 image_width:=640 image_height:=360
+```
+
 固定翼 `uav1` 使用包内真实 `YOLO11n COCO` 权重和 SmartTracker，同时启动消息桥
 （原有 `xd_uav_detect` 继续独立运行）：
 

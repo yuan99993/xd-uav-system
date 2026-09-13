@@ -38,13 +38,20 @@ windows:
       layout: tiled
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch
-  - planning:
+  - track_execute:
       layout: tiled
       panes:
-        - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav1 vehicle_type:=fixedwing common_frame:=world
-        - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav2 vehicle_type:=multirotor common_frame:=world output_frame:=uav2/odom ego_id:=0
-        - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav3 vehicle_type:=multirotor common_frame:=world output_frame:=uav3/odom ego_id:=1
-        - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav4 vehicle_type:=multirotor common_frame:=world output_frame:=uav4/odom ego_id:=2
+        - waitForTime; roslaunch xd_uav_track track.launch UAV_NAME:=uav3
+        - waitForTime; roslaunch xd_uav_track track.launch UAV_NAME:=uav4
+        - waitForTime; roslaunch xd_uav_task_execute task_execute.launch UAV_NAME:=uav3
+        - waitForTime; roslaunch xd_uav_task_execute task_execute.launch UAV_NAME:=uav4
+  # - planning:
+  #     layout: tiled
+  #     panes:
+  #       - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav1 vehicle_type:=fixedwing common_frame:=world
+  #       - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav2 vehicle_type:=multirotor common_frame:=world output_frame:=uav2/odom ego_id:=0
+  #       - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav3 vehicle_type:=multirotor common_frame:=world output_frame:=uav3/odom ego_id:=1
+  #       - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav4 vehicle_type:=multirotor common_frame:=world output_frame:=uav4/odom ego_id:=2
   - task_allocator:
       layout: tiled
       panes:
@@ -54,8 +61,8 @@ windows:
       panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav2 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/multirotor_detect.yaml
-        #- waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav1 use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python
-        #- waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav2 input_image_topic:=camera/image_raw camera_info_topic:=camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav1 use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav2 input_image_topic:=camera/image_raw camera_info_topic:=camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python
   - rviz:
       layout: tiled
       panes:

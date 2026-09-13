@@ -15,6 +15,10 @@ ERROR_STATUS_TIMEOUT = "status_timeout"
 ERROR_EXECUTION_TIMEOUT = "execution_timeout"
 ERROR_TRACKER_STOPPED = "tracker_stopped"
 ERROR_EMERGENCY_STOP = "emergency_stop"
+ERROR_TARGET_MISMATCH = "target_mismatch"
+ERROR_PROFILE_MISMATCH = "profile_mismatch"
+ERROR_CONTROL_UNAVAILABLE = "control_unavailable"
+ERROR_GIMBAL_UNAVAILABLE = "gimbal_unavailable"
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,9 @@ class TrackMonitorPolicy:
     maximum_duration_sec: float = 120.0
     minimum_tracking_quality: float = 0.0
     allow_predicted: bool = False
+    required_track_id: int = -1
+    required_profile: str = ""
+    require_control_reference: bool = True
 
     def __post_init__(self):
         for name in (
@@ -59,6 +66,10 @@ class TrackMonitor:
         self.valid_started_at = None
         self.acquired = False
         self.progress = 0.0
+        self.locked_track_id = None
+        self.tracker_seen_active = False
+        self.pending_error = ERROR_NONE
+        self.pending_detail = ""
 
     @property
     def terminal(self) -> bool:
@@ -76,6 +87,12 @@ class TrackMonitor:
         emergency_stop_active: bool,
         tracking_state: str,
         tracking_quality: float,
+        track_id: int = 0,
+        follower_profile: str = "",
+        requested_profile: str = "",
+        control_reference_published: bool = True,
+        gimbal_state_valid: bool = True,
+        gimbal_fallback_active: bool = False,
         invalid_reason: str = "",
     ) -> str:
         if self.terminal:
@@ -87,10 +104,49 @@ class TrackMonitor:
         if emergency_stop_active:
             return self._fail(ERROR_EMERGENCY_STOP, "tracker emergency stop is active")
         if not tracker_active:
-            return self._fail(ERROR_TRACKER_STOPPED, "tracker stopped unexpectedly")
+            if self.tracker_seen_active:
+                return self._fail(
+                    ERROR_TRACKER_STOPPED, "tracker stopped unexpectedly"
+                )
+            # A queued status published just before StartTracker(true) can be
+            # delivered after the service response. Treat it as startup state;
+            # a tracker that never reports active still fails at acquisition
+            # timeout with the more useful stopped reason.
+            self.pending_error = ERROR_TRACKER_STOPPED
+            self.pending_detail = "waiting for tracker active status"
+            self.detail = self.pending_detail
+            return self.poll(stamp)
+        self.tracker_seen_active = True
 
         measured_target = bool(target_visible) and (
             self.policy.allow_predicted or not bool(target_predicted)
+        )
+        expected_profile = (
+            str(self.policy.required_profile).strip()
+            or str(requested_profile).strip()
+        )
+        profile_valid = bool(
+            not expected_profile
+            or (
+                str(requested_profile).strip() == expected_profile
+                and str(follower_profile).strip() == expected_profile
+                and not bool(gimbal_fallback_active)
+            )
+        )
+        expected_track_id = int(self.policy.required_track_id)
+        if expected_track_id < 0 and self.locked_track_id is not None:
+            expected_track_id = int(self.locked_track_id)
+        track_valid = int(track_id) >= 0 and (
+            expected_track_id < 0 or int(track_id) == expected_track_id
+        )
+        gimbal_required = expected_profile.startswith("gm_velocity_")
+        gimbal_valid = bool(
+            not gimbal_required
+            or gimbal_state_valid
+        )
+        reference_valid = bool(
+            not self.policy.require_control_reference
+            or control_reference_published
         )
         valid = bool(
             measured_target
@@ -98,12 +154,20 @@ class TrackMonitor:
             and state_valid
             and str(tracking_state) == "tracking"
             and float(tracking_quality) >= self.policy.minimum_tracking_quality
+            and track_valid
+            and profile_valid
+            and gimbal_valid
+            and reference_valid
         )
         if valid:
+            if self.locked_track_id is None:
+                self.locked_track_id = int(track_id)
             if self.valid_started_at is None:
                 self.valid_started_at = stamp
             self.last_valid_at = stamp
             self.acquired = True
+            self.pending_error = ERROR_NONE
+            self.pending_detail = ""
             self.state = STATE_RUNNING
             elapsed = max(0.0, stamp - self.valid_started_at)
             self.progress = min(1.0, elapsed / self.policy.required_tracking_sec)
@@ -115,9 +179,39 @@ class TrackMonitor:
             self.valid_started_at = None
             self.progress = 0.0
             self.state = STATE_ACQUIRING
-            self.detail = str(invalid_reason).strip() or (
-                f"waiting for valid tracking (state={tracking_state})"
-            )
+            if not profile_valid:
+                self.pending_error = ERROR_PROFILE_MISMATCH
+                self.pending_detail = (
+                    f"requested profile {expected_profile or '<unset>'} is not active "
+                    f"(requested={requested_profile or '<unset>'}, "
+                    f"active={follower_profile or '<unset>'}, "
+                    f"fallback={bool(gimbal_fallback_active)})"
+                )
+            elif not gimbal_valid:
+                self.pending_error = ERROR_GIMBAL_UNAVAILABLE
+                self.pending_detail = "gimbal tracking or gimbal state is unavailable"
+            elif not track_valid:
+                self.pending_error = ERROR_TARGET_MISMATCH
+                self.pending_detail = (
+                    f"active local track {int(track_id)} does not match "
+                    f"required track {expected_track_id}"
+                )
+            elif not measured_target:
+                self.pending_error = ERROR_TARGET_LOST
+                self.pending_detail = str(invalid_reason).strip() or (
+                    f"waiting for measured target tracking (state={tracking_state})"
+                )
+            elif not reference_valid or not command_valid or not state_valid:
+                self.pending_error = ERROR_CONTROL_UNAVAILABLE
+                self.pending_detail = str(invalid_reason).strip() or (
+                    "track control reference is not active"
+                )
+            else:
+                self.pending_error = ERROR_TARGET_LOST
+                self.pending_detail = str(invalid_reason).strip() or (
+                    f"waiting for measured target tracking (state={tracking_state})"
+                )
+            self.detail = self.pending_detail
         return self.poll(stamp)
 
     def poll(self, now: float) -> str:
@@ -139,6 +233,8 @@ class TrackMonitor:
             return self._fail(ERROR_STATUS_TIMEOUT, "tracker status timed out")
         if not self.acquired:
             if stamp - self.started_at > self.policy.acquisition_timeout_sec:
+                if self.pending_error not in (ERROR_NONE, ERROR_TARGET_LOST):
+                    return self._fail(self.pending_error, self.pending_detail)
                 return self._fail(
                     ERROR_ACQUISITION_TIMEOUT,
                     "no valid target was acquired before the deadline",
@@ -148,7 +244,10 @@ class TrackMonitor:
             self.last_valid_at is not None
             and stamp - self.last_valid_at > self.policy.target_loss_timeout_sec
         ):
-            return self._fail(ERROR_TARGET_LOST, "tracked target was lost for too long")
+            return self._fail(
+                self.pending_error or ERROR_TARGET_LOST,
+                self.pending_detail or "tracked target was lost for too long",
+            )
         return self.state
 
     def _fail(self, error: str, detail: str) -> str:

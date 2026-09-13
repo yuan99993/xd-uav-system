@@ -13,6 +13,8 @@ post_arrival:
 
   failure_policy: fail
   retry_delay_sec: 5.0
+  # Applies to both direct_controller_test and planning backends.
+  control_handoff_settle_sec: 0.5
 
   default_task:
     task_type: track
@@ -31,4 +33,12 @@ post_arrival:
       follower_profile: fw_velocity_vector
 
   class_overrides: {}
-  worker_overrides: {}
+  # Execution is selected per aircraft ID. Keep the mobility override above as
+  # a fallback for aircraft which have not yet been listed here.
+  worker_overrides:
+    uav3:
+      task_type: track
+      follower_profile: mc_velocity_ground
+    uav4:
+      task_type: track
+      follower_profile: mc_velocity_ground

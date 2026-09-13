@@ -81,6 +81,13 @@ class GimbalImageControllerNode:
         self.gimbal_state = None
         self.tracking_enabled = bool(rospy.get_param("~tracking_enabled_at_startup", False))
         self.search_enabled = False
+        self.return_to_init_on_stop = bool(
+            rospy.get_param("~return_to_init_on_stop/enabled", True)
+        )
+        self.return_to_init_duration_s = max(
+            0.0, float(rospy.get_param("~return_to_init_on_stop/duration_s", 2.0))
+        )
+        self.return_to_init_until = 0.0
         self.last_stamp = rospy.Time.now()
         self.bridge = CvBridge()
 
@@ -145,12 +152,22 @@ class GimbalImageControllerNode:
             # Do not carry integral/derivative state across a manual start.
             self.controller.reset()
             active = self.tracking_enabled
+            if active:
+                self.return_to_init_until = 0.0
+            elif self.return_to_init_on_stop:
+                self.return_to_init_until = (
+                    rospy.get_time() + self.return_to_init_duration_s
+                )
 
         if active:
             message = "gimbal image tracking enabled"
             rospy.loginfo(message)
         else:
-            message = "gimbal image tracking disabled; holding current gimbal target"
+            message = (
+                "gimbal image tracking disabled; returning to initial pose"
+                if self.return_to_init_on_stop
+                else "gimbal image tracking disabled; holding current gimbal target"
+            )
             rospy.loginfo(message)
 
         return StartGimbalTrackingResponse(
@@ -164,11 +181,21 @@ class GimbalImageControllerNode:
             self.search_enabled = bool(request.start)
             self.controller.set_manual_search(self.search_enabled)
             active = self.search_enabled
+            if active:
+                self.return_to_init_until = 0.0
+            elif not self.tracking_enabled and self.return_to_init_on_stop:
+                self.return_to_init_until = (
+                    rospy.get_time() + self.return_to_init_duration_s
+                )
 
         message = (
             "manual gimbal search enabled"
             if active
-            else "manual gimbal search disabled; holding current gimbal target"
+            else (
+                "manual gimbal search disabled; returning to initial pose"
+                if self.return_to_init_on_stop and not self.tracking_enabled
+                else "manual gimbal search disabled; holding current gimbal target"
+            )
         )
         rospy.loginfo(message)
         return StartGimbalSearchResponse(
@@ -326,6 +353,8 @@ class GimbalImageControllerNode:
                 stamp = self.last_stamp
                 tracking_enabled = self.tracking_enabled
                 search_enabled = self.search_enabled
+                return_to_init_until = self.return_to_init_until
+                controller_config = self.controller.config
 
             if tracking_enabled or search_enabled:
                 command, (error_x, error_y) = self.controller.update(
@@ -334,6 +363,15 @@ class GimbalImageControllerNode:
                     gimbal_state=gimbal_state,
                     now=rospy.get_time(),
                 )
+            elif rospy.get_time() <= return_to_init_until:
+                command = GimbalCommandData(
+                    mode="angle",
+                    valid=True,
+                    yaw_deg=controller_config.target_lost_back_to_init_yaw_deg,
+                    pitch_deg=controller_config.target_lost_back_to_init_pitch_deg,
+                    roll_deg=controller_config.target_lost_back_to_init_roll_deg,
+                )
+                error_x, error_y = 0.0, 0.0
             else:
                 command = GimbalCommandData(
                     mode=self.controller.config.control_mode,

@@ -65,10 +65,17 @@ target_lost:
   action: search
   hold_time_s: 0.2
   search_yaw_rate_deg_s: 10.0
-  search_pitch_rate_deg_s: 0.0
+  search_pitch_rate_deg_s: 5.0
   back_to_init_yaw_deg: 0.0
   back_to_init_pitch_deg: 0.0
   back_to_init_roll_deg: 0.0
+
+# Closing both the tracking and search gates (task complete, failed, cancelled,
+# or released) repeatedly publishes the initial angle long enough for the
+# physical gimbal adapter to return, then resumes the normal invalid/hold state.
+return_to_init_on_stop:
+  enabled: true
+  duration_s: 2.0
 
 # Smooth the output command to reduce jitter from bbox noise.
 smoothing:

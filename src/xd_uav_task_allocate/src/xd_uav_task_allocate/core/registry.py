@@ -27,6 +27,7 @@ class TargetObservation:
     track_id: int = -1
     track_id_is_stable: bool = False
     sensor_id: str = ""
+    normalized_bbox: Optional[Tuple[float, float, float, float]] = None
 
 
 @dataclass
@@ -85,6 +86,7 @@ class GlobalTargetRegistry:
         class_confirmation_minimum_ratio: float = 0.65,
         maximum_confirmation_position_spread_m: float = 3.0,
         position_history_size: int = 30,
+        duplicate_bbox_iou_threshold: float = 0.50,
     ):
         self.association_radius_m = max(0.1, float(association_radius_m))
         self.confirmation_hits = max(1, int(confirmation_hits))
@@ -129,6 +131,9 @@ class GlobalTargetRegistry:
             0.0, float(maximum_confirmation_position_spread_m)
         )
         self.position_history_size = max(3, int(position_history_size))
+        self.duplicate_bbox_iou_threshold = min(
+            1.0, max(0.0, float(duplicate_bbox_iou_threshold))
+        )
         self.targets: Dict[int, GlobalTargetRecord] = {}
         self._source_track_to_target: Dict[Tuple[str, str, int], int] = {}
         self._next_target_id = 1
@@ -207,9 +212,66 @@ class GlobalTargetRegistry:
             ):
                 continue
             item_key = self._source_track_key(item)
-            if item_key is not None and item_key != observation_key:
+            if (
+                item_key is not None
+                and item_key != observation_key
+                and not self._bbox_duplicate(item, observation)
+            ):
                 return True
         return False
+
+    @staticmethod
+    def _bbox_iou(first, second) -> float:
+        if first is None or second is None:
+            return 0.0
+        first_cx, first_cy, first_w, first_h = (
+            float(value) for value in first
+        )
+        second_cx, second_cy, second_w, second_h = (
+            float(value) for value in second
+        )
+        if min(first_w, first_h, second_w, second_h) <= 0.0:
+            return 0.0
+        first_left = first_cx - 0.5 * first_w
+        first_top = first_cy - 0.5 * first_h
+        first_right = first_cx + 0.5 * first_w
+        first_bottom = first_cy + 0.5 * first_h
+        second_left = second_cx - 0.5 * second_w
+        second_top = second_cy - 0.5 * second_h
+        second_right = second_cx + 0.5 * second_w
+        second_bottom = second_cy + 0.5 * second_h
+        intersection = max(
+            0.0, min(first_right, second_right) - max(first_left, second_left)
+        ) * max(
+            0.0,
+            min(first_bottom, second_bottom) - max(first_top, second_top),
+        )
+        union = first_w * first_h + second_w * second_h - intersection
+        return intersection / union if union > 1e-12 else 0.0
+
+    def _bbox_duplicate(
+        self, first: TargetObservation, second: TargetObservation
+    ) -> bool:
+        return (
+            self.duplicate_bbox_iou_threshold > 0.0
+            and first.class_id == second.class_id
+            and self._bbox_iou(first.normalized_bbox, second.normalized_bbox)
+            >= self.duplicate_bbox_iou_threshold
+        )
+
+    def _same_frame_duplicate_track(
+        self, target: GlobalTargetRecord, observation: TargetObservation
+    ) -> bool:
+        observation_key = self._source_track_key(observation)
+        if observation_key is None:
+            return False
+        return any(
+            item.source_uav == observation.source_uav
+            and abs(float(item.stamp) - float(observation.stamp)) <= 1e-6
+            and self._source_track_key(item) not in (None, observation_key)
+            and self._bbox_duplicate(item, observation)
+            for item in target.recent_measurements
+        )
 
     def _compatible(self, target: GlobalTargetRecord, observation: TargetObservation) -> bool:
         if target.status == TARGET_STALE:
@@ -220,6 +282,11 @@ class GlobalTargetRegistry:
         )
         if self._same_frame_distinct_track(target, observation):
             return False
+        if self._same_frame_duplicate_track(target, observation):
+            # Two highly-overlapping same-class boxes are detector duplicates,
+            # even when their independent range projections differ more than
+            # the normal world-space association gate.
+            return distance <= self.stable_track_maximum_jump_m
         class_conflict = (
             target.class_id >= 0
             and observation.class_id >= 0

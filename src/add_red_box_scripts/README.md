@@ -78,7 +78,7 @@ python3 src/add_red_box_scripts/spawn_red_boxes.py --count 8 --area=0,20,0,20 --
 终端 1：
 
 ```bash
-cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red_box_scripts/spawn_red_boxes.py --count 5 --search-area-topic /task_allocate/search_areas --size 3 3 1 --ground-z 0 --replace --min-spacing 10
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red_box_scripts/spawn_red_boxes.py --count 3 --search-area-topic /task_allocate/search_areas --size 3 3 3 --ground-z 3 --replace --min-spacing 10
 ```
 
 终端 2：执行任务系统原有的搜索区域发布命令。收到区域消息后，终端 1 才会
@@ -336,7 +336,7 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /ta
 
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 100.0, y: 0.0, z: 0.0}, {x: 100.0, y: 100.0, z: 0.0}, {x: 0.0, y: 100.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 6.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -160.0, y: -160.0, z: 0.0}, {x: 0.0, y: -160.0, z: 0.0}, {x: -60.0, y: -60.0, z: 0.0}, {x: -160.0, y: 0.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 5.0, priority: 1}]}"
 
-cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 150.0, y: 0.0, z: 0.0}, {x: 150.0, y: 120.0, z: 0.0}, {x: 0.0, y: 120.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 8.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -70.0, y: -60.0, z: 0.0}, {x: 0.0, y: -60.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -70.0, y: 0.0, z: 0.0}]}, altitude: 8.0, lane_spacing: 8.0, priority: 1}]}"
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 150.0, y: 0.0, z: 0.0}, {x: 150.0, y: 120.0, z: 0.0}, {x: 0.0, y: 120.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 13.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -70.0, y: -60.0, z: 0.0}, {x: 0.0, y: -60.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -70.0, y: 0.0, z: 0.0}]}, altitude: 8.0, lane_spacing: 13.0, priority: 1}]}"
 
 
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 50.0, y: 50.0, z: 0.0}, {x: 200.0, y: 50.0, z: 0.0}, {x: 200.0, y: 200.0, z: 0.0}, {x: 50.0, y: 200.0, z: 0.0}]}, altitude: 8.0, lane_spacing: 8.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -0.0, y: -0.0, z: 0.0}, {x: -50.0, y: 0.0, z: 0.0}, {x: -50.0, y: -50.0, z: 0.0}, {x: 0.0, y: -50.0, z: 0.0}]}, altitude: 8.0, lane_spacing: 8.0, priority: 1}]}"

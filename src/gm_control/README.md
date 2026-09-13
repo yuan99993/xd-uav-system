@@ -44,21 +44,41 @@ those topics and no MAVROS mount-control interface is added here.
 The bridge invalidates the bbox when the track stream times out. Direction signs
 for driver-specific gimbal conventions are in `config/xd_track_bridge.yaml`.
 
-Gimbal tracking is manually gated. Starting `gm_control` does not enable motion,
-even if a valid bbox is already being published. Enable or disable the gimbal
-controller with:
+When launched through `xd_track_gimbal_control.launch`, the bridge automatically
+opens the existing gimbal tracking gate while `xd_uav_track` is active with a
+`gm_velocity_*` requested profile. Tracker stop, a non-GM profile, or emergency
+stop closes the gate. This lifecycle stays in `gm_control`; task execution does
+not call the gimbal service and no ROS message or service type is changed.
+After tracking enablement is acknowledged, the bridge also calls the existing
+`start_search(true)` service. Search supplies a scan command only while no valid
+target exists; a valid bbox immediately takes priority and uses normal tracking.
+Set `auto_gimbal_search: false` to disable this chaining.
+The bridge marks the forwarded gimbal state invalid until enablement is
+acknowledged, so a missing gimbal controller cannot be mistaken for a completed
+GM tracking task.
+
+The bridge also watches the existing rescue-task and worker-odometry topics.
+When an assigned worker enters `proximity_search/radius_m`, it enables search
+before visual handoff. Once the task is completed, failed, cancelled, or
+released and tracking has stopped, both gates close and gm_control commands the
+configured `target_lost/back_to_init_*` angles for
+`return_to_init_on_stop/duration_s`.
+
+The gate can still be controlled manually (or automatic coupling can be disabled
+with `auto_gimbal_tracking: false`):
 
 ```bash
 rosservice call /uav1/gm_control/start_tracking "start: true"
 rosservice call /uav1/gm_control/start_tracking "start: false"
 ```
 
-The service uses `StartGimbalTracking.srv`. Disabling tracking publishes invalid
-gimbal commands while retaining the latest bbox, so the adapter can hold the
-current gimbal target and tracking can be enabled again later.
+The service uses `StartGimbalTracking.srv`. With
+`return_to_init_on_stop/enabled: true`, disabling the final active gate first
+publishes the configured initial-angle command for a short interval, then
+returns to invalid/hold output. The latest bbox is retained for a later restart.
 
-`start_tracking: true` does not start search. If no valid target has ever been
-detected, the controller publishes an invalid/hold command. Automatic
+Calling `start_tracking` by itself still does not start search; the bridge makes
+the two existing service calls in sequence. Without the bridge, automatic
 `target_lost.action: search` starts only after a valid target was detected once
 and then remains lost for `target_lost.timeout_s`.
 

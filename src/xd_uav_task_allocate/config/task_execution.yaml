@@ -12,6 +12,9 @@ post_arrival:
   # retry: return it to PENDING and temporarily exclude the failed worker.
   failure_policy: fail  # fail | retry
   retry_delay_sec: 5.0
+  # After Track stops, wait briefly before either direct control or planning
+  # receives the next task, allowing queued tracking references to drain.
+  control_handoff_settle_sec: 0.5
 
   default_task:
     task_type: track
@@ -23,7 +26,8 @@ post_arrival:
     required_execution_sec: 0.0
     maximum_duration_sec: 0.0
 
-  # Merge order is: default -> mobility profile -> target class -> worker.
+  # Merge order is: default -> mobility profile (legacy fallback) -> worker ID
+  # -> target class. Therefore class_overrides always has the highest priority.
   # These examples are intentionally inactive while mode=arrive.
   mobility_profile_overrides:
     hover:
@@ -38,4 +42,5 @@ post_arrival:
 
   worker_overrides: {}
     # uav3:
+    #   task_type: track
     #   follower_profile: gm_velocity_vector

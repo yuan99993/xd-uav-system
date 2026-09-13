@@ -109,6 +109,7 @@ post_arrival:
 ```yaml
 post_arrival:
   mode: task_execute
+  control_handoff_settle_sec: 0.5
   default_task:
     task_type: track
     local_track_id: -1
@@ -120,9 +121,15 @@ post_arrival:
 默认把任务标为 `FAILED`，等待操作员调用 `retry_task`；也可将 `failure_policy` 设为
 `retry` 自动重新排队。
 
-任务参数按 `default_task → mobility_profile_overrides → class_overrides → worker_overrides`
-依次覆盖。例如四旋翼可使用 `gm_velocity_chase`，固定翼可使用
-`fw_velocity_vector`。`follower_profile: ""` 表示沿用 Track 自身配置，避免分配层强制切换。
+Action 结束后，`control_handoff_settle_sec` 会让该工作机短暂退出可分配集合，再允许下一项
+任务接管。该交接窗口同时适用于 direct 和 planning 后端，用于排空 Track 停止时已经进入
+ROS 队列的末帧控制参考；direct 多旋翼随后持续刷新当前导航位置目标，planning 则下发新的
+完整路径并等待 EGO 的新候选重新取得控制权。
+
+任务参数按 `default_task → mobility_profile_overrides → worker_overrides → class_overrides`
+依次覆盖。通常用 `worker_overrides` 按飞机 ID 定义任务，mobility 规则仅作为未配置飞机的
+兼容回退；目标类别规则优先级最高，和飞机 ID 规则冲突时采用 `class_overrides`。
+`follower_profile: ""` 表示沿用 Track 自身配置，避免分配层强制切换。
 暂停、停止、禁用飞机、取消任务、拒绝目标或工作机掉线时，协调器会取消对应 Action；暂停
 会把未完成任务退回队列，恢复后重新分配。
 
@@ -363,8 +370,9 @@ rosservice call /task_allocate/retry_verification "{target_id: 3}"
 轨迹优先关联原世界目标，不同轨迹仍可通过世界位置和协方差重新关联，因此跟踪中断换号或
 多机分别编号不会直接变成新任务。具体 `class_id` 全部保留，不做类别合并；物理身份关联与
 类别判断分开，同一稳定轨迹的偶发类别跳变只累计为类别证据，必须达到多帧类别占比和位置
-散布门限后才能 confirmed。不同稳定轨迹在同一来源帧中同时出现时会记录为两个明确目标，
-避免把靠近的同类物体误合并。
+散布门限后才能 confirmed。不同稳定轨迹在同一来源帧中同时出现时通常记录为两个明确目标；
+但同类别框的 IoU 达到 `duplicate_bbox_iou_threshold` 时视为检测器重复框，并融合到同一个
+世界目标，避免同一物体因两个局部 track ID 生成两个任务。
 
 普通模式下，满足观测次数、持续时间、类别稳定度和世界位置稳定度后才 confirmed；两级搜索
 模式下，固定翼证据只进入 VERIFYING，必须由四旋翼的稳定精定位证据确认。每个全局目标只

@@ -5,9 +5,11 @@ find_package(catkin REQUIRED COMPONENTS
   dynamic_reconfigure
   geometry_msgs
   message_generation
+  nav_msgs
   rospy
   sensor_msgs
   std_msgs
+  xd_uav_task_allocate
   xd_uav_track
 )
 
@@ -38,7 +40,7 @@ generate_messages(
 )
 
 catkin_package(
-  CATKIN_DEPENDS dynamic_reconfigure geometry_msgs message_runtime rospy sensor_msgs std_msgs xd_uav_track
+  CATKIN_DEPENDS dynamic_reconfigure geometry_msgs message_runtime nav_msgs rospy sensor_msgs std_msgs xd_uav_task_allocate xd_uav_track
 )
 
 catkin_install_python(
