@@ -11,17 +11,15 @@ track_status_topic: "track/status"
 # the gimbal, while tracker stop/profile change/emergency stop disables it.
 auto_gimbal_tracking: true
 gimbal_tracking_service: "gm_control/start_tracking"
-# After start_tracking succeeds, arm the existing manual search service. A
-# valid bbox always takes priority inside gm_control, so search automatically
-# yields to target tracking and becomes useful again if the target is lost.
-auto_gimbal_search: true
+# Do not invoke the search service automatically. Search remains available as
+# an explicit operator call to gm_control/start_search.
+auto_gimbal_search: false
 gimbal_search_service: "gm_control/start_search"
 gimbal_service_retry_s: 0.5
 
-# Start the existing gm_control search before visual handoff.  The bridge reads
-# the already-published rescue task and this worker's world odometry; no new ROS
-# interface is introduced. Keep radius_m aligned with task_allocate's
-# allocation/worker_execution/target_radius_m.
+# Proximity is retained as state/configuration for compatibility, but it does
+# not start a search while auto_gimbal_search is disabled. Keep radius_m
+# aligned with task_allocate's allocation/worker_execution/target_radius_m.
 proximity_search:
   enabled: true
   radius_m: 20.0

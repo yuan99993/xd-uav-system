@@ -1,0 +1,28 @@
+<launch>
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find xd_uav_detect)/models:$(optenv GAZEBO_MODEL_PATH)"/>
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find xd_uav_detect)/worlds/gimbal_range_demo.world"/>
+    <arg name="gui" value="false"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+  </include>
+  <node pkg="gazebo_ros" type="spawn_model"
+        name="spawn_x500_gimbal_sensor_demo" output="screen"
+        args="-sdf -file $(find xd_uav_detect)/models/x500_gimbal/sensor_demo.sdf
+              -model x500_gimbal -x 0 -y 0 -z 1"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="laser_to_optical"
+        args="0 0 0 -1.57079632679 0 -1.57079632679 uav1/gimbal_laser uav1/gimbal_camera_optical"/>
+  <include file="$(find xd_uav_detect)/launch/gimbal_control.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+  </include>
+  <include file="$(find xd_uav_detect)/launch/detect.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+    <arg name="config" value="$(find xd_uav_detect)/config/gimbal_laser_range.yaml"/>
+    <arg name="body_frame" value="uav1/base_link"/>
+    <arg name="world_frame" value="map"/>
+  </include>
+  <param name="/uav1/detect/gimbal_range/maximum_time_difference_sec" value="0.15"/>
+  <test pkg="xd_uav_detect" type="gimbal_range_acceptance.py"
+        test-name="gimbal_range_gazebo_acceptance" time-limit="60"/>
+</launch>

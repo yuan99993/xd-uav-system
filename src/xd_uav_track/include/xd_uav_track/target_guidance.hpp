@@ -231,6 +231,9 @@ class TargetGuidance {
                               TargetGuidanceConfig());
 
   TargetGuidanceOutput update(const TargetGuidanceInput& input);
+  // Runtime profile switching uses the same guidance object so its
+  // configuration and safety limits remain intact.
+  void setProfileMode(TargetGuidanceMode mode, bool enabled);
   void reset();
 
  private:

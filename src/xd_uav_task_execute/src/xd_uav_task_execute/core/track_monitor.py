@@ -82,6 +82,9 @@ class TrackMonitor:
         tracker_active: bool,
         target_visible: bool,
         target_predicted: bool,
+        metric_target_valid: bool = False,
+        metric_active: bool = False,
+        orbit_active: bool = False,
         command_valid: bool,
         state_valid: bool,
         emergency_stop_active: bool,
@@ -118,12 +121,19 @@ class TrackMonitor:
             return self.poll(stamp)
         self.tracker_seen_active = True
 
-        measured_target = bool(target_visible) and (
-            self.policy.allow_predicted or not bool(target_predicted)
-        )
         expected_profile = (
             str(self.policy.required_profile).strip()
             or str(requested_profile).strip()
+        )
+        metric_profile = expected_profile.startswith("fw_metric_")
+        metric_state = str(tracking_state).strip() in (
+            "pursuit", "orbit", "coast", "orbit_coast", "center_hold"
+        )
+        measured_target = (
+            bool(metric_target_valid) and bool(metric_active) and metric_state
+            if metric_profile
+            else bool(target_visible)
+            and (self.policy.allow_predicted or not bool(target_predicted))
         )
         profile_valid = bool(
             not expected_profile
@@ -148,11 +158,14 @@ class TrackMonitor:
             not self.policy.require_control_reference
             or control_reference_published
         )
+        tracking_state_valid = (
+            metric_state if metric_profile else str(tracking_state) == "tracking"
+        )
         valid = bool(
             measured_target
             and command_valid
             and state_valid
-            and str(tracking_state) == "tracking"
+            and tracking_state_valid
             and float(tracking_quality) >= self.policy.minimum_tracking_quality
             and track_valid
             and profile_valid

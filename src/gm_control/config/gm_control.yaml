@@ -56,13 +56,13 @@ max_pitch_angle_deg: 90.0
 # Target-lost behavior:
 #   stop      - publish invalid command after timeout
 #   hold_last - briefly keep the previous command
-#   search    - publish a constant search rate after a previously seen target
-#               is lost and target_lost/timeout_s has elapsed
+#   search    - deprecated; automatic search is disabled. Use the
+#               start_search service for an explicit operator request.
 #   back_to_init - publish an angle command to return the gimbal to its initial pose
 target_lost:
   timeout_s: 0.3
-  # 丢框时发布无效命令，后端保持当前角度，避免短暂漏检导致云台反复归零。
-  action: search
+  # 丢框后发布无效命令；搜索必须由 start_search 服务手动触发。
+  action: stop
   hold_time_s: 0.2
   search_yaw_rate_deg_s: 10.0
   search_pitch_rate_deg_s: 5.0

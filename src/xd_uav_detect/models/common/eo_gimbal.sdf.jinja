@@ -1,0 +1,122 @@
+{# Shared CGO3-style EO payload used by every *_gimbal airframe.
+   Link poses are model-relative to preserve the established generated SDF.
+   roll_enabled is an inactive extension point; shipped profiles remain 2-DOF. #}
+{% macro eo_gimbal(parent_link, mesh_uri_prefix, ros_namespace, frame_prefix,
+                   mount_pose, yaw_pose, pitch_pose,
+                   camera_enabled=true, range_enabled=true,
+                   roll_enabled=false, roll_pose='0 0 0 0 0 0',
+                   yaw_lower=-3.14159, yaw_upper=3.14159,
+                   pitch_lower=-1.5708, pitch_upper=1.5708,
+                   roll_lower=-0.7854, roll_upper=0.7854,
+                   camera_width=640, camera_height=480,
+                   camera_hfov=1.0472, update_rate=20,
+                   range_min=0.2, range_max=30.0,
+                   position_p=0.20, position_i=0.0, position_d=0.01,
+                   maximum_effort=0.20) -%}
+    <!-- XD_UAV_DETECT_EO_GIMBAL_BEGIN -->
+    <!-- +X is the shared camera/range boresight. -->
+    <link name="gimbal_mount">
+      <pose>{{ mount_pose }}</pose>
+      <gravity>false</gravity>
+      <inertial><mass>0.02</mass><inertia><ixx>0.00002</ixx><iyy>0.00002</iyy><izz>0.00002</izz></inertia></inertial>
+      <visual name="mount_visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry><mesh><uri>{{ mesh_uri_prefix }}/cgo3_mount_remeshed_v1.stl</uri><scale>0.001 0.001 0.001</scale></mesh></geometry>
+        <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material>
+      </visual>
+    </link>
+    <joint name="gimbal_mount_joint" type="fixed">
+      <parent>{{ parent_link }}</parent><child>gimbal_mount</child>
+    </joint>
+    <link name="gimbal_yaw">
+      <pose>{{ yaw_pose }}</pose>
+      <gravity>false</gravity>
+      <inertial><mass>0.08</mass><inertia><ixx>0.0001</ixx><iyy>0.0001</iyy><izz>0.0001</izz></inertia></inertial>
+      <visual name="vertical_arm_visual">
+        <pose>-0.025 0 0.10 0 0 0</pose>
+        <geometry><mesh><uri>{{ mesh_uri_prefix }}/cgo3_vertical_arm_remeshed_v1.stl</uri><scale>0.001 0.001 0.001</scale></mesh></geometry>
+        <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material>
+      </visual>
+      <visual name="horizontal_arm_visual">
+        <pose>-0.024 0 0.10 0 0 0</pose>
+        <geometry><mesh><uri>{{ mesh_uri_prefix }}/cgo3_horizontal_arm_remeshed_v1.stl</uri><scale>0.001 0.001 0.001</scale></mesh></geometry>
+        <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material>
+      </visual>
+    </link>
+    <joint name="gimbal_yaw_joint" type="revolute">
+      <parent>gimbal_mount</parent><child>gimbal_yaw</child>
+      <axis><xyz>0 0 1</xyz><limit><lower>{{ yaw_lower }}</lower><upper>{{ yaw_upper }}</upper></limit><dynamics><damping>0.01</damping></dynamics></axis>
+    </joint>
+    <link name="gimbal_pitch">
+      <pose>{{ pitch_pose }}</pose>
+      <gravity>false</gravity>
+      <inertial><mass>0.12</mass><inertia><ixx>0.0002</ixx><iyy>0.0002</iyy><izz>0.0002</izz></inertia></inertial>
+      {% if not roll_enabled %}{{ payload_body(mesh_uri_prefix, ros_namespace, frame_prefix, camera_enabled, range_enabled, camera_width, camera_height, camera_hfov, update_rate, range_min, range_max) }}{% endif %}
+    </link>
+    <joint name="gimbal_pitch_joint" type="revolute">
+      <parent>gimbal_yaw</parent><child>gimbal_pitch</child>
+      <axis><xyz>0 1 0</xyz><limit><lower>{{ pitch_lower }}</lower><upper>{{ pitch_upper }}</upper></limit><dynamics><damping>0.01</damping></dynamics></axis>
+    </joint>
+    {% if roll_enabled %}
+    <link name="gimbal_roll">
+      <pose>{{ roll_pose }}</pose>
+      <gravity>false</gravity>
+      <inertial><mass>0.01</mass><inertia><ixx>0.00001</ixx><iyy>0.00001</iyy><izz>0.00001</izz></inertia></inertial>
+      {{ payload_body(mesh_uri_prefix, ros_namespace, frame_prefix, camera_enabled, range_enabled, camera_width, camera_height, camera_hfov, update_rate, range_min, range_max) }}
+    </link>
+    <joint name="gimbal_roll_joint" type="revolute">
+      <parent>gimbal_pitch</parent><child>gimbal_roll</child>
+      <axis><xyz>1 0 0</xyz><limit><lower>{{ roll_lower }}</lower><upper>{{ roll_upper }}</upper></limit><dynamics><damping>0.01</damping></dynamics></axis>
+    </joint>
+    {% endif %}
+    <plugin name="gimbal_joint_state_publisher" filename="libgazebo_ros_joint_state_publisher.so">
+      <robotNamespace>{{ ros_namespace }}</robotNamespace>
+      <jointName>gimbal_yaw_joint, gimbal_pitch_joint{% if roll_enabled %}, gimbal_roll_joint{% endif %}</jointName>
+      <updateRate>50</updateRate><alwaysOn>true</alwaysOn>
+    </plugin>
+    <plugin name="gimbal_joint_trajectory" filename="libxd_uav_detect_gimbal_joint_controller.so">
+      <robotNamespace>{{ ros_namespace }}</robotNamespace>
+      <topicName>gimbal/set_joint_trajectory</topicName>
+      <positionP>{{ position_p }}</positionP><positionI>{{ position_i }}</positionI><positionD>{{ position_d }}</positionD>
+      <maximumEffort>{{ maximum_effort }}</maximumEffort>
+    </plugin>
+    <!-- XD_UAV_DETECT_EO_GIMBAL_END -->
+{%- endmacro %}
+
+{% macro payload_body(mesh_uri_prefix, ros_namespace, frame_prefix,
+                      camera_enabled, range_enabled, camera_width,
+                      camera_height, camera_hfov, update_rate,
+                      range_min, range_max) -%}
+      <visual name="payload_visual">
+        <pose>-0.0418 -0.0015 0.1641 0 0 3.14159265</pose>
+        <geometry><mesh><uri>{{ mesh_uri_prefix }}/cgo3_camera_remeshed_v1.stl</uri><scale>0.001 0.001 0.001</scale></mesh></geometry>
+        <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.15 0.15 0.15 1</diffuse></material>
+      </visual>
+      <visual name="optical_window_visual">
+        <pose>0.036 0 0 0 1.57079633 0</pose>
+        <geometry><cylinder><radius>0.012</radius><length>0.002</length></cylinder></geometry>
+        <material><ambient>0.01 0.05 0.08 1</ambient><diffuse>0.03 0.18 0.28 1</diffuse></material>
+      </visual>
+      {% if camera_enabled %}
+      <sensor name="gimbal_camera" type="camera">
+        <always_on>true</always_on><update_rate>{{ update_rate }}</update_rate>
+        <camera><horizontal_fov>{{ camera_hfov }}</horizontal_fov><image><width>{{ camera_width }}</width><height>{{ camera_height }}</height><format>R8G8B8</format></image><clip><near>0.1</near><far>{{ range_max }}</far></clip></camera>
+        <plugin name="gimbal_camera_ros" filename="libgazebo_ros_camera.so">
+          <robotNamespace>{{ ros_namespace }}</robotNamespace><cameraName>gimbal_camera</cameraName>
+          <imageTopicName>image_raw</imageTopicName><cameraInfoTopicName>camera_info</cameraInfoTopicName>
+          <frameName>{{ frame_prefix }}/gimbal_camera_optical</frameName>
+        </plugin>
+      </sensor>
+      {% endif %}
+      {% if range_enabled %}
+      <sensor name="laser_range" type="ray">
+        <always_on>true</always_on><update_rate>{{ update_rate }}</update_rate>
+        <ray><scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan><range><min>{{ range_min }}</min><max>{{ range_max }}</max><resolution>0.001</resolution></range></ray>
+        <plugin name="laser_range_ros" filename="libgazebo_ros_range.so">
+          <robotNamespace>{{ ros_namespace }}</robotNamespace><topicName>gimbal/range</topicName>
+          <frameName>{{ frame_prefix }}/gimbal_laser</frameName><radiation>infrared</radiation><fov>0.001</fov>
+          <updateRate>{{ update_rate }}</updateRate><gaussianNoise>0.0</gaussianNoise>
+        </plugin>
+      </sensor>
+      {% endif %}
+{%- endmacro %}

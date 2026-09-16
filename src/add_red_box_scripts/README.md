@@ -66,6 +66,8 @@ python3 src/add_red_box_scripts/spawn_red_boxes.py --count 6 --area=-25,-5,-25,-
 
 # 在两个矩形区域之间轮流分配方块
 python3 src/add_red_box_scripts/spawn_red_boxes.py --count 8 --area=0,20,0,20 --area=-30,0,-30,0 --ground-z 0 --replace
+
+/usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/spawn_red_boxes.py --position=0,0,0.1 --size 5 5 3 --ground-z 0 --reference-frame world --replace --prefix fixedwing_track_target
 ```
 
 ### 在任务搜索区域内随机生成
@@ -384,3 +386,32 @@ cd /home/kzy/xd-uavsystem-test
 会话自动启动图像端口桥、红色目标、红框识别、`xd_uav_track`、`gm_control` 和 Gazebo
 云台适配器。`enable_tracking` 和 `takeoff` 窗口只预填命令，分别按 Enter 后才会启用飞机
 跟随和起飞。
+
+### 固定翼高速云台单机验证
+
+`session_one_fixed_gimbal_px4.yml` 使用外部 `sar_yolo_detector` 产生检测框，启动
+`gm_control.launch` 而不是包含内部 `bbox_tracker` 的
+`gm_tracking_control.launch`。检测包仍发布原有 `xd_uav_track/DetectionArray`，Gazebo
+桥接脚本在测试边界内将其转换为原有 `gm_control/BoundingBox2D`，不修改两侧消息定义。
+
+同一启动文件中的 `FIXED_GIMBAL_TARGET_X/Y/Z` 只用于 `spawn_red_boxes.py` 生成测试目标；
+桥接器按 `fixedwing_gimbal_target` 前缀订阅 `/gazebo/model_states`，直接读取实际生成模型的
+世界坐标，因此不会因为手工复制坐标而指错目标。若没有 Gazebo 模型，也可以用
+`--target-position` 作为静态回退。
+桥接器根据 `/uav1/state_estimator/main/frames/world/odom` 的位置变化计算目标视线角速度，
+并用机体姿态把实际模型坐标转换成云台当前应指向的绝对 yaw/pitch。
+绝对位置指向还会对 body-frame yaw/pitch 目标角做差分，前馈目标角本身的瞬时变化；
+这部分已经包含飞机姿态和位移运动，因而不会再与原始 IMU 机体角速度补偿重复叠加。
+绝对位置指向、视线角速度前馈与图像误差 PID、机体角速度补偿只在这个启动文件显式开启：
+
+固定翼桥接器还订阅 `/uav1/mavros/state` 和状态估计器里程计。起飞前（未解锁或高度低于
+5 m）只发送 MAVLink `NEUTRAL`，不会启动 Gazebo 云台 PID；达到高度后才转发搜索/跟踪命令。
+这个门控只在固定翼会话的命令行中打开，不改变普通 Typhoon/多旋翼适配器。
+
+```bash
+cd /home/kzy/xd-uavsystem-test
+./src/tmux_start/start.sh ./src/tmux_start/session_one_fixed_gimbal_px4.yml
+```
+
+`recognition` 窗口当前为了红色方块仿真调用外部识别包的 `color_tracker` 模式；测试训练
+模型时只需替换该服务调用，不需要重新启用 `gm_control` 内部识别。

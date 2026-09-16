@@ -19,6 +19,8 @@ interfaces:
     vehicle_state: "state_estimator/main/odom"
     gimbal_state: "track/gimbal_state"
     gimbal_status: "track/gimbal_status"
+    # Shared world-frame target hand-off used by fw_metric_* profiles.
+    metric_target: "track/metric_target"
   output:
     # 真正送给现有控制器的速度参考。
     control_reference: "control/reference/setpoint"
@@ -66,9 +68,15 @@ tracker:
 
 # 4. Follower：目标状态 -> 单一机体系速度向量 -------------------------------
 follower:
-  # mc_velocity_ground | mc_velocity_position | mc_velocity_distance
-  # mc_velocity_chase | gm_velocity_chase | gm_velocity_vector
-  # fw_velocity_vector
+  # mc_velocity_ground 从上往下看，下视相机对齐
+  # mc_velocity_position 控制飞机yaw和上下
+  # mc_velocity_distance 控制飞机左右平移
+  # mc_velocity_chase 带有固定前向速度的，同时可选转向或者侧移
+  # gm_velocity_chase 依据云台角度，进行转向或者侧移，同时前向速度固定
+  # gm_velocity_vector 依据云台三轴角度对一个前向速度向量分解
+  # fw_velocity_vector: 固定翼前视相机，向量跟踪
+  # fw_metric_pursuit: 固定翼目标跟踪
+  # fw_metric_orbit: 固定翼到目标附近盘旋
   profile: "mc_velocity_chase"
   lateral_guidance_mode: "coordinated_turn"  # coordinated_turn | sideslip
   enable_vertical_control: true
@@ -109,7 +117,7 @@ follower:
 
   chase:
     initial_forward_velocity: 0.0
-    forward_velocity: 3.0
+    forward_velocity: 0.0
     forward_ramp_rate: 0.5
 
   # 候选检测含 body forward/right/down 相对位置/速度时，追逐模式自动叠加米制控制。

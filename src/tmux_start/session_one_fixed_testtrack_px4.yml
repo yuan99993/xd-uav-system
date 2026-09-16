@@ -1,0 +1,116 @@
+# Fixed-wing front-camera visual tracking test: red target -> 2D detection
+# -> xd_uav_track/fw_velocity_vector -> fixed-wing controller. This session
+# deliberately does not start xd_uav_detect, gm_control or a gimbal bridge:
+# fw_velocity_vector only needs the normalized image bounding box, not a world
+# target position.
+root: ./
+name: one_fixed_testtrack_px4
+socket_name: mrs
+attach: false
+tmux_options: -f /etc/ctu-mrs/tmux.conf
+
+# The sar_yolo_detector launch below is started first, then switched to its
+# red color-tracker mode. This keeps the recognition package but avoids using
+# the YOLO vehicle class label (for example, CAR) for the red test target.
+pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:${ROS_PACKAGE_PATH:-}; export GAZEBO_PLUGIN_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:${GAZEBO_PLUGIN_PATH:-}; export LD_LIBRARY_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:/usr/lib/x86_64-linux-gnu/gazebo-11/plugins:${LD_LIBRARY_PATH:-}; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
+startup_window: observe
+
+windows:
+  - roscore:
+      layout: tiled
+      panes:
+        - roscore
+
+  - px4_sitl:
+      layout: tiled
+      panes:
+        - waitForRos; roslaunch px4 mavros_posix_sitl_fixedwing_ns.launch uav_name:=uav1 ID:=0
+
+  - estimator:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+
+  - world_tf_manager:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch
+
+  - controller:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager fixedwing_system.launch UAV_NAME:=uav1
+
+  # Add or spawn your own red box/target before starting the recognition pane.
+  - yolo:
+      layout: tiled
+      panes:
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch
+          UAV_NAME:=uav1
+          instance_name:=front
+          input_image_topic:=camera/image_raw
+          camera_info_topic:=camera/camera_info
+          tracked_detections_topic:=sar_yolo_detector/front/tracked_detections
+          output_detections_topic:=track/detections
+          image_source:=forward_rgb
+          sensor_id:=forward_camera
+          use_gpu:=true
+          python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
+          detector_pid=$!;
+          until rosservice info /uav1/sar_yolo_smart_tracker_front/switch_tracking_mode >/dev/null 2>&1; do
+            kill -0 "$detector_pid" 2>/dev/null || exit 1;
+            sleep 0.2;
+          done;
+          rosservice call /uav1/sar_yolo_smart_tracker_front/switch_tracking_mode
+          "{mode: 'color_tracker', color_name: 'red'}";
+          wait "$detector_pid"
+
+  - track:
+      layout: tiled
+      panes:
+        # Launch the fixed-wing tracker through its launch file. The overlay
+        # changes the 2D input topic, color-track confidence gate and follower
+        # profile; no target world position, CameraInfo or point-cloud
+        # localization is needed.
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          roslaunch xd_uav_track track_fixedwing_sitl.launch
+          UAV_NAME:=uav1
+          base_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
+          config:=/home/kzy/xd-uavsystem-test/src/xd_uav_track/config/fixedwing_visual_track.yaml
+
+  - observe:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo /uav1/track/status
+        - waitForTime; rostopic echo /uav1/track/command
+        - waitForTime; rostopic echo /uav1/track/detections
+        - waitForTime; rostopic echo /uav1/control/reference/setpoint
+        - waitForTime; rosrun rqt_image_view rqt_image_view /uav1/camera/image_raw
+        - waitForTime; rosrun rqt_image_view rqt_image_view /uav1/sar_yolo_detector/front/annotated
+
+
+  # Takeoff is intentionally manual. First confirm that TrackStatus reports
+  # state_valid=true and command_valid=false while the tracker is stopped.
+  - takeoff:
+      layout: tiled
+      panes:
+        - >-
+          history -s '/usr/bin/python3 /home/kzy/xd-uavsystem-test/src/tmux_start/wait_for_uav_control_ready.py --uav uav1 --timeout 120 && rosservice call /uav1/control_manager/takeoff "altitude: 40.0"'
+
+  # After the aircraft is airborne, execute this command manually. The
+  # expected result is command_valid=true and a non-zero ENU velocity vector
+  # when the target is off the image centre.
+  - enable_tracking:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/track/set_profile "profile: fw_velocity_vector"; rosservice call /uav1/track/start_tracker "start: true"'
+
+  - stop_and_land:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/track/start_tracker "start: false"; rosservice call /uav1/control_manager/land_home'

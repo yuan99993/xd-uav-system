@@ -239,6 +239,13 @@ TargetGuidance::TargetGuidance(const TargetGuidanceConfig& requested)
   }
 }
 
+void TargetGuidance::setProfileMode(const TargetGuidanceMode mode,
+                                    const bool enabled) {
+  config_.mode = mode;
+  config_.enabled = enabled;
+  reset();
+}
+
 double TargetGuidance::clamp(const double value, const double minimum,
                              const double maximum) {
   return std::max(minimum, std::min(maximum, value));

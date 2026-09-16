@@ -50,18 +50,18 @@ opens the existing gimbal tracking gate while `xd_uav_track` is active with a
 stop closes the gate. This lifecycle stays in `gm_control`; task execution does
 not call the gimbal service and no ROS message or service type is changed.
 After tracking enablement is acknowledged, the bridge also calls the existing
-`start_search(true)` service. Search supplies a scan command only while no valid
-target exists; a valid bbox immediately takes priority and uses normal tracking.
-Set `auto_gimbal_search: false` to disable this chaining.
+`start_search(true)` service only when `auto_gimbal_search` is explicitly enabled.
+The default is now disabled: a lost target or proximity event does not start a
+scan automatically. Search is operator-controlled through `start_search`.
 The bridge marks the forwarded gimbal state invalid until enablement is
 acknowledged, so a missing gimbal controller cannot be mistaken for a completed
 GM tracking task.
 
 The bridge also watches the existing rescue-task and worker-odometry topics.
-When an assigned worker enters `proximity_search/radius_m`, it enables search
-before visual handoff. Once the task is completed, failed, cancelled, or
-released and tracking has stopped, both gates close and gm_control commands the
-configured `target_lost/back_to_init_*` angles for
+Proximity state is retained for compatibility, but it only enables search when
+`auto_gimbal_search` is explicitly enabled. Once the task is completed, failed,
+cancelled, or released and tracking has stopped, both gates close and gm_control
+commands the configured `target_lost/back_to_init_*` angles for
 `return_to_init_on_stop/duration_s`.
 
 The gate can still be controlled manually (or automatic coupling can be disabled
@@ -77,10 +77,9 @@ The service uses `StartGimbalTracking.srv`. With
 publishes the configured initial-angle command for a short interval, then
 returns to invalid/hold output. The latest bbox is retained for a later restart.
 
-Calling `start_tracking` by itself still does not start search; the bridge makes
-the two existing service calls in sequence. Without the bridge, automatic
-`target_lost.action: search` starts only after a valid target was detected once
-and then remains lost for `target_lost.timeout_s`.
+Calling `start_tracking` by itself never starts search. The legacy
+`target_lost.action: search` value is deprecated and is treated as `stop`; a
+lost target publishes an invalid/hold command after the timeout.
 
 Search can be started and stopped explicitly:
 
