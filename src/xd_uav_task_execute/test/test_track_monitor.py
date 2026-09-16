@@ -167,6 +167,27 @@ class TrackMonitorTest(unittest.TestCase):
         )
         self.assertEqual(monitor.error, ERROR_CONTROL_UNAVAILABLE)
 
+    def test_metric_profile_accepts_world_target_without_image_visibility(self):
+        monitor = TrackMonitor(
+            0.0, self.policy(required_profile="fw_metric_pursuit")
+        )
+        self.assertEqual(
+            observe(
+                monitor,
+                0.1,
+                valid=False,
+                target_visible=False,
+                command_valid=True,
+                control_reference_published=True,
+                follower_profile="fw_metric_pursuit",
+                requested_profile="fw_metric_pursuit",
+                tracking_state="pursuit",
+                metric_target_valid=True,
+                metric_active=True,
+            ),
+            STATE_RUNNING,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

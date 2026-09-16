@@ -1,0 +1,35 @@
+# Vehicle-independent camera-ray intersection with a horizontal world plane.
+localization:
+  enabled: true
+  method: "camera_ground_plane"
+
+interfaces:
+  input:
+    detections_2d: "detect/input/detections_2d"
+    image: "down_camera/image_raw"
+    camera_info: "down_camera/camera_info"
+  output:
+    detections_3d: "detect/detections"
+    detections_world: "detect/detections_world"
+    status: "detect/status"
+    debug_image: "detect/debug/image"
+
+frames:
+  camera: ""
+
+ground_projection:
+  ground_plane_z_m: 0.0
+  minimum_range_m: 1.0
+  maximum_range_m: 500.0
+  minimum_ray_plane_angle_deg: 5.0
+  box_anchor_y_ratio: 0.5
+  pixel_stddev_px: 2.0
+  ground_height_stddev_m: 1.0
+  position_stddev_m: 0.25
+  tf_timeout_sec: 0.05
+  tf_use_latest_on_failure: false
+  require_detection_timestamp: true
+  require_matching_camera_frame: true
+
+visualization:
+  enabled: true

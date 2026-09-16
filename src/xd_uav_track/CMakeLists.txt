@@ -23,6 +23,7 @@ add_message_files(
   TrackStateArray.msg
   TrackStatus.msg
   GimbalStatus.msg
+  MetricTarget.msg
 )
 
 add_service_files(

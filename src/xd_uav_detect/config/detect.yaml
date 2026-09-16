@@ -1,0 +1,51 @@
+# xd_uav_detect：外部二维检测 + 激光雷达/相机融合
+# 单位：距离 m，时间 s。检测图像应当与 CameraInfo 的成像模型一致（建议使用去畸变图像）。
+
+# 本文件只保存感知算法与传感器标定参数。
+# UAV_NAME 和 body frame 由 launch 注入；话题使用相对名称，自动位于 UAV_NAME 下。
+
+interfaces:
+  input:
+    # 外部识别器发布二维候选；可以只有一个框，也可以同帧多个框。
+    detections_2d: "detect/input/detections_2d"
+    image: "camera/image_raw"
+    camera_info: "camera/camera_info"
+    point_cloud: "fastlio/points"
+  output:
+    # 这是 xd_uav_track 唯一需要订阅的感知结果。
+    detections_3d: "track/detections"
+    status: "detect/status"
+    # 原始图像 + 深度着色点云 + 检测框，仅用于观察配准和融合效果。
+    debug_image: "detect/debug/image"
+
+calibration:
+  # 直接复制 velo2cam_calibration 生成的 velo2cam_tf 参数。
+  # 原始顺序：x y z yaw pitch roll；平移单位 m，角度单位 rad。
+  calibrated: true
+  translation_xyz: [-0.253366, -0.0435222, 0.185053]
+  rotation_ypr: [0.0100813, 0.00255071, -0.00259498]
+
+fusion:
+  enabled: true
+  maximum_cloud_time_difference_sec: 0.12
+  cloud_buffer_size: 10
+  tf_timeout_sec: 0.03
+
+  # 点云很密时可设为 2/3... 降采样；1 表示使用全部点。
+  point_stride: 1
+  minimum_range_m: 0.30
+  maximum_range_m: 120.0
+
+  # 框向内收缩，减少边缘背景点；按相机深度选择最近的有效点簇。
+  box_shrink_ratio: 0.10
+  minimum_cluster_points: 3
+  depth_cluster_tolerance_m: 0.75
+
+visualization:
+  enabled: true
+  # 仅影响调试图像；数值越大，绘制点越少。
+  point_stride: 1
+  point_radius_px: 1
+  # 深度色条范围：近处红色、远处蓝色。
+  minimum_depth_m: 0.30
+  maximum_depth_m: 30.0

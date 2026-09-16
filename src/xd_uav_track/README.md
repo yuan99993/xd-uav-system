@@ -48,6 +48,7 @@ Tracker 不再订阅图像或 CameraInfo；检测框、图像尺寸和可选三�
 ```text
 /uavX/track/tracks          xd_uav_track/TrackStateArray
 /uavX/track/select_track    xd_uav_track/SelectTrack
+/uavX/track/metric_target   xd_uav_track/MetricTarget（共享世界/里程计坐标）
 ```
 
 `SelectTrack` 可以直接给 `target_id`，也可以用 normalized ROI 选择与区域 IoU 最大的轨迹。
@@ -68,8 +69,10 @@ Tracker 不再订阅图像或 CameraInfo；检测框、图像尺寸和可选三�
 | `gm_velocity_chase` | 机体系速度 | 根据云台偏航/俯仰角做 PID 追逐，支持恒速或俯仰变速 |
 | `gm_velocity_vector` | 机体系速度 | 将云台光轴直接变换为机体系三维速度向量 |
 | `fw_velocity_vector` | 机体系速度 | 固定翼目标空速方向与爬升率组成的单一三维速度向量 |
+| `fw_metric_pursuit` | 机体系速度 | 使用共享世界坐标目标进行固定翼 metric 接近，不要求图像框 |
+| `fw_metric_orbit` | 机体系速度 | 使用共享世界坐标目标进行固定翼定半径 metric 盘旋 |
 
-七个模式全部输出速度，保留或适配 PixEagle Follower 的独立 PID、积分限幅、速度 EMA 和偏航处理
+九个模式全部输出速度，保留或适配 PixEagle Follower 的独立 PID、积分限幅、速度 EMA 和偏航处理
 （死区、速度缩放、变化率限制、EMA）。追逐模式在丢失目标后立刻清零水平、垂直和
 偏航控制，并按 `forward_ramp_rate` 将前向速度减到配置值。
 
@@ -117,7 +120,8 @@ Follower 内的速度上限用于限制制导意图；最终速度、加速度�
 `abort_ratio` 后停止制导；appearance 重识别成功后也会从较低速度渐进恢复。若候选带有
 body forward/right/down 的相对三维位置和速度，追逐模式还能启用米制距离误差与目标速度
 前馈。以上状态都能从 `TrackStatus` 的 `target_predicted`、`tracking_quality`、
-`uncertainty_scale`、`association_method` 和 `relative_state_active` 查看。
+`uncertainty_scale`、`association_method`、`relative_state_active` 以及
+`metric_target_valid`、`metric_active`、`orbit_active` 查看。
 
 ## 启动
 
@@ -212,9 +216,23 @@ follower:
   profile: "fw_velocity_vector"
 ```
 
+世界坐标任务模式示例：
+
+```yaml
+follower:
+  profile: "fw_metric_pursuit"   # 或 fw_metric_orbit
+interfaces:
+  input:
+    metric_target: "track/metric_target"
+```
+
+`fw_metric_*` 使用 `state_estimator/main/frames/world/odom` 和目标消息的
+`header.frame_id` 作为同一共享世界坐标，不需要把任务坐标手工转换成飞机相对坐标。
+
 也可以在节点运行时通过 `/uav1/track/set_profile` 切换。
 
 所有可调项集中在 `config/track.yaml`，并按阅读顺序分为 `runtime`、`interfaces`、
 `tracker`、`follower` 和 `safety`。固定翼目标空速只在
-`follower/fw_velocity_vector/airspeed` 配置；实际空速测量、
+`follower/fw_velocity_vector/airspeed`（metric 模式也可在
+`follower/fw_metric_pursuit` 或 `follower/fw_metric_orbit` 下覆盖）配置；实际空速测量、
 空速上下限和油门控制属于 `xd_uav_controller`，本包不再重复订阅或配置。

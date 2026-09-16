@@ -254,12 +254,12 @@ TEST(TrackController, FixedWingTargetLossReleasesVelocityReference) {
   EXPECT_DOUBLE_EQ(lost.up, 0.0);
 }
 
-TEST(TrackController, SupportsAllSevenVelocityProfiles) {
+TEST(TrackController, SupportsAllRegisteredFollowerProfiles) {
   const char* names[] = {
       "mc_velocity_ground", "mc_velocity_position",
       "mc_velocity_distance", "mc_velocity_chase",
       "gm_velocity_chase", "gm_velocity_vector",
-      "fw_velocity_vector"};
+      "fw_velocity_vector", "fw_metric_pursuit", "fw_metric_orbit"};
   for (const char* name : names) {
     xd_uav_track::FollowerProfile profile;
     ASSERT_TRUE(xd_uav_track::parseFollowerProfile(name, &profile));
@@ -267,6 +267,35 @@ TEST(TrackController, SupportsAllSevenVelocityProfiles) {
   }
   xd_uav_track::FollowerProfile rejected;
   EXPECT_FALSE(xd_uav_track::parseFollowerProfile("unknown", &rejected));
+}
+
+TEST(TrackController, MetricProfileAcceptsWorldFrameTaskTarget) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingMetricOrbit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.orbit_radius_m = 40.0;
+  config.target_guidance.minimum_turn_radius_m = 20.0;
+  config.target_guidance.commanded_speed = 15.0;
+  config.target_guidance.publish_position_reference = true;
+  xd_uav_track::TrackController controller(config);
+  controller.setVehicleState(metricVehicleState());
+  const std::array<double, 3> target{{80.0, 0.0, 20.0}};
+  std::string reason;
+  ASSERT_TRUE(controller.updateMetricWorldTarget(
+      42, 10.0, 10.0, target, false, {{0.0, 0.0, 0.0}}, 1.0,
+      "task_execute", &reason)) << reason;
+  const auto output = controller.compute(10.01);
+  EXPECT_TRUE(output.valid) << output.invalid_reason << " state="
+                            << output.tracking_state;
+  EXPECT_TRUE(output.metric_target_valid);
+  EXPECT_TRUE(output.metric_active);
+  EXPECT_EQ(output.profile, "fw_metric_orbit");
+  EXPECT_EQ(output.track_id, 42);
+  EXPECT_FALSE(output.target_visible);
+  EXPECT_TRUE(output.position_reference_valid);
+  const auto stale = controller.compute(20.0);
+  EXPECT_FALSE(stale.valid);
+  EXPECT_TRUE(stale.release_reference_on_invalid);
 }
 
 TEST(TrackController, ConfidenceHysteresisKeepsAnAcquiredTarget) {

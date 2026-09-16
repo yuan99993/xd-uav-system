@@ -1,8 +1,14 @@
 <launch>
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
-  <arg name="config" default="$(find xd_uav_detect)/config/multirotor_detect.yaml"/>
+  <arg name="config" default="$(find xd_uav_detect)/config/lidar_camera.yaml"/>
   <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
   <arg name="world_frame" default="$(arg UAV_NAME)/local_origin"/>
+  <arg name="detections_compat" default=""/>
+  <!-- Optional per-vehicle topic overrides. Empty values keep the YAML values. -->
+  <arg name="image_topic" default=""/>
+  <arg name="camera_info_topic" default=""/>
+  <arg name="point_cloud_topic" default=""/>
+  <arg name="laser_range_topic" default=""/>
 
   <group ns="$(arg UAV_NAME)">
     <node pkg="xd_uav_detect"
@@ -13,6 +19,15 @@
       <rosparam command="load" file="$(arg config)"/>
       <param name="frames/body" value="$(arg body_frame)"/>
       <param name="frames/world" value="$(arg world_frame)"/>
+      <param name="interfaces/output/detections_compat" value="$(arg detections_compat)"/>
+      <param if="$(eval arg('image_topic') != '')"
+             name="interfaces/input/image" value="$(arg image_topic)"/>
+      <param if="$(eval arg('camera_info_topic') != '')"
+             name="interfaces/input/camera_info" value="$(arg camera_info_topic)"/>
+      <param if="$(eval arg('point_cloud_topic') != '')"
+             name="interfaces/input/point_cloud" value="$(arg point_cloud_topic)"/>
+      <param if="$(eval arg('laser_range_topic') != '')"
+             name="interfaces/input/laser_range" value="$(arg laser_range_topic)"/>
     </node>
   </group>
 </launch>

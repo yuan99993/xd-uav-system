@@ -231,9 +231,6 @@ class ImageGimbalController:
         if action == "hold_last" and lost_time <= self.config.target_lost_hold_time_s:
             return self.last_command
 
-        if action == "search":
-            return self._search_command()
-
         if action == "back_to_init":
             return GimbalCommandData(
                 mode="angle",

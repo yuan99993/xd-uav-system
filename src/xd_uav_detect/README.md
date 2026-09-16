@@ -1,135 +1,100 @@
 # xd_uav_detect
 
-`xd_uav_detect` 是 `xd_uav_track` 前面的统一三维感知层，现支持两种定位方法：
+本包接收外部识别器的二维候选，并按 YAML 选择定位方法；定位方式与固定翼/旋翼机型无关。
+包内另提供与定位节点独立的两轴光电云台控制接口及 Gazebo 执行后端。
 
-- 多旋翼：把激光雷达点投影到相机，在二维框内选取最近有效点簇。
-- 固定翼：用下视相机的检测框中心射线与水平地面平面求交。
+完整接入、TF、参数、诊断和 Gazebo 演示说明见 `docs/USAGE.md`。
+四个统一 Gazebo 模型的来源、用途与飞行集成边界见 `models/README.md`。
 
-两种方法都输出同一个接口：
+本包还保留了 `origin/dev` 后续增加的四个正式目标场景工具：红色目标二维识别、红色方块生成、
+搜索区随机车辆生成和 YOLO 车辆目标生成。脚本位于 `scripts/demo/`，源自
+`origin/dev@e763836:src/add_red_box_scripts/` 的对应正式版本；车辆脚本仅增加 catkin 安装态
+导入保护。安装后可直接通过 `rosrun xd_uav_detect <脚本名>` 使用，完整命令与可选依赖见
+`docs/USAGE.md`。
 
-```text
-/<uav>/track/detections    xd_uav_track/DetectionArray
+## 输出契约
+
+- `/<uav>/detect/detections`：原 `xd_uav_track/DetectionArray` 接口，`relative_position_body` 始终为机体系 FRD（m）。
+- `/<uav>/detect/detections_world`：新增 `xd_uav_detect/WorldDetectionArray`，在检测时刻输出配置 world frame 中的位置和协方差。
+
+`detect_track.launch` 另将同一旧消息镜像到 `/<uav>/track/detections`，以兼容当前 track 输入配置；该镜像可通过 `track_detections_topic` 改名或置空关闭。
+
+世界 TF 缺失只使世界候选无效，不改变旧 FRD 输出。定位失败时保留二维候选并清除三维有效标志。
+
+## 定位方法
+
+| 方法 | 配置 | 输入 |
+|---|---|---|
+| `lidar_camera` | `config/lidar_camera.yaml` | 2D 框、CameraInfo、PointCloud2、标定/TF |
+| `camera_ground_plane` | `config/camera_ground_plane.yaml` | 2D 框、CameraInfo、地面高程、拍摄时刻 TF |
+| `gimbal_laser_range` | `config/gimbal_laser_range.yaml` | 2D 框、CameraInfo、`sensor_msgs/Range`、拍摄时刻 TF |
+
+旧 `multirotor_detect.yaml` 和 `fixedwing_detect.yaml` 保留为兼容入口；`UAV_NAME` 只用于命名空间和 frame 前缀，不参与方法选择。
+
+## 光电定位契约
+
+光电模式要求 Range 使用传感器坐标系 +X 视轴，并在检测时间戳处存在 `camera <- laser` 与 `body <- laser` TF。激光端点投影必须只落入一个候选框；无匹配或多框歧义均按失效保护处理。示例噪声参数不是实机标定值。
+
+## 两轴云台控制
+
+本包同时提供与定位节点独立的 `gimbal_control_node`。公共接口为
+`/<uav>/gimbal/command`（`GimbalCommand`）和 `/<uav>/gimbal/state`
+（`GimbalState`），支持位置、速度和回中三种命令。当前机械模型为 yaw + pitch 两自由度：
+yaw 负责水平搜索/指向，pitch 负责俯仰指向；相机和单束激光都固定在 pitch 载荷上，始终一起
+运动。仿真默认范围为 yaw ±180°、pitch ±90°，可直接发布公共命令完成全范围扫掠；具体命令
+见 `docs/USAGE.md`。roll 轴本轮不实现，但定位算法只依赖 TF，因此未来增加三轴模型不需要改变
+检测输出契约。
+
+控制节点的公共命令不依赖 Gazebo；当前仿真后端通过内部
+`/<uav>/gimbal/set_joint_trajectory` 驱动模型。真实设备仍需适配器把公共命令映射到厂商协议，
+并把编码器状态和 TF 回传。控制接口不包含自动扫描、目标跟随或厂商 SDK。
+
+## 启动与验证
+
+基于 MRS/PX4 `x500_gimbal` 旋翼模型的可视化光电吊舱演示：
+
+```bash
+roslaunch xd_uav_detect demo.launch mode:=sensor gui:=true
 ```
-
-目标相对位置写入每个 `DetectionCandidate` 的 `relative_position_body`，坐标约定为
-`forward/right/down`，并设置 `has_relative_position_body=true`、`range_valid=true` 和
-`position_covariance`。因此 `xd_uav_track` 以及后续任务分配不需要针对固定翼修改输入接口。
-
-## 输入检测框
-
-外部识别模型向下面的话题发布检测结果：
-
-```text
-/<uav>/detect/input/detections_2d    xd_uav_track/DetectionArray
-```
-
-需要填写：
-
-- `header.stamp`：原始下视图像的拍摄时间；固定翼姿态变化快，不能使用推理完成时间。
-- `image_width`、`image_height`。
-- 每个候选的 `bbox`/`has_bbox`，或 `normalized_bbox`/`has_normalized_bbox`。
-- `confidence`、`class_id`，以及识别器已有的其他字段。
-
-如果上游已经填写可靠的三维位置，本节点会保留而不覆盖。定位条件不满足时，二维候选仍会
-发布，但 `range_valid` 保持为 false。
-
-## 多旋翼配置
-
-配置文件为 [multirotor_detect.yaml](config/multirotor_detect.yaml)：
 
 ```bash
 roslaunch xd_uav_detect detect.launch \
   UAV_NAME:=uav1 \
-  config:=$(rospack find xd_uav_detect)/config/multirotor_detect.yaml
+  config:=$(rospack find xd_uav_detect)/config/gimbal_laser_range.yaml
 ```
-
-将 `velo2cam_calibration` 生成的六个数复制到：
-
-```yaml
-calibration:
-  calibrated: true
-  translation_xyz: [x, y, z]
-  rotation_ypr: [yaw, pitch, roll]
-```
-
-点云三维位置通过 TF 转到 `frames/body` 的 ROS FLU 坐标，再转换成消息要求的 FRD。TF
-中必须存在：
-
-```text
-frames/body <- PointCloud2.header.frame_id
-```
-
-## 固定翼下视定位
-
-配置文件为 [fixedwing_detect.yaml](config/fixedwing_detect.yaml)：
 
 ```bash
-roslaunch xd_uav_detect detect.launch \
-  UAV_NAME:=uav1 \
-  config:=$(rospack find xd_uav_detect)/config/fixedwing_detect.yaml
+cd /home/promise/catkin_ws
+catkin_make -j2 --pkg xd_uav_detect
+catkin_make -j2 run_tests_xd_uav_detect
+catkin_test_results build/test_results/xd_uav_detect
 ```
 
-固定翼模式不订阅点云。节点将框内锚点反投影成相机光线，并在 `frames/world` 中与
-`z = ground_projection/ground_plane_z_m` 相交。必须满足：
+`test/gazebo/gimbal_range.test` 使用 x500 机体外形及惯性、真实 Gazebo camera、ray/range 插件、
+yaw/pitch revolute joints 和实体碰撞目标，并读取 x500 base/gimbal link 真值验证正前方、
+组合云台角、FRD/世界输出及移出视轴无返回。真实吊舱由包外驱动/适配器提供标准 Range、
+CameraInfo 和动态 TF；本包不内嵌厂商 SDK，也不负责 YOLO 推理、自动扫描、目标跟随、
+跟踪、任务分配或飞行控制。
 
-```text
-frames/world <- 下视相机 optical frame
-frames/body  <- 下视相机 optical frame
-```
+规范 `models/x500_gimbal/model.sdf` 完整保留当前 MRS/PX4 x500 的飞行插件；无 PX4 的传感器
+演示显式使用同目录 `sensor_demo.sdf` 夹具。当前 MRS spawner 尚不能把新 Gazebo 模板名与
+既有 PX4 airframe 名 `x500` 分开，完整飞行接入边界见 `models/README.md`。
 
-推荐让 `CameraInfo.header.frame_id` 填写准确的相机 optical frame，并保持配置中的
-`frames/camera: ""`；也可以显式设置该参数。`frames/world` 必须使用 z 轴向上的局部世界
-坐标系；与任务分配联用时应和 `mission/shared_frame` 一致（本工程为 ENU `world`）。
-`ground_plane_z_m` 是该世界坐标系中的绝对 z，
-并不是飞机离地高度。
-
-固定翼实机使用前至少要确认：
-
-- 下视图像与 `CameraInfo` 来自同一相机和同一成像尺寸；若检测使用缩放图像，节点会按
-  `DetectionArray.image_width/image_height` 缩放内参。
-- 当前针孔反投影要求检测使用与 `CameraInfo.P/K` 对应的去畸变图像；若模型输入为原始
-  畸变图像，应先用 `image_proc` 矫正。
-- 相机外参已发布到 TF，且 TF 缓存覆盖检测消息的拍摄时间。
-- `ground_plane_z_m` 符合任务区域的地面高程；地形起伏较大时，水平平面模型会产生系统
-  误差，应接入 DEM 或测距信息后再执行真实任务。
-- `box_anchor_y_ratio` 默认 0.5（框中心）。若识别目标的位置定义在框底，可设为 1.0。
-
-`pixel_stddev_px`、`ground_height_stddev_m` 和 `position_stddev_m` 会传播到输出协方差。
-`minimum_ray_plane_angle_deg` 会拒绝过于接近地平线的射线，避免位置误差失控。
-
-## 同时启动跟踪
-
-多旋翼（默认）：
+不使用 MRS spawner 的单机 PX4/MAVROS 模型入口：
 
 ```bash
-roslaunch xd_uav_detect detect_track.launch UAV_NAME:=uav1
+roslaunch xd_uav_detect demo.launch mode:=px4 gui:=true
 ```
 
-固定翼：
+该可选入口复用工作区现有的 MRS PX4/MAVROS launch 和 Gazebo 世界资源，但不使用
+`mrs_drone_spawner`；它只启动飞行底座，不自动起飞，也不代替上面的吊舱定位演示。
+
+飞行中的完整吊舱定位演示：
 
 ```bash
-roslaunch xd_uav_detect detect_track.launch \
-  UAV_NAME:=uav1 \
-  detect_config:=$(rospack find xd_uav_detect)/config/fixedwing_detect.yaml
+roslaunch xd_uav_detect demo.launch mode:=flight gui:=true
 ```
 
-## 状态与调试图像
-
-```bash
-rostopic echo /uav1/detect/status
-rostopic echo /uav1/track/detections
-rqt_image_view /uav1/detect/debug/image
-```
-
-状态中的 `method` 为 `lidar_camera` 或 `ground_plane`，`metric` 表示本帧成功获得三维位置
-的候选数量。多旋翼调试图显示雷达投影深度；固定翼调试图显示检测框、解算距离和地面投影
-状态。
-
-## 红色目标仿真检测
-
-```bash
-python3 src/add_red_box_scripts/red_box_detector.py --uavs uav1 uav2
-```
-
-脚本只负责发布二维候选；稳定目标 ID 由 `xd_uav_track` 分配。固定翼仿真时还必须提供正确
-的下视相机 `CameraInfo` 和拍摄时刻 TF，才能得到三维位置。
+该入口在同一 Gazebo 中组合规范 `x500_gimbal`、PX4/MAVROS、MRS core、自动起飞和
+`gimbal_range_demo.py`。起飞稳定后可向 `/uav1/control_manager/reference` 发布
+`mrs_msgs/ReferenceStamped` 移动飞机；命令示例和安全停止方法见 `docs/USAGE.md`。

@@ -1,0 +1,36 @@
+# Down-camera multirotor task-execution test.
+# Loaded after mission/scout/worker configuration by task_allocate.launch.
+
+post_arrival:
+  mode: task_execute
+  action_name_template: /{worker}/task_execute/execute
+  server_wait_timeout_sec: 2.0
+
+  failure_policy: fail
+  retry_delay_sec: 5.0
+  # Let the final Track reference drain before assigning the next navigation
+  # command. This applies to both direct-controller and planning backends.
+  control_handoff_settle_sec: 0.5
+
+  default_task:
+    task_type: track
+    local_track_id: -1
+    follower_profile: mc_velocity_position
+    required_execution_sec: 10.0
+    maximum_duration_sec: 60.0
+
+  # Keep the legacy airframe fallback, then explicitly define each worker.
+  # A future class_overrides entry still has the highest priority.
+  mobility_profile_overrides:
+    hover:
+      follower_profile: mc_velocity_position
+
+  worker_overrides:
+    uav3:
+      task_type: track
+      follower_profile: mc_velocity_position
+    uav4:
+      task_type: track
+      follower_profile: mc_velocity_position
+
+  class_overrides: {}

@@ -1,12 +1,13 @@
 # do not modify these
 root: ./
-name: three_uav_px4
+name: four_fixed_task_execute_px4
 socket_name: mrs
 attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 
 # Four fixed-wing PX4 SITL vehicles. uav1/uav2 are scouts; uav3/uav4
-# are workers that fly to confirmed coarse target positions.
+# are workers that hand over from navigation to xd_uav_task_execute, then use
+# xd_uav_track's fw_velocity_vector + metric_orbit guidance.
 pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2:$ROS_PACKAGE_PATH; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
 startup_window: estimator
 
@@ -48,36 +49,63 @@ windows:
   - task_allocator:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_allocate task_allocate.launch scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_two_fixed.yaml worker_config:=$(rospack find xd_uav_task_allocate)/config/workers_two_fixed.yaml
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          roslaunch xd_uav_task_allocate task_allocate.launch
+          mission_config:=$(rospack find xd_uav_task_allocate)/config/mission.yaml
+          scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_two_fixed.yaml
+          worker_config:=$(rospack find xd_uav_task_allocate)/config/workers_two_fixed.yaml
+          post_arrival_config:=$(rospack find xd_uav_task_allocate)/config/task_execution_four_fixed.yaml
   - detect:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav2 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav2 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info
+        # Workers also need metric local detections. These streams are used by
+        # the visual handoff gate and fixed-wing metric-orbit Track profile;
+        # they do not register new global targets as scout observations.
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav3 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav4 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info
+  - yolo_red:
+      layout: tiled
+      panes:
         - >-
           waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
-          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav1 use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
+          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav1 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info output_detections_topic:=detect/input/detections_2d image_source:=fixed_rgb sensor_id:=fixed_camera use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
           detector_pid=$!;
-          while kill -0 "$detector_pid" 2>/dev/null; do
-            if rosservice info /uav1/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; then
-              rosservice call /uav1/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
-              break;
-            fi;
-            sleep 0.2;
-          done;
+          until rosservice info /uav1/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav1/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
           wait "$detector_pid"
         - >-
           waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
-          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav2 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
+          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav2 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info output_detections_topic:=detect/input/detections_2d image_source:=fixed_rgb sensor_id:=fixed_camera use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
           detector_pid=$!;
-          while kill -0 "$detector_pid" 2>/dev/null; do
-            if rosservice info /uav2/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; then
-              rosservice call /uav2/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
-              break;
-            fi;
-            sleep 0.2;
-          done;
+          until rosservice info /uav2/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav2/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
           wait "$detector_pid"
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav3 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info output_detections_topic:=detect/input/detections_2d image_source:=fixed_rgb sensor_id:=fixed_camera use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
+          detector_pid=$!;
+          until rosservice info /uav3/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav3/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          wait "$detector_pid"
+        - >-
+          waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
+          roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav4 input_image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info output_detections_topic:=detect/input/detections_2d image_source:=fixed_rgb sensor_id:=fixed_camera use_gpu:=true python_executable:=/home/kzy/xd-uavsystem-test/.venv-sar-gpu/bin/python &
+          detector_pid=$!;
+          until rosservice info /uav4/sar_yolo_smart_tracker_fixed/switch_tracking_mode >/dev/null 2>&1; do kill -0 "$detector_pid" 2>/dev/null || exit 1; sleep 0.2; done;
+          rosservice call /uav4/sar_yolo_smart_tracker_fixed/switch_tracking_mode "{mode: 'color_tracker', color_name: 'red'}";
+          wait "$detector_pid"
+  - track_execute:
+      layout: tiled
+      panes:
+        # track_fixedwing_sitl.launch loads track.yaml first and then the full
+        # metric-orbit overlay. task_execute switches/starts it per assignment.
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_track track_fixedwing_sitl.launch UAV_NAME:=uav3
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_track track_fixedwing_sitl.launch UAV_NAME:=uav4
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_execute task_execute.launch UAV_NAME:=uav3
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_execute task_execute.launch UAV_NAME:=uav4
   - rviz:
       layout: tiled
       panes:
@@ -85,13 +113,15 @@ windows:
   - takeoff:
       layout: tiled
       panes:
+        # Scouts search at 40 m. Workers use 35 m, matching the fixed-wing
+        # metric-orbit entry-altitude reference in fixedwing_metric_orbit.yaml.
         - >-
-          history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 40.0"; rosservice call /uav2/control_manager/takeoff "altitude: 40.0"; rosservice call /uav3/control_manager/takeoff "altitude: 40.0"; rosservice call /uav4/control_manager/takeoff "altitude: 40.0"'
+          history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 40.0"; rosservice call /uav2/control_manager/takeoff "altitude: 40.0"; rosservice call /uav3/control_manager/takeoff "altitude: 35.0"; rosservice call /uav4/control_manager/takeoff "altitude: 35.0"'
   - land_home:
       layout: tiled
       panes:
         - >-
-          history -s 'waitForTime; rosservice call /uav1/control_manager/land_home; rosservice call /uav2/control_manager/land_home; rosservice call /uav3/control_manager/land_home; rosservice call /uav4/control_manager/land_home'
+          history -s 'rosservice call /task_allocate/stop; rosservice call /uav1/control_manager/land_home; rosservice call /uav2/control_manager/land_home; rosservice call /uav3/control_manager/land_home; rosservice call /uav4/control_manager/land_home'
 
   # - fastlio:
   #     layout: tiled

@@ -52,7 +52,10 @@ class XdTrackGimbalBridgeNode:
         self.auto_gimbal_tracking = bool(
             rospy.get_param("~auto_gimbal_tracking", True)
         )
-        self.auto_gimbal_search = bool(rospy.get_param("~auto_gimbal_search", True))
+        # Search is an explicit operator action. Keep the parameter for
+        # backwards-compatible launch files, but default it off so a lost
+        # target or proximity event cannot start a scan by itself.
+        self.auto_gimbal_search = bool(rospy.get_param("~auto_gimbal_search", False))
         self.proximity_search_enabled = bool(
             rospy.get_param("~proximity_search/enabled", True)
         )

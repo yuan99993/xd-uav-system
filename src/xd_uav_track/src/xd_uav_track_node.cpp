@@ -16,6 +16,7 @@
 #include <xd_uav_track/FollowerCommand.h>
 #include <xd_uav_track/GimbalStatus.h>
 #include <xd_uav_track/GimbalState.h>
+#include <xd_uav_track/MetricTarget.h>
 #include <xd_uav_track/SelectTrack.h>
 #include <xd_uav_track/SetProfile.h>
 #include <xd_uav_track/StartTracker.h>
@@ -504,6 +505,25 @@ class XdUavTrackNode {
     private_nh_.param("follower/fw_velocity_vector/maximum_climb_rate",
                       config.fw_maximum_climb_rate,
                       config.fw_maximum_climb_rate);
+    // Allow the registered metric profiles to carry their own fixed-wing
+    // limits while retaining fw_velocity_vector as the common fallback.
+    if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
+      const std::string profile_prefix = std::string("follower/") +
+          xd_uav_track::followerProfileName(config.profile);
+      loadPid(private_nh_, profile_prefix + "/pid/course",
+              &config.fw_course_pid);
+      loadPid(private_nh_, profile_prefix + "/pid/climb_rate",
+              &config.fw_climb_rate_pid);
+      private_nh_.param(profile_prefix + "/airspeed",
+                        config.fw_commanded_airspeed,
+                        config.fw_commanded_airspeed);
+      private_nh_.param(profile_prefix + "/maximum_course_offset",
+                        config.fw_maximum_course_offset,
+                        config.fw_maximum_course_offset);
+      private_nh_.param(profile_prefix + "/maximum_climb_rate",
+                        config.fw_maximum_climb_rate,
+                        config.fw_maximum_climb_rate);
+    }
     private_nh_.param("safety/uncertainty/enabled", config.uncertainty_control_enabled,
                       config.uncertainty_control_enabled);
     private_nh_.param("safety/uncertainty/nominal_sigma_normalized",
@@ -542,6 +562,11 @@ class XdUavTrackNode {
                       config.relative_maximum_correction,
                       config.relative_maximum_correction);
     loadTargetGuidance(private_nh_, &config.target_guidance);
+    if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
+      config.target_guidance.enabled = true;
+      config.target_guidance.mode =
+          xd_uav_track::targetGuidanceModeForFollowerProfile(config.profile);
+    }
     gimbal_timeout_sec_ = config.gimbal_input_timeout_sec;
     multi_source_fusion_enabled_ = config.target_guidance.multi_source_fusion_enabled;
     controller_.reset(new xd_uav_track::TrackController(config));
@@ -635,6 +660,7 @@ class XdUavTrackNode {
     std::string follower_command_topic{"track/command"};
     std::string gimbal_state_topic{"track/gimbal_state"};
     std::string gimbal_status_topic{"track/gimbal_status"};
+    std::string metric_target_topic{"track/metric_target"};
     std::string status_topic{"track/status"};
     std::string reference_topic{"control/reference/setpoint"};
     private_nh_.param("interfaces/input/detections", detections_topic,
@@ -648,6 +674,8 @@ class XdUavTrackNode {
                       gimbal_state_topic);
     private_nh_.param("interfaces/input/gimbal_status", gimbal_status_topic,
                       gimbal_status_topic);
+    private_nh_.param("interfaces/input/metric_target", metric_target_topic,
+                      metric_target_topic);
     private_nh_.param("interfaces/output/status", status_topic, status_topic);
     private_nh_.param("interfaces/input/vehicle_state", state_topic, state_topic);
     private_nh_.param("interfaces/output/control_reference", reference_topic,
@@ -678,6 +706,14 @@ class XdUavTrackNode {
             boost::bind(&XdUavTrackNode::gimbalStatusCallback, this, _1),
             ros::VoidConstPtr(), &perception_queue_);
     gimbal_status_subscriber_ = nh_.subscribe(gimbal_status_options);
+    if (!metric_target_topic.empty()) {
+      ros::SubscribeOptions metric_target_options =
+          ros::SubscribeOptions::create<xd_uav_track::MetricTarget>(
+              metric_target_topic, 5,
+              boost::bind(&XdUavTrackNode::metricTargetCallback, this, _1),
+              ros::VoidConstPtr(), &control_queue_);
+      metric_target_subscriber_ = nh_.subscribe(metric_target_options);
+    }
     body_velocity_publisher_ = nh_.advertise<geometry_msgs::TwistStamped>(
         body_velocity_topic, 10);
     follower_command_publisher_ = nh_.advertise<xd_uav_track::FollowerCommand>(
@@ -999,6 +1035,65 @@ class XdUavTrackNode {
     controller_->setVehicleState(state);
   }
 
+  void metricTargetCallback(
+      const xd_uav_track::MetricTarget::ConstPtr& message) {
+    if (message == nullptr) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto canonical_frame = [](const std::string& frame) {
+      return frame.empty() ? frame
+                           : (frame.front() == '/' ? frame.substr(1) : frame);
+    };
+    if (!message->header.frame_id.empty() && !state_frame_.empty() &&
+        canonical_frame(message->header.frame_id) !=
+            canonical_frame(state_frame_)) {
+      ROS_WARN_THROTTLE(2.0,
+                        "[xd_uav_track] metric target frame '%s' does not "
+                        "match odometry frame '%s'; target rejected",
+                        message->header.frame_id.c_str(), state_frame_.c_str());
+      return;
+    }
+    const auto finite = [](double value) { return std::isfinite(value); };
+    const auto& p = message->pose.pose.position;
+    const auto& v = message->velocity.twist.linear;
+    std::array<double, 3> world_position{{p.x, p.y, p.z}};
+    std::array<double, 3> world_velocity{{v.x, v.y, v.z}};
+    if (!std::all_of(world_position.begin(), world_position.end(), finite)) {
+      ROS_WARN_THROTTLE(2.0,
+                        "[xd_uav_track] metric target position is non-finite");
+      return;
+    }
+    const bool velocity_valid = message->has_velocity &&
+        std::all_of(world_velocity.begin(), world_velocity.end(), finite);
+    if (message->has_velocity && !velocity_valid) {
+      ROS_WARN_THROTTLE(2.0,
+                        "[xd_uav_track] metric target velocity is non-finite");
+      return;
+    }
+    if (!message->valid) return;
+    const double receive_time = ros::WallTime::now().toSec();
+    const double observation_time = message->header.stamp.isZero()
+        ? receive_time : message->header.stamp.toSec();
+    double sigma = 0.0;
+    const double covariance_max = std::max({
+        static_cast<double>(message->pose.covariance[0]),
+        static_cast<double>(message->pose.covariance[7]),
+        static_cast<double>(message->pose.covariance[14]), 0.0});
+    if (std::isfinite(covariance_max) && covariance_max > 0.0) {
+      sigma = std::sqrt(covariance_max);
+    }
+    std::string reason;
+    if (!controller_->updateMetricWorldTarget(
+            message->target_id, receive_time, observation_time, world_position,
+            velocity_valid, world_velocity, sigma,
+            message->source.empty() ? std::string("metric_target")
+                                     : message->source,
+            &reason)) {
+      ROS_WARN_THROTTLE(2.0,
+                        "[xd_uav_track] metric world target rejected: %s",
+                        reason.c_str());
+    }
+  }
+
   void gimbalStateCallback(
       const xd_uav_track::GimbalState::ConstPtr& message) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1066,7 +1161,8 @@ class XdUavTrackNode {
           xd_uav_track::followerProfileName(controller_->profile());
       response.message = "supported profiles: mc_velocity_ground, "
           "mc_velocity_position, mc_velocity_distance, mc_velocity_chase, "
-          "gm_velocity_chase, gm_velocity_vector, fw_velocity_vector";
+          "gm_velocity_chase, gm_velocity_vector, fw_velocity_vector, "
+          "fw_metric_pursuit, fw_metric_orbit";
       return true;
     }
     const ros::WallTime now = ros::WallTime::now();
@@ -1086,8 +1182,8 @@ class XdUavTrackNode {
     if (changed) {
       last_profile_change_ = now;
       const bool fixed_wing_transition =
-          previous_profile == xd_uav_track::FollowerProfile::kFixedWingVelocityVector ||
-          requested_profile == xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+          xd_uav_track::isFixedWingProfile(previous_profile) ||
+          xd_uav_track::isFixedWingProfile(requested_profile);
       blend_active_ = have_last_command_ && last_command_.valid &&
           profile_blend_duration_sec_ > 0.0 && !fixed_wing_transition;
       blend_start_ = now;
@@ -1319,10 +1415,8 @@ class XdUavTrackNode {
       const auto old_effective_profile = controller_->profile();
       controller_->setProfile(effective_profile);
       const bool fixed_wing_transition =
-          old_effective_profile ==
-              xd_uav_track::FollowerProfile::kFixedWingVelocityVector ||
-          effective_profile ==
-              xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+          xd_uav_track::isFixedWingProfile(old_effective_profile) ||
+          xd_uav_track::isFixedWingProfile(effective_profile);
       if (have_last_command_ && last_command_.valid &&
           profile_blend_duration_sec_ > 0.0 && !fixed_wing_transition) {
         blend_active_ = true;
@@ -1364,8 +1458,8 @@ class XdUavTrackNode {
       command.left = 0.0;
       command.up = 0.0;
       command.yaw_rate = 0.0;
-      command.release_reference_on_invalid = requested_profile_ ==
-          xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+      command.release_reference_on_invalid =
+          xd_uav_track::isFixedWingProfile(requested_profile_);
       command.tracking_state = "emergency_stop";
       command.invalid_reason = "emergency stop service is active";
     }
@@ -1390,10 +1484,16 @@ class XdUavTrackNode {
     follower_command.target_predicted = command.target_predicted;
     follower_command.uncertainty_limited = command.uncertainty_limited;
     follower_command.relative_state_active = command.relative_state_active;
+    follower_command.metric_target_valid = command.metric_target_valid;
+    follower_command.metric_active = command.metric_active;
+    follower_command.orbit_active = command.orbit_active;
     follower_command.velocity_body.x = command.forward;
     follower_command.velocity_body.y = command.left;
     follower_command.velocity_body.z = command.up;
     follower_command.yaw_rate = command.yaw_rate;
+    follower_command.metric_radial_error_m = command.metric_radial_error_m;
+    follower_command.metric_effective_radius_m =
+        command.metric_effective_radius_m;
     follower_command.yaw_rate_enabled = command.use_yaw_rate;
     follower_command.tracking_state = command.tracking_state;
     follower_command.tracking_quality = command.tracking_quality;
@@ -1416,6 +1516,9 @@ class XdUavTrackNode {
     status.control_reference_published = reference_published;
     status.uncertainty_limited = command.uncertainty_limited;
     status.relative_state_active = command.relative_state_active;
+    status.metric_target_valid = command.metric_target_valid;
+    status.metric_active = command.metric_active;
+    status.orbit_active = command.orbit_active;
     status.gimbal_fallback_active = gimbal_fallback_active_;
     status.emergency_stop_active = emergency_stop_active_;
     status.track_id = command.track_id;
@@ -1439,6 +1542,8 @@ class XdUavTrackNode {
     status.command_left = command.left;
     status.command_up = command.up;
     status.command_yaw_rate = command.yaw_rate;
+    status.metric_radial_error_m = command.metric_radial_error_m;
+    status.metric_effective_radius_m = command.metric_effective_radius_m;
     status.association_method = command.association_method;
     status.invalid_reason = command.invalid_reason;
     if (command.valid && publish_control_reference_ && !state_valid) {
@@ -1456,6 +1561,7 @@ class XdUavTrackNode {
   ros::Subscriber state_subscriber_;
   ros::Subscriber gimbal_state_subscriber_;
   ros::Subscriber gimbal_status_subscriber_;
+  ros::Subscriber metric_target_subscriber_;
   ros::CallbackQueue perception_queue_;
   ros::CallbackQueue control_queue_;
   std::unique_ptr<ros::AsyncSpinner> perception_spinner_;

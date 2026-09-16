@@ -5,6 +5,7 @@ import time
 
 import rospy
 
+from xd_uav_task_execute.msg import ExecuteTaskGoal
 from xd_uav_task_execute.core.track_monitor import (
     ERROR_ACQUISITION_TIMEOUT,
     ERROR_CONTROL_UNAVAILABLE,
@@ -22,7 +23,7 @@ from xd_uav_task_execute.core.track_monitor import (
     TrackMonitor,
     TrackMonitorPolicy,
 )
-from xd_uav_track.msg import TrackStatus
+from xd_uav_track.msg import MetricTarget, TrackStatus
 from xd_uav_track.srv import SelectTrack, SetProfile, StartTracker
 
 from .base import HandlerResult
@@ -41,6 +42,9 @@ class TrackHandler:
         self._profile_service_name = str(
             interfaces.get("set_profile_service", "track/set_profile")
         )
+        self._metric_target_topic = str(
+            interfaces.get("metric_target_topic", "track/metric_target")
+        )
         status_topic = str(interfaces.get("status_topic", "track/status"))
         self._start_client = rospy.ServiceProxy(
             self._start_service_name, StartTracker, persistent=False
@@ -51,6 +55,14 @@ class TrackHandler:
         self._profile_client = rospy.ServiceProxy(
             self._profile_service_name, SetProfile, persistent=False
         )
+        self._metric_target_publisher = None
+        if self._metric_target_topic:
+            self._metric_target_publisher = rospy.Publisher(
+                self._metric_target_topic,
+                MetricTarget,
+                queue_size=1,
+                latch=True,
+            )
         self._condition = threading.Condition()
         self._latest_status = None
         self._status_sequence = 0
@@ -64,7 +76,55 @@ class TrackHandler:
             self._status_sequence += 1
             self._condition.notify_all()
 
+    @staticmethod
+    def _effective_profile(goal):
+        profile = str(goal.follower_profile).strip()
+        if profile:
+            return profile
+        # OBSERVE and INTERCEPT are task-level defaults; callers can still
+        # override them with an explicit follower_profile.
+        if int(goal.task_type) == ExecuteTaskGoal.OBSERVE:
+            return "fw_metric_orbit"
+        if int(goal.task_type) == ExecuteTaskGoal.INTERCEPT:
+            return "fw_metric_pursuit"
+        return ""
+
+    @staticmethod
+    def _is_metric_profile(profile):
+        return str(profile).startswith("fw_metric_")
+
+    @staticmethod
+    def _metric_target_available(goal):
+        pose = goal.target_pose
+        return bool(pose.header.frame_id) or any(
+            abs(float(value)) >= 1e-9
+            for value in (
+                pose.pose.position.x,
+                pose.pose.position.y,
+                pose.pose.position.z,
+            )
+        )
+
+    def _publish_metric_target(self, goal, profile):
+        if self._metric_target_publisher is None or not self._is_metric_profile(profile):
+            return
+        pose = goal.target_pose
+        if not self._metric_target_available(goal):
+            raise RuntimeError(
+                "metric fixed-wing task requires target_pose in the shared world frame"
+            )
+        message = MetricTarget()
+        message.header.stamp = rospy.Time.now()
+        message.header.frame_id = str(pose.header.frame_id)
+        message.target_id = int(goal.target_id)
+        message.valid = True
+        message.pose.pose = pose.pose
+        message.has_velocity = False
+        message.source = "task_execute"
+        self._metric_target_publisher.publish(message)
+
     def _policy(self, goal):
+        profile = self._effective_profile(goal)
         required = (
             float(goal.required_execution_sec)
             if float(goal.required_execution_sec) > 0.0
@@ -90,7 +150,7 @@ class TrackHandler:
             ),
             allow_predicted=bool(self._config.get("allow_predicted", False)),
             required_track_id=int(goal.local_track_id),
-            required_profile=str(goal.follower_profile).strip(),
+            required_profile=profile,
             require_control_reference=bool(
                 self._config.get("require_control_reference", True)
             ),
@@ -103,9 +163,14 @@ class TrackHandler:
         )
 
     def _start(self, goal, should_stop):
-        if str(goal.follower_profile).strip():
+        profile = self._effective_profile(goal)
+        if self._is_metric_profile(profile) and not self._metric_target_available(goal):
+            raise RuntimeError(
+                "metric fixed-wing task requires target_pose in the shared world frame"
+            )
+        if profile:
             self._wait_for_service(self._profile_service_name)
-            response = self._profile_client(str(goal.follower_profile).strip())
+            response = self._profile_client(profile)
             if not response.success:
                 raise RuntimeError("track profile rejected: " + response.message)
         if int(goal.local_track_id) >= 0:
@@ -127,6 +192,7 @@ class TrackHandler:
                     capture_timestamp=rospy.Time(),
                 )
                 if response.success:
+                    self._publish_metric_target(goal, profile)
                     return
                 if should_stop():
                     raise RuntimeError("track selection interrupted by preemption")
@@ -140,6 +206,9 @@ class TrackHandler:
         response = self._start_client(True)
         if not response.success or not response.active:
             raise RuntimeError("tracker start rejected: " + response.message)
+        # Publish after StartTracker: that service resets the controller and
+        # would otherwise discard the one-shot world target.
+        self._publish_metric_target(goal, profile)
 
     def _stop(self):
         self._wait_for_service(self._start_service_name)
@@ -195,6 +264,9 @@ class TrackHandler:
                         tracker_active=status.tracker_active,
                         target_visible=status.target_visible,
                         target_predicted=status.target_predicted,
+                        metric_target_valid=status.metric_target_valid,
+                        metric_active=status.metric_active,
+                        orbit_active=status.orbit_active,
                         command_valid=status.command_valid,
                         state_valid=status.state_valid,
                         emergency_stop_active=status.emergency_stop_active,

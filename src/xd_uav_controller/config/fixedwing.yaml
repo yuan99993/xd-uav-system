@@ -76,14 +76,14 @@ fixedwing:
     underspeed_max_nose_up_pitch: 0.05
 
   limits:
-    minimum_throttle: 0.05
+    minimum_throttle: 0.01
     maximum_throttle: 1.0
     # R=30 m at the observed 15--17.5 m/s requires roughly 0.65--0.81 rad.
     # Do not let course-error feedback tighten the turn far below the planned
     # Dubins radius (the previous 0.95 rad produced the measured inner loops).
     maximum_roll: 0.9
-    maximum_pitch: 0.45
-    maximum_climb_rate: 5.0
+    maximum_pitch: 0.6
+    maximum_climb_rate: 30.0
     maximum_body_rate: [2.5, 2.0, 2.0]
 
   modes:

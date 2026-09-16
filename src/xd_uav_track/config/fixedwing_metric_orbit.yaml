@@ -13,7 +13,10 @@ runtime:
 interfaces:
   input:
     detections: "detect/detections"
-    vehicle_state: "state_estimator/main/odom"
+    # Metric target poses from task_allocate use the shared world frame. Use
+    # the estimator's world-frame odometry here so no implicit TF lookup is
+    # needed inside the real-time tracker.
+    vehicle_state: "state_estimator/main/frames/world/odom"
     gimbal_state: "track/gimbal_state"
     gimbal_status: "track/gimbal_status"
   output:
@@ -66,9 +69,9 @@ tracker:
     metric_distance_m: 35.0
 
 follower:
-  profile: "fw_velocity_vector"
+  profile: "fw_metric_orbit"
   enable_vertical_control: false
-  fw_velocity_vector:
+  fw_metric_orbit:
     airspeed: 15.0
     maximum_course_offset: 0.70
     maximum_course_rate_radps: 0.35

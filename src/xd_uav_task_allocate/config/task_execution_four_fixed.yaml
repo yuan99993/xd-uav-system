@@ -1,0 +1,54 @@
+# Four-fixed-wing end-to-end task execution overlay. This file is loaded after
+# mission.yaml, scouts_two_fixed.yaml and workers_two_fixed.yaml.
+
+target_registry:
+  # Keep the first end-to-end test usable when only one scout sees a target.
+  # Change to 2 after the overlapping uav1/uav2 detections are verified.
+  confirmation_distinct_uavs: 1
+
+# This session launches xd_uav_planning for all four aircraft. Exercise the
+# planning-backed handoff: task_allocate must cancel the active worker plan and
+# receive its release acknowledgement before task_execute may start Observe.
+planner:
+  backend: planning
+
+allocation:
+  worker_execution:
+    # The fixed-wing execution orbit is 80 m. Hand Track control over before
+    # the worker reaches the target centre so it has room to capture the ring.
+    # The worker receives the scout's shared world-frame target pose; a local
+    # camera detection is optional for this metric orbit task.
+    target_radius_m: 100.0
+
+post_arrival:
+  mode: task_execute
+  action_name_template: /{worker}/task_execute/execute
+  server_wait_timeout_sec: 2.0
+  failure_policy: fail
+  retry_delay_sec: 5.0
+  # Prevent a queued final Track reference and the next navigation path from
+  # being issued in the same control cycle.
+  control_handoff_settle_sec: 0.5
+
+  default_task:
+    task_type: observe
+    local_track_id: -1
+    follower_profile: fw_metric_orbit
+    required_execution_sec: 10.0
+    maximum_duration_sec: 120.0
+
+  # Mobility remains a fallback. Per-aircraft settings below override it, and
+  # class_overrides remains authoritative over both when populated later.
+  mobility_profile_overrides:
+    fixedwing:
+      follower_profile: fw_metric_orbit
+
+  worker_overrides:
+    uav3:
+      task_type: observe
+      follower_profile: fw_metric_orbit
+    uav4:
+      task_type: observe
+      follower_profile: fw_metric_pursuit
+
+  class_overrides: {}

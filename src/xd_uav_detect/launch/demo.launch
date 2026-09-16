@@ -1,0 +1,114 @@
+<launch>
+  <!-- Public demonstration entrypoint: sensor | px4 | flight. -->
+  <arg name="mode" default="sensor"/>
+  <arg name="gui" default="true"/>
+  <arg name="loop" default="true"/>
+  <arg name="stage_duration" default="7.0"/>
+  <arg name="run_demo_sequence" default="true"/>
+  <arg name="auto_takeoff" default="true"/>
+  <arg name="world_file"
+       default="$(find xd_uav_detect)/worlds/gimbal_range_flight_demo.world"/>
+  <arg name="x" default="0.0"/>
+  <arg name="y" default="0.0"/>
+  <arg name="z" default="0.3"/>
+  <arg name="yaw" default="0.0"/>
+  <arg name="fcu_url"
+       default="udp://127.0.0.1:14006@127.0.0.1:14005"/>
+
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find xd_uav_detect)/models:$(optenv GAZEBO_MODEL_PATH)"/>
+
+  <group if="$(eval arg('mode') == 'sensor')">
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+      <arg name="world_name"
+           value="$(find xd_uav_detect)/worlds/gimbal_range_demo.world"/>
+      <arg name="gui" value="$(arg gui)"/>
+      <arg name="paused" value="false"/>
+      <arg name="use_sim_time" value="true"/>
+    </include>
+    <node pkg="gazebo_ros" type="spawn_model"
+          name="spawn_x500_gimbal_sensor_demo" output="screen"
+          args="-sdf -file $(find xd_uav_detect)/models/x500_gimbal/sensor_demo.sdf -model x500_gimbal -x 0 -y 0 -z 1"/>
+  </group>
+
+  <group if="$(eval arg('mode') in ['px4', 'flight'])">
+    <include file="$(find gazebo_ros)/launch/empty_world.launch">
+      <arg name="world_name" value="$(arg world_file)"/>
+      <arg name="gui" value="$(arg gui)"/>
+      <arg name="paused" value="false"/>
+      <arg name="use_sim_time" value="true"/>
+    </include>
+    <node pkg="gazebo_ros" type="spawn_model" name="spawn_x500_gimbal"
+          output="screen"
+          args="-sdf -file $(find xd_uav_detect)/models/x500_gimbal/model.sdf -model uav1 -x $(arg x) -y $(arg y) -z $(arg z) -Y $(arg yaw)"/>
+    <include file="$(find mrs_uav_gazebo_simulation)/launch/run_simulation_firmware.launch">
+      <arg name="ID" value="1"/>
+      <arg name="PX4_SIM_MODEL" value="x500"/>
+    </include>
+    <include file="$(find mrs_uav_px4_api)/launch/mavros_gazebo_simulation.launch">
+      <arg name="ID" value="1"/>
+      <arg name="vehicle" value="x500"/>
+      <arg name="fcu_url" value="$(arg fcu_url)"/>
+    </include>
+  </group>
+
+  <group if="$(eval arg('mode') == 'flight')">
+    <include file="$(find mrs_uav_px4_api)/launch/api.launch">
+      <arg name="UAV_NAME" value="uav1"/>
+      <arg name="RUN_TYPE" value="simulation"/>
+    </include>
+    <include file="$(find mrs_uav_core)/launch/core.launch">
+      <arg name="UAV_NAME" value="uav1"/>
+      <arg name="RUN_TYPE" value="simulation"/>
+      <arg name="DEBUG" value="false"/>
+      <arg name="platform_config"
+           value="$(find mrs_uav_gazebo_simulation)/config/mrs_uav_system/x500.yaml"/>
+      <arg name="custom_config"
+           value="$(find mrs_uav_gazebo_simulation)/tmux/one_drone/config/custom_config.yaml"/>
+      <arg name="world_config"
+           value="$(find mrs_uav_gazebo_simulation)/tmux/one_drone/config/world_config.yaml"/>
+      <arg name="network_config"
+           value="$(find mrs_uav_gazebo_simulation)/tmux/one_drone/config/network_config.yaml"/>
+    </include>
+    <include if="$(arg auto_takeoff)"
+             file="$(find mrs_uav_autostart)/launch/automatic_start.launch">
+      <arg name="UAV_NAME" value="uav1"/>
+      <arg name="RUN_TYPE" value="simulation"/>
+      <arg name="custom_config"
+           value="$(find xd_uav_detect)/config/demo/gimbal_flight_autostart.yaml"/>
+    </include>
+    <node if="$(arg auto_takeoff)" pkg="xd_uav_detect"
+          type="gimbal_flight_start.py" name="gimbal_flight_start"
+          output="screen"/>
+  </group>
+
+  <group if="$(eval arg('mode') in ['sensor', 'flight'])">
+    <node pkg="tf2_ros" type="static_transform_publisher"
+          name="gimbal_laser_to_optical"
+          args="0 0 0 -1.57079632679 0 -1.57079632679 uav1/gimbal_laser uav1/gimbal_camera_optical"/>
+    <include file="$(find xd_uav_detect)/launch/gimbal_control.launch">
+      <arg name="UAV_NAME" value="uav1"/>
+    </include>
+    <include file="$(find xd_uav_detect)/launch/detect.launch">
+      <arg name="UAV_NAME" value="uav1"/>
+      <arg name="config"
+           value="$(find xd_uav_detect)/config/gimbal_laser_range.yaml"/>
+      <arg name="body_frame" value="uav1/base_link"/>
+      <arg name="world_frame" value="map"/>
+    </include>
+    <param name="/uav1/detect/gimbal_range/maximum_time_difference_sec"
+           value="0.15"/>
+    <node if="$(arg run_demo_sequence)"
+          pkg="xd_uav_detect" type="gimbal_range_demo.py"
+          name="gimbal_range_demo" output="screen" required="true">
+      <param name="model_name"
+             value="$(eval 'uav1' if arg('mode') == 'flight' else 'x500_gimbal')"/>
+      <param name="airborne_min_z"
+             value="$(eval 0.8 if arg('mode') == 'flight' else 0.0)"/>
+      <param name="ready_timeout"
+             value="$(eval 90.0 if arg('mode') == 'flight' else 30.0)"/>
+      <param name="loop" value="$(arg loop)"/>
+      <param name="stage_duration" value="$(arg stage_duration)"/>
+    </node>
+  </group>
+</launch>

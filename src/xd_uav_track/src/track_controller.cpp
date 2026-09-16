@@ -131,6 +131,14 @@ bool parseFollowerProfile(const std::string& value, FollowerProfile* profile) {
     *profile = FollowerProfile::kFixedWingVelocityVector;
     return true;
   }
+  if (value == "fw_metric_pursuit") {
+    *profile = FollowerProfile::kFixedWingMetricPursuit;
+    return true;
+  }
+  if (value == "fw_metric_orbit") {
+    *profile = FollowerProfile::kFixedWingMetricOrbit;
+    return true;
+  }
   return false;
 }
 
@@ -144,8 +152,34 @@ const char* followerProfileName(const FollowerProfile profile) {
     case FollowerProfile::kGimbalVelocityVector: return "gm_velocity_vector";
     case FollowerProfile::kFixedWingVelocityVector:
       return "fw_velocity_vector";
+    case FollowerProfile::kFixedWingMetricPursuit:
+      return "fw_metric_pursuit";
+    case FollowerProfile::kFixedWingMetricOrbit:
+      return "fw_metric_orbit";
   }
   return "mc_velocity_chase";
+}
+
+bool isFixedWingProfile(const FollowerProfile profile) {
+  return profile == FollowerProfile::kFixedWingVelocityVector ||
+      profile == FollowerProfile::kFixedWingMetricPursuit ||
+      profile == FollowerProfile::kFixedWingMetricOrbit;
+}
+
+bool isMetricFixedWingProfile(const FollowerProfile profile) {
+  return profile == FollowerProfile::kFixedWingMetricPursuit ||
+      profile == FollowerProfile::kFixedWingMetricOrbit;
+}
+
+TargetGuidanceMode targetGuidanceModeForFollowerProfile(
+    const FollowerProfile profile) {
+  if (profile == FollowerProfile::kFixedWingMetricPursuit) {
+    return TargetGuidanceMode::kMetricPursuit;
+  }
+  if (profile == FollowerProfile::kFixedWingMetricOrbit) {
+    return TargetGuidanceMode::kMetricOrbit;
+  }
+  return TargetGuidanceMode::kLegacyVisual;
 }
 
 bool parseLateralGuidanceMode(const std::string& value,
@@ -346,6 +380,15 @@ TrackController::TrackController(const TrackControllerConfig& requested)
                            config_.fw_maximum_course_offset);
   fw_climb_rate_pid_.configure(config_.fw_climb_rate_pid,
                                config_.fw_maximum_climb_rate);
+  // The metric fixed-wing profiles are complete modes, not aliases for the
+  // visual vector profile.  Selecting one enables the shared metric guidance
+  // core and fixes its policy even when the YAML only contains the common
+  // target_guidance tuning block.
+  if (isMetricFixedWingProfile(config_.profile)) {
+    config_.target_guidance.enabled = true;
+    config_.target_guidance.mode =
+        targetGuidanceModeForFollowerProfile(config_.profile);
+  }
   target_guidance_.reset(new TargetGuidance(config_.target_guidance));
   forward_velocity_ = config_.initial_forward_velocity;
   gm_chase_forward_velocity_ = 0.0;
@@ -1014,6 +1057,62 @@ bool TrackController::updateMetricMeasurement(
   return true;
 }
 
+bool TrackController::updateMetricWorldTarget(
+    const int target_id, const double receive_time, const double observation_time,
+    const std::array<double, 3>& world_position, const bool velocity_valid,
+    const std::array<double, 3>& world_velocity, const double position_sigma_m,
+    const std::string& source, std::string* rejection_reason) {
+  auto reject = [&](const std::string& reason) {
+    if (rejection_reason != nullptr) *rejection_reason = reason;
+    return false;
+  };
+  if (!std::isfinite(receive_time) || receive_time < 0.0 ||
+      !std::isfinite(observation_time) || observation_time < 0.0) {
+    return reject("metric world target time is invalid");
+  }
+  if (!std::all_of(world_position.begin(), world_position.end(),
+                   [](double value) { return std::isfinite(value); })) {
+    return reject("metric world target position is non-finite");
+  }
+  if (velocity_valid && !std::all_of(world_velocity.begin(), world_velocity.end(),
+                                     [](double value) { return std::isfinite(value); })) {
+    return reject("metric world target velocity is non-finite");
+  }
+  MetricObservation observation;
+  observation.stamp = observation_time > 0.0 ? observation_time : receive_time;
+  observation.world_position = world_position;
+  observation.world_velocity = velocity_valid
+      ? world_velocity : std::array<double, 3>{{0.0, 0.0, 0.0}};
+  observation.velocity_valid = velocity_valid;
+  observation.sigma_m = std::isfinite(position_sigma_m) && position_sigma_m > 1e-3
+      ? position_sigma_m : 1.0;
+  observation.image_source = source;
+  std::array<double, 3> filtered_world{{0.0, 0.0, 0.0}};
+  if (!applyMetricObservation(observation, true, rejection_reason)) return false;
+  filtered_world = last_metric_world_position_;
+  if (vehicle_state_.valid && vehicle_state_.pose_valid) {
+    last_metric_position_frd_ = worldEnuToBodyFrd(filtered_world, vehicle_state_);
+    last_metric_velocity_frd_ = worldEnuVectorToBodyFrd(
+        last_metric_world_velocity_, vehicle_state_);
+    last_metric_velocity_valid_ = last_metric_world_velocity_valid_;
+  } else {
+    last_metric_position_frd_ = {{0.0, 0.0, 0.0}};
+    last_metric_velocity_frd_ = {{0.0, 0.0, 0.0}};
+    last_metric_velocity_valid_ = false;
+  }
+  last_metric_sigma_m_ = last_metric_world_sigma_m_;
+  have_metric_state_ = true;
+  external_metric_target_active_ = true;
+  metric_state_time_ = receive_time;
+  filtered_track_id_ = target_id;
+  measurement_.track_id = target_id;
+  measurement_.image_source = source;
+  measurement_.tracking_quality = 1.0;
+  cleared_reason_.clear();
+  if (rejection_reason != nullptr) rejection_reason->clear();
+  return true;
+}
+
 bool TrackController::metricMeasurementCompatible(
     const TargetMeasurement& incoming, const double maximum_distance_m,
     std::string* rejection_reason) const {
@@ -1203,16 +1302,14 @@ TrackVelocity TrackController::baseOutput(const double now) const {
     active_guidance = config_.gm_chase_lateral_guidance;
   } else if (config_.profile == FollowerProfile::kGimbalVelocityVector) {
     active_guidance = config_.gm_vector_lateral_guidance;
-  } else if (config_.profile == FollowerProfile::kFixedWingVelocityVector) {
+  } else if (isFixedWingProfile(config_.profile)) {
     output.lateral_guidance_mode = "velocity_vector";
   }
   if (output.lateral_guidance_mode.empty()) {
     output.lateral_guidance_mode = lateralGuidanceModeName(active_guidance);
   }
-  output.use_yaw_rate =
-      config_.profile != FollowerProfile::kFixedWingVelocityVector;
-  output.release_reference_on_invalid =
-      config_.profile == FollowerProfile::kFixedWingVelocityVector;
+  output.use_yaw_rate = !isFixedWingProfile(config_.profile);
+  output.release_reference_on_invalid = isFixedWingProfile(config_.profile);
   output.track_id = filtered_track_id_;
   output.center_x = filtered_center_x_;
   output.center_y = filtered_center_y_;
@@ -1366,7 +1463,7 @@ TrackVelocity TrackController::compute(const double now) {
     const bool metric_mode_requested = config_.target_guidance.mode ==
             TargetGuidanceMode::kMetricPursuit ||
         config_.target_guidance.mode == TargetGuidanceMode::kMetricOrbit;
-    const bool metric_observation = fresh &&
+    const bool metric_observation = !external_metric_target_active_ && fresh &&
         measurement_.has_relative_position_body && measurement_.range_valid;
     const double metric_elapsed = have_metric_state_
         ? std::max(0.0, now - metric_state_time_) : 0.0;
@@ -1375,9 +1472,13 @@ TrackVelocity TrackController::compute(const double now) {
         config_.target_guidance.target_loss_orbit_sec +
         (config_.target_guidance.target_loss_center_hold_enabled
              ? config_.target_guidance.target_loss_center_hold_sec : 0.0);
-    const bool metric_coast = !metric_observation && have_metric_state_ &&
+    const bool external_metric_fresh = external_metric_target_active_ &&
         metric_elapsed <= coast_limit && metric_elapsed >= -1e-6;
-    if (metric_observation || metric_coast || (fresh && metric_mode_requested)) {
+    const bool metric_coast = !external_metric_target_active_ &&
+        !metric_observation && have_metric_state_ &&
+        metric_elapsed <= coast_limit && metric_elapsed >= -1e-6;
+    if (metric_observation || metric_coast || external_metric_fresh ||
+        (fresh && metric_mode_requested)) {
       TargetGuidanceInput input;
       input.now = now;
       input.dt = dt;
@@ -1386,12 +1487,14 @@ TrackVelocity TrackController::compute(const double now) {
       // is still used by the inertial filter/OOSM path, but it may be in a
       // different epoch (Gazebo simulation time versus wall time), so it
       // must never be used for this freshness comparison.
-      input.observation_time = metric_coast ? now : measurement_.receive_time;
+      input.observation_time = (external_metric_fresh || metric_coast)
+          ? now : measurement_.receive_time;
       input.image_error_x = filtered_center_x_ - config_.target_x;
       input.image_error_y = filtered_center_y_ - config_.target_y;
-      input.metric_valid = metric_observation || metric_coast;
-      input.range_valid = metric_observation || metric_coast;
-      input.position_sigma_m = !(metric_observation || metric_coast) ? 0.0
+      input.metric_valid = metric_observation || metric_coast ||
+          external_metric_fresh;
+      input.range_valid = input.metric_valid;
+      input.position_sigma_m = !input.metric_valid ? 0.0
           : metric_coast
           ? last_metric_sigma_m_ +
               ((metric_elapsed <= config_.target_guidance.target_loss_coast_sec)
@@ -1400,18 +1503,22 @@ TrackVelocity TrackController::compute(const double now) {
                   std::max(0.0, metric_elapsed)
           : (measurement_.position_sigma_m > 1e-3
                  ? measurement_.position_sigma_m : last_metric_sigma_m_);
-      input.relative_position_body_frd = metric_coast
+      input.relative_position_body_frd = external_metric_fresh
+          ? last_metric_position_frd_ : metric_coast
           ? last_metric_position_frd_
           : (metric_observation ? measurement_.relative_position_body
                                  : std::array<double, 3>{{0.0, 0.0, 0.0}});
-      input.relative_velocity_valid = metric_coast
+      input.relative_velocity_valid = external_metric_fresh
+          ? last_metric_velocity_valid_ : metric_coast
           ? last_metric_velocity_valid_
           : (metric_observation && measurement_.has_relative_velocity_body);
-      input.relative_velocity_body_frd = metric_coast
+      input.relative_velocity_body_frd = external_metric_fresh
+          ? last_metric_velocity_frd_ : metric_coast
           ? last_metric_velocity_frd_
           : (metric_observation ? measurement_.relative_velocity_body
                                  : std::array<double, 3>{{0.0, 0.0, 0.0}});
-      if (metric_coast && input.relative_velocity_valid) {
+      if (!external_metric_target_active_ && metric_coast &&
+          input.relative_velocity_valid) {
         for (std::size_t i = 0; i < 3; ++i) {
           input.relative_position_body_frd[i] +=
               input.relative_velocity_body_frd[i] * metric_elapsed;
@@ -1422,7 +1529,8 @@ TrackVelocity TrackController::compute(const double now) {
           (vehicle_state_.receive_time <= 0.0 ||
            now - vehicle_state_.receive_time <=
                config_.target_guidance.inertial_coast_state_timeout_sec);
-      if (metric_coast && have_metric_world_state_ && pose_fresh) {
+      if ((metric_coast || external_metric_fresh) &&
+          have_metric_world_state_ && pose_fresh) {
         std::array<double, 3> world = last_metric_world_position_;
         if (last_metric_world_velocity_valid_) {
           for (std::size_t i = 0; i < 3; ++i) {
@@ -1449,8 +1557,7 @@ TrackVelocity TrackController::compute(const double now) {
       const double guidance_speed = config_.target_guidance.commanded_speed > 0.1
           ? config_.target_guidance.commanded_speed
           : config_.fw_commanded_airspeed;
-      input.commanded_speed = config_.profile ==
-              FollowerProfile::kFixedWingVelocityVector
+      input.commanded_speed = isFixedWingProfile(config_.profile)
           ? guidance_speed : std::min(guidance_speed,
                                       config_.maximum_forward_velocity);
       double gimbal_yaw = 0.0;
@@ -1485,7 +1592,7 @@ TrackVelocity TrackController::compute(const double now) {
         output.forward = guidance.forward;
         output.left = guidance.left;
         output.up = guidance.up;
-        if (config_.profile != FollowerProfile::kFixedWingVelocityVector) {
+        if (!isFixedWingProfile(config_.profile)) {
           output.forward = clamp(output.forward,
                                  -config_.maximum_reverse_velocity,
                                  config_.maximum_forward_velocity);
@@ -1494,13 +1601,11 @@ TrackVelocity TrackController::compute(const double now) {
           output.up = clamp(output.up, -config_.maximum_vertical_velocity,
                             config_.maximum_vertical_velocity);
         }
-        output.yaw_rate = config_.profile ==
-                FollowerProfile::kFixedWingVelocityVector
+        output.yaw_rate = isFixedWingProfile(config_.profile)
             ? (config_.target_guidance.publish_course_rate_feedforward
                    ? guidance.course_rate : 0.0)
             : guidance.course_rate;
-        output.use_yaw_rate = config_.profile !=
-            FollowerProfile::kFixedWingVelocityVector ||
+        output.use_yaw_rate = !isFixedWingProfile(config_.profile) ||
             config_.target_guidance.publish_course_rate_feedforward;
         // The fixed-wing controller can combine a tangent velocity with a
         // position anchor.  Anchoring the reference on the requested orbit
@@ -1509,7 +1614,7 @@ TrackVelocity TrackController::compute(const double now) {
         // unchanged.  The anchor is recomputed in the same odometry frame as
         // the vehicle state, so it remains valid through yaw changes.
         if (config_.target_guidance.publish_position_reference &&
-            config_.profile == FollowerProfile::kFixedWingVelocityVector &&
+            isFixedWingProfile(config_.profile) &&
             have_metric_world_state_ && vehicle_state_.pose_valid &&
             vehicle_state_.valid) {
           // Publish the circumference anchor during both pursuit and orbit.
@@ -1547,9 +1652,15 @@ TrackVelocity TrackController::compute(const double now) {
         output.release_reference_on_invalid = false;
         output.valid = true;
         output.target_visible = fresh && !measurement_.predicted;
-        output.target_predicted = !fresh || measurement_.predicted;
+        output.target_predicted = !external_metric_fresh &&
+            (!fresh || measurement_.predicted);
+        output.metric_target_valid = guidance.range_accepted;
+        output.metric_active = guidance.metric_active;
+        output.orbit_active = guidance.orbit_active;
+        output.metric_radial_error_m = guidance.radial_error_m;
+        output.metric_effective_radius_m = guidance.effective_radius_m;
         output.tracking_state = guidance.state;
-        if (metric_coast) {
+        if (metric_coast && !external_metric_target_active_) {
           const double coast_age = std::max(0.0, metric_elapsed -
               config_.input_timeout_sec);
           if (coast_age <= config_.target_guidance.target_loss_coast_sec) {
@@ -1570,8 +1681,7 @@ TrackVelocity TrackController::compute(const double now) {
         output.target_visible = false;
         output.tracking_state = guidance.state;
         output.invalid_reason = guidance.invalid_reason;
-        output.release_reference_on_invalid =
-            config_.profile == FollowerProfile::kFixedWingVelocityVector;
+        output.release_reference_on_invalid = isFixedWingProfile(config_.profile);
         return output;
       }
     }
@@ -1603,7 +1713,7 @@ TrackVelocity TrackController::compute(const double now) {
     output.tracking_state = "target_lost";
     output.invalid_reason = cleared_reason_.empty()
         ? "target is unavailable" : cleared_reason_;
-    if (config_.profile == FollowerProfile::kFixedWingVelocityVector) {
+    if (isFixedWingProfile(config_.profile)) {
       // A fixed-wing cannot execute a zero-velocity stop. Mark the command
       // invalid so the node releases the stream and the downstream controller
       // transitions to its configured reference-timeout loiter.
@@ -1689,7 +1799,7 @@ TrackVelocity TrackController::compute(const double now) {
       config_.profile != FollowerProfile::kVelocityGround &&
       config_.profile != FollowerProfile::kGimbalVelocityChase &&
       config_.profile != FollowerProfile::kGimbalVelocityVector &&
-      config_.profile != FollowerProfile::kFixedWingVelocityVector) {
+      !isFixedWingProfile(config_.profile)) {
     desired_up = vertical_pid_.update(-error_y, dt);
   } else {
     vertical_pid_.reset();
@@ -1855,7 +1965,9 @@ TrackVelocity TrackController::compute(const double now) {
       yaw_pid_.reset();
       break;
     }
-    case FollowerProfile::kFixedWingVelocityVector: {
+    case FollowerProfile::kFixedWingVelocityVector:
+    case FollowerProfile::kFixedWingMetricPursuit:
+    case FollowerProfile::kFixedWingMetricOrbit: {
       // The horizontal vector direction is the requested course relative to
       // current heading. Its magnitude is the requested airspeed. Positive
       // image x is right, while body-FLU y is left, hence the negative error.
@@ -1954,7 +2066,28 @@ void TrackController::clearMeasurement(const std::string& reason) {
 
 bool TrackController::setProfile(const FollowerProfile profile) {
   if (profile == config_.profile) return false;
+  const bool was_metric = isMetricFixedWingProfile(config_.profile);
   config_.profile = profile;
+  if (target_guidance_ != nullptr) {
+  if (isMetricFixedWingProfile(profile)) {
+      target_guidance_->setProfileMode(
+          targetGuidanceModeForFollowerProfile(profile), true);
+      config_.target_guidance.enabled = true;
+      config_.target_guidance.mode =
+          targetGuidanceModeForFollowerProfile(profile);
+    } else if (was_metric) {
+      // Leaving an explicitly metric profile returns to the visual policy.
+      // A legacy fw_velocity_vector can still opt into metric guidance at
+      // startup through its YAML target_guidance block.
+      target_guidance_->setProfileMode(TargetGuidanceMode::kLegacyVisual,
+                                       false);
+      config_.target_guidance.enabled = false;
+      config_.target_guidance.mode = TargetGuidanceMode::kLegacyVisual;
+    }
+  }
+  if (!isMetricFixedWingProfile(profile)) {
+    external_metric_target_active_ = false;
+  }
   resetFollowerState();
   return true;
 }
@@ -1997,6 +2130,7 @@ void TrackController::reset() {
   filtered_track_id_ = -1;
   reidentification_time_ = -1.0;
   have_metric_state_ = false;
+  external_metric_target_active_ = false;
   last_metric_measurement_accepted_ = false;
   metric_state_time_ = 0.0;
   last_metric_position_frd_ = {{0.0, 0.0, 0.0}};
