@@ -1,11 +1,12 @@
 # sar_yolo_detector
 
-面向多无人机应急搜救的 ROS1 感知与任务网关包。**主要入口是部署在侦察机上的
-PixEagle SmartTracker**：相机图像经 YOLO 识别和稳定跟踪后，目标连同可验证的方位或
-世界坐标被转换为规划器可消费的任务候选。规划器完成全局去重、定位融合、分配与航线规划后，再通过每架工作机
+面向多无人机应急搜救的 ROS1 感知与任务网关包。与 XD 飞行链路组合时，本包只负责
+YOLO 检测，稳定 ID、ReID、遮挡预测和重捕获统一由 `xd_uav_track` 管理。目标连同
+可验证的方位或世界坐标被转换为规划器可消费的任务候选。规划器完成全局去重、定位融合、分配与航线规划后，再通过每架工作机
 自己的任务网关下发任务。
 
-包内按 `scout`（侦察感知上行）和 `worker`（规划任务下行）隔离职责。SmartTracker
+包内按 `scout`（侦察感知上行）和 `worker`（规划任务下行）隔离职责。旧 PixEagle
+SmartTracker 仅作为兼容入口保留，不应与 `xd_uav_track` 同时分配身份。检测器
 及任务候选节点不发布飞控命令；工作机网关只把通过身份、地理参考、鉴权、能力和
 状态检查的任务交给本机执行器。核心接口不依赖 Pod、Follower、MRS 或 PX4，因而可由
 MRS 执行器在边界之外接入。`sar_yolo_detector` 是规划电脑和各飞机之间的稳定
@@ -14,8 +15,8 @@ ROS 消息合同。
 ## 支持范围
 
 - 主输入：侦察机 EO `sensor_msgs/Image`
-- 主输出：SmartTracker 发布带稳定 ID 的 `TrackedDetection2DArray`；飞机目标经时序
-  确认后，以方位线索或有效三维定位上行发布 `PerceptionCandidateArray`
+- XD 主输出：`DetectionArray`，仅包含 bbox、类别和置信度，`track_id=-1`；飞机目标经
+  下游时序确认后，以方位线索或有效三维定位上行发布 `PerceptionCandidateArray`
 - 兼容输出：C++ YOLO profile 发布 `vision_msgs/Detection2DArray`；FloodNet profile
   发布 `sar_yolo_detector/FloodRegionArray`
 - 后端：`opencv_dnn`、`tensorrt`、`test`；Noetic/OpenCV 4.2 另提供
@@ -26,7 +27,9 @@ ROS 消息合同。
   TensorRT 支持 FP32/FP16 输入输出。engine 后端在构建时检测到 CUDA
   runtime、`NvInfer.h` 和 `libnvinfer` 后才启用；缺少依赖时会明确报错。
 - 测试：`test` 后端在没有模型/GPU 时生成确定性原始 YOLO 输出，用于接口回归
-- 调度：单工作线程、latest-frame-wins，推理繁忙时覆盖旧帧
+- 调度：YOLO 与可选 ReID 使用同进程两级 latest-frame-wins 流水线；XD `.pt` 入口
+  直接发布 `DetectionArray`，不再经过中间桥接和第二份完整图像传输。没有下游订阅者
+  时生产入口暂停推理，以避免空载 GPU 功耗。
 - 安全：采集时间戳、未来/乱序/重复/过期帧拒绝、NaN/输出形状检查、模型 SHA-256 启动校验
 - 可观测性：`/diagnostics`、`VisionInfo` 和可选检测框图像
 - 任务候选：独立 C++ 节点将稳定检测转为带定位状态、协方差、ID 和生命周期的
@@ -217,6 +220,9 @@ roslaunch sar_yolo_detector scout_perception.launch \
 
 包装脚本只补充 `/opt/ros/$ROS_DISTRO/lib/python3/dist-packages`，不会把另一 Python
 小版本的系统 NumPy/OpenCV 注入虚拟环境；`rospkg` 由上述可选 requirements 安装。
+`netifaces` 也必须由 requirements 安装到该虚拟环境；它包含 Python ABI 相关的本地
+扩展，不能复用 ROS Noetic 系统 Python 3.8 的二进制。缺少它时节点可以完成模型加载，
+但与真实相机建立 TCPROS 连接时会失败。
 
 主要入口默认使用包内 `models/aircraft_coco/yolo11n.pt`，并在加载前校验 SHA-256、
 文件类型、大小和写权限。通用兼容入口 `smart_tracker.launch` 仍默认使用 thermal
@@ -462,66 +468,34 @@ source devel/setup.bash
 `catkin build sar_yolo_detector --cmake-args -DSAR_YOLO_ENABLE_TENSORRT=OFF` 完成
 CPU/接口构建；GPU 部署再按目标机架构重新生成 TensorRT engine。
 
-## 已验证的 COCO→Tracker 冒烟链
-
-下列启动文件以 C++ 静态图像回放器、COCO YOLOv3-tiny、标准
-`vision_msgs/Detection2DArray` 和现有 Tracker 验证完整链路。它不依赖 `pod`，
-也不会向 Follower/飞控写入任何命令。为保持 Tracker 的帧容忍与演示输入一致，
-回放默认 10 Hz。
-
-```bash
-roslaunch sar_yolo_detector coco_tracker_demo.launch \
-  model_path:=/absolute/path/yolov3-tiny.weights \
-  network_config_path:=/absolute/path/yolov3-tiny.cfg \
-  image_path:=/absolute/path/person.jpg \
-  config:=$(rospack find sar_yolo_detector)/config/coco_person_darknet.yaml
-```
-
-已验证输出的关键约束是：检测数组和每个检测框继承相机的采集时间戳；Tracker 对
-推理延迟帧在 OOSM 历史窗口内以 `FUSED_OOSM` 进行回放融合，间帧为预测状态。
-
 ## 接入当前 Tracker
 
-当前工作区的 Tracker 提供可选 `vision_msgs/Detection2DArray` 输入。联合启动：
-
-```bash
-roslaunch sar_yolo_detector tracker_integration.launch \
-  model_path:=/absolute/path/rescue_yolo.onnx \
-  image_topic:=/camera/image_raw \
-  camera_info_topic:=/camera/camera_info \
-  frame_width:=640 frame_height:=480
-```
-
-普通 `Detection2DArray` 不携带稳定 ID；任务节点也可订阅
-`TrackedDetection2DArray`，优先使用 Tracker 的稳定 ID。没有该适配输出时才由任务
-节点的速度/协方差关联维持局部轨迹。
+正式入口为 `xd_uav_track/vision_tracking_stack.launch`。`.pt` YOLO 节点直接发布
+`xd_uav_track/DetectionArray`，并调用 tracker 包拥有的无状态 ReID 编码器填充外观特征，
+最终稳定 ID 只能由 `MultiTrackManager` 分配。标准 `vision_msgs/Detection2DArray`
+仍可通过 `detection_only.launch` 的 `publish_vision_detections:=true` 单独启用。
 
 ## 接入 XD 检测定位层
 
-`sar_vision_to_xd_bridge` 将本包的标准 `vision_msgs/Detection2DArray` 或带稳定 ID 的
-`TrackedDetection2DArray` 转为 `xd_uav_track/DetectionArray`，用于接入
-`xd_uav_detect`，不需要修改后者的订阅或定位代码。桥接器保留图像采集时间戳和相机
+正式 `.pt` 入口直接产生 `xd_uav_track/DetectionArray`，用于接入 `xd_uav_detect`，
+不需要修改后者的订阅或定位代码。独立的 `sar_vision_to_xd_bridge` 仅用于标准
+`vision_msgs` 或旧 SmartTracker 兼容输入。两条路径都会保留图像采集时间戳和相机
 frame，将中心点/宽高框转换为 `[x_min, y_min, x_max, y_max]`，并从 CameraInfo
 补充原图尺寸。二维检测进入 `xd_uav_detect` 前保持 `range_valid=false`，由地面投影或
 雷达相机融合成功后填写三维相对位置。
 
-固定翼 `uav1` 使用包内真实 `YOLO11n COCO` 权重和 SmartTracker，同时启动消息桥
-（原有 `xd_uav_detect` 继续独立运行）：
+固定翼或多旋翼的完整检测、ReID、定位和跟踪组合由下列入口启动：
 
 ```bash
-roslaunch sar_yolo_detector xd_smart_tracker_integration.launch \
-  UAV_NAME:=uav1 \
-  python_executable:=$PWD/.venv-sar-gpu/bin/python
+roslaunch xd_uav_track vision_tracking_stack.launch \
+  UAV_NAME:=uav1 vehicle_type:=fixedwing \
+  enable_fixed_camera:=true enable_gimbal_lrf:=false
 ```
 
-该入口订阅 `/uav1/down_camera/image_raw`，用包内
-`models/aircraft_coco/yolo11n.pt` 在 CUDA GPU 上推理。XD 专用覆盖配置
-`config/smart_tracker_xd_vehicle.yaml` 只允许
-COCO `car(2)`、`motorcycle(3)`、`bus(5)` 和 `truck(7)`，置信度门限为 0.45，
-非车辆框在绘制和发布前都会被丢弃。随后节点把
-`TrackedDetection2DArray`（包括稳定跟踪 ID）转换成
-`/uav1/detect/input/detections_2d`。标注图发布到
-`/uav1/sar_yolo_detector/coco/annotated`。这条链路不使用颜色或红色方块阈值。
+默认使用 `models/xd_vehicle_train7/xd_vehicle_train7.pt` 和精简的
+`config/xd_vehicle_detection.yaml`，类别合同为 `car=0, ar-car=1, tank=2`。
+`config/smart_tracker_xd_vehicle.yaml` 只服务于下面的旧手动框/颜色兼容入口，不进入
+正式自动跟踪链路。
 
 ### 手动初始框跟踪
 
@@ -596,7 +570,7 @@ rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
 
 旧的 `xd_detector_integration.launch` 保留给兼容 OpenCV/TensorRT 的 ONNX/engine
 模型；当前 Ubuntu 20.04 自带 OpenCV 4.2 无法加载包内新式 Ultralytics ONNX，
-因此本机默认使用上面的 `.pt` + CUDA SmartTracker 入口。启动时禁用静默 CPU
+因此本机默认使用上面的 `.pt` + CUDA 纯检测入口。启动时禁用静默 CPU
 回退，CUDA 环境或显存不足会直接报错，避免误以为正在使用 GPU。
 
 只启动消息桥、复用已经运行的 YOLO 时：

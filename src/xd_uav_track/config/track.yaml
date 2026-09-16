@@ -19,6 +19,8 @@ interfaces:
     vehicle_state: "state_estimator/main/odom"
     gimbal_state: "track/gimbal_state"
     gimbal_status: "track/gimbal_status"
+    # 可选 OCR/QR/AprilTag/人工编号证据；关闭 identity_hints 时无需发布。
+    identity_hints: "track/identity_hints"
   output:
     # 真正送给现有控制器的速度参考。
     control_reference: "control/reference/setpoint"
@@ -46,6 +48,15 @@ tracker:
   image_source: ""
   selection:
     auto_select: true              # 未手选时选择质量最高的 confirmed 轨迹
+    # 已锁定目标暂时失检时，不自动跳到画面内的另一对象。
+    # 与长期身份库一致：失联期间停止输出观测控制，但不自动锁定另一目标。
+    locked_target_release_timeout_sec: 60.0
+  global_identity:
+    # Fixed and gimbal streams keep independent local tracklets. A selected
+    # identity is promoted across them only after capture-time metric/world
+    # gating; matching appearance never authorizes a handover by itself.
+    enabled: true
+    appearance_cosine: 0.78
   confidence:
     new_track: 0.20
     update: 0.05
@@ -53,6 +64,9 @@ tracker:
     confirmation_hits: 2
     occlusion_frames: 5            # 该阶段允许 Kalman 预测继续短时控制
     removal_frames: 30
+    # 非负时按采集时间管理，避免 5/15/30 FPS 下行为不同；负值保留旧帧数语义。
+    occlusion_timeout_sec: 0.35
+    removal_timeout_sec: 5.0
   limits:
     maximum_tracks: 128
     maximum_embedding_dimension: 2048
@@ -60,6 +74,45 @@ tracker:
     iou_threshold: 0.20
     center_distance: 1.50
     appearance_cosine: 0.78        # 候选含 embedding 时启用外观重识别
+    high_confidence: 0.50          # 高置信检测可创建新 ID
+    low_confidence: 0.10           # 低置信检测只用于维持现有轨迹
+    appearance_gallery_size: 12    # 保留跨光照、视角与相机来源的多样原型
+    appearance_update_confidence: 0.60
+    mahalanobis_gate: 16.0
+    metric_innovation_distance_m: 25.0
+  # 普通 ReID 始终是主通道；仅当前两名接近，或多个身份有至少两项
+  # 粗特征一致时，才激活低频 Group-ReID 二次判别。
+  group_reid:
+    enabled: true
+    appearance_cosine: 0.55
+    aspect_log_gate: 0.55
+    source_strict: false
+    maximum_groups: 64
+    trigger_minimum_features: 2
+    trigger_score_margin: 0.12
+    short_occlusion_sec: 1.0
+    long_association_minimum_margin: 0.08
+  long_term_identity:
+    enabled: true
+    ttl_sec: 60.0
+    maximum_identities: 256
+    appearance_cosine: 0.84
+    minimum_margin: 0.08
+    maximum_cost: 0.55
+    reconfirmation_hits: 3
+  identity_hints:
+    # 接入实体喷涂号/OCR、二维码或 AprilTag 时启用。
+    enabled: false
+    maximum_time_delta_sec: 0.10
+    minimum_confidence: 0.55
+    hard_confidence: 0.90
+    iou_gate: 0.30
+    confirmations: 2
+  world_identity:
+    # 对每个有效 metric 候选按采集时刻姿态投影，而非使用接收时刻机体坐标。
+    innovation_gate_sigma: 5.0
+    # 失联后世界位置协方差随时间增长，避免长期使用过度自信的位置门控。
+    process_noise_mps: 2.0
   kalman:
     process_noise: 1.0
     measurement_noise: 1.0

@@ -39,15 +39,17 @@ public:
     private_node_.param("model_version", model_version_,
                         std::string("unknown"));
 
+    // This is a real-time observation path: queued old detections only add
+    // control latency, while the tracker already owns bounded OOSM handling.
     publisher_ =
-        node_.advertise<xd_uav_track::DetectionArray>(output_topic_, 5);
+        node_.advertise<xd_uav_track::DetectionArray>(output_topic_, 1);
     if (input_type_ == "vision") {
       subscriber_ = node_.subscribe(
-          input_topic_, 5, &VisionToXdBridge::detectionsCallback, this,
+          input_topic_, 1, &VisionToXdBridge::detectionsCallback, this,
           ros::TransportHints().tcpNoDelay());
     } else if (input_type_ == "tracked") {
       subscriber_ = node_.subscribe(
-          input_topic_, 5, &VisionToXdBridge::trackedDetectionsCallback, this,
+          input_topic_, 1, &VisionToXdBridge::trackedDetectionsCallback, this,
           ros::TransportHints().tcpNoDelay());
     } else {
       throw std::invalid_argument("input_type must be 'vision' or 'tracked'");

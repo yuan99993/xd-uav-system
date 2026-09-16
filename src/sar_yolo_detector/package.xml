@@ -3,8 +3,8 @@
   <name>sar_yolo_detector</name>
   <version>0.4.0</version>
   <description>
-    Scout-side PixEagle SmartTracker and search-and-rescue perception frontend.
-    Stable tracked detections are localized into planner-facing task candidates;
+    Search-and-rescue YOLO perception frontend and optional legacy PixEagle adapter.
+    Raw detections are localized and tracked downstream by xd_uav_track;
     role-separated gateways connect scout perception and worker executors without
     depending on Pod, Follower, MRS, PX4, or other flight-control packages.
   </description>

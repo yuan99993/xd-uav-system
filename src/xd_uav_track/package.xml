@@ -16,6 +16,7 @@
   <depend>roscpp</depend>
   <depend>rospy</depend>
   <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
   <depend>std_srvs</depend>
   <build_depend>message_generation</build_depend>
   <exec_depend>message_runtime</exec_depend>
@@ -23,13 +24,18 @@
   <exec_depend>gazebo_msgs</exec_depend>
   <exec_depend>mavros</exec_depend>
   <exec_depend>rosnode</exec_depend>
+  <exec_depend>rosbag</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>xd_uav_state_estimators</exec_depend>
   <exec_depend>xd_uav_control_manager</exec_depend>
   <exec_depend>xd_uav_world_tf_manager</exec_depend>
   <exec_depend>xd_uav_single_tf_manager</exec_depend>
-  <exec_depend>xd_uav_detect</exec_depend>
-  <exec_depend>sar_yolo_detector</exec_depend>
+  <!-- xd_uav_detect and sar_yolo_detector consume this package's messages.
+       Declaring either as a reverse exec dependency creates an unbuildable
+       catkin cycle. They are optional composition-layer packages launched by
+       vision_tracking_stack.launch and must be installed beside this package. -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
 
   <test_depend>gtest</test_depend>
 

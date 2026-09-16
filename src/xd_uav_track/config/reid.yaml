@@ -1,0 +1,97 @@
+# Tracker-owned appearance frontend.  Select profiles according to the active
+# YOLO label contract, not merely a semantic class name shared by another model.
+reid:
+  active_model_profile: xd_vehicle_train7
+  default_backend: hybrid
+  minimum_roi_width_px: 16
+  minimum_roi_height_px: 16
+  edge_margin_px: 2
+  histogram_bins: 16
+  hybrid_hue_bins: 8
+  hybrid_saturation_bins: 4
+  hybrid_gradient_bins: 9
+
+  synchronization:
+    maximum_image_delta_sec: 0.050
+    # Covers ROS callback ordering jitter without building a frame backlog.
+    maximum_image_wait_sec: 0.080
+    # Four frames cover the 50 ms sync window at 30 FPS without retaining a
+    # large dual-camera image backlog.
+    image_cache_size: 4
+  runtime:
+    # Latest-frame processing bounds latency when the camera FPS exceeds the
+    # available ReID compute budget.
+    maximum_rois_per_frame: 32
+    maximum_output_age_sec: 0.75
+
+  model_profiles:
+    xd_vehicle_train7:
+      # train7: car=0, ar-car=1, tank=2.  Do not apply Market1501 person ReID.
+      class_profiles:
+        vehicle:
+          class_ids: [0, 1, 2]
+          backend: hybrid
+    coco_person:
+      class_profiles:
+        person:
+          class_ids: [0]
+          backend: deep
+          model_name: osnet_x0_25
+          # This is a person-only model. The package URI keeps the feature
+          # extractor tracker-owned while allowing the existing audited model
+          # artifact to remain a detector package dependency.
+          model_path: "package://sar_yolo_detector/models/person_reid/osnet_x0_25_market1501.pt"
+          sha256: c0ff09177a21417a19bc73bbf5af4eb5d2b097c2074ed35e67819ee6cd93612c
+          require_sha256: true
+          device: auto
+          use_gpu: true
+          fallback_to_cpu: true
+          input_height: 256
+          input_width: 128
+          pixel_mean: [0.485, 0.456, 0.406]
+          pixel_std: [0.229, 0.224, 0.225]
+    maritime_person:
+      # maritime_person.pt publishes person as class 0. Use only after the
+      # RGB camera/domain validation described in docs; it is not a vehicle model.
+      class_profiles:
+        person:
+          class_ids: [0]
+          backend: deep
+          model_name: osnet_x0_25
+          model_path: "package://sar_yolo_detector/models/person_reid/osnet_x0_25_market1501.pt"
+          sha256: c0ff09177a21417a19bc73bbf5af4eb5d2b097c2074ed35e67819ee6cd93612c
+          require_sha256: true
+          device: auto
+          use_gpu: true
+          fallback_to_cpu: true
+          input_height: 256
+          input_width: 128
+          pixel_mean: [0.485, 0.456, 0.406]
+          pixel_std: [0.229, 0.224, 0.225]
+    xd_thermal_vehicle:
+      # thermal model: person=0, bicycle=1, car=2, other_vehicle=3. OSNet
+      # trained on RGB people is forbidden here until a thermal vehicle ReID
+      # checkpoint and validation report are supplied.
+      class_profiles:
+        thermal_vehicle:
+          class_ids: [2, 3]
+          backend: hybrid
+    xd_vehicle_onnx:
+      # Deployment template for a vehicle checkpoint trained on the actual
+      # camera domain. Keep this profile inactive until model_path and sha256
+      # are populated from the calibration report.
+      class_profiles:
+        vehicle:
+          class_ids: [0, 1, 2]
+          backend: onnx
+          model_path: ""
+          sha256: ""
+          require_sha256: true
+          device: cpu
+          fallback_to_cpu: true
+          input_height: 256
+          input_width: 128
+          embedding_dimension: 0
+          input_scale: 0.00392156862745098
+          pixel_mean_bgr: [0.406, 0.456, 0.485]
+          swap_rb: true

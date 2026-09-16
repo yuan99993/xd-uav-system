@@ -11,6 +11,8 @@ import stat
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from .detection_backend import DetectionBackend, DevicePreference
 from ..detection_adapter import NormalizedDetection
 from ..geometry_utils import obb_xywhr_to_aabb, validate_obb_xywhr
@@ -84,6 +86,11 @@ class UltralyticsBackend(DetectionBackend):
             return "bytetrack", False
         if requested == "custom_reid":
             return "bytetrack", True
+        # Detection-only ROS deployments call detect(), never track(). Keep
+        # this explicit so a production launch cannot accidentally enable an
+        # Ultralytics tracker or emit a misleading fallback warning.
+        if requested in {"detection_only", "none"}:
+            return "bytetrack", False
         if requested != "botsort":
             logger.warning("Unknown tracker type %s; using botsort", requested)
         return "botsort", False
@@ -387,6 +394,48 @@ class UltralyticsBackend(DetectionBackend):
         boxes = getattr(result, "boxes", None)
         if boxes is None:
             return []
+        # Ultralytics stores xyxy/(optional id)/confidence/class in one tensor.
+        # Pull it to host once instead of synchronizing CUDA separately for
+        # xyxy, conf, cls and id. The fallback below preserves compatibility
+        # with older Ultralytics releases and the lightweight test doubles.
+        raw_data = getattr(boxes, "data", None)
+        try:
+            matrix = raw_data
+            if hasattr(matrix, "detach"):
+                matrix = matrix.detach()
+            if hasattr(matrix, "cpu"):
+                matrix = matrix.cpu()
+            if hasattr(matrix, "numpy"):
+                matrix = matrix.numpy()
+            matrix = np.asarray(matrix)
+            tracked = bool(getattr(boxes, "is_track", False))
+            required_columns = 7 if tracked else 6
+            if matrix.ndim == 2 and matrix.shape[1] >= required_columns:
+                output = []
+                for index, row in enumerate(matrix):
+                    values = tuple(float(value) for value in row[:4])
+                    confidence_column = 5 if tracked else 4
+                    class_column = 6 if tracked else 5
+                    confidence = float(row[confidence_column])
+                    class_id = float(row[class_column])
+                    if not (all(math.isfinite(value) for value in values) and
+                            math.isfinite(confidence) and math.isfinite(class_id)):
+                        continue
+                    aabb = tuple(int(value) for value in values)
+                    track_id = int(row[4]) if tracked else -(index + 1)
+                    output.append(NormalizedDetection(
+                        track_id=track_id,
+                        class_id=int(class_id),
+                        confidence=confidence,
+                        aabb_xyxy=aabb,
+                        center_xy=((aabb[0] + aabb[2]) // 2,
+                                   (aabb[1] + aabb[3]) // 2),
+                        geometry_type="aabb",
+                        track_id_is_stable=tracked,
+                    ))
+                return output
+        except (TypeError, ValueError, IndexError):
+            pass
         xyxy = cls._to_list(getattr(boxes, "xyxy", None))
         confs = cls._to_list(getattr(boxes, "conf", None))
         classes = cls._to_list(getattr(boxes, "cls", None))

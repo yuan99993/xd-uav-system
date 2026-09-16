@@ -284,6 +284,12 @@ class TrackController {
   bool metricMeasurementCompatible(const TargetMeasurement& measurement,
                                    double maximum_distance_m,
                                    std::string* rejection_reason = nullptr) const;
+  bool projectMetricMeasurement(
+      const TargetMeasurement& measurement,
+      std::array<double, 3>* world_position,
+      std::array<double, 3>* world_velocity,
+      bool* velocity_valid, double* sigma_m,
+      std::string* rejection_reason = nullptr) const;
   TrackVelocity compute(double now);
   void setVehicleState(const VehicleState& state);
   void setGimbalState(const GimbalStateData& state);

@@ -1,0 +1,57 @@
+<launch>
+  <!-- Ultralytics .pt detector without ByteTrack/BoT-SORT/SmartTracker state. -->
+  <arg name="config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml" />
+  <arg name="overlay_config" default="" />
+  <arg name="node_name" default="sar_yolo_detection_only" />
+  <arg name="input_image_topic" default="camera/image_raw" />
+  <arg name="detections_topic" default="sar_yolo_detector/detections" />
+  <arg name="publish_vision_detections" default="true" />
+  <arg name="xd_detections_topic" default="" />
+  <arg name="image_source" default="eo" />
+  <arg name="sensor_id" default="camera_primary" />
+  <arg name="detector_name" default="sar_yolo_detector" />
+  <arg name="model_version" default="unknown" />
+  <arg name="reid_enabled" default="false" />
+  <arg name="reid_config" default="$(find xd_uav_track)/config/reid.yaml" />
+  <arg name="reid_model_profile" default="" />
+  <arg name="reid_async" default="true" />
+  <arg name="model_path" default="" />
+  <arg name="model_sha256" default="" />
+  <arg name="use_gpu" default="true" />
+  <arg name="fallback_to_cpu" default="false" />
+  <arg name="maximum_capture_age_sec" default="0.5" />
+  <arg name="pause_without_subscribers" default="false" />
+
+  <node pkg="sar_yolo_detector" type="sar_yolo_detection_only"
+        name="$(arg node_name)" output="screen" required="true">
+    <env name="SAR_YOLO_PYTHON" value="$(optenv SAR_YOLO_PYTHON)" />
+    <rosparam command="load" file="$(arg config)" />
+    <rosparam if="$(eval arg('overlay_config') != '')" command="load"
+              file="$(arg overlay_config)" />
+    <rosparam if="$(arg reid_enabled)" command="load"
+              file="$(arg reid_config)" />
+    <param name="input_image_topic" value="$(arg input_image_topic)" />
+    <param name="detections_topic" value="$(arg detections_topic)" />
+    <param name="publish_vision_detections" value="$(arg publish_vision_detections)" />
+    <param name="xd_detections_topic" value="$(arg xd_detections_topic)" />
+    <param name="image_source" value="$(arg image_source)" />
+    <param name="sensor_id" value="$(arg sensor_id)" />
+    <param name="detector_name" value="$(arg detector_name)" />
+    <param name="model_version" value="$(arg model_version)" />
+    <param name="reid_enabled" value="$(arg reid_enabled)" />
+    <param name="reid_async" value="$(arg reid_async)" />
+    <param if="$(eval arg('reid_model_profile') != '')"
+           name="reid_model_profile" value="$(arg reid_model_profile)" />
+    <param name="model_path" value="$(arg model_path)" />
+    <param name="use_gpu" value="$(arg use_gpu)" />
+    <param name="fallback_to_cpu" value="$(arg fallback_to_cpu)" />
+    <param name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
+    <param name="pause_without_subscribers" value="$(arg pause_without_subscribers)" />
+    <param if="$(eval arg('model_path') != '')"
+           name="SmartTracker/SMART_TRACKER_GPU_MODEL_PATH" value="$(arg model_path)" />
+    <param if="$(eval arg('model_path') != '')"
+           name="SmartTracker/SMART_TRACKER_CPU_MODEL_PATH" value="$(arg model_path)" />
+    <param if="$(eval arg('model_sha256') != '')"
+           name="SmartTracker/SMART_TRACKER_MODEL_SHA256" value="$(arg model_sha256)" />
+  </node>
+</launch>

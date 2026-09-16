@@ -187,6 +187,38 @@ class PixEaglePortableTest(unittest.TestCase):
         self.assertEqual(detections[0].class_id, 0)
         self.assertFalse(detections[0].track_id_is_stable)
 
+    def test_ultralytics_box_tensor_uses_one_host_transfer(self):
+        class Tensor:
+            def __init__(self):
+                self.cpu_calls = 0
+
+            def __len__(self):
+                return 2
+
+            def detach(self):
+                return self
+
+            def cpu(self):
+                self.cpu_calls += 1
+                return self
+
+            def numpy(self):
+                return np.asarray([
+                    [10.2, 20.8, 30.9, 50.1, 0.8, 0.0],
+                    [40.0, 15.0, 70.0, 45.0, 0.7, 2.0],
+                ], dtype=np.float32)
+
+        tensor = Tensor()
+        boxes = SimpleNamespace(data=tensor, is_track=False)
+        mode, detections = UltralyticsBackend._normalize_results(
+            [SimpleNamespace(boxes=boxes, obb=None)]
+        )
+        self.assertEqual(mode, "detect")
+        self.assertEqual(tensor.cpu_calls, 1)
+        self.assertEqual([item.class_id for item in detections], [0, 2])
+        self.assertEqual(detections[0].aabb_xyxy, (10, 20, 30, 50))
+        self.assertTrue(all(not item.track_id_is_stable for item in detections))
+
     def test_model_integrity_accepts_only_matching_digest(self):
         payload = b"trusted-model-fixture"
         expected = hashlib.sha256(payload).hexdigest()

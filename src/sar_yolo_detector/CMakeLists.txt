@@ -310,7 +310,9 @@ install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/LICENSES
 )
 install(PROGRAMS
+  scripts/sar_yolo_detection_only
   scripts/sar_yolo_smart_tracker
+  scripts/detection_only_node.py
   scripts/smart_tracker_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
@@ -332,6 +334,7 @@ catkin_install_python(PROGRAMS
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_detection_only_output.py)
   find_package(rostest REQUIRED)
   catkin_add_nosetests(test/test_pixeagle_portable.py)
   catkin_add_nosetests(test/test_smart_tracker_image_codec.py)

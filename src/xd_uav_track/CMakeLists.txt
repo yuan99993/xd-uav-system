@@ -6,12 +6,14 @@ find_package(catkin REQUIRED COMPONENTS
   mavros_msgs
   message_generation
   nav_msgs
+  sensor_msgs
   roscpp
   rospy
   std_msgs
   std_srvs
 )
 find_package(Eigen3 REQUIRED)
+catkin_python_setup()
 
 add_message_files(
   FILES
@@ -23,6 +25,8 @@ add_message_files(
   TrackStateArray.msg
   TrackStatus.msg
   GimbalStatus.msg
+  IdentityHint.msg
+  IdentityHintArray.msg
 )
 
 add_service_files(
@@ -46,6 +50,7 @@ catkin_package(
     mavros_msgs
     message_runtime
     nav_msgs
+    sensor_msgs
     roscpp
     rospy
     std_msgs
@@ -102,11 +107,13 @@ catkin_install_python(PROGRAMS
   scripts/record_tracking_decisions.py
   scripts/render_plane_catapult_sdf.py
   scripts/replay_tracking_faults.py
+  scripts/evaluate_tracking_recording.py
   scripts/run_px4_sitl.py
   scripts/run_with_config_preflight.py
   scripts/sitl_metric_input.py
   scripts/validate_tracking_config.py
   scripts/verify_fixedwing_sitl.py
+  scripts/reid_encoder_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -115,6 +122,7 @@ install(FILES README.md
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_reid_encoder.py)
   catkin_add_gtest(test_track_controller
     test/test_track_controller.cpp
   )

@@ -1,0 +1,21 @@
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
+  <arg name="node_name" default="reid_encoder" />
+  <arg name="config" default="$(find xd_uav_track)/config/reid.yaml" />
+  <arg name="enabled" default="true" />
+  <arg name="model_profile" default="" />
+  <arg name="input_image_topic" default="fixed_camera/image_raw" />
+  <arg name="input_detections_topic" default="detect/input/fixed/detections_raw" />
+  <arg name="output_detections_topic" default="detect/input/fixed/detections_2d" />
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_track" type="reid_encoder_node.py" name="$(arg node_name)" output="screen" required="true">
+      <rosparam command="load" file="$(arg config)" />
+      <param name="enabled" value="$(arg enabled)" />
+      <param if="$(eval arg('model_profile') != '')" name="model_profile" value="$(arg model_profile)" />
+      <param name="input_image_topic" value="$(arg input_image_topic)" />
+      <param name="input_detections_topic" value="$(arg input_detections_topic)" />
+      <param name="output_detections_topic" value="$(arg output_detections_topic)" />
+    </node>
+  </group>
+</launch>

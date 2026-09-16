@@ -1049,6 +1049,24 @@ bool TrackController::metricMeasurementCompatible(
   return true;
 }
 
+bool TrackController::projectMetricMeasurement(
+    const TargetMeasurement& incoming,
+    std::array<double, 3>* world_position,
+    std::array<double, 3>* world_velocity,
+    bool* velocity_valid, double* sigma_m,
+    std::string* rejection_reason) const {
+  if (world_position == nullptr || world_velocity == nullptr ||
+      velocity_valid == nullptr || sigma_m == nullptr) return false;
+  MetricObservation observation;
+  if (!metricObservationFromMeasurement(incoming, &observation,
+                                        rejection_reason)) return false;
+  *world_position = observation.world_position;
+  *world_velocity = observation.world_velocity;
+  *velocity_valid = observation.velocity_valid;
+  *sigma_m = observation.sigma_m;
+  return true;
+}
+
 bool TrackController::updateMeasurement(
     const TargetMeasurement& incoming, std::string* rejection_reason) {
   auto reject = [&](const std::string& reason) {

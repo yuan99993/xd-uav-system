@@ -13,6 +13,17 @@
   <arg name="fixed_detect_config" default="$(find xd_uav_detect)/config/multirotor_fixed_camera.yaml"/>
   <arg name="gimbal_detect_config" default="$(find xd_uav_detect)/config/gimbal_lrf_camera.yaml"/>
   <arg name="track_config" default="$(find xd_uav_track)/config/track.yaml"/>
+  <arg name="reid_config" default="$(find xd_uav_track)/config/reid.yaml"/>
+  <arg name="enable_reid" default="true"/>
+  <!-- Inline mode reuses YOLO's decoded frame and avoids a second image
+       subscription/process. Set false only for a non-SAR detector frontend. -->
+  <arg name="inline_reid" default="true"/>
+  <arg name="fixed_reid_profile" default="xd_vehicle_train7"/>
+  <arg name="gimbal_reid_profile" default="xd_vehicle_train7"/>
+  <arg name="sar_config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml"/>
+  <arg name="sar_vehicle_config" default=""/>
+  <arg name="sar_model_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt"/>
+  <arg name="sar_model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54"/>
   <arg name="fixed_image_topic" default="fixed_camera/image_raw"/>
   <arg name="fixed_camera_info_topic" default="fixed_camera/camera_info"/>
   <arg name="gimbal_image_topic" default="gimbal_camera/image_raw"/>
@@ -23,26 +34,63 @@
   <arg name="gimbal_sensor_id" default="gimbal_camera"/>
 
   <include if="$(arg enable_sar_fixed)"
-           file="$(find sar_yolo_detector)/launch/xd_smart_tracker_integration.launch">
+           file="$(find sar_yolo_detector)/launch/xd_yolo_detection_integration.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="instance_name" value="fixed"/>
+    <arg name="config" value="$(arg sar_config)"/>
+    <arg name="overlay_config" value="$(arg sar_vehicle_config)"/>
+    <arg name="model_path" value="$(arg sar_model_path)"/>
+    <arg name="model_sha256" value="$(arg sar_model_sha256)"/>
     <arg name="input_image_topic" value="$(arg fixed_image_topic)"/>
     <arg name="camera_info_topic" value="$(arg fixed_camera_info_topic)"/>
-    <arg name="tracked_detections_topic" value="sar_yolo_detector/fixed/tracked_detections"/>
-    <arg name="output_detections_topic" value="detect/input/fixed/detections_2d"/>
+    <arg name="raw_detections_topic" value="sar_yolo_detector/fixed/detections"/>
+    <arg name="output_detections_topic"
+         value="$(eval 'detect/input/fixed/detections_2d' if arg('inline_reid') or not arg('enable_reid') else 'detect/input/fixed/detections_raw')"/>
     <arg name="image_source" value="$(arg fixed_image_source)"/>
     <arg name="sensor_id" value="$(arg fixed_sensor_id)"/>
+    <arg name="reid_enabled" value="$(eval arg('enable_reid') and arg('inline_reid'))"/>
+    <arg name="reid_config" value="$(arg reid_config)"/>
+    <arg name="reid_model_profile" value="$(arg fixed_reid_profile)"/>
   </include>
   <include if="$(arg enable_sar_gimbal)"
-           file="$(find sar_yolo_detector)/launch/xd_smart_tracker_integration.launch">
+           file="$(find sar_yolo_detector)/launch/xd_yolo_detection_integration.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="instance_name" value="gimbal"/>
+    <arg name="config" value="$(arg sar_config)"/>
+    <arg name="overlay_config" value="$(arg sar_vehicle_config)"/>
+    <arg name="model_path" value="$(arg sar_model_path)"/>
+    <arg name="model_sha256" value="$(arg sar_model_sha256)"/>
     <arg name="input_image_topic" value="$(arg gimbal_image_topic)"/>
     <arg name="camera_info_topic" value="$(arg gimbal_camera_info_topic)"/>
-    <arg name="tracked_detections_topic" value="sar_yolo_detector/gimbal/tracked_detections"/>
-    <arg name="output_detections_topic" value="detect/input/gimbal/detections_2d"/>
+    <arg name="raw_detections_topic" value="sar_yolo_detector/gimbal/detections"/>
+    <arg name="output_detections_topic"
+         value="$(eval 'detect/input/gimbal/detections_2d' if arg('inline_reid') or not arg('enable_reid') else 'detect/input/gimbal/detections_raw')"/>
     <arg name="image_source" value="$(arg gimbal_image_source)"/>
     <arg name="sensor_id" value="$(arg gimbal_sensor_id)"/>
+    <arg name="reid_enabled" value="$(eval arg('enable_reid') and arg('inline_reid'))"/>
+    <arg name="reid_config" value="$(arg reid_config)"/>
+    <arg name="reid_model_profile" value="$(arg gimbal_reid_profile)"/>
+  </include>
+
+  <include if="$(eval arg('enable_sar_fixed') and arg('enable_reid') and not arg('inline_reid'))" file="$(find xd_uav_track)/launch/reid_encoder.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="node_name" value="reid_encoder_fixed"/>
+    <arg name="config" value="$(arg reid_config)"/>
+    <arg name="enabled" value="$(arg enable_reid)"/>
+    <arg name="model_profile" value="$(arg fixed_reid_profile)"/>
+    <arg name="input_image_topic" value="$(arg fixed_image_topic)"/>
+    <arg name="input_detections_topic" value="detect/input/fixed/detections_raw"/>
+    <arg name="output_detections_topic" value="detect/input/fixed/detections_2d"/>
+  </include>
+  <include if="$(eval arg('enable_sar_gimbal') and arg('enable_reid') and not arg('inline_reid'))" file="$(find xd_uav_track)/launch/reid_encoder.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="node_name" value="reid_encoder_gimbal"/>
+    <arg name="config" value="$(arg reid_config)"/>
+    <arg name="enabled" value="$(arg enable_reid)"/>
+    <arg name="model_profile" value="$(arg gimbal_reid_profile)"/>
+    <arg name="input_image_topic" value="$(arg gimbal_image_topic)"/>
+    <arg name="input_detections_topic" value="detect/input/gimbal/detections_raw"/>
+    <arg name="output_detections_topic" value="detect/input/gimbal/detections_2d"/>
   </include>
 
   <include if="$(arg enable_fixed_camera)" file="$(find xd_uav_track)/launch/detect_instance.launch">

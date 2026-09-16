@@ -6,6 +6,10 @@ torch>=2.0,<3
 ultralytics==8.4.118
 lap>=0.5.12,<1
 rospkg>=1.5,<2
+# rospy's TCPROS peer-address check imports this binary module. It must be
+# installed for the virtual-environment Python version, not borrowed from the
+# host ROS Python directory.
+netifaces>=0.11,<1
 # Optional deep person ReID (OSNet/Market1501).  The runtime never downloads
 # weights; provision models/person_reid/*.pt from the package artifact.
 torchvision>=0.15,<1

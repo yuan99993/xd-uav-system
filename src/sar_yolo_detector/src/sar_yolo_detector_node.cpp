@@ -6,6 +6,7 @@
 #include <limits>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -240,9 +241,13 @@ public:
   SarYoloDetectorNode() : private_node_("~"), image_transport_(node_) {
     loadParameters();
     loadInferenceBackend();
+    if (thermal_clahe_enabled_) {
+      thermal_clahe_ = cv::createCLAHE(
+          std::max(0.1, thermal_clahe_clip_limit_), cv::Size(8, 8));
+    }
 
     detections_publisher_ =
-        node_.advertise<vision_msgs::Detection2DArray>(detections_topic_, 5);
+        node_.advertise<vision_msgs::Detection2DArray>(detections_topic_, 1);
     vision_info_publisher_ =
         node_.advertise<vision_msgs::VisionInfo>(vision_info_topic_, 1, true);
     thermal_info_publisher_ =
@@ -668,9 +673,15 @@ private:
   PreparedImage prepareImage(const sensor_msgs::ImageConstPtr &message) const {
     PreparedImage prepared;
     if (input_mode_ == "color") {
-      prepared.bgr = cv_bridge::toCvCopy(
-                         message, sensor_msgs::image_encodings::BGR8)
-                         ->image;
+      if (message->encoding == sensor_msgs::image_encodings::BGR8) {
+        // processImage keeps the ROS message alive, so the native BGR buffer
+        // can be shared through preprocessing without a full-frame copy.
+        prepared.bgr = cv_bridge::toCvShare(message)->image;
+      } else {
+        prepared.bgr = cv_bridge::toCvCopy(
+                           message, sensor_msgs::image_encodings::BGR8)
+                           ->image;
+      }
       return prepared;
     }
 
@@ -702,14 +713,21 @@ private:
       }
       if (samples.empty())
         throw std::runtime_error("thermal image contains no finite samples");
-      std::sort(samples.begin(), samples.end());
-      const auto percentile = [&samples](const double value) {
-        const std::size_t index = static_cast<std::size_t>(std::round(
-            (value / 100.0) * static_cast<double>(samples.size() - 1U)));
-        return static_cast<double>(samples[std::min(index, samples.size() - 1U)]);
+      const auto percentile_index = [&samples](const double value) {
+        return std::min(static_cast<std::size_t>(std::round(
+            (value / 100.0) * static_cast<double>(samples.size() - 1U))),
+            samples.size() - 1U);
       };
-      lower = percentile(thermal_lower_percentile_);
-      upper = percentile(thermal_upper_percentile_);
+      const std::size_t lower_index = percentile_index(
+          thermal_lower_percentile_);
+      const std::size_t upper_index = percentile_index(
+          thermal_upper_percentile_);
+      std::nth_element(samples.begin(), samples.begin() + lower_index,
+                       samples.end());
+      lower = samples[lower_index];
+      std::nth_element(samples.begin(), samples.begin() + upper_index,
+                       samples.end());
+      upper = samples[upper_index];
     }
     if (!std::isfinite(lower) || !std::isfinite(upper) || upper <= lower)
       throw std::runtime_error("thermal normalization range is degenerate");
@@ -727,9 +745,7 @@ private:
       prepared.bad_pixel_corrected = true;
     }
     if (thermal_clahe_enabled_) {
-      cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(
-          std::max(0.1, thermal_clahe_clip_limit_), cv::Size(8, 8));
-      clahe->apply(gray8, gray8);
+      thermal_clahe_->apply(gray8, gray8);
       prepared.clahe_applied = true;
     }
     cv::cvtColor(gray8, prepared.bgr, cv::COLOR_GRAY2BGR);
@@ -847,7 +863,9 @@ private:
         std::vector<Detection> full = inferRegion(
             source, cv::Point(0, 0), &preprocess_ms, &inference_ms,
             &postprocess_ms);
-        detections.insert(detections.end(), full.begin(), full.end());
+        detections.insert(detections.end(),
+                          std::make_move_iterator(full.begin()),
+                          std::make_move_iterator(full.end()));
         ++inference_region_count;
       }
       if (use_tiles) {
@@ -863,7 +881,9 @@ private:
             std::vector<Detection> local = inferRegion(
                 source(tile), tile.tl(), &preprocess_ms, &inference_ms,
                 &postprocess_ms);
-            detections.insert(detections.end(), local.begin(), local.end());
+            detections.insert(detections.end(),
+                              std::make_move_iterator(local.begin()),
+                              std::make_move_iterator(local.end()));
             ++inference_region_count;
           }
         }
@@ -1113,6 +1133,7 @@ private:
   PostprocessorConfig postprocessor_config_;
   std::unique_ptr<YoloPostprocessor> postprocessor_;
   std::unique_ptr<InferenceBackend> inference_backend_;
+  cv::Ptr<cv::CLAHE> thermal_clahe_;
   PerceptionIdentity identity_;
 
   bool publish_debug_image_{false};

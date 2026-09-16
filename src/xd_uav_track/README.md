@@ -218,3 +218,94 @@ follower:
 `tracker`、`follower` 和 `safety`。固定翼目标空速只在
 `follower/fw_velocity_vector/airspeed` 配置；实际空速测量、
 空速上下限和油门控制属于 `xd_uav_controller`，本包不再重复订阅或配置。
+
+## 生产多目标/ReID 边界
+
+正式视觉链路中，`sar_yolo_detector` 只产生 bbox、类别和置信度，并直接发布
+`DetectionArray`；其 `track_id=-1`、`track_id_is_stable=false`，避免额外的桥接进程和
+一次 ROS 序列化。标准 `vision_msgs` 或旧输入仍可显式使用兼容桥接器。
+`xd_uav_track` 是唯一的稳定身份分配器，并维护确认、遮挡、丢失和重捕获状态。
+不要把 `xd_smart_tracker_integration.launch` 接入这条链路，否则会重新引入双重
+ID 管理。
+
+`launch/vision_tracking_stack.launch` 的 `enable_reid`（默认 true）会启用无状态
+外观编码。SAR YOLO 默认采用 `inline_reid:=true`：直接复用检测器已解码的图像，并在
+同一进程的独立 latest-only 工作线程中流水处理，不再为每个相机重复传输和反序列化
+整幅图像。接入其他检测器时可设置 `inline_reid:=false`，恢复独立的
+`reid_encoder_node.py`。两种模式都只写入
+`DetectionCandidate.appearance_embedding`，不分配 ID、不保存丢失目标。模型和类别
+契约在 `config/reid.yaml`：默认 `xd_vehicle_train7` 对 car/ar-car/tank 使用低算力
+空间颜色、光照归一化和梯度纹理混合描述子；Market1501 的 OSNet 仅可在明确选择
+`coco_person` 且部署已校验权重时启用。编码不可用时会原样转发，轨迹管理自动退化
+为空间/运动关联。
+
+轨迹关联采用类别硬门控、Kalman 马氏距离、IoU/中心距离和有限外观 gallery 的两阶段
+全局分配。低置信检测只维持已有轨迹，不会创建新 ID。锁定目标进入短时失检时会保持
+其公开 ID 和 coast 预测，直到 `tracker/selection/locked_target_release_timeout_sec`
+超时或人工重新选择，避免自动跳到画面中的另一目标。
+
+相似车辆场景采用并行的普通 ReID + 按需 Group-ReID。普通关联是低开销主通道；当前
+两名代价过近，或类别、尺寸比例、混合颜色/纹理特征、相机来源等粗属性同时匹配多个
+身份时，才进入组内二次判别。`group_id` 仅在跟踪器内部使用，同组车辆仍拥有不同公开
+`track_id`。活动轨迹超时后，已确认身份进入有界的长期库（默认 60 s）；库中保留多样
+外观原型、按采集时刻姿态投影的世界位置/速度、增长协方差和身份置信度。长期恢复必须
+同时通过世界位置创新、外观绝对门限和第一/第二名分差，
+并连续确认三帧后才恢复 `control_measurement_ready`。候选接近时不会强行占用旧 ID。
+关联器会在类别、运动、世界坐标门控后，将稀疏二分图拆为独立连通分量再执行
+Hungarian；稳定 detector ID 和世界量测均使用帧内索引，长期库转移 embedding gallery
+使用移动语义。因此目标数量较多但空间上分离时，不会为全部无效组合支付一个巨型稠密
+分配矩阵的三次复杂度。
+
+车辆喷涂号、OCR、二维码或 AprilTag 可通过可选
+`interfaces/input/identity_hints`（`IdentityHintArray`）接入。配置
+`tracker/identity_hints/enabled: true` 后，提示必须与检测时间及 bbox 重叠一致；同一采集
+时间的重复消息只计一次。编号连续出现至少两次才固化，高置信编号冲突直接拒绝身份关联，
+单次低质量结果不会覆盖长期身份。跨固定相机/云台交接仍要求世界坐标创新门控；一致实体
+编号可替代受视角影响的外观否决，但绝不单独绕过空间门控。
+
+固定相机和云台相机各自维护局部 tracklet。启用
+`tracker/global_identity/enabled` 后，已锁定目标可以在两路相机间保持同一公开 ID，
+但前提是类别相同、采集时刻的世界坐标量测通过控制器的时间/协方差创新门控；两端都有
+embedding 时还必须不与 `appearance_cosine` 矛盾。仅凭相似外观绝不允许跨相机合并。
+真实录制数据的 ID switch、误关联和重捕获验收格式见
+[`docs/tracking_recording_acceptance.md`](docs/tracking_recording_acceptance.md)。
+
+实机视觉相机可直接接入 `vision_tracking_stack.launch` 的
+`fixed_image_topic/fixed_camera_info_topic` 或
+`gimbal_image_topic/gimbal_camera_info_topic`。检测、ReID 和定位消息沿用相机采集
+时间戳；内联模式不需要图像时间近邻查找，独立模式使用 50 ms 同步窗、最多 80 ms
+的到达顺序等待。两者都使用单槽最新结果和 750 ms 输出新鲜度门限，避免低算力设备
+积压旧帧。车辆默认 `hybrid`
+外观描述子不依赖 PyTorch；若部署经过本机数据标定的车辆 ONNX 模型，选择
+`xd_vehicle_onnx` 并在 `config/reid.yaml` 填写模型路径、SHA-256 和输出维数。
+深度 OSNet 会把同一帧同一模型的多个 ROI 合并为一次 GPU batch；hybrid/ONNX 路径
+保持原有逐 ROI 数值语义。
+
+`.pt` YOLO 仍运行在工作区 `.venv-sar-gpu`（或 `SAR_YOLO_PYTHON` 指定的
+环境）中。该环境必须完整安装 `sar_yolo_detector/requirements-smart-tracker.txt`；
+尤其不能从 ROS Noetic 的 Python 3.8 目录借用 `netifaces` 到 Python 3.10 环境，否则
+节点虽能加载模型，但实际相机 TCPROS 连接会失败。
+
+`vision_tracking_stack.launch` 是组合入口，因此部署镜像还应显式包含
+`sar_yolo_detector` 和 `xd_uav_detect`。二者都依赖本包的消息，不能反向写入本包的
+`package.xml`，否则 catkin 会形成循环依赖；应在系统级 rosdep/镜像清单中同时安装
+这三个包。
+
+连接实机相机前可离线检查当前类别/ReID 合同；深度或 ONNX profile 会同时校验模型
+类型、路径和 SHA-256，默认车辆 `hybrid` profile 不要求权重：
+
+```bash
+rosrun xd_uav_track validate_tracking_config.py \
+  --reid-config $(rospack find xd_uav_track)/config/reid.yaml \
+  --reid-profile xd_vehicle_train7
+```
+
+采集上线验收证据时可另开终端运行：
+
+```bash
+roslaunch xd_uav_track record_tracking_evidence.launch UAV_NAME:=uav1 \
+  output_prefix:=tracking_evidence_01
+```
+
+该入口只录制两路原图、相机内参、检测各阶段、轨迹、状态、里程计和云台状态，
+不会启动飞控或改变控制参考。

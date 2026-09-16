@@ -4,6 +4,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <geometry_msgs/TwistStamped.h>
 #include <mavros_msgs/PositionTarget.h>
@@ -16,6 +17,7 @@
 #include <xd_uav_track/FollowerCommand.h>
 #include <xd_uav_track/GimbalStatus.h>
 #include <xd_uav_track/GimbalState.h>
+#include <xd_uav_track/IdentityHintArray.h>
 #include <xd_uav_track/SelectTrack.h>
 #include <xd_uav_track/SetProfile.h>
 #include <xd_uav_track/StartTracker.h>
@@ -26,6 +28,23 @@
 #include <xmlrpcpp/XmlRpcValue.h>
 
 namespace {
+
+double embeddingCosine(const std::vector<float>& lhs,
+                       const std::vector<float>& rhs) {
+  // -2 is outside the cosine domain and means "no comparable embedding".
+  if (lhs.empty() || lhs.size() != rhs.size()) return -2.0;
+  double dot = 0.0;
+  double lhs_norm = 0.0;
+  double rhs_norm = 0.0;
+  for (std::size_t index = 0; index < lhs.size(); ++index) {
+    if (!std::isfinite(lhs[index]) || !std::isfinite(rhs[index])) return -2.0;
+    dot += static_cast<double>(lhs[index]) * rhs[index];
+    lhs_norm += static_cast<double>(lhs[index]) * lhs[index];
+    rhs_norm += static_cast<double>(rhs[index]) * rhs[index];
+  }
+  return lhs_norm > 1e-12 && rhs_norm > 1e-12
+      ? dot / std::sqrt(lhs_norm * rhs_norm) : -2.0;
+}
 
 void eulerFromQuaternion(const geometry_msgs::Quaternion& quaternion,
                          double* roll, double* pitch, double* yaw) {
@@ -549,6 +568,12 @@ class XdUavTrackNode {
 
     xd_uav_track::MultiTrackConfig multi_config;
     private_nh_.param("tracker/selection/auto_select", auto_select_track_, true);
+    private_nh_.param("tracker/selection/locked_target_release_timeout_sec",
+                      locked_target_release_timeout_sec_, 5.0);
+    private_nh_.param("tracker/global_identity/enabled",
+                      global_identity_enabled_, true);
+    private_nh_.param("tracker/global_identity/appearance_cosine",
+                      global_identity_appearance_cosine_, 0.78);
     private_nh_.param("tracker/image_source",
                       accepted_image_source_, std::string());
     private_nh_.param("tracker/source_policy", source_policy_,
@@ -586,6 +611,12 @@ class XdUavTrackNode {
                       multi_config.occlusion_frames, multi_config.occlusion_frames);
     private_nh_.param("tracker/lifecycle/removal_frames",
                       multi_config.removal_frames, multi_config.removal_frames);
+    private_nh_.param("tracker/lifecycle/occlusion_timeout_sec",
+                      multi_config.occlusion_timeout_sec,
+                      multi_config.occlusion_timeout_sec);
+    private_nh_.param("tracker/lifecycle/removal_timeout_sec",
+                      multi_config.removal_timeout_sec,
+                      multi_config.removal_timeout_sec);
     private_nh_.param("tracker/limits/maximum_tracks",
                       multi_config.maximum_tracks, multi_config.maximum_tracks);
     private_nh_.param("tracker/limits/maximum_embedding_dimension",
@@ -606,6 +637,94 @@ class XdUavTrackNode {
     private_nh_.param("tracker/association/appearance_cosine",
                       multi_config.appearance_minimum_cosine,
                       multi_config.appearance_minimum_cosine);
+    private_nh_.param("tracker/association/high_confidence",
+                      multi_config.high_confidence_threshold,
+                      multi_config.high_confidence_threshold);
+    private_nh_.param("tracker/association/low_confidence",
+                      multi_config.low_confidence_threshold,
+                      multi_config.low_confidence_threshold);
+    private_nh_.param("tracker/association/appearance_gallery_size",
+                      multi_config.appearance_gallery_size,
+                      multi_config.appearance_gallery_size);
+    private_nh_.param("tracker/association/appearance_update_confidence",
+                      multi_config.appearance_update_minimum_confidence,
+                      multi_config.appearance_update_minimum_confidence);
+    private_nh_.param("tracker/association/mahalanobis_gate",
+                      multi_config.association_mahalanobis_gate,
+                      multi_config.association_mahalanobis_gate);
+    private_nh_.param("tracker/association/metric_innovation_distance_m",
+                      multi_config.metric_innovation_distance_m,
+                      multi_config.metric_innovation_distance_m);
+    private_nh_.param("tracker/group_reid/enabled",
+                      multi_config.group_reid_enabled,
+                      multi_config.group_reid_enabled);
+    private_nh_.param("tracker/group_reid/appearance_cosine",
+                      multi_config.group_appearance_minimum_cosine,
+                      multi_config.group_appearance_minimum_cosine);
+    private_nh_.param("tracker/group_reid/aspect_log_gate",
+                      multi_config.group_aspect_log_gate,
+                      multi_config.group_aspect_log_gate);
+    private_nh_.param("tracker/group_reid/source_strict",
+                      multi_config.group_source_strict,
+                      multi_config.group_source_strict);
+    private_nh_.param("tracker/group_reid/maximum_groups",
+                      multi_config.maximum_groups,
+                      multi_config.maximum_groups);
+    private_nh_.param("tracker/group_reid/trigger_minimum_features",
+                      multi_config.group_trigger_minimum_features,
+                      multi_config.group_trigger_minimum_features);
+    private_nh_.param("tracker/group_reid/trigger_score_margin",
+                      multi_config.group_trigger_score_margin,
+                      multi_config.group_trigger_score_margin);
+    private_nh_.param("tracker/group_reid/short_occlusion_sec",
+                      multi_config.short_occlusion_sec,
+                      multi_config.short_occlusion_sec);
+    private_nh_.param("tracker/group_reid/long_association_minimum_margin",
+                      multi_config.long_association_minimum_margin,
+                      multi_config.long_association_minimum_margin);
+    private_nh_.param("tracker/long_term_identity/enabled",
+                      multi_config.long_term_memory_enabled,
+                      multi_config.long_term_memory_enabled);
+    private_nh_.param("tracker/long_term_identity/ttl_sec",
+                      multi_config.long_term_memory_ttl_sec,
+                      multi_config.long_term_memory_ttl_sec);
+    private_nh_.param("tracker/long_term_identity/maximum_identities",
+                      multi_config.long_term_memory_maximum_identities,
+                      multi_config.long_term_memory_maximum_identities);
+    private_nh_.param("tracker/long_term_identity/appearance_cosine",
+                      multi_config.long_term_memory_minimum_cosine,
+                      multi_config.long_term_memory_minimum_cosine);
+    private_nh_.param("tracker/long_term_identity/minimum_margin",
+                      multi_config.long_term_memory_minimum_margin,
+                      multi_config.long_term_memory_minimum_margin);
+    private_nh_.param("tracker/long_term_identity/maximum_cost",
+                      multi_config.long_term_memory_maximum_cost,
+                      multi_config.long_term_memory_maximum_cost);
+    private_nh_.param("tracker/long_term_identity/reconfirmation_hits",
+                      multi_config.long_term_reconfirmation_hits,
+                      multi_config.long_term_reconfirmation_hits);
+    private_nh_.param("tracker/identity_hints/enabled",
+                      identity_hints_enabled_, false);
+    private_nh_.param("tracker/identity_hints/maximum_time_delta_sec",
+                      identity_hint_maximum_time_delta_sec_, 0.10);
+    private_nh_.param("tracker/identity_hints/minimum_confidence",
+                      multi_config.identity_hint_minimum_confidence,
+                      multi_config.identity_hint_minimum_confidence);
+    private_nh_.param("tracker/identity_hints/hard_confidence",
+                      multi_config.identity_hint_hard_confidence,
+                      multi_config.identity_hint_hard_confidence);
+    private_nh_.param("tracker/identity_hints/iou_gate",
+                      multi_config.identity_hint_iou_gate,
+                      multi_config.identity_hint_iou_gate);
+    private_nh_.param("tracker/identity_hints/confirmations",
+                      multi_config.identity_hint_confirmations,
+                      multi_config.identity_hint_confirmations);
+    private_nh_.param("tracker/world_identity/innovation_gate_sigma",
+                      multi_config.world_innovation_gate_sigma,
+                      multi_config.world_innovation_gate_sigma);
+    private_nh_.param("tracker/world_identity/process_noise_mps",
+                      multi_config.world_process_noise_mps,
+                      multi_config.world_process_noise_mps);
     private_nh_.param("tracker/kalman/process_noise",
                       multi_config.process_noise, multi_config.process_noise);
     private_nh_.param("tracker/kalman/measurement_noise",
@@ -635,6 +754,7 @@ class XdUavTrackNode {
     std::string follower_command_topic{"track/command"};
     std::string gimbal_state_topic{"track/gimbal_state"};
     std::string gimbal_status_topic{"track/gimbal_status"};
+    std::string identity_hints_topic{"track/identity_hints"};
     std::string status_topic{"track/status"};
     std::string reference_topic{"control/reference/setpoint"};
     private_nh_.param("interfaces/input/detections", detections_topic,
@@ -648,6 +768,8 @@ class XdUavTrackNode {
                       gimbal_state_topic);
     private_nh_.param("interfaces/input/gimbal_status", gimbal_status_topic,
                       gimbal_status_topic);
+    private_nh_.param("interfaces/input/identity_hints", identity_hints_topic,
+                      identity_hints_topic);
     private_nh_.param("interfaces/output/status", status_topic, status_topic);
     private_nh_.param("interfaces/input/vehicle_state", state_topic, state_topic);
     private_nh_.param("interfaces/output/control_reference", reference_topic,
@@ -678,6 +800,14 @@ class XdUavTrackNode {
             boost::bind(&XdUavTrackNode::gimbalStatusCallback, this, _1),
             ros::VoidConstPtr(), &perception_queue_);
     gimbal_status_subscriber_ = nh_.subscribe(gimbal_status_options);
+    if (identity_hints_enabled_) {
+      ros::SubscribeOptions identity_options =
+          ros::SubscribeOptions::create<xd_uav_track::IdentityHintArray>(
+              identity_hints_topic, 2,
+              boost::bind(&XdUavTrackNode::identityHintsCallback, this, _1),
+              ros::VoidConstPtr(), &perception_queue_);
+      identity_hints_subscriber_ = nh_.subscribe(identity_options);
+    }
     body_velocity_publisher_ = nh_.advertise<geometry_msgs::TwistStamped>(
         body_velocity_topic, 10);
     follower_command_publisher_ = nh_.advertise<xd_uav_track::FollowerCommand>(
@@ -762,6 +892,23 @@ class XdUavTrackNode {
         measurement, source_identity_max_distance_m_, reason);
   }
 
+  void identityHintsCallback(
+      const xd_uav_track::IdentityHintArray::ConstPtr& message) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string source = message->image_source.empty()
+        ? (message->header.frame_id.empty() ? std::string("default")
+                                            : message->header.frame_id)
+        : message->image_source;
+    auto existing = latest_identity_hints_.find(source);
+    if (existing != latest_identity_hints_.end() &&
+        !message->header.stamp.isZero() &&
+        !existing->second.header.stamp.isZero() &&
+        message->header.stamp < existing->second.header.stamp) {
+      return;
+    }
+    latest_identity_hints_[source] = *message;
+  }
+
   void detectionsCallback(
       const xd_uav_track::DetectionArray::ConstPtr& message) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -794,17 +941,88 @@ class XdUavTrackNode {
       tracker->reset();
       controller_->reset();
       metric_identity_valid_ = false;
+      if (locked_target_source_ == source) locked_target_active_ = false;
+      latest_identity_hints_.erase(source);
     } else if (message->command == "start_track") {
       tracker_active_ = true;
     } else if (message->command == "stop_track") {
       tracker_active_ = false;
       controller_->reset();
       metric_identity_valid_ = false;
+      locked_target_active_ = false;
     }
 
+    std::vector<xd_uav_track::TargetIdentityHint> identity_hints;
+    const auto hints_it = latest_identity_hints_.find(source);
+    if (identity_hints_enabled_ && hints_it != latest_identity_hints_.end()) {
+      const ros::Time hint_stamp = hints_it->second.header.stamp;
+      const bool synchronized = stamp.isZero() || hint_stamp.isZero() ||
+          std::abs((stamp - hint_stamp).toSec()) <=
+              identity_hint_maximum_time_delta_sec_;
+      if (synchronized) {
+        identity_hints.reserve(hints_it->second.hints.size());
+        for (const auto& raw : hints_it->second.hints) {
+          const int x1 = raw.bbox[0];
+          const int y1 = raw.bbox[1];
+          const int x2 = raw.bbox[2];
+          const int y2 = raw.bbox[3];
+          if (raw.identity_label.empty() || !std::isfinite(raw.confidence) ||
+              x2 <= x1 || y2 <= y1) continue;
+          xd_uav_track::TargetIdentityHint hint;
+          hint.class_id = raw.class_id;
+          hint.normalized_bbox = {{
+              0.5 * static_cast<double>(x1 + x2) / image_width,
+              0.5 * static_cast<double>(y1 + y2) / image_height,
+              static_cast<double>(x2 - x1) / image_width,
+              static_cast<double>(y2 - y1) / image_height}};
+          hint.identity_label = raw.identity_label;
+          hint.source_type = raw.source_type;
+          hint.confidence = raw.confidence;
+          hint.capture_stamp = hint_stamp;
+          identity_hints.push_back(std::move(hint));
+        }
+      }
+    }
+    std::vector<xd_uav_track::TargetWorldObservation> world_observations;
+    world_observations.reserve(message->candidates.size());
+    for (std::size_t index = 0; index < message->candidates.size(); ++index) {
+      const auto& candidate = message->candidates[index];
+      if (!candidate.range_valid || !candidate.has_relative_position_body) continue;
+      xd_uav_track::TargetMeasurement metric;
+      metric.receive_time = ros::WallTime::now().toSec();
+      metric.observation_time = stamp.isZero()
+          ? metric.receive_time : stamp.toSec();
+      metric.range_valid = true;
+      metric.has_relative_position_body = true;
+      metric.has_relative_velocity_body = candidate.has_relative_velocity_body;
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        metric.relative_position_body[axis] =
+            candidate.relative_position_body[axis];
+        metric.relative_velocity_body[axis] =
+            candidate.relative_velocity_body[axis];
+      }
+      const double covariance_max = std::max({
+          static_cast<double>(candidate.position_covariance[0]),
+          static_cast<double>(candidate.position_covariance[4]),
+          static_cast<double>(candidate.position_covariance[8]), 0.0});
+      metric.position_sigma_m = covariance_max > 0.0
+          ? std::sqrt(covariance_max) : 1.0;
+      metric.class_id = candidate.class_id;
+      metric.image_source = source;
+      xd_uav_track::TargetWorldObservation world;
+      world.candidate_index = index;
+      world.capture_stamp = stamp;
+      std::string projection_reason;
+      if (controller_->projectMetricMeasurement(
+              metric, &world.position, &world.velocity,
+              &world.velocity_valid, &world.sigma_m, &projection_reason)) {
+        world_observations.push_back(std::move(world));
+      }
+    }
     auto frame = tracker->update(
         *message, static_cast<int>(image_width),
-        static_cast<int>(image_height), source);
+        static_cast<int>(image_height), source, identity_hints,
+        world_observations);
     latest_tracks_by_source_[source] = frame.tracks;
     source_last_receive_[source] = ros::WallTime::now();
     const std::string previous_active_source = active_source_;
@@ -817,7 +1035,8 @@ class XdUavTrackNode {
         source_policy_ == "fixed";
     const bool fixed_first_policy = source_policy_ == "fixed_first";
     if (!manual_policy && active_stale) active_source_ = source;
-    if (fixed_first_policy && source.find("fixed") != std::string::npos) {
+    if (fixed_first_policy && source.find("fixed") != std::string::npos &&
+        !(locked_target_active_ && source != locked_target_source_)) {
       active_source_ = source;
     }
     if (!manual_policy && !fixed_first_policy && source != active_source_ &&
@@ -852,8 +1071,113 @@ class XdUavTrackNode {
     if ((manual_policy || fixed_first_policy) && active_source_.empty()) {
       active_source_ = source;
     }
+    // Local trackers deliberately remain source-isolated.  A public ID is
+    // shared across sources only for an explicitly locked target and only
+    // after the capture-time world gate accepts the metric observation.  An
+    // optional appearance comparison can reject a contradictory handover but
+    // can never approve one by itself.
+    if (global_identity_enabled_ && locked_target_active_ &&
+        source != locked_target_source_ && metric_identity_valid_) {
+      auto locked_tracker_it = source_trackers_.find(locked_target_source_);
+      xd_uav_track::DetectionCandidate locked_candidate;
+      const bool have_locked_candidate = locked_tracker_it != source_trackers_.end() &&
+          locked_tracker_it->second->latestCandidate(locked_target_id_,
+                                                      &locked_candidate);
+      std::string locked_physical_label;
+      if (locked_tracker_it != source_trackers_.end()) {
+        locked_tracker_it->second->identityLabel(
+            locked_target_id_, &locked_physical_label);
+      }
+      bool locked_source_missing = true;
+      const auto locked_tracks_it = latest_tracks_by_source_.find(locked_target_source_);
+      if (locked_tracks_it != latest_tracks_by_source_.end()) {
+        for (const auto& state : locked_tracks_it->second.tracks) {
+          if (state.track_id == locked_target_id_ &&
+              (state.lifecycle_state == "confirmed" ||
+               state.lifecycle_state == "occluded")) {
+            locked_source_missing = false;
+            break;
+          }
+        }
+      }
+      for (auto& candidate_state : frame.tracks.tracks) {
+        if (!candidate_state.detected || candidate_state.lifecycle_state != "confirmed" ||
+            candidate_state.class_id != metric_identity_class_id_ ||
+            !candidate_state.range_valid ||
+            !candidate_state.has_relative_position_body) {
+          continue;
+        }
+        xd_uav_track::DetectionCandidate incoming_candidate;
+        if (!tracker->latestCandidate(candidate_state.track_id, &incoming_candidate)) {
+          continue;
+        }
+        std::string incoming_physical_label;
+        tracker->identityLabel(candidate_state.track_id,
+                               &incoming_physical_label);
+        if (!locked_physical_label.empty() &&
+            !incoming_physical_label.empty() &&
+            locked_physical_label != incoming_physical_label) {
+          continue;
+        }
+        const bool exact_physical_label = !locked_physical_label.empty() &&
+            locked_physical_label == incoming_physical_label;
+        const double appearance = have_locked_candidate ? embeddingCosine(
+            locked_candidate.appearance_embedding,
+            incoming_candidate.appearance_embedding) : -2.0;
+        if (!exact_physical_label && appearance >= -1.0 &&
+            appearance < global_identity_appearance_cosine_) {
+          continue;
+        }
+        xd_uav_track::TargetMeasurement handover;
+        handover.receive_time = wall_now.toSec();
+        handover.observation_time = stamp.isZero() ? handover.receive_time : stamp.toSec();
+        handover.image_source = source;
+        handover.class_id = candidate_state.class_id;
+        handover.range_valid = true;
+        handover.has_relative_position_body = true;
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+          handover.relative_position_body[axis] =
+              static_cast<double>(candidate_state.relative_position_body[axis]);
+        }
+        const double covariance_max = std::max({
+            static_cast<double>(candidate_state.position_covariance[0]),
+            static_cast<double>(candidate_state.position_covariance[4]),
+            static_cast<double>(candidate_state.position_covariance[8]), 0.0});
+        handover.position_sigma_m = std::sqrt(covariance_max);
+        std::string handover_reason;
+        if (!metricSourceIdentityCompatible(handover, source, &handover_reason)) {
+          continue;
+        }
+        const int local_id = candidate_state.track_id;
+        if (!tracker->adoptPublicId(local_id, locked_target_id_)) continue;
+        for (auto& state : frame.tracks.tracks) {
+          if (state.track_id == local_id) {
+            state.track_id = locked_target_id_;
+            state.selected = true;
+          }
+        }
+        for (auto& candidate : frame.candidates.candidates) {
+          if (candidate.track_id == local_id) candidate.track_id = locked_target_id_;
+        }
+        tracker->setSelectedTrackId(locked_target_id_);
+        locked_target_source_ = source;
+        locked_target_last_detected_ = wall_now;
+        if (active_source_ != source && locked_source_missing) {
+          active_source_ = source;
+          last_source_switch_ = wall_now;
+        }
+        ROS_INFO("[xd_uav_track] global identity handover %s -> %s, id=%d",
+                 previous_active_source.c_str(), source.c_str(), locked_target_id_);
+        break;
+      }
+    }
+    latest_tracks_by_source_[source] = frame.tracks;
     int selected_id = tracker->selectedTrackId();
-    if (selected_id < 0 && auto_select_track_) {
+    if (locked_target_active_ && source == locked_target_source_) {
+      selected_id = locked_target_id_;
+      tracker->setSelectedTrackId(selected_id);
+    }
+    if (!locked_target_active_ && selected_id < 0 && auto_select_track_) {
       float best_quality = -1.0F;
       for (const auto& track : frame.tracks.tracks) {
         if (track.lifecycle_state == "confirmed" &&
@@ -862,7 +1186,13 @@ class XdUavTrackNode {
           selected_id = track.track_id;
         }
       }
-      if (selected_id >= 0) tracker->setSelectedTrackId(selected_id);
+      if (selected_id >= 0) {
+        tracker->setSelectedTrackId(selected_id);
+        locked_target_active_ = true;
+        locked_target_source_ = source;
+        locked_target_id_ = selected_id;
+        locked_target_last_detected_ = wall_now;
+      }
     }
 
     const xd_uav_track::TrackState* selected = nullptr;
@@ -872,7 +1202,23 @@ class XdUavTrackNode {
           (track.lifecycle_state == "confirmed" ||
            track.lifecycle_state == "occluded")) {
         selected = &track;
+        if (track.detected && locked_target_active_ &&
+            source == locked_target_source_ && track.track_id == locked_target_id_) {
+          locked_target_last_detected_ = wall_now;
+        }
       }
+    }
+    // Never silently hand a lock to another object.  During a brief
+    // occlusion the selected Kalman state continues to coast; after the
+    // explicit release timeout selection becomes eligible again.
+    if (locked_target_active_ && source == locked_target_source_ &&
+        selected == nullptr && !locked_target_last_detected_.isZero() &&
+        (wall_now - locked_target_last_detected_).toSec() >
+            locked_target_release_timeout_sec_) {
+      tracker->setSelectedTrackId(-1);
+      locked_target_active_ = false;
+      locked_target_id_ = -1;
+      locked_target_source_.clear();
     }
     if (source == active_source_) {
       latest_tracks_ = frame.tracks;
@@ -1206,6 +1552,10 @@ class XdUavTrackNode {
     }
     tracker->setSelectedTrackId(target_id);
     active_source_ = source;
+    locked_target_active_ = true;
+    locked_target_source_ = source;
+    locked_target_id_ = target_id;
+    locked_target_last_detected_ = ros::WallTime::now();
     latest_tracks_ = source_tracks;
     tracker_active_ = request.start_tracking;
     controller_->reset();
@@ -1456,6 +1806,7 @@ class XdUavTrackNode {
   ros::Subscriber state_subscriber_;
   ros::Subscriber gimbal_state_subscriber_;
   ros::Subscriber gimbal_status_subscriber_;
+  ros::Subscriber identity_hints_subscriber_;
   ros::CallbackQueue perception_queue_;
   ros::CallbackQueue control_queue_;
   std::unique_ptr<ros::AsyncSpinner> perception_spinner_;
@@ -1478,6 +1829,7 @@ class XdUavTrackNode {
       latest_tracks_by_source_;
   std::map<std::string, ros::WallTime> source_last_receive_;
   std::map<std::string, ros::Time> source_last_stamp_;
+  std::map<std::string, xd_uav_track::IdentityHintArray> latest_identity_hints_;
   std::mutex mutex_;
   bool publish_control_reference_{true};
   bool tracker_active_{false};
@@ -1490,11 +1842,17 @@ class XdUavTrackNode {
   bool emergency_stop_active_{false};
   bool blend_active_{false};
   bool have_last_command_{false};
+  bool locked_target_active_{false};
+  bool global_identity_enabled_{true};
+  bool identity_hints_enabled_{false};
   double publish_rate_{30.0};
   double state_timeout_sec_{0.30};
   double gimbal_timeout_sec_{0.20};
   double profile_switch_min_interval_sec_{0.50};
   double profile_blend_duration_sec_{0.50};
+  double locked_target_release_timeout_sec_{5.0};
+  double global_identity_appearance_cosine_{0.78};
+  double identity_hint_maximum_time_delta_sec_{0.10};
   double state_yaw_{0.0};
   ros::WallTime state_receive_time_;
   ros::WallTime gimbal_state_receive_time_;
@@ -1513,6 +1871,9 @@ class XdUavTrackNode {
   std::string accepted_image_source_;
   std::string source_policy_{"auto_handover"};
   std::string active_source_;
+  std::string locked_target_source_;
+  int locked_target_id_{-1};
+  ros::WallTime locked_target_last_detected_;
   double source_handover_timeout_sec_{0.75};
   double select_capture_tolerance_sec_{0.10};
   double source_clock_reset_jump_sec_{5.0};

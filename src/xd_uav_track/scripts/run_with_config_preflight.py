@@ -39,6 +39,7 @@ Report = _validator.Report
 _load = _validator._load
 merge_mappings = _validator.merge_mappings
 validate_detector = _validator.validate_detector
+validate_reid = _validator.validate_reid
 validate_tracker = _validator.validate_tracker
 
 
@@ -46,6 +47,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--track-config", action="append", default=[], metavar="YAML")
     parser.add_argument("--detector-config", action="append", default=[], metavar="YAML")
+    parser.add_argument("--reid-config", action="append", default=[], metavar="YAML")
+    parser.add_argument("--reid-profile", default="", metavar="NAME")
     parser.add_argument("--strict-metric", action="store_true")
     parser.add_argument("--node-package", required=True)
     parser.add_argument("--node-type", required=True)
@@ -58,6 +61,12 @@ def main():
         validate_tracker(tracker_config, report, " + ".join(args.track_config))
     for path in args.detector_config:
         validate_detector(_load(path, report), report, path, args.strict_metric)
+    reid_config = {}
+    for path in args.reid_config:
+        reid_config = merge_mappings(reid_config, _load(path, report))
+    if args.reid_config:
+        validate_reid(reid_config, report, " + ".join(args.reid_config),
+                      args.reid_profile)
     for text in report.warnings:
         print("WARNING: " + text, file=sys.stderr)
     if report.errors:
