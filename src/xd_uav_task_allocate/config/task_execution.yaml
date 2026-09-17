@@ -1,9 +1,14 @@
-# Worker behavior after camera detection triggers execution inside the target
-# radius. This file is loaded separately from the allocation policy.
+# Worker behavior after navigation reaches the assigned target. Depending on
+# handoff_mode, execution can require a local camera detection or use only the
+# shared-world position target. This file is loaded separately from allocation.
 post_arrival:
   # arrive: preserve the original behavior and complete immediately at REACHED.
   # task_execute: send ExecuteTaskGoal and complete only after action success.
   mode: arrive  # arrive | task_execute
+  # auto maps fw_metric_*/OBSERVE/INTERCEPT to position-only handoff and other
+  # task types to the legacy camera+position handoff. Override with visual or
+  # position when the mission knows the worker sensor availability.
+  handoff_mode: auto  # auto | visual | position
 
   action_name_template: /{worker}/task_execute/execute
   server_wait_timeout_sec: 2.0
@@ -31,7 +36,7 @@ post_arrival:
   # These examples are intentionally inactive while mode=arrive.
   mobility_profile_overrides:
     hover:
-      follower_profile: gm_velocity_chase
+      follower_profile: mc_velocity_chase
     fixedwing:
       follower_profile: fw_velocity_vector
 

@@ -9,19 +9,22 @@ target_registry:
 # This session launches xd_uav_planning for all four aircraft. Exercise the
 # planning-backed handoff: task_allocate must cancel the active worker plan and
 # receive its release acknowledgement before task_execute may start Observe.
-planner:
-  backend: planning
+
 
 allocation:
   worker_execution:
-    # The fixed-wing execution orbit is 80 m. Hand Track control over before
-    # the worker reaches the target centre so it has room to capture the ring.
-    # The worker receives the scout's shared world-frame target pose; a local
-    # camera detection is optional for this metric orbit task.
+    # Position-only metric handoff does not wait for a worker camera. Keep a
+    # generous radius only as a safety margin if a visual task is later
+    # selected through a class/worker override.
     target_radius_m: 100.0
 
 post_arrival:
+  # arrive:仅到达任务目标附近就算任务完成
+  # task_execute:到达目标附近切到track并执行相应的要求
   mode: task_execute
+  # Metric fixed-wing tasks receive the scout's world-frame target pose, so
+  # reaching the navigation point is sufficient; worker cameras are optional.
+  handoff_mode: position  # auto | visual | position
   action_name_template: /{worker}/task_execute/execute
   server_wait_timeout_sec: 2.0
   failure_policy: fail

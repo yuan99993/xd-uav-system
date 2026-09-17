@@ -58,9 +58,9 @@ windows:
         - >-
           waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
           roslaunch xd_uav_task_allocate task_allocate.launch
-          scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_mixed_example.yaml
-          worker_config:=$(rospack find xd_uav_task_allocate)/config/workers.yaml
-          post_arrival_config:=$(rospack find xd_uav_task_allocate)/config/task_execution_mc_ground.yaml
+          scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_mixed.yaml
+          worker_config:=$(rospack find xd_uav_task_allocate)/config/workers_two_multi.yaml
+          post_arrival_config:=$(rospack find xd_uav_task_allocate)/config/task_execution.yaml
   # Only scouts localize detections in 3-D: uav1 uses its down camera and the
   # ground plane; uav2 fuses its forward camera with the lidar point cloud.
   - scout_detection_localization:

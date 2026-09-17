@@ -1,44 +1,57 @@
-# Four-VTOL end-to-end validation overrides. This file is loaded after
-# mission.yaml, scouts.yaml and workers.yaml by task_allocate.launch.
+# Four-fixed-wing end-to-end task execution overlay. This file is loaded after
+# mission.yaml, scouts_two_fixed.yaml and workers_two_fixed.yaml.
 
 target_registry:
-  # During the first end-to-end run, a target seen by either search aircraft
-  # may enter allocation. Raise this to 2 after camera overlap is verified.
+  # Keep the first end-to-end test usable when only one scout sees a target.
+  # Change to 2 after the overlapping uav1/uav2 detections are verified.
   confirmation_distinct_uavs: 1
 
+# This session launches xd_uav_planning for all four aircraft. Exercise the
+# planning-backed handoff: task_allocate must cancel the active worker plan and
+# receive its release acknowledgement before task_execute may start Observe.
+
+
+allocation:
+  worker_execution:
+    # Position-only metric handoff does not wait for a worker camera. Keep a
+    # generous radius only as a safety margin if a visual task is later
+    # selected through a class/worker override.
+    target_radius_m: 100.0
+
 post_arrival:
+  # arrive:仅到达任务目标附近就算任务完成
+  # task_execute:到达目标附近切到track并执行相应的要求
   mode: task_execute
+  # Metric fixed-wing tasks receive the scout's world-frame target pose, so
+  # reaching the navigation point is sufficient; worker cameras are optional.
+  handoff_mode: position  # auto | visual | position
   action_name_template: /{worker}/task_execute/execute
   server_wait_timeout_sec: 2.0
-
   failure_policy: fail
   retry_delay_sec: 5.0
-  # Applies to both direct_controller_test and planning backends.
+  # Prevent a queued final Track reference and the next navigation path from
+  # being issued in the same control cycle.
   control_handoff_settle_sec: 0.5
 
   default_task:
-    task_type: track
+    task_type: observe
     local_track_id: -1
-    follower_profile: ""
+    follower_profile: fw_metric_orbit
     required_execution_sec: 10.0
-    maximum_duration_sec: 60.0
+    maximum_duration_sec: 120.0
 
+  # Mobility remains a fallback. Per-aircraft settings below override it, and
+  # class_overrides remains authoritative over both when populated later.
   mobility_profile_overrides:
-    # All four VTOLs stay in multicopter mode for this initial task-flow test.
-    # The detector uses the downward camera, so use the matching ground-target
-    # follower instead of the front-camera/gimbal chase profile.
-    hover:
-      follower_profile: mc_velocity_ground
     fixedwing:
-      follower_profile: fw_velocity_vector
+      follower_profile: fw_metric_orbit
 
-  class_overrides: {}
-  # Execution is selected per aircraft ID. Keep the mobility override above as
-  # a fallback for aircraft which have not yet been listed here.
   worker_overrides:
     uav3:
-      task_type: track
-      follower_profile: mc_velocity_ground
+      task_type: observe
+      follower_profile: fw_metric_orbit
     uav4:
-      task_type: track
-      follower_profile: mc_velocity_ground
+      task_type: observe
+      follower_profile: fw_metric_pursuit
+
+  class_overrides: {}

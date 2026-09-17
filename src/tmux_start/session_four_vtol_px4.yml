@@ -86,8 +86,8 @@ windows:
   - track_execute:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_track track.launch UAV_NAME:=uav3
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_track track.launch UAV_NAME:=uav4
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_track track_fixedwing_sitl.launch UAV_NAME:=uav3
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_track track_fixedwing_sitl.launch UAV_NAME:=uav4
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_execute task_execute.launch UAV_NAME:=uav3
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_task_execute task_execute.launch UAV_NAME:=uav4
 
@@ -97,17 +97,21 @@ windows:
         - >-
           waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1;
           roslaunch xd_uav_task_allocate task_allocate.launch
-          scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts.yaml
-          worker_config:=$(rospack find xd_uav_task_allocate)/config/workers.yaml
+          scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_two_fixed.yaml
+          worker_config:=$(rospack find xd_uav_task_allocate)/config/workers_two_fixed.yaml
           post_arrival_config:=$(rospack find xd_uav_task_allocate)/config/task_execution_vtol.yaml
-
-  - observe:
+          
+  - transition_to_fw:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo /task_allocate/mission_state
-        - waitForTime; rostopic echo /task_allocate/rescue_tasks
-        - waitForTime; rostopic echo /uav3/task_execute/status
-        - waitForTime; rostopic echo /uav4/task_execute/status
+        - >-
+          history -s 'rosservice call /uav1/control_manager/set_flight_regime "target_regime: 1"; rosservice call /uav2/control_manager/set_flight_regime "target_regime: 1"; rosservice call /uav3/control_manager/set_flight_regime "target_regime: 1"; rosservice call /uav4/control_manager/set_flight_regime "target_regime: 1";'
+    
+  - transition_to_mr:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/control_manager/set_flight_regime "target_regime: 0"; rosservice call /uav2/control_manager/set_flight_regime "target_regime: 0"; rosservice call /uav3/control_manager/set_flight_regime "target_regime: 0"; rosservice call /uav4/control_manager/set_flight_regime "target_regime: 0"; '
 
   - rviz:
       layout: tiled
@@ -119,18 +123,6 @@ windows:
       panes:
         - >-
           history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 20.0"; rosservice call /uav2/control_manager/takeoff "altitude: 20.0"; rosservice call /uav3/control_manager/takeoff "altitude: 20.0"; rosservice call /uav4/control_manager/takeoff "altitude: 20.0"'
-
-  - mission:
-      layout: tiled
-      panes:
-        - >-
-          history -s 'rosrun xd_uav_task_allocate mock_search_mission.py; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/spawn_red_boxes.py --position=40,30 --size 5 5 0.2 --ground-z 0 --replace --prefix vtol_target; rosservice call /task_allocate/start'
-        - >-
-          history -s 'rosservice call /task_allocate/get_state'
-        - >-
-          history -s 'rosservice call /task_allocate/pause'
-        - >-
-          history -s 'rosservice call /task_allocate/resume'
 
   - land_home:
       layout: tiled

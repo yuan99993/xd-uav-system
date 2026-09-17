@@ -71,7 +71,7 @@ scouts:
 0.35 m/s，随后立即锁存当前位置保持，避免高速掠过停距点后继续撞向目标。
 
 旋翼工作机前往远距离救援目标时也使用同一完整 Path 接口；只有最终目标到达后才释放规划
-控制权并进入视觉交接。
+控制权并进入配置指定的视觉或位置交接。
 
 `ego_swarm` 仅保留为旧配置的 planning 别名；新配置统一写 `planning`。路线可视化单独发布到
 `/<uav>/planning/route_preview`，绝不能把预览 Path 当作固定翼执行输入。
@@ -109,6 +109,8 @@ post_arrival:
 ```yaml
 post_arrival:
   mode: task_execute
+  # auto: metric fixed-wing/OBSERVE/INTERCEPT use position; TRACK uses vision
+  handoff_mode: auto  # auto | visual | position
   control_handoff_settle_sec: 0.5
   default_task:
     task_type: track
@@ -116,8 +118,10 @@ post_arrival:
     required_execution_sec: 10.0
 ```
 
-协调器随后连接 `/<worker>/task_execute/execute`。工作机到达只表示进入
-`EXECUTING`，只有 Action 成功才把任务和目标标为 `COMPLETED` 并释放工作机。Action 失败
+协调器随后连接 `/<worker>/task_execute/execute`。视觉交接任务要求工作机进入
+`target_radius_m` 且本机检测到匹配类别；位置交接任务（例如 `fw_metric_orbit` /
+`fw_metric_pursuit`）只要求导航后端报告最终目标点 `REACHED`，不依赖工作机相机。
+工作机到达/交接后进入 `EXECUTING`，只有 Action 成功才把任务和目标标为 `COMPLETED` 并释放工作机。Action 失败
 默认把任务标为 `FAILED`，等待操作员调用 `retry_task`；也可将 `failure_policy` 设为
 `retry` 自动重新排队。
 
@@ -129,6 +133,8 @@ ROS 队列的末帧控制参考；direct 多旋翼随后持续刷新当前导航
 任务参数按 `default_task → mobility_profile_overrides → worker_overrides → class_overrides`
 依次覆盖。通常用 `worker_overrides` 按飞机 ID 定义任务，mobility 规则仅作为未配置飞机的
 兼容回退；目标类别规则优先级最高，和飞机 ID 规则冲突时采用 `class_overrides`。
+`handoff_mode` 也可放入这些覆盖项中；`auto` 会将 `fw_metric_*`、`OBSERVE` 和
+`INTERCEPT` 解析为位置交接，其余任务解析为视觉交接。
 `follower_profile: ""` 表示沿用 Track 自身配置，避免分配层强制切换。
 暂停、停止、禁用飞机、取消任务、拒绝目标或工作机掉线时，协调器会取消对应 Action；暂停
 会把未完成任务退回队列，恢复后重新分配。

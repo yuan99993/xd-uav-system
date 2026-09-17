@@ -258,6 +258,77 @@ class CoordinatorConfigurationTest(unittest.TestCase):
         )
         self.assertIn("waiting for", task.detail)
 
+    def test_metric_navigation_arrival_starts_without_worker_detection(self):
+        coordinator, _target, task = self._coordinator()
+        coordinator.post_arrival_mode = "task_execute"
+        coordinator.task_execute_handoff_mode = "auto"
+        coordinator.task_execute_defaults = {
+            "task_type": "observe",
+            "local_track_id": -1,
+            "follower_profile": "fw_metric_orbit",
+        }
+        coordinator.task_execute_mobility_profile_overrides = {}
+        coordinator.task_execute_worker_overrides = {}
+        coordinator.task_execute_class_overrides = {}
+        coordinator.worker_visual_handoff_waiting = {}
+        coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
+        coordinator._clear_active_goal = lambda vehicle: coordinator.active_goals.pop(
+            vehicle, None
+        )
+        starts = []
+        coordinator._start_task_execution = lambda *args, **kwargs: (
+            starts.append((args, kwargs)) or True
+        )
+
+        coordinator._handle_goal_status(
+            "uav3", 7, PlannerStatus.REACHED, "at target navigation point"
+        )
+
+        self.assertNotIn("uav3", coordinator.worker_visual_handoff_waiting)
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0][0][0:2], (task, "uav3"))
+        self.assertEqual(starts[0][1]["local_track_id"], -1)
+        self.assertIn("position-only", starts[0][1]["handoff_detail"])
+
+    def test_position_handoff_ignores_optional_worker_detection(self):
+        coordinator, _target, task = self._coordinator()
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.post_arrival_mode = "task_execute"
+        coordinator.task_execute_handoff_mode = "position"
+        coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
+        coordinator.vehicle_world_positions = {"uav3": (1.0, (9.0, 2.0, 4.0))}
+        starts = []
+        coordinator._start_task_execution = lambda *args, **kwargs: starts.append(
+            (args, kwargs)
+        )
+        message = SimpleNamespace(
+            image_width=640,
+            image_height=360,
+            sensor_id="optional_camera",
+            candidates=[SimpleNamespace(confidence=0.9, class_id=0)],
+        )
+
+        coordinator._worker_detection_callback("uav3", message)
+
+        self.assertEqual(starts, [])
+        self.assertEqual(coordinator.active_goals["uav3"][2], task.task_id)
+
+    def test_position_handoff_does_not_require_worker_detection_subscription(self):
+        coordinator, _target, _task = self._coordinator()
+        coordinator.post_arrival_mode = "task_execute"
+        coordinator.task_execute_handoff_mode = "position"
+        coordinator.task_execute_defaults = {
+            "task_type": "observe",
+            "follower_profile": "fw_metric_orbit",
+        }
+        coordinator.task_execute_mobility_profile_overrides = {}
+        coordinator.task_execute_worker_overrides = {}
+        coordinator.task_execute_class_overrides = {}
+
+        self.assertFalse(
+            coordinator._worker_visual_handoff_subscription_enabled()
+        )
+
     def test_visual_handoff_is_refused_when_planning_cannot_release(self):
         coordinator, _target, task = self._coordinator()
         coordinator.mission_state = MISSION_ACTIVE
