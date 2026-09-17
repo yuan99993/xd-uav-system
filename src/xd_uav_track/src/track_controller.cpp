@@ -322,6 +322,10 @@ TrackController::TrackController(const TrackControllerConfig& requested)
       config_.reidentification_initial_scale, 0.0, 1.0);
   config_.reidentification_recovery_sec = std::max(
       0.0, config_.reidentification_recovery_sec);
+  config_.maximum_vehicle_state_history_samples = std::max<std::size_t>(
+      2, config_.maximum_vehicle_state_history_samples);
+  config_.maximum_oosm_history_samples = std::max<std::size_t>(
+      2, config_.maximum_oosm_history_samples);
   config_.relative_position_gain = std::max(
       0.0, config_.relative_position_gain);
   config_.relative_velocity_feedforward = std::max(
@@ -371,13 +375,20 @@ void TrackController::setVehicleState(const VehicleState& state) {
   const double stamp = sanitized.observation_time > 0.0
       ? sanitized.observation_time : sanitized.receive_time;
   if (!std::isfinite(stamp) || stamp <= 0.0) return;
-  if (!vehicle_state_history_.empty() &&
-      stamp < (vehicle_state_history_.back().observation_time > 0.0
-          ? vehicle_state_history_.back().observation_time
-          : vehicle_state_history_.back().receive_time)) {
+  if (!vehicle_state_history_.empty()) {
+    const double newest_stamp =
+        vehicle_state_history_.back().observation_time > 0.0
+            ? vehicle_state_history_.back().observation_time
+            : vehicle_state_history_.back().receive_time;
+    if (std::abs(stamp - newest_stamp) <= 1e-9) {
+      ++duplicate_vehicle_states_;
+      return;
+    }
+    if (stamp < newest_stamp) {
     // A restarted odometry clock must not corrupt a usable capture-time pose
     // history. The newest state remains available for legacy metric input.
-    return;
+      return;
+    }
   }
   vehicle_state_history_.push_back(sanitized);
   const double keep_sec = std::max(2.0,
@@ -388,6 +399,11 @@ void TrackController::setVehicleState(const VehicleState& state) {
         ? oldest.observation_time : oldest.receive_time;
     if (stamp - oldest_stamp <= keep_sec) break;
     vehicle_state_history_.pop_front();
+  }
+  while (vehicle_state_history_.size() >
+         config_.maximum_vehicle_state_history_samples) {
+    vehicle_state_history_.pop_front();
+    ++vehicle_history_capacity_drops_;
   }
 }
 
@@ -885,12 +901,30 @@ bool TrackController::integrateMetricMeasurement(
     *filtered_world = last_metric_world_position_;
     return true;
   }
-  const WorldFilterState saved_state{have_metric_world_state_, metric_world_time_,
-      world_filter_models_, world_filter_probabilities_};
-  const auto saved_history = world_filter_history_;
-  const WorldFilterState saved_baseline = world_filter_baseline_;
+  // A repeated observation from the same source must not grow the replay
+  // history or apply the same evidence twice. Equal timestamps from different
+  // cameras remain valid for asynchronous multi-source fusion.
+  const auto duplicate = std::find_if(
+      world_filter_history_.rbegin(), world_filter_history_.rend(),
+      [&](const WorldFilterHistory& item) {
+        if (item.observation.stamp < observation.stamp - 1e-9) return false;
+        return std::abs(item.observation.stamp - observation.stamp) <= 1e-9 &&
+            item.observation.image_source == observation.image_source;
+      });
+  if (duplicate != world_filter_history_.rend()) {
+    ++duplicate_metric_observations_;
+    return reject("duplicate metric observation timestamp for source");
+  }
   const bool delayed = have_metric_world_state_ &&
       observation.stamp < metric_world_time_ - 1e-9;
+  const WorldFilterState saved_state{have_metric_world_state_, metric_world_time_,
+      world_filter_models_, world_filter_probabilities_};
+  const WorldFilterState saved_baseline = world_filter_baseline_;
+  // In-order observations never mutate history before a successful update, so
+  // copying the replay deque on every normal frame was pure allocation work.
+  // Only the uncommon delayed replay path needs a transactional history copy.
+  std::deque<WorldFilterHistory> saved_history;
+  if (delayed) saved_history = world_filter_history_;
   if (delayed && (!config_.target_guidance.world_filter_oosm_enabled ||
       metric_world_time_ - observation.stamp >
           config_.target_guidance.world_filter_oosm_window_sec ||
@@ -908,7 +942,6 @@ bool TrackController::integrateMetricMeasurement(
       metric_world_time_ = saved_state.stamp;
       world_filter_models_ = saved_state.models;
       world_filter_probabilities_ = saved_state.probabilities;
-      world_filter_history_ = saved_history;
       world_filter_baseline_ = saved_baseline;
       return false;
     }
@@ -968,6 +1001,11 @@ bool TrackController::integrateMetricMeasurement(
              std::max(0.0, config_.target_guidance.world_filter_oosm_window_sec)) {
     world_filter_baseline_ = world_filter_history_.front().state_after;
     world_filter_history_.pop_front();
+  }
+  while (world_filter_history_.size() > config_.maximum_oosm_history_samples) {
+    world_filter_baseline_ = world_filter_history_.front().state_after;
+    world_filter_history_.pop_front();
+    ++oosm_history_capacity_drops_;
   }
   *filtered_world = last_metric_world_position_;
   if (rejection_reason != nullptr) rejection_reason->clear();
@@ -1981,6 +2019,17 @@ FollowerProfile TrackController::profile() const {
   return config_.profile;
 }
 
+TrackControllerRuntimeStatistics TrackController::runtimeStatistics() const {
+  TrackControllerRuntimeStatistics result;
+  result.vehicle_state_history_samples = vehicle_state_history_.size();
+  result.world_filter_history_samples = world_filter_history_.size();
+  result.duplicate_vehicle_states = duplicate_vehicle_states_;
+  result.duplicate_metric_observations = duplicate_metric_observations_;
+  result.vehicle_history_capacity_drops = vehicle_history_capacity_drops_;
+  result.oosm_history_capacity_drops = oosm_history_capacity_drops_;
+  return result;
+}
+
 void TrackController::resetFollowerState() {
   lateral_pid_.reset();
   vertical_pid_.reset();
@@ -2033,6 +2082,10 @@ void TrackController::reset() {
   world_filter_baseline_ = WorldFilterState();
   world_filter_history_.clear();
   vehicle_state_history_.clear();
+  duplicate_vehicle_states_ = 0;
+  duplicate_metric_observations_ = 0;
+  vehicle_history_capacity_drops_ = 0;
+  oosm_history_capacity_drops_ = 0;
   if (target_guidance_) target_guidance_->reset();
   gimbal_state_ = GimbalStateData();
   gimbal_filter_initialized_ = false;

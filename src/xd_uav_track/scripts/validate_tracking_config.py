@@ -106,6 +106,12 @@ def merge_mappings(base, overlay):
 
 
 def validate_tracker(config, report, label):
+    runtime = _mapping(config.get("runtime", {}), label + ".runtime", report)
+    for key in ("maximum_vehicle_state_history_samples",
+                "maximum_oosm_history_samples"):
+        value = runtime.get(key)
+        if not isinstance(value, int) or value < 2:
+            report.error(label + ".runtime." + key + " must be an integer >= 2")
     interfaces = _mapping(config.get("interfaces", {}), label + ".interfaces", report)
     inputs = _mapping(interfaces.get("input", {}), label + ".interfaces.input", report)
     outputs = _mapping(interfaces.get("output", {}), label + ".interfaces.output", report)
@@ -115,6 +121,26 @@ def validate_tracker(config, report, label):
         report.require_topic(outputs.get(key), label + ".interfaces.output." + key)
 
     tracker = _mapping(config.get("tracker", {}), label + ".tracker", report)
+    sources = _mapping(tracker.get("sources", {}),
+                       label + ".tracker.sources", report)
+    allowed_sources = sources.get("allowed")
+    if not isinstance(allowed_sources, list) or any(
+            not isinstance(value, str) or not value
+            for value in allowed_sources):
+        report.error(label + ".tracker.sources.allowed must be a string array")
+    for key in ("maximum_sources", "maximum_name_length"):
+        value = sources.get(key)
+        if not isinstance(value, int) or value <= 0:
+            report.error(label + ".tracker.sources." + key +
+                         " must be a positive integer")
+    report.finite(sources.get("ttl_sec"),
+                  label + ".tracker.sources.ttl_sec", positive=True)
+    global_identity = _mapping(tracker.get("global_identity", {}),
+                               label + ".tracker.global_identity", report)
+    maximum_entities = global_identity.get("maximum_entities")
+    if not isinstance(maximum_entities, int) or maximum_entities <= 0:
+        report.error(label + ".tracker.global_identity.maximum_entities "
+                     "must be a positive integer")
     group_reid = _mapping(tracker.get("group_reid", {}),
                           label + ".tracker.group_reid", report)
     if group_reid.get("enabled", False):
@@ -197,6 +223,22 @@ def validate_tracker(config, report, label):
                              " must be in [0, 1]")
         report.finite(source_quality.get("cooldown_sec"),
                       label + ".tracker.source_quality_handover.cooldown_sec")
+
+    camera_motion = _mapping(tracker.get("camera_motion_compensation", {}),
+                             label + ".tracker.camera_motion_compensation", report)
+    if camera_motion.get("enabled", False):
+        for key in ("fx", "fy", "maximum_pose_delta_sec"):
+            report.finite(camera_motion.get(key),
+                          label + ".tracker.camera_motion_compensation." + key,
+                          positive=True)
+        for key in ("cx", "cy"):
+            report.finite(camera_motion.get(key),
+                          label + ".tracker.camera_motion_compensation." + key)
+        report.vector3(camera_motion.get("optical_to_body_rpy"),
+                       label + ".tracker.camera_motion_compensation.optical_to_body_rpy")
+        history = camera_motion.get("pose_history_size")
+        if not isinstance(history, int) or history < 2:
+            report.error(label + ".tracker.camera_motion_compensation.pose_history_size must be >= 2")
 
     frames = _mapping(config.get("frames", {}), label + ".frames", report)
     if frames:

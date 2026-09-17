@@ -1,0 +1,63 @@
+<launch>
+  <!-- One immutable YOLO runtime feeds two independent DetectionArray topics. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
+  <arg name="config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml" />
+  <arg name="overlay_config" default="" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt" />
+  <arg name="model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54" />
+  <arg name="use_gpu" default="true" />
+  <arg name="batch_wait_ms" default="4.0" />
+  <arg name="startup_warmup_frames" default="1" />
+  <arg name="fixed_image_topic" default="fixed_camera/image_raw" />
+  <arg name="gimbal_image_topic" default="gimbal_camera/image_raw" />
+  <arg name="fixed_output_topic" default="detect/input/fixed/detections_2d" />
+  <arg name="gimbal_output_topic" default="detect/input/gimbal/detections_2d" />
+  <arg name="fixed_image_source" default="fixed_rgb" />
+  <arg name="gimbal_image_source" default="gimbal_rgb" />
+  <arg name="fixed_sensor_id" default="fixed_camera" />
+  <arg name="gimbal_sensor_id" default="gimbal_camera" />
+  <arg name="reid_enabled" default="true" />
+  <arg name="reid_config" default="$(find xd_uav_track)/config/reid.yaml" />
+  <arg name="fixed_reid_profile" default="xd_vehicle_train7" />
+  <arg name="gimbal_reid_profile" default="xd_vehicle_train7" />
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="sar_yolo_detector" type="sar_yolo_multi_source_detection"
+          name="sar_yolo_multi_source_detection" output="screen" required="true">
+      <env name="SAR_YOLO_PYTHON" value="$(optenv SAR_YOLO_PYTHON)" />
+      <rosparam command="load" file="$(arg config)" />
+      <rosparam if="$(eval arg('overlay_config') != '')" command="load"
+                file="$(arg overlay_config)" />
+      <rosparam if="$(arg reid_enabled)" command="load" file="$(arg reid_config)" />
+      <param name="model_path" value="$(arg model_path)" />
+      <param name="use_gpu" value="$(arg use_gpu)" />
+      <param name="fallback_to_cpu" value="false" />
+      <param name="pause_without_subscribers" value="true" />
+      <param name="batch_wait_ms" value="$(arg batch_wait_ms)" />
+      <param name="startup_warmup_frames" value="$(arg startup_warmup_frames)" />
+      <param name="SmartTracker/SMART_TRACKER_GPU_MODEL_PATH" value="$(arg model_path)" />
+      <param name="SmartTracker/SMART_TRACKER_CPU_MODEL_PATH" value="$(arg model_path)" />
+      <param name="SmartTracker/SMART_TRACKER_MODEL_SHA256" value="$(arg model_sha256)" />
+      <rosparam param="sources" subst_value="true">
+        - name: fixed
+          input_image_topic: $(arg fixed_image_topic)
+          xd_detections_topic: $(arg fixed_output_topic)
+          image_source: $(arg fixed_image_source)
+          sensor_id: $(arg fixed_sensor_id)
+          detector_name: sar_yolo_detector
+          model_version: xd_vehicle_train7_best
+          reid_enabled: $(arg reid_enabled)
+          reid_model_profile: $(arg fixed_reid_profile)
+        - name: gimbal
+          input_image_topic: $(arg gimbal_image_topic)
+          xd_detections_topic: $(arg gimbal_output_topic)
+          image_source: $(arg gimbal_image_source)
+          sensor_id: $(arg gimbal_sensor_id)
+          detector_name: sar_yolo_detector
+          model_version: xd_vehicle_train7_best
+          reid_enabled: $(arg reid_enabled)
+          reid_model_profile: $(arg gimbal_reid_profile)
+      </rosparam>
+    </node>
+  </group>
+</launch>

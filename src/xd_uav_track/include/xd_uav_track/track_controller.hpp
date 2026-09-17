@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <string>
@@ -134,6 +135,12 @@ struct TrackControllerConfig {
   double reidentification_initial_scale{0.35};
   double reidentification_recovery_sec{0.60};
 
+  // Histories are bounded by both time and count.  The count cap protects a
+  // long-running process when a simulator/sensor keeps publishing a frozen
+  // timestamp or when an upstream clock runs at an unexpected rate.
+  std::size_t maximum_vehicle_state_history_samples{400};
+  std::size_t maximum_oosm_history_samples{128};
+
   // Optional metric relative-state control for chase profiles. Values use
   // body forward/right/down axes and supplement image centering.
   bool relative_state_control_enabled{true};
@@ -263,6 +270,15 @@ struct TrackVelocity {
   std::string invalid_reason;
 };
 
+struct TrackControllerRuntimeStatistics {
+  std::size_t vehicle_state_history_samples{0};
+  std::size_t world_filter_history_samples{0};
+  std::uint64_t duplicate_vehicle_states{0};
+  std::uint64_t duplicate_metric_observations{0};
+  std::uint64_t vehicle_history_capacity_drops{0};
+  std::uint64_t oosm_history_capacity_drops{0};
+};
+
 class TrackController {
  public:
   explicit TrackController(const TrackControllerConfig& config);
@@ -296,6 +312,7 @@ class TrackController {
   void clearMeasurement(const std::string& reason = "target box is invalid");
   bool setProfile(FollowerProfile profile);
   FollowerProfile profile() const;
+  TrackControllerRuntimeStatistics runtimeStatistics() const;
   void reset();
 
  private:
@@ -437,6 +454,10 @@ class TrackController {
   WorldFilterState world_filter_baseline_;
   std::deque<WorldFilterHistory> world_filter_history_;
   std::deque<VehicleState> vehicle_state_history_;
+  std::uint64_t duplicate_vehicle_states_{0};
+  std::uint64_t duplicate_metric_observations_{0};
+  std::uint64_t vehicle_history_capacity_drops_{0};
+  std::uint64_t oosm_history_capacity_drops_{0};
   bool gimbal_filter_initialized_{false};
   double filtered_gimbal_yaw_{0.0};
   double filtered_gimbal_pitch_{0.0};

@@ -33,7 +33,30 @@
   <arg name="gimbal_image_source" default="gimbal_rgb"/>
   <arg name="gimbal_sensor_id" default="gimbal_camera"/>
 
-  <include if="$(arg enable_sar_fixed)"
+  <include if="$(eval arg('enable_sar_fixed') and arg('enable_sar_gimbal'))"
+           file="$(find sar_yolo_detector)/launch/xd_yolo_multi_source_detection_integration.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="config" value="$(arg sar_config)"/>
+    <arg name="overlay_config" value="$(arg sar_vehicle_config)"/>
+    <arg name="model_path" value="$(arg sar_model_path)"/>
+    <arg name="model_sha256" value="$(arg sar_model_sha256)"/>
+    <arg name="fixed_image_topic" value="$(arg fixed_image_topic)"/>
+    <arg name="gimbal_image_topic" value="$(arg gimbal_image_topic)"/>
+    <arg name="fixed_output_topic"
+         value="$(eval 'detect/input/fixed/detections_2d' if arg('inline_reid') or not arg('enable_reid') else 'detect/input/fixed/detections_raw')"/>
+    <arg name="gimbal_output_topic"
+         value="$(eval 'detect/input/gimbal/detections_2d' if arg('inline_reid') or not arg('enable_reid') else 'detect/input/gimbal/detections_raw')"/>
+    <arg name="fixed_image_source" value="$(arg fixed_image_source)"/>
+    <arg name="gimbal_image_source" value="$(arg gimbal_image_source)"/>
+    <arg name="fixed_sensor_id" value="$(arg fixed_sensor_id)"/>
+    <arg name="gimbal_sensor_id" value="$(arg gimbal_sensor_id)"/>
+    <arg name="reid_enabled" value="$(eval arg('enable_reid') and arg('inline_reid'))"/>
+    <arg name="reid_config" value="$(arg reid_config)"/>
+    <arg name="fixed_reid_profile" value="$(arg fixed_reid_profile)"/>
+    <arg name="gimbal_reid_profile" value="$(arg gimbal_reid_profile)"/>
+  </include>
+
+  <include if="$(eval arg('enable_sar_fixed') and not arg('enable_sar_gimbal'))"
            file="$(find sar_yolo_detector)/launch/xd_yolo_detection_integration.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="instance_name" value="fixed"/>
@@ -52,7 +75,7 @@
     <arg name="reid_config" value="$(arg reid_config)"/>
     <arg name="reid_model_profile" value="$(arg fixed_reid_profile)"/>
   </include>
-  <include if="$(arg enable_sar_gimbal)"
+  <include if="$(eval arg('enable_sar_gimbal') and not arg('enable_sar_fixed'))"
            file="$(find sar_yolo_detector)/launch/xd_yolo_detection_integration.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="instance_name" value="gimbal"/>

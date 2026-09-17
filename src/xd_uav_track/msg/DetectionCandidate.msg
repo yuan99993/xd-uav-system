@@ -15,6 +15,9 @@ float32 confidence
 # Optional L2-normalized visual embedding for C++ appearance ReID.
 # Empty keeps all existing detector publishers fully compatible.
 float32[] appearance_embedding
+# Quality of this embedding in [0, 1].  Zero means legacy/unknown and makes
+# the tracker estimate a conservative value from geometry and confidence.
+float32 appearance_quality
 
 # Optional metric relative state in body frame (forward, right, down).
 # The tracker/follower keep the legacy bbox path when these fields are absent.
@@ -25,4 +28,3 @@ float32[3] relative_velocity_body
 float32[9] position_covariance
 float32[9] velocity_covariance
 bool range_valid
-

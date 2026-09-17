@@ -15,6 +15,7 @@
   <arg name="reid_config" default="$(find xd_uav_track)/config/reid.yaml" />
   <arg name="reid_model_profile" default="" />
   <arg name="reid_async" default="true" />
+  <arg name="startup_warmup_frames" default="1" />
   <arg name="model_path" default="" />
   <arg name="model_sha256" default="" />
   <arg name="use_gpu" default="true" />
@@ -40,6 +41,7 @@
     <param name="model_version" value="$(arg model_version)" />
     <param name="reid_enabled" value="$(arg reid_enabled)" />
     <param name="reid_async" value="$(arg reid_async)" />
+    <param name="startup_warmup_frames" value="$(arg startup_warmup_frames)" />
     <param if="$(eval arg('reid_model_profile') != '')"
            name="reid_model_profile" value="$(arg reid_model_profile)" />
     <param name="model_path" value="$(arg model_path)" />

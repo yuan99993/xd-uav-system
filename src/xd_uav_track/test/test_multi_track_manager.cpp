@@ -127,6 +127,24 @@ TEST(MultiTrackManager, ReturnsOnlyCurrentCandidatesForSelection) {
   EXPECT_FALSE(manager.latestCandidate(9, &selected));
 }
 
+TEST(MultiTrackManager, AppliesValidatedCameraMotionOnlyWhenEnabled) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  xd_uav_track::MultiTrackManager manager(config);
+  manager.update(frame(4.5, {candidate(19, true, 0.50F, 0.9F)}), 640, 480);
+  xd_uav_track::CameraMotionCompensation motion;
+  motion.valid = true;
+  // Normalized translation: previous image point moves right by 0.10 in the
+  // current camera frame. This is the rotation-homography contract supplied
+  // by xd_uav_track_node after pose/camera calibration.
+  motion.normalized_homography = {{1.0, 0.0, 0.10,
+                                    0.0, 1.0, 0.0,
+                                    0.0, 0.0, 1.0}};
+  const auto predicted = manager.update(frame(4.54, {}), 640, 480, "eo", {}, {}, motion);
+  ASSERT_EQ(1U, predicted.tracks.tracks.size());
+  EXPECT_GT(predicted.tracks.tracks.front().normalized_bbox[0], 0.58F);
+}
+
 TEST(MultiTrackManager, UsesAppearanceForReidentificationWithinMotionGate) {
   xd_uav_track::MultiTrackConfig config;
   config.confirmation_hits = 1;

@@ -1,13 +1,8 @@
 # Optional overlay: load after the vehicle-specific tracker config.
 # Camera calibration values below are examples, not measured installation data.
-tracker:
-  two_stage_association: false
-  high_confidence_threshold: 0.5
-  camera_motion_compensation:
-    # Rotation-only optical-flow compensation using timestamped camera TF.
-    # It reuses the predictive_fov intrinsics below and is safe to leave off
-    # until camera timestamps/extrinsics have been calibrated.
-    enabled: false
+# Two-pass high/low-confidence association is unconditional and configured in
+# track.yaml under tracker/association.  Camera-motion compensation has no
+# implementation yet, so no misleading deployment switch is exposed here.
 follower:
   target_guidance:
     prediction_process_sigma_mps: 1.0

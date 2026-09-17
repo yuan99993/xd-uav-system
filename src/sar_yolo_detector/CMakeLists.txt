@@ -3,6 +3,7 @@ project(sar_yolo_detector)
 
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
+  diagnostic_msgs
   diagnostic_updater
   geometry_msgs
   image_geometry
@@ -111,6 +112,7 @@ catkin_package(
   LIBRARIES sar_yolo_postprocessor sar_yolo_inference_backend sar_model_integrity sar_mission_state_store
   CATKIN_DEPENDS
     cv_bridge
+    diagnostic_msgs
     diagnostic_updater
     geometry_msgs
     image_geometry
@@ -311,8 +313,10 @@ install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt
 )
 install(PROGRAMS
   scripts/sar_yolo_detection_only
+  scripts/sar_yolo_multi_source_detection
   scripts/sar_yolo_smart_tracker
   scripts/detection_only_node.py
+  scripts/multi_source_detection_node.py
   scripts/smart_tracker_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

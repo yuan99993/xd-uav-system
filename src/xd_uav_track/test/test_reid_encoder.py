@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import unittest
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -59,6 +60,43 @@ class ReIDEncoderTest(unittest.TestCase):
                 self.assertIsNone(actual)
             else:
                 np.testing.assert_array_equal(expected, actual)
+
+    def test_onnx_profile_batches_compatible_rois_once(self):
+        image = self.vehicle((30, 80, 210))
+
+        class FakeOnnxModel:
+            calls = 0
+
+            def __init__(self, _profile):
+                pass
+
+            def encode_many(self, rois):
+                FakeOnnxModel.calls += 1
+                return [np.asarray([float(index + 1), 1.0], dtype=np.float32)
+                        for index, _ in enumerate(rois)]
+
+            def close(self):
+                pass
+
+        config = {
+            "default_backend": "histogram",
+            "minimum_roi_width_px": 8,
+            "minimum_roi_height_px": 8,
+            "class_profiles": {
+                "vehicle": {"class_ids": [0, 1], "backend": "onnx"},
+            },
+        }
+        with mock.patch(
+                "xd_uav_track.reid.encoder.OnnxReIDModel", FakeOnnxModel):
+            encoder = AppearanceEncoder(config)
+            features = encoder.encode_many(image, [
+                ((20, 16, 108, 80), 0),
+                ((24, 20, 104, 76), 1),
+            ])
+            encoder.close()
+        self.assertEqual(FakeOnnxModel.calls, 1)
+        self.assertEqual(2, len(features))
+        self.assertTrue(all(feature is not None for feature in features))
 
 
 if __name__ == "__main__":

@@ -222,12 +222,16 @@ class ReidEncoderNode:
             selected = output.candidates[:self._max_rois]
             observations = [(self._bbox(candidate), candidate.class_id)
                             for candidate in selected]
-            features = self._encoder.encode_many(image, observations)
-            for candidate, feature in zip(selected, features):
+            features, qualities = self._encoder.encode_many_with_quality(
+                image, observations)
+            for candidate, feature, quality in zip(selected, features, qualities):
                 candidate.appearance_embedding = [] if feature is None else \
                     feature.astype(np.float32, copy=False).tolist()
+                candidate.appearance_quality = 0.0 if feature is None else \
+                    max(0.001, float(quality))
             for candidate in output.candidates[self._max_rois:]:
                 candidate.appearance_embedding = []
+                candidate.appearance_quality = 0.0
             self._publisher.publish(output)
             self._published += 1
             rospy.loginfo_throttle(

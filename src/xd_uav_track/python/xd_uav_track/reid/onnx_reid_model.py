@@ -6,7 +6,7 @@ import hashlib
 import os
 import stat
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -75,25 +75,47 @@ class OnnxReIDModel:
         finally:
             os.close(descriptor)
 
-    def encode(self, bgr_roi: np.ndarray) -> Optional[np.ndarray]:
-        if bgr_roi is None or bgr_roi.ndim != 3 or bgr_roi.shape[2] != 3:
-            return None
-        blob = cv2.dnn.blobFromImage(
-            bgr_roi, scalefactor=self.scale,
+    def encode_many(self, bgr_rois) -> List[Optional[np.ndarray]]:
+        """Run compatible ROIs in one OpenCV-DNN call.
+
+        Invalid inputs retain their original positions.  Batching changes only
+        scheduling and memory transfer; preprocessing and L2 normalization are
+        identical to the legacy one-ROI path.
+        """
+        outputs: List[Optional[np.ndarray]] = [None] * len(bgr_rois)
+        valid_indices = []
+        valid_rois = []
+        for index, roi in enumerate(bgr_rois):
+            if (roi is None or roi.ndim != 3 or roi.shape[2] != 3 or
+                    min(roi.shape[:2]) < 2):
+                continue
+            valid_indices.append(index)
+            valid_rois.append(roi)
+        if not valid_rois:
+            return outputs
+        blob = cv2.dnn.blobFromImages(
+            valid_rois, scalefactor=self.scale,
             size=(self.input_width, self.input_height), mean=self.mean,
             swapRB=self.swap_rb, crop=False)
         self.net.setInput(blob)
-        feature = np.asarray(self.net.forward(), dtype=np.float32).reshape(-1)
-        if not feature.size or not np.isfinite(feature).all():
-            return None
-        norm = float(np.linalg.norm(feature))
-        if norm <= 1e-12:
-            return None
-        if self.dimension > 0 and feature.size != self.dimension:
-            return None
+        raw = np.asarray(self.net.forward(), dtype=np.float32)
+        if raw.size == 0 or raw.size % len(valid_rois) != 0:
+            return outputs
+        features = raw.reshape(len(valid_rois), -1)
+        inferred_dimension = int(features.shape[1])
+        if self.dimension > 0 and inferred_dimension != self.dimension:
+            return outputs
         if self.dimension == 0:
-            self.dimension = int(feature.size)
-        return (feature / norm).astype(np.float32, copy=False)
+            self.dimension = inferred_dimension
+        norms = np.linalg.norm(features, axis=1)
+        for row, output_index in enumerate(valid_indices):
+            if np.isfinite(features[row]).all() and float(norms[row]) > 1e-12:
+                outputs[output_index] = (
+                    features[row] / norms[row]).astype(np.float32, copy=False)
+        return outputs
+
+    def encode(self, bgr_roi: np.ndarray) -> Optional[np.ndarray]:
+        return self.encode_many([bgr_roi])[0]
 
     def close(self) -> None:
         self.net = None

@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.5)
 project(xd_uav_track)
 
 find_package(catkin REQUIRED COMPONENTS
+  diagnostic_msgs
+  diagnostic_updater
   geometry_msgs
   mavros_msgs
   message_generation
@@ -46,6 +48,8 @@ catkin_package(
   INCLUDE_DIRS include
   LIBRARIES xd_uav_track_core
   CATKIN_DEPENDS
+    diagnostic_msgs
+    diagnostic_updater
     geometry_msgs
     mavros_msgs
     message_runtime
@@ -108,6 +112,7 @@ catkin_install_python(PROGRAMS
   scripts/render_plane_catapult_sdf.py
   scripts/replay_tracking_faults.py
   scripts/evaluate_tracking_recording.py
+  scripts/export_trackeval_mot.py
   scripts/run_px4_sitl.py
   scripts/run_with_config_preflight.py
   scripts/sitl_metric_input.py

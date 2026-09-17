@@ -333,6 +333,32 @@ class UltralyticsBackend(DetectionBackend):
         )
         return self._normalize_results(results)
 
+    def detect_many(
+        self, frames: List[np.ndarray], conf: float = 0.3,
+        iou: float = 0.3, max_det: int = 20,
+    ) -> List[Tuple[str, List[NormalizedDetection]]]:
+        """Infer compatible camera frames in one model call.
+
+        This preserves the detector's model, classes and inference arguments;
+        callers retain the one-frame path when source geometries differ.
+        """
+        if not frames:
+            return []
+        if len(frames) == 1:
+            return [self.detect(frames[0], conf=conf, iou=iou, max_det=max_det)]
+        if self._model is None:
+            raise RuntimeError("SmartTracker model is not loaded")
+        inference_args = {}
+        if self._allowed_class_ids is not None:
+            inference_args["classes"] = self._allowed_class_ids
+        results = list(self._model.predict(
+            frames, conf=conf, iou=iou, max_det=max_det, verbose=False,
+            **inference_args,
+        ))
+        if len(results) != len(frames):
+            raise RuntimeError("Ultralytics returned an incomplete inference batch")
+        return [self._normalize_result(result) for result in results]
+
     def detect_and_track(
         self,
         frame,
@@ -500,7 +526,10 @@ class UltralyticsBackend(DetectionBackend):
     def _normalize_results(cls, results: Any) -> Tuple[str, List[NormalizedDetection]]:
         if not results:
             return "none", []
-        result = results[0]
+        return cls._normalize_result(results[0])
+
+    @classmethod
+    def _normalize_result(cls, result: Any) -> Tuple[str, List[NormalizedDetection]]:
         obb = getattr(result, "obb", None)
         boxes = getattr(result, "boxes", None)
         has_obb = obb is not None and len(getattr(obb, "data", [])) > 0

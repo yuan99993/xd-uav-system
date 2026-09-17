@@ -732,6 +732,57 @@ TEST(TrackController, FirstMetricCourseCommandIsRateLimited) {
   EXPECT_LE(std::abs(output.yaw_rate), 0.35 + 1e-9);
 }
 
+TEST(TrackController, VehiclePoseHistoryRejectsDuplicatesAndHonorsCountCap) {
+  auto config = deterministicConfig();
+  config.maximum_vehicle_state_history_samples = 3;
+  xd_uav_track::TrackController controller(config);
+  for (int index = 0; index < 6; ++index) {
+    auto state = metricVehicleState();
+    state.receive_time = 10.0 + 0.01 * index;
+    state.observation_time = state.receive_time;
+    controller.setVehicleState(state);
+  }
+  auto duplicate = metricVehicleState();
+  duplicate.receive_time = 10.05;
+  duplicate.observation_time = 10.05;
+  controller.setVehicleState(duplicate);
+  const auto stats = controller.runtimeStatistics();
+  EXPECT_EQ(3U, stats.vehicle_state_history_samples);
+  EXPECT_EQ(1U, stats.duplicate_vehicle_states);
+  EXPECT_EQ(3U, stats.vehicle_history_capacity_drops);
+}
+
+TEST(TrackController, MetricHistoryRejectsSameSourceDuplicateAndHonorsCountCap) {
+  auto config = deterministicConfig();
+  config.target_guidance.world_filter_enabled = true;
+  config.target_guidance.world_filter_model = "cv";
+  config.target_guidance.world_filter_mahalanobis_gate = 1e6;
+  config.target_guidance.world_filter_max_innovation_m = 1e6;
+  config.maximum_oosm_history_samples = 3;
+  xd_uav_track::TrackController controller(config);
+  auto state = metricVehicleState();
+  state.observation_time = 10.0;
+  controller.setVehicleState(state);
+  auto measurement = box(280, 200, 360, 280, 1.0, 10.0);
+  measurement.image_source = "fixed_rgb";
+  measurement.has_relative_position_body = true;
+  measurement.range_valid = true;
+  measurement.position_sigma_m = 1.0;
+  measurement.relative_position_body = {{40.0, 0.0, 0.0}};
+  for (int index = 0; index < 6; ++index) {
+    measurement.receive_time = 10.0 + 0.05 * index;
+    measurement.observation_time = measurement.receive_time;
+    ASSERT_TRUE(controller.updateMetricMeasurement(measurement));
+  }
+  std::string reason;
+  EXPECT_FALSE(controller.updateMetricMeasurement(measurement, &reason));
+  EXPECT_NE(reason.find("duplicate"), std::string::npos);
+  const auto stats = controller.runtimeStatistics();
+  EXPECT_EQ(3U, stats.world_filter_history_samples);
+  EXPECT_EQ(1U, stats.duplicate_metric_observations);
+  EXPECT_EQ(3U, stats.oosm_history_capacity_drops);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {

@@ -219,6 +219,25 @@ class PixEaglePortableTest(unittest.TestCase):
         self.assertEqual(detections[0].aabb_xyxy, (10, 20, 30, 50))
         self.assertTrue(all(not item.track_id_is_stable for item in detections))
 
+    def test_ultralytics_detect_many_preserves_one_result_per_source(self):
+        class Model:
+            def predict(self, frames, **_kwargs):
+                self.frames = frames
+                return [SimpleNamespace(
+                    boxes=SimpleNamespace(data=[[0, 0, 10, 10, 0.8, index]],
+                                           is_track=False),
+                    obb=None) for index, _ in enumerate(frames)]
+
+        backend = UltralyticsBackend({"SMART_TRACKER_REQUIRE_MODEL_SHA256": False})
+        backend._model = Model()
+        outputs = backend.detect_many([
+            np.zeros((32, 32, 3), dtype=np.uint8),
+            np.zeros((32, 32, 3), dtype=np.uint8),
+        ])
+        self.assertEqual(len(outputs), 2)
+        self.assertEqual([detections[0].class_id for _, detections in outputs], [0, 1])
+        self.assertEqual(len(backend._model.frames), 2)
+
     def test_model_integrity_accepts_only_matching_digest(self):
         payload = b"trusted-model-fixture"
         expected = hashlib.sha256(payload).hexdigest()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Optional, Tuple
 import logging
 
@@ -109,6 +110,31 @@ class AppearanceEncoder:
         parts.append(moments)
         return self._normalise(np.concatenate(parts).astype(np.float32, copy=False))
 
+    @staticmethod
+    def quality(roi: np.ndarray) -> float:
+        """Return a conservative visual reliability score without a model call.
+
+        Blur, clipping and tiny patches are poor ReID evidence even when an
+        embedding network returns a finite vector.  This score is metadata,
+        not an identity decision; the C++ tracker lowers appearance influence
+        rather than discarding valid geometric observations.
+        """
+        if roi is None or roi.ndim != 3 or roi.shape[2] != 3:
+            return 0.0
+        height, width = roi.shape[:2]
+        if height < 2 or width < 2:
+            return 0.0
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        sharpness = min(1.0, max(0.0, cv2.Laplacian(
+            gray, cv2.CV_32F).var() / 120.0))
+        # Penalize severe under/over exposure but do not assume a particular
+        # lighting domain. Mid-range luminance remains neutral.
+        low = float(np.mean(gray <= 8))
+        high = float(np.mean(gray >= 247))
+        exposure = max(0.0, 1.0 - 1.5 * (low + high))
+        area = min(1.0, math.sqrt(float(width * height)) / 64.0)
+        return float(min(1.0, max(0.0, area * (0.35 + 0.65 * sharpness) * exposure)))
+
     def encode(self, image: np.ndarray, bbox, class_id: int) -> Optional[np.ndarray]:
         return self.encode_many(image, [(bbox, class_id)])[0]
 
@@ -119,6 +145,7 @@ class AppearanceEncoder:
             return outputs
         height, width = image.shape[:2]
         deep_groups = {}
+        onnx_groups = {}
         for index, (bbox, class_id) in enumerate(observations):
             try:
                 x1, y1, x2, y2 = [int(round(float(value))) for value in bbox]
@@ -143,14 +170,10 @@ class AppearanceEncoder:
             elif backend == "onnx":
                 if name in self._failed_deep_profiles:
                     continue
-                try:
-                    model = self._deep_models.get(name)
-                    if model is None:
-                        model = OnnxReIDModel(profile)
-                        self._deep_models[name] = model
-                    outputs[index] = model.encode(roi)
-                except Exception as error:
-                    self._disable_failed_profile(name, error)
+                group = onnx_groups.setdefault(name, {
+                    "profile": profile, "indices": [], "rois": []})
+                group["indices"].append(index)
+                group["rois"].append(roi)
             elif backend == "deep":
                 if name in self._failed_deep_profiles:
                     continue
@@ -169,7 +192,38 @@ class AppearanceEncoder:
                     outputs[output_index] = feature
             except Exception as error:
                 self._disable_failed_profile(name, error)
+        for name, group in onnx_groups.items():
+            try:
+                model = self._deep_models.get(name)
+                if model is None:
+                    model = OnnxReIDModel(group["profile"])
+                    self._deep_models[name] = model
+                features = model.encode_many(group["rois"])
+                for output_index, feature in zip(group["indices"], features):
+                    outputs[output_index] = feature
+            except Exception as error:
+                self._disable_failed_profile(name, error)
         return outputs
+
+    def encode_many_with_quality(self, image: np.ndarray, observations):
+        """Encode ROIs and return a same-order quality score for each one."""
+        features = self.encode_many(image, observations)
+        qualities = [0.0] * len(observations)
+        if image is None or image.ndim != 3 or image.shape[2] != 3:
+            return features, qualities
+        height, width = image.shape[:2]
+        for index, ((bbox, _), feature) in enumerate(zip(observations, features)):
+            if feature is None:
+                continue
+            try:
+                x1, y1, x2, y2 = [int(round(float(value))) for value in bbox]
+            except (TypeError, ValueError):
+                continue
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(width, x2), min(height, y2)
+            if x2 > x1 and y2 > y1:
+                qualities[index] = self.quality(image[y1:y2, x1:x2])
+        return features, qualities
 
     def _disable_failed_profile(self, name, error) -> None:
         if name not in self._failed_deep_profiles:

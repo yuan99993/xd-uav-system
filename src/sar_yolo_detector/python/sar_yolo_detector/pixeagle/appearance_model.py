@@ -62,9 +62,15 @@ class AppearanceModel:
 
         # Performance profiling
         self.enable_profiling = self.config.get('ENABLE_APPEARANCE_PROFILING', False)
+        self.profiling_window = max(16, min(10000, int(
+            self.config.get('APPEARANCE_PROFILING_WINDOW', 256))))
+        self.profiling_ewma_alpha = min(1.0, max(0.001, float(
+            self.config.get('APPEARANCE_PROFILING_EWMA_ALPHA', 0.1))))
         self.profiling_stats = {
-            'feature_extraction_ms': [],
-            'similarity_computation_ms': [],
+            'feature_extraction_ms': deque(maxlen=self.profiling_window),
+            'similarity_computation_ms': deque(maxlen=self.profiling_window),
+            'feature_extraction_ewma_ms': 0.0,
+            'similarity_computation_ewma_ms': 0.0,
             'total_extractions': 0,
             'total_comparisons': 0,
             'failed_extractions': 0
@@ -82,6 +88,15 @@ class AppearanceModel:
         logging.info(f"[AppearanceModel] Initialized with feature_type='{self.feature_type}', "
                     f"threshold={self.similarity_threshold}, memory={self.max_memory_frames} frames, "
                     f"profiling={'enabled' if self.enable_profiling else 'disabled'}")
+
+    def _record_profile_timing(self, key: str, elapsed_ms: float) -> None:
+        samples = self.profiling_stats[key]
+        samples.append(float(elapsed_ms))
+        ewma_key = key.replace('_ms', '_ewma_ms')
+        previous = float(self.profiling_stats[ewma_key])
+        self.profiling_stats[ewma_key] = (
+            float(elapsed_ms) if len(samples) == 1 else
+            previous + self.profiling_ewma_alpha * (float(elapsed_ms) - previous))
 
     def _init_feature_params(self):
         """Initialize feature extraction parameters based on feature_type and config."""
@@ -224,7 +239,7 @@ class AppearanceModel:
         # Profiling
         if self.enable_profiling and start_time is not None:
             elapsed_ms = (time.time() - start_time) * 1000
-            self.profiling_stats['feature_extraction_ms'].append(elapsed_ms)
+            self._record_profile_timing('feature_extraction_ms', elapsed_ms)
             self.profiling_stats['total_extractions'] += 1
 
             # Log every 50 extractions
@@ -328,7 +343,7 @@ class AppearanceModel:
         # Profiling
         if self.enable_profiling and start_time is not None:
             elapsed_ms = (time.time() - start_time) * 1000
-            self.profiling_stats['similarity_computation_ms'].append(elapsed_ms)
+            self._record_profile_timing('similarity_computation_ms', elapsed_ms)
             self.profiling_stats['total_comparisons'] += 1
 
         return float(similarity)
@@ -583,6 +598,11 @@ class AppearanceModel:
             'total_extractions': self.profiling_stats['total_extractions'],
             'total_comparisons': self.profiling_stats['total_comparisons'],
             'failed_extractions': self.profiling_stats['failed_extractions'],
+            'profiling_window': self.profiling_window,
+            'feature_extraction_ewma_ms': self.profiling_stats[
+                'feature_extraction_ewma_ms'],
+            'similarity_computation_ewma_ms': self.profiling_stats[
+                'similarity_computation_ewma_ms'],
             'success_rate': (
                 (self.profiling_stats['total_extractions'] - self.profiling_stats['failed_extractions']) /
                 max(self.profiling_stats['total_extractions'], 1) * 100
@@ -590,6 +610,7 @@ class AppearanceModel:
         }
 
         if extraction_times:
+            extraction_times = list(extraction_times)
             stats['feature_extraction'] = {
                 'avg_ms': np.mean(extraction_times),
                 'min_ms': np.min(extraction_times),
@@ -598,6 +619,7 @@ class AppearanceModel:
             }
 
         if similarity_times:
+            similarity_times = list(similarity_times)
             stats['similarity_computation'] = {
                 'avg_ms': np.mean(similarity_times),
                 'min_ms': np.min(similarity_times),

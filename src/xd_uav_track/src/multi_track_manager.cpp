@@ -188,6 +188,59 @@ class BoxKalmanFilter {
                   gain * noise * gain.transpose();
   }
 
+  void observationCentricReupdate(const NormalizedBox& previous,
+                                  const NormalizedBox& current,
+                                  const double dt, const double blend) {
+    if (!(std::isfinite(dt) && dt > 1e-3)) return;
+    const double clipped = clampValue(blend, 0.0, 1.0);
+    const std::array<double, 4> prior{{previous.cx, previous.cy,
+        std::log(previous.width), std::log(previous.height)}};
+    const std::array<double, 4> observed{{current.cx, current.cy,
+        std::log(current.width), std::log(current.height)}};
+    for (int index = 0; index < 4; ++index) {
+      const double velocity = (observed[index] - prior[index]) / dt;
+      state_(index + 4) = (1.0 - clipped) * state_(index + 4) +
+          clipped * velocity;
+    }
+  }
+
+  void compensateCameraMotion(const std::array<double, 9>& homography) {
+    const NormalizedBox before = box();
+    const std::array<std::array<double, 2>, 4> corners{{
+        {{before.cx - 0.5 * before.width, before.cy - 0.5 * before.height}},
+        {{before.cx + 0.5 * before.width, before.cy - 0.5 * before.height}},
+        {{before.cx + 0.5 * before.width, before.cy + 0.5 * before.height}},
+        {{before.cx - 0.5 * before.width, before.cy + 0.5 * before.height}}}};
+    double x_min = std::numeric_limits<double>::infinity();
+    double y_min = std::numeric_limits<double>::infinity();
+    double x_max = -std::numeric_limits<double>::infinity();
+    double y_max = -std::numeric_limits<double>::infinity();
+    for (const auto& point : corners) {
+      const double denominator = homography[6] * point[0] +
+          homography[7] * point[1] + homography[8];
+      if (!std::isfinite(denominator) || std::abs(denominator) < 1e-8) return;
+      const double x = (homography[0] * point[0] + homography[1] * point[1] +
+                        homography[2]) / denominator;
+      const double y = (homography[3] * point[0] + homography[4] * point[1] +
+                        homography[5]) / denominator;
+      if (!std::isfinite(x) || !std::isfinite(y)) return;
+      x_min = std::min(x_min, x); y_min = std::min(y_min, y);
+      x_max = std::max(x_max, x); y_max = std::max(y_max, y);
+    }
+    const double width = x_max - x_min;
+    const double height = y_max - y_min;
+    if (!(width > 1e-4 && height > 1e-4 && width < 4.0 && height < 4.0)) return;
+    state_(0) = 0.5 * (x_min + x_max);
+    state_(1) = 0.5 * (y_min + y_max);
+    state_(2) = std::log(width);
+    state_(3) = std::log(height);
+    // The homography explains platform rotation, not target velocity. Leave a
+    // damped residual velocity for true target motion and inflate position
+    // uncertainty slightly for calibration/model error.
+    state_.segment<4>(4) *= 0.75;
+    covariance_.block<4, 4>(0, 0) *= 1.15;
+  }
+
   double mahalanobisDistance(const NormalizedBox& box,
                              const double confidence) const {
     Eigen::Matrix<double, 4, 8> observation;
@@ -244,6 +297,7 @@ struct PreparedDetection {
   // reference avoids copying every appearance embedding before association.
   const xd_uav_track::DetectionCandidate& message;
   double appearance_norm{-1.0};
+  double appearance_quality{0.0};
   NormalizedBox box;
   std::size_t original_index{0};
   std::string identity_label;
@@ -266,6 +320,7 @@ struct PersistentTrack {
   int class_id{-1};
   double confidence{0.0};
   BoxKalmanFilter filter;
+  NormalizedBox last_observation_box;
   xd_uav_track::DetectionCandidate latest_detection;
   std_msgs::Header latest_header;
   std::vector<float> appearance;
@@ -544,6 +599,12 @@ struct MultiTrackManager::Impl {
     config.appearance_gallery_size = std::max(1, config.appearance_gallery_size);
     config.appearance_update_minimum_confidence = clampValue(
         config.appearance_update_minimum_confidence, 0.0, 1.0);
+    config.appearance_minimum_quality = clampValue(
+        config.appearance_minimum_quality, 0.0, 1.0);
+    config.appearance_low_quality_weight = clampValue(
+        config.appearance_low_quality_weight, 0.0, 1.0);
+    config.observation_centric_velocity_blend = clampValue(
+        config.observation_centric_velocity_blend, 0.0, 1.0);
     config.association_mahalanobis_gate =
         std::max(1e-3, config.association_mahalanobis_gate);
     config.metric_innovation_distance_m =
@@ -904,6 +965,16 @@ ManagedDetectionFrame MultiTrackManager::update(
     const int image_height, const std::string& image_source,
     const std::vector<TargetIdentityHint>& identity_hints,
     const std::vector<TargetWorldObservation>& world_observations) {
+  return update(detections, image_width, image_height, image_source,
+                identity_hints, world_observations, {});
+}
+
+ManagedDetectionFrame MultiTrackManager::update(
+    const xd_uav_track::DetectionArray& detections, const int image_width,
+    const int image_height, const std::string& image_source,
+    const std::vector<TargetIdentityHint>& identity_hints,
+    const std::vector<TargetWorldObservation>& world_observations,
+    const CameraMotionCompensation& camera_motion) {
   ManagedDetectionFrame output;
   output.candidates.header = detections.header;
   output.candidates.command = detections.command;
@@ -927,6 +998,13 @@ ManagedDetectionFrame MultiTrackManager::update(
     item.box = box;
     item.original_index = index;
     item.appearance_norm = embeddingNorm(raw.appearance_embedding);
+    const double declared_quality = std::isfinite(raw.appearance_quality)
+        ? clampValue(raw.appearance_quality, 0.0, 1.0) : 0.0;
+    // Legacy producers have no quality field and publish its ROS default 0.
+    // Preserve their established association behavior; quality-aware encoders
+    // encode an explicit non-zero score (including 0.001 for unusable ROIs).
+    item.appearance_quality = raw.appearance_embedding.empty() ? 0.0 :
+        (declared_quality > 0.0 ? declared_quality : 1.0);
     prepared.push_back(std::move(item));
   }
 
@@ -993,6 +1071,10 @@ ManagedDetectionFrame MultiTrackManager::update(
   impl_->pruneMemory(frame_stamp);
   for (auto& entry : impl_->tracks) {
     entry.second.filter.predict(impl_->dtFor(entry.second, frame_stamp));
+    if (camera_motion.valid) {
+      entry.second.filter.compensateCameraMotion(
+          camera_motion.normalized_homography);
+    }
     ++entry.second.age;
     ++entry.second.missing;
     entry.second.detected = false;
@@ -1099,8 +1181,11 @@ ManagedDetectionFrame MultiTrackManager::update(
             track, detection.message.appearance_embedding,
             detection.appearance_norm);
         const bool has_appearance = appearance >= -1.0;
-        const bool appearance_match =
-            has_appearance && appearance >= impl_->config.appearance_minimum_cosine;
+        const double appearance_quality = detection.appearance_quality;
+        const bool reliable_appearance = has_appearance &&
+            appearance_quality >= impl_->config.appearance_minimum_quality;
+        const bool appearance_match = reliable_appearance &&
+            appearance >= impl_->config.appearance_minimum_cosine;
         const bool exact_physical_label = !track.stable_identity_label.empty() &&
             track.stable_identity_label == detection.identity_label &&
             detection.identity_confidence >=
@@ -1110,7 +1195,15 @@ ManagedDetectionFrame MultiTrackManager::update(
         const double geometric = 0.60 * (1.0 - overlap) + 0.40 *
             std::min(1.0, distance / std::max(1e-6,
                 impl_->config.association_center_distance));
-        const double appearance_term = has_appearance ? 1.0 - appearance : 0.5;
+        // Low-quality embeddings converge toward a neutral cost rather than
+        // being allowed to overwrite motion during glare, blur or tiny ROIs.
+        const double raw_appearance_term = has_appearance ? 1.0 - appearance : 0.5;
+        const double appearance_reliability = has_appearance
+            ? impl_->config.appearance_low_quality_weight +
+                (1.0 - impl_->config.appearance_low_quality_weight) *
+                    appearance_quality : 0.0;
+        const double appearance_term = appearance_reliability *
+            raw_appearance_term + (1.0 - appearance_reliability) * 0.5;
         const double innovation = std::min(1.0, mahalanobis /
             impl_->config.association_mahalanobis_gate);
         const double unseen_sec = !frame_stamp.isZero() &&
@@ -1147,7 +1240,7 @@ ManagedDetectionFrame MultiTrackManager::update(
           world_cost = clampValue(normalized_world_error /
               impl_->config.world_innovation_gate_sigma, 0.0, 1.0);
         }
-        if (unseen_sec > impl_->config.short_occlusion_sec && has_appearance &&
+        if (unseen_sec > impl_->config.short_occlusion_sec && reliable_appearance &&
             !appearance_match && !exact_physical_label) continue;
         if (unseen_sec <= 0.10) {
           costs[row][column] = 0.65 * geometric + 0.20 * appearance_term +
@@ -1577,6 +1670,7 @@ ManagedDetectionFrame MultiTrackManager::update(
     track.class_id = prepared[index].message.class_id;
     track.confidence = clampValue(prepared[index].message.confidence, 0.0, 1.0);
     track.filter.initialize(prepared[index].box, impl_->config);
+    track.last_observation_box = prepared[index].box;
     track.latest_detection = prepared[index].message;
     track.latest_header = detections.header;
     track.appearance = prepared[index].message.appearance_embedding;
@@ -1617,6 +1711,13 @@ ManagedDetectionFrame MultiTrackManager::update(
     if (!freshly_created && !freshly_restored) {
       track.filter.update(prepared[index].box,
                           clampValue(prepared[index].message.confidence, 0.0, 1.0));
+      if (impl_->config.observation_centric_reupdate_enabled &&
+          !frame_stamp.isZero() && !track.last_detection_stamp.isZero() &&
+          frame_stamp > track.last_detection_stamp) {
+        track.filter.observationCentricReupdate(track.last_observation_box,
+            prepared[index].box, (frame_stamp - track.last_detection_stamp).toSec(),
+            impl_->config.observation_centric_velocity_blend);
+      }
       ++track.hits;
     }
     bool reacquisition_confirmed = false;
@@ -1642,7 +1743,9 @@ ManagedDetectionFrame MultiTrackManager::update(
     }
     if (!prepared[index].message.appearance_embedding.empty() &&
         prepared[index].message.confidence >=
-            impl_->config.appearance_update_minimum_confidence) {
+            impl_->config.appearance_update_minimum_confidence &&
+        prepared[index].appearance_quality >=
+            impl_->config.appearance_minimum_quality) {
       impl_->updateAppearance(&track,
                               prepared[index].message.appearance_embedding);
     }
@@ -1653,6 +1756,7 @@ ManagedDetectionFrame MultiTrackManager::update(
     track.latest_detection.track_id = assigned_id;
     track.latest_detection.track_id_is_stable = true;
     track.latest_header = detections.header;
+    track.last_observation_box = prepared[index].box;
     track.last_stamp = frame_stamp;
     track.last_detection_stamp = frame_stamp;
     output.candidates.candidates.push_back(track.latest_detection);

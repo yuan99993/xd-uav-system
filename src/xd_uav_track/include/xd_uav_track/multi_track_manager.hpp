@@ -33,6 +33,10 @@ struct MultiTrackConfig {
   double low_confidence_threshold{0.10};
   int appearance_gallery_size{12};
   double appearance_update_minimum_confidence{0.60};
+  double appearance_minimum_quality{0.35};
+  // Quality is used as a soft association weight, never as a reason to drop
+  // a geometrically valid detection.
+  double appearance_low_quality_weight{0.20};
   // Image-space innovation is evaluated against the Kalman covariance.  It
   // makes large jumps fail even when their boxes happen to overlap.
   double association_mahalanobis_gate{16.0};
@@ -43,6 +47,10 @@ struct MultiTrackConfig {
   double removal_timeout_sec{-1.0};
   double process_noise{1.0};
   double measurement_noise{1.0};
+  // OC-SORT observation-centric re-update is an opt-in A/B path. CV Kalman
+  // remains the default for existing deployments.
+  bool observation_centric_reupdate_enabled{false};
+  double observation_centric_velocity_blend{0.50};
 
   // Group-ReID first narrows candidates by stable coarse attributes. The
   // group identifier is deliberately internal: public track IDs remain the
@@ -99,6 +107,19 @@ struct TargetWorldObservation {
   ros::Time capture_stamp;
 };
 
+// Rotation-only image homography obtained from synchronized UAV pose and
+// calibrated camera intrinsics/extrinsics. It maps the previous normalized
+// image plane into the current one. Translation is intentionally excluded:
+// without a depth estimate it would fabricate parallax.
+struct CameraMotionCompensation {
+  bool valid{false};
+  std::array<double, 9> normalized_homography{{1.0, 0.0, 0.0,
+                                                 0.0, 1.0, 0.0,
+                                                 0.0, 0.0, 1.0}};
+  ros::Time previous_stamp;
+  ros::Time current_stamp;
+};
+
 struct MultiTrackStatistics {
   std::uint64_t input_frames{0};
   std::uint64_t accepted_detections{0};
@@ -143,6 +164,12 @@ class MultiTrackManager {
       int image_height, const std::string& image_source,
       const std::vector<TargetIdentityHint>& identity_hints,
       const std::vector<TargetWorldObservation>& world_observations);
+  ManagedDetectionFrame update(
+      const xd_uav_track::DetectionArray& detections, int image_width,
+      int image_height, const std::string& image_source,
+      const std::vector<TargetIdentityHint>& identity_hints,
+      const std::vector<TargetWorldObservation>& world_observations,
+      const CameraMotionCompensation& camera_motion);
   bool latestCandidate(int track_id, xd_uav_track::DetectionCandidate* candidate,
                        std_msgs::Header* header = nullptr) const;
   // Returns a repeatedly-confirmed physical label from either the active

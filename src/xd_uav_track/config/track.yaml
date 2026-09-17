@@ -8,6 +8,8 @@
 runtime:
   publish_rate_hz: 30.0
   state_timeout_sec: 0.30
+  maximum_vehicle_state_history_samples: 400
+  maximum_oosm_history_samples: 128
   # true：直接接 xd_uav_controller；false：只观察 track 下的诊断输出。
   publish_control_reference: true
 
@@ -46,17 +48,28 @@ tracker:
 
   # 空=接收全部；也可锁定 eo/ir/逻辑相机名。
   image_source: ""
+  sources:
+    # Empty keeps portable deployments configurable; production overlays should
+    # list their exact image_source values, e.g. [fixed_rgb, gimbal_rgb].
+    allowed: []
+    maximum_sources: 4
+    ttl_sec: 300.0
+    maximum_name_length: 128
   selection:
     auto_select: true              # 未手选时选择质量最高的 confirmed 轨迹
     # 已锁定目标暂时失检时，不自动跳到画面内的另一对象。
     # 与长期身份库一致：失联期间停止输出观测控制，但不自动锁定另一目标。
     locked_target_release_timeout_sec: 60.0
   global_identity:
-    # Fixed and gimbal streams keep independent local tracklets. A selected
-    # identity is promoted across them only after capture-time metric/world
-    # gating; matching appearance never authorizes a handover by itself.
+    # Fixed and gimbal streams keep independent local tracklets.  The global
+    # table merges any confirmed target only after capture-time metric/world
+    # gating; matching appearance can reject but never authorize a merge.
     enabled: true
     appearance_cosine: 0.78
+    maximum_distance_m: 8.0
+    minimum_margin_m: 0.75
+    ttl_sec: 120.0
+    maximum_entities: 512
   confidence:
     new_track: 0.20
     update: 0.05
@@ -78,8 +91,27 @@ tracker:
     low_confidence: 0.10           # 低置信检测只用于维持现有轨迹
     appearance_gallery_size: 12    # 保留跨光照、视角与相机来源的多样原型
     appearance_update_confidence: 0.60
+    appearance_minimum_quality: 0.35  # blur/exposure/small-ROI score gate
+    appearance_low_quality_weight: 0.20
     mahalanobis_gate: 16.0
     metric_innovation_distance_m: 25.0
+  # Optional OC-SORT-style observation-centric velocity re-update. Keep CV
+  # Kalman as production default until replay A/B validation is available.
+  oc_sort:
+    enabled: false
+    velocity_blend: 0.50
+  # BoT-SORT-style rotation-only compensation. Enable only after the camera
+  # intrinsics/extrinsics and odometry timestamps are calibrated. Per-source
+  # overrides live below the same key using the image_source name.
+  camera_motion_compensation:
+    enabled: false
+    pose_history_size: 120
+    maximum_pose_delta_sec: 0.05
+    fx: 0.0
+    fy: 0.0
+    cx: 0.0
+    cy: 0.0
+    optical_to_body_rpy: [0.0, 0.0, 0.0]
   # 普通 ReID 始终是主通道；仅当前两名接近，或多个身份有至少两项
   # 粗特征一致时，才激活低频 Group-ReID 二次判别。
   group_reid:

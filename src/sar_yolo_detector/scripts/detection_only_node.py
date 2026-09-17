@@ -10,6 +10,8 @@ XD tracking package is therefore the sole owner of temporal identity.
 from __future__ import annotations
 
 import math
+import resource
+import sys
 import threading
 import time
 from pathlib import Path
@@ -17,6 +19,7 @@ from typing import Any, Dict
 
 import rospy
 import rospkg
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
 from xd_uav_track.msg import DetectionArray, DetectionCandidate
@@ -50,6 +53,14 @@ class DetectionOnlyNode:
         self._reid_backlog_drop = 0
         self._reid_condition = threading.Condition()
         self._pending_reid = None
+        self._startup_ready = False
+        self._startup_error = ""
+        self._startup_started_wall = time.monotonic()
+        self._startup_duration_sec = 0.0
+        self._warmup_frames = max(0, min(4, int(rospy.get_param(
+            "~startup_warmup_frames", 1))))
+        self._warmup_width = max(32, int(rospy.get_param("~warmup_width", 640)))
+        self._warmup_height = max(32, int(rospy.get_param("~warmup_height", 640)))
         self._package_root = Path(
             rospkg.RosPack().get_path("sar_yolo_detector")
         ).resolve()
@@ -156,6 +167,10 @@ class DetectionOnlyNode:
             self._reid_worker.start()
         self._worker = threading.Thread(
             target=self._worker_loop, name="yolo_detection", daemon=True)
+        self._diagnostics_publisher = rospy.Publisher(
+            "/diagnostics", DiagnosticArray, queue_size=2)
+        self._diagnostics_timer = rospy.Timer(
+            rospy.Duration(1.0), self._publish_diagnostics)
         self._worker.start()
         rospy.on_shutdown(self.close)
         rospy.loginfo(
@@ -273,6 +288,8 @@ class DetectionOnlyNode:
             self._condition.notify()
 
     def _worker_loop(self) -> None:
+        if not self._run_startup_warmup():
+            return
         while not rospy.is_shutdown():
             with self._condition:
                 while (self._pending_image is None and not self._closing and
@@ -341,7 +358,7 @@ class DetectionOnlyNode:
         if vision_output is not None:
             self._publisher.publish(vision_output)
         if xd_output is not None:
-            if self._reid_encoder is None:
+            if self._reid_encoder is None or not xd_output.candidates:
                 self._xd_publisher.publish(xd_output)
             elif self._reid_async:
                 with self._reid_condition:
@@ -390,14 +407,16 @@ class DetectionOnlyNode:
     def _encode_and_publish_reid(self, frame, output: DetectionArray) -> None:
         start = time.perf_counter()
         candidates = output.candidates[:self._maximum_reid_rois]
-        features = self._reid_encoder.encode_many(
+        features, qualities = self._reid_encoder.encode_many_with_quality(
             frame, [(candidate.bbox, candidate.class_id)
                     for candidate in candidates])
-        for candidate, feature in zip(candidates, features):
+        for candidate, feature, quality in zip(candidates, features, qualities):
             if feature is not None:
                 candidate.appearance_embedding = feature.astype(
                     "float32", copy=False).tolist()
                 self._encoded_embeddings += 1
+            candidate.appearance_quality = 0.0 if feature is None else \
+                max(0.001, float(quality))
         stamp = output.header.stamp
         now = rospy.Time.now()
         if (not stamp.is_zero() and not now.is_zero() and
@@ -412,6 +431,81 @@ class DetectionOnlyNode:
         else:
             self._reid_ms_ewma += 0.10 * (elapsed_ms - self._reid_ms_ewma)
         self._xd_publisher.publish(output)
+
+    def _run_startup_warmup(self) -> bool:
+        try:
+            if self._warmup_frames > 0:
+                import numpy as np
+                frame = np.zeros(
+                    (self._warmup_height, self._warmup_width, 3), dtype=np.uint8)
+                for _ in range(self._warmup_frames):
+                    self._backend.detect(frame, self._confidence, self._iou,
+                                         self._maximum_detections)
+            self._startup_ready = True
+            self._startup_duration_sec = time.monotonic() - self._startup_started_wall
+            rospy.loginfo("YOLO warmup complete in %.3fs",
+                          self._startup_duration_sec)
+            return True
+        except Exception as error:
+            self._startup_error = "%s: %s" % (type(error).__name__, error)
+            self._startup_duration_sec = time.monotonic() - self._startup_started_wall
+            rospy.logerr("YOLO startup warmup failed: %s", self._startup_error)
+            return False
+
+    @staticmethod
+    def _diagnostic_value(key: str, value: Any) -> KeyValue:
+        return KeyValue(key=key, value=str(value))
+
+    def _publish_diagnostics(self, _event) -> None:
+        status = DiagnosticStatus()
+        status.name = rospy.get_name() + ": yolo_detection"
+        status.hardware_id = str(self._runtime.get("effective_device", "unknown"))
+        if self._startup_error:
+            status.level = DiagnosticStatus.ERROR
+            status.message = "startup warmup failed"
+        elif not self._startup_ready:
+            status.level = DiagnosticStatus.WARN
+            status.message = "model warmup in progress"
+        else:
+            drop_ratio = float(self._dropped_backlog) / max(1, self._received)
+            status.level = (DiagnosticStatus.WARN if drop_ratio > 0.50
+                            else DiagnosticStatus.OK)
+            status.message = ("detector overloaded" if status.level == DiagnosticStatus.WARN
+                              else "detector ready")
+        with self._condition:
+            pending_image = self._pending_image is not None
+        with self._reid_condition:
+            pending_reid = self._pending_reid is not None
+        values = {
+            "startup_ready": self._startup_ready,
+            "startup_error": self._startup_error,
+            "startup_seconds": round(self._startup_duration_sec, 3),
+            "device": self._runtime.get("effective_device", "unknown"),
+            "received_frames": self._received,
+            "processed_frames": self._processed,
+            "pending_image": pending_image,
+            "dropped_image_backlog": self._dropped_backlog,
+            "skipped_without_subscriber": self._skipped_without_subscriber,
+            "inference_ms_ewma": round(self._inference_ms_ewma, 3),
+            "processing_ms_ewma": round(self._processing_ms_ewma, 3),
+            "pending_reid": pending_reid,
+            "reid_processed": self._reid_processed,
+            "reid_dropped_backlog": self._reid_backlog_drop,
+            "reid_ms_ewma": round(self._reid_ms_ewma, 3),
+            "rss_peak_mib": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2),
+        }
+        torch_module = sys.modules.get("torch")
+        if torch_module is not None and torch_module.cuda.is_available():
+            values["cuda_allocated_mib"] = round(
+                torch_module.cuda.memory_allocated() / 1048576.0, 2)
+            values["cuda_reserved_mib"] = round(
+                torch_module.cuda.memory_reserved() / 1048576.0, 2)
+        status.values = [self._diagnostic_value(key, value)
+                         for key, value in values.items()]
+        message = DiagnosticArray()
+        message.header.stamp = rospy.Time.now()
+        message.status = [status]
+        self._diagnostics_publisher.publish(message)
 
 
 def main() -> None:

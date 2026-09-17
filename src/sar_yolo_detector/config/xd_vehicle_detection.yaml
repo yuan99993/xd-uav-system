@@ -10,7 +10,9 @@ SmartTracker:
   SMART_TRACKER_MODEL_SHA256: 8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54
   SMART_TRACKER_REQUIRE_MODEL_SHA256: true
   SMART_TRACKER_MODEL_MAX_BYTES: 536870912
-  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.60
+  # Low-confidence boxes are kept for xd_uav_track's second association pass.
+  # Only its high-confidence pass may create a new trajectory.
+  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.10
   SMART_TRACKER_IOU_THRESHOLD: 0.45
   SMART_TRACKER_MAX_DETECTIONS: 30
   TRACKER_TYPE: detection_only
