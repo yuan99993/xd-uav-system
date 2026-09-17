@@ -217,6 +217,13 @@ class TaskAllocateCoordinator:
             0.0,
             float(post_arrival.get("control_handoff_settle_sec", 0.5)),
         )
+        self.task_execute_handoff_mode = str(
+            post_arrival.get("handoff_mode", "auto")
+        ).strip().lower()
+        if self.task_execute_handoff_mode not in ("auto", "visual", "position"):
+            raise ValueError(
+                "post_arrival/handoff_mode must be auto, visual or position"
+            )
         self.task_execute_defaults = dict(post_arrival.get("default_task", {}))
         self.task_execute_mobility_profile_overrides = dict(
             post_arrival.get("mobility_profile_overrides", {})
@@ -595,7 +602,7 @@ class TaskAllocateCoordinator:
         rospy.loginfo(
             "[task_allocate] ready: scouts=%s workers=%s shared_frame=%s; "
             "position=main world Odometry; mobility=%s; backends=%s; "
-            "hierarchical_search=%s(mode=%s); post_arrival=%s",
+            "hierarchical_search=%s(mode=%s); post_arrival=%s handoff=%s",
             sorted(self.scout_configs),
             sorted(self.worker_configs),
             self.shared_frame,
@@ -604,6 +611,7 @@ class TaskAllocateCoordinator:
             self.hierarchical_search_enabled,
             self.hierarchical_search_mode,
             self.post_arrival_mode,
+            self.task_execute_handoff_mode,
         )
         if self.direct_controller_test:
             rospy.logwarn(
@@ -730,6 +738,65 @@ class TaskAllocateCoordinator:
         # target may require observation even if this aircraft normally tracks.
         options.update(dict(class_options))
         return options
+
+    def _task_execute_handoff_mode(self, task, worker: str) -> str:
+        """Resolve whether task_execute starts from vision or position arrival.
+
+        ``visual`` preserves the legacy two-part gate (worker inside the
+        radius *and* a matching local DetectionArray candidate). ``position``
+        starts as soon as the navigation backend reports the final waypoint
+        reached. ``auto`` selects position-only handoff for metric fixed-wing
+        profiles and the explicit OBSERVE/INTERCEPT task types, because those
+        tasks consume the scout's shared-world target pose instead of a local
+        camera detection.
+        """
+
+        options = self._task_execute_options(task, worker)
+        configured = str(
+            options.get(
+                "handoff_mode",
+                getattr(self, "task_execute_handoff_mode", "auto"),
+            )
+        ).strip().lower()
+        if configured not in ("auto", "visual", "position"):
+            raise ValueError(
+                "task_execute handoff_mode must be auto, visual or position"
+            )
+        if configured != "auto":
+            return configured
+
+        profile = str(options.get("follower_profile", "")).strip().lower()
+        if profile.startswith("fw_metric_"):
+            return "position"
+        task_type = self._task_execute_type(options.get("task_type", "track"))
+        if task_type in (ExecuteTaskGoal.OBSERVE, ExecuteTaskGoal.INTERCEPT):
+            return "position"
+        return "visual"
+
+    def _worker_visual_handoff_subscription_enabled(self) -> bool:
+        """Return whether any configured worker task may need detections.
+
+        A global ``position`` policy normally removes worker camera
+        subscriptions. Keep them when a more specific default/mobility/
+        worker/class override explicitly asks for ``visual`` or ``auto``.
+        """
+
+        if self.post_arrival_mode != "task_execute":
+            return False
+        if getattr(self, "task_execute_handoff_mode", "auto") != "position":
+            return True
+        option_groups = [
+            getattr(self, "task_execute_defaults", {}),
+            *getattr(self, "task_execute_mobility_profile_overrides", {}).values(),
+            *getattr(self, "task_execute_worker_overrides", {}).values(),
+            *getattr(self, "task_execute_class_overrides", {}).values(),
+        ]
+        for options in option_groups:
+            if not isinstance(options, dict) or "handoff_mode" not in options:
+                continue
+            if str(options["handoff_mode"]).strip().lower() != "position":
+                return True
+        return False
 
     def _build_task_execute_goal(
         self, task, worker: str, local_track_id=None
@@ -1274,7 +1341,15 @@ class TaskAllocateCoordinator:
                     queue_size=10,
                 )
             )
-        if is_scout or self.post_arrival_mode == "task_execute":
+        # Worker detections are only needed for the visual handoff.  Scouts
+        # always keep their detection subscriptions for global target
+        # creation; a position-only metric worker can run without any camera
+        # topic at all (and should not create a misleading fallback
+        # subscription under /<uav>/track/detections).
+        worker_visual_subscription = (
+            self._worker_visual_handoff_subscription_enabled()
+        )
+        if is_scout or worker_visual_subscription:
             for detection_topic in self._topics(
                 config, "detections", f"/{name}/track/detections"
             ):
@@ -2566,18 +2641,14 @@ class TaskAllocateCoordinator:
     def _worker_detection_callback(
         self, worker: str, message: DetectionArray
     ) -> None:
-        """Start execution only when the worker is in radius and sees the target."""
+        """Handle the optional visual half of a worker task handoff.
 
-        if int(message.image_width) <= 0 or int(message.image_height) <= 0:
-            rospy.logwarn_throttle(
-                2.0,
-                "[task_allocate] ignoring %s handoff detections with invalid "
-                "image size %dx%d; xd_uav_track would reject the same frame",
-                worker,
-                int(message.image_width),
-                int(message.image_height),
-            )
-            return
+        Position-only metric tasks never enter this callback's gate. They are
+        started by ``_handle_goal_status`` when navigation reaches the target;
+        a camera topic (and even a camera) is therefore optional for those
+        fixed-wing workers.
+        """
+
         with self._lock:
             if (
                 self.mission_state != MISSION_ACTIVE
@@ -2594,6 +2665,18 @@ class TaskAllocateCoordinator:
                 return
             task = self.allocator.tasks.get(active_task_id)
             if task is None or task.assigned_worker != worker:
+                return
+            if self._task_execute_handoff_mode(task, worker) == "position":
+                return
+            if int(message.image_width) <= 0 or int(message.image_height) <= 0:
+                rospy.logwarn_throttle(
+                    2.0,
+                    "[task_allocate] ignoring %s handoff detections with invalid "
+                    "image size %dx%d; xd_uav_track would reject the same frame",
+                    worker,
+                    int(message.image_width),
+                    int(message.image_height),
+                )
                 return
             worker_state = self.vehicle_world_positions.get(worker)
             if worker_state is None:
@@ -3363,8 +3446,9 @@ class TaskAllocateCoordinator:
         for task, worker in self.allocator.assign_pending():
             self.registry.set_status(task.target_id, TARGET_ASSIGNED)
             # Navigate toward the target XY at the worker's current altitude.
-            # Task execution is not tied to reaching this point: the detection
-            # callback is the sole handoff gate inside target_radius_m.
+            # The final handoff is selected by post_arrival/handoff_mode:
+            # visual tasks require a matching local detection inside
+            # target_radius_m; metric position-only tasks start on REACHED.
             task.goal = [
                 float(task.target_position[0]),
                 float(task.target_position[1]),
@@ -3520,17 +3604,37 @@ class TaskAllocateCoordinator:
                 self._publish_direct_hold(vehicle)
             self._clear_active_goal(vehicle)
             if getattr(self, "post_arrival_mode", "arrive") == "task_execute":
-                self.worker_visual_handoff_waiting[vehicle] = task.task_id
-                task.detail = (
-                    "worker reached target navigation point; waiting for "
-                    "a matching local camera detection"
-                )
-                rospy.loginfo(
-                    "[task_allocate] task=%d worker=%s reached target navigation "
-                    "point; holding for camera detection",
-                    task.task_id,
-                    vehicle,
-                )
+                handoff_mode = self._task_execute_handoff_mode(task, vehicle)
+                if handoff_mode == "position":
+                    self.worker_visual_handoff_waiting.pop(vehicle, None)
+                    task.detail = (
+                        "worker reached target navigation point; starting "
+                        "position-only task handoff"
+                    )
+                    rospy.loginfo(
+                        "[task_allocate] task=%d worker=%s reached target navigation "
+                        "point; starting position-only task execution",
+                        task.task_id,
+                        vehicle,
+                    )
+                    self._start_task_execution(
+                        task,
+                        vehicle,
+                        local_track_id=-1,
+                        handoff_detail="navigation reached; metric position-only handoff",
+                    )
+                else:
+                    self.worker_visual_handoff_waiting[vehicle] = task.task_id
+                    task.detail = (
+                        "worker reached target navigation point; waiting for "
+                        "a matching local camera detection"
+                    )
+                    rospy.loginfo(
+                        "[task_allocate] task=%d worker=%s reached target navigation "
+                        "point; holding for camera detection",
+                        task.task_id,
+                        vehicle,
+                    )
             else:
                 self._complete_worker_task(
                     task, vehicle, f"worker reached the task goal: {detail}"

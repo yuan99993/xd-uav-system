@@ -1,0 +1,48 @@
+# Two fixed-wing working aircraft.  They do not subscribe to detector output;
+# they receive confirmed coarse world-frame goals as a two-point geometric
+# path and complete a task by controller path status or this package's
+# acceptance-radius/fly-through fallback.
+workers:
+  uav3:
+    mobility_profile: fixedwing
+    localization:
+      # Selected main estimator state, already expressed in world.
+      world_odometry_topic: /uav3/state_estimator/main/frames/world/odom
+    health:
+      control_state_topic: /uav3/control_manager/state
+    coverage:
+      # Also used for the safe forward reference after a fixed-wing goal.
+      nominal_speed_mps: 15.0
+    fixedwing:
+      waypoint_acceptance_radius_m: 20.0
+      waypoint_altitude_tolerance_m: 10.0
+      pass_cross_track_limit_m: 40.0
+    topics:
+      planner_task_path: /uav3/planning/task_path
+      planner_cancel: /uav3/planning/cancel
+      route_preview: /uav3/planning/route_preview
+      planner_status: /uav3/planning/status
+      controller_path: /uav3/control/reference/path
+      controller_path_status: /uav3/controller/path_status
+      controller_setpoint: /uav3/control/reference/setpoint
+
+  uav4:
+    mobility_profile: fixedwing
+    localization:
+      world_odometry_topic: /uav4/state_estimator/main/frames/world/odom
+    health:
+      control_state_topic: /uav4/control_manager/state
+    coverage:
+      nominal_speed_mps: 15.0
+    fixedwing:
+      waypoint_acceptance_radius_m: 20.0
+      waypoint_altitude_tolerance_m: 10.0
+      pass_cross_track_limit_m: 40.0
+    topics:
+      planner_task_path: /uav4/planning/task_path
+      planner_cancel: /uav4/planning/cancel
+      route_preview: /uav4/planning/route_preview
+      planner_status: /uav4/planning/status
+      controller_path: /uav4/control/reference/path
+      controller_path_status: /uav4/controller/path_status
+      controller_setpoint: /uav4/control/reference/setpoint

@@ -3,6 +3,7 @@
 
 post_arrival:
   mode: task_execute
+  handoff_mode: visual
   action_name_template: /{worker}/task_execute/execute
   server_wait_timeout_sec: 2.0
 
@@ -28,7 +29,7 @@ post_arrival:
   worker_overrides:
     uav3:
       task_type: track
-      follower_profile: mc_velocity_position
+      follower_profile: fw_metric_orbit
     uav4:
       task_type: track
       follower_profile: mc_velocity_position

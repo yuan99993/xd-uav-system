@@ -6,8 +6,10 @@ attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 
 # One namespaced PX4 Standard VTOL SITL and the VTOL-aware control stack.
-pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:$ROS_PACKAGE_PATH; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
-startup_window: observe
+# Keep the Gazebo environment and spawn sequence identical to uav1 in the
+# four-VTOL launcher so single- and multi-vehicle tests are comparable.
+pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:${ROS_PACKAGE_PATH:-}; export GAZEBO_PLUGIN_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:${GAZEBO_PLUGIN_PATH:-}; export GAZEBO_MODEL_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo/models:${GAZEBO_MODEL_PATH:-}; export LD_LIBRARY_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:${LD_LIBRARY_PATH:-}; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
+startup_window: estimator
 
 windows:
   - roscore:
@@ -18,20 +20,39 @@ windows:
   - px4_sitl:
       layout: tiled
       panes:
-        - waitForRos; roslaunch px4 mavros_posix_sitl_vtol_ns.launch uav_name:=uav1 ID:=0
+        - >-
+          waitForRos;
+          roslaunch px4 mavros_posix_sitl_ns.launch
+          uav_name:=uav1 ID:=0
+          vehicle:=standard_vtol sdf:=standard_vtol
+          world:=/opt/ros/noetic/share/mavlink_sitl_gazebo/worlds/grass_plane.world
+          paused:=true start_gazebo:=true unpause_after_spawn:=true
+          mavros_publish_tf:=false publish_payload_static_tf:=false
 
-  - vehicle_stack:
+  - estimator:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+
+  - controller:
+      layout: tiled
+      panes:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav1
+
+  - world_tf:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch config:=/home/kzy/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world_single_uav1.yaml
 
   - observe:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo /uav1/control_manager/state
-        - waitForTime; rostopic echo /uav1/mavros/extended_state
-        - waitForTime; rostopic echo /uav1/controller/command
+        # Sample only the fields needed during a flight test. Continuous full
+        # message echo at 100 Hz can perturb a real-time SITL comparison.
+        - waitForTime; watch -n 0.5 'rostopic echo -n1 /uav1/control_manager/state/flight_regime'
+        - waitForTime; watch -n 0.5 'rostopic echo -n1 /uav1/state_estimator/main/odom/pose/pose/position/z'
+        - waitForTime; watch -n 0.5 'rostopic echo -n1 /uav1/state_estimator/main/odom/twist/twist/linear/z'
+        - waitForTime; watch -n 0.5 'rostopic echo -n1 /uav1/controller/command/thrust'
 
   # 先在多旋翼阶段起飞，确认state中的flight_regime为HOVER后再切换。
   - takeoff:

@@ -11,9 +11,8 @@ scouts:
     coverage:
       nominal_speed_mps: 15.0
     fixedwing:
-      # Keep coarse search at the fixed-wing loiter/takeoff altitude instead of
-      # inheriting the lower multirotor SearchArea altitude.
-      coverage_altitude_m: 40.0
+      # Zero preserves SearchArea.altitude from the incoming search-area topic.
+      coverage_altitude_m: 0.0
       # Fixed-wing coarse-search swath. Set this from camera FOV, altitude and
       # required overlap; it is intentionally wider than multirotor fine search.
       coverage_lane_spacing_m: 30.0

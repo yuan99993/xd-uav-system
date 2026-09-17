@@ -154,8 +154,10 @@ allocation:
   # idle configured worker is eligible; route semantics are configured on the
   # vehicle with mobility_profile instead of being used as an eligibility gate.
   worker_execution:
-    # task_execute has exactly two gates: the worker is horizontally within
-    # this radius of its assigned target, and its camera reports that class.
+    # Visual handoff uses this radius together with a matching local camera
+    # detection. Position-only metric handoff uses the navigation REACHED
+    # result instead; this radius remains useful for visual-task safety
+    # checks and is not a camera requirement for metric workers.
     target_radius_m: 20.0
   # Larger value is dispatched first. class_id 0 is the red-marker test target.
   class_priorities:
