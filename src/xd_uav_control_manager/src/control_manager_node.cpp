@@ -595,12 +595,14 @@ class ControlManagerNode {
         have_airspeed_
             ? static_cast<double>(airspeed_.airspeed)
             : std::numeric_limits<double>::quiet_NaN();
-    const bool airspeed_ground_clamp_allowed =
+    const bool airspeed_negative_clamp_allowed =
         (mavrosStateFresh(now) && !mavros_state_.armed) ||
         (mavrosExtendedStateFresh(now) &&
          mavros_extended_state_.landed_state ==
              mavros_msgs::ExtendedState::
-                 LANDED_STATE_ON_GROUND);
+                 LANDED_STATE_ON_GROUND) ||
+        (vehicle_adapter_ &&
+         vehicle_adapter_->allowsNegativeAirspeedClamp(regime));
     state.odometry_fresh =
         state.odometry_age <= odometry_timeout_;
     state.imu_fresh = state.imu_age <= imu_timeout_;
@@ -610,7 +612,7 @@ class ControlManagerNode {
         state.airspeed_age <= airspeed_timeout_ &&
         std::isfinite(measured_airspeed) &&
         (measured_airspeed >= 0.0 ||
-         (airspeed_ground_clamp_allowed &&
+         (airspeed_negative_clamp_allowed &&
           measured_airspeed >=
               -airspeed_negative_tolerance_));
 
@@ -691,7 +693,7 @@ class ControlManagerNode {
           measured_airspeed < 0.0) {
         ROS_WARN_THROTTLE(
             2.0,
-            "[xd_uav_control_manager] 地面空速为%.2fm/s，"
+            "[xd_uav_control_manager] 低速阶段空速为%.2fm/s，"
             "在%.2fm/s负值容差内，按0m/s提供给控制器",
             measured_airspeed,
             airspeed_negative_tolerance_);

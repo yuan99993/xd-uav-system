@@ -47,6 +47,14 @@ class VehicleAdapter {
             regime ==
                 xd_uav_controller::FlightRegime::kTransitionToHover);
   }
+
+  // Airspeed sensors can report a small negative value around zero. Static
+  // fixed-wing flight must never accept that value, while a VTOL may safely
+  // clamp it during hover and the low-speed portions of a transition.
+  virtual bool allowsNegativeAirspeedClamp(
+      const xd_uav_controller::FlightRegime /* regime */) const {
+    return false;
+  }
 };
 
 }  // namespace xd_uav_control_manager

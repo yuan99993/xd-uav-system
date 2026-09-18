@@ -170,4 +170,17 @@ TEST(VehicleAdapterCapabilities, DeclareBehaviorWithoutAirframeStringBranches) {
       vtol.requiresAirspeed(control::FlightRegime::kTransitionToForward));
   EXPECT_TRUE(
       vtol.requiresAirspeed(control::FlightRegime::kTransitionToHover));
+
+  EXPECT_FALSE(multirotor.allowsNegativeAirspeedClamp(
+      control::FlightRegime::kHover));
+  EXPECT_FALSE(fixed_wing.allowsNegativeAirspeedClamp(
+      control::FlightRegime::kForwardFlight));
+  EXPECT_TRUE(vtol.allowsNegativeAirspeedClamp(
+      control::FlightRegime::kHover));
+  EXPECT_TRUE(vtol.allowsNegativeAirspeedClamp(
+      control::FlightRegime::kTransitionToForward));
+  EXPECT_TRUE(vtol.allowsNegativeAirspeedClamp(
+      control::FlightRegime::kTransitionToHover));
+  EXPECT_FALSE(vtol.allowsNegativeAirspeedClamp(
+      control::FlightRegime::kForwardFlight));
 }
