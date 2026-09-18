@@ -110,6 +110,21 @@ class AppearanceEncoder:
         parts.append(moments)
         return self._normalise(np.concatenate(parts).astype(np.float32, copy=False))
 
+    def _fallback_feature(
+            self, profile: Dict[str, Any], roi: np.ndarray) -> Optional[np.ndarray]:
+        """Return the configured low-cost fallback for an unavailable model.
+
+        A fallback is selected for a whole profile only after model
+        construction fails.  We intentionally do not mix a 512-D deep vector
+        and a 170-D hybrid vector during normal operation.
+        """
+        backend = str(profile.get("fallback_backend", "none") or "none").lower()
+        if backend == "hybrid":
+            return self._hybrid(roi)
+        if backend == "histogram":
+            return self._histogram(roi)
+        return None
+
     @staticmethod
     def quality(roi: np.ndarray) -> float:
         """Return a conservative visual reliability score without a model call.
@@ -169,6 +184,7 @@ class AppearanceEncoder:
                 outputs[index] = self._hybrid(roi)
             elif backend == "onnx":
                 if name in self._failed_deep_profiles:
+                    outputs[index] = self._fallback_feature(profile, roi)
                     continue
                 group = onnx_groups.setdefault(name, {
                     "profile": profile, "indices": [], "rois": []})
@@ -176,6 +192,7 @@ class AppearanceEncoder:
                 group["rois"].append(roi)
             elif backend == "deep":
                 if name in self._failed_deep_profiles:
+                    outputs[index] = self._fallback_feature(profile, roi)
                     continue
                 group = deep_groups.setdefault(name, {
                     "profile": profile, "indices": [], "rois": []})
@@ -192,6 +209,9 @@ class AppearanceEncoder:
                     outputs[output_index] = feature
             except Exception as error:
                 self._disable_failed_profile(name, error)
+                for output_index, roi in zip(group["indices"], group["rois"]):
+                    outputs[output_index] = self._fallback_feature(
+                        group["profile"], roi)
         for name, group in onnx_groups.items():
             try:
                 model = self._deep_models.get(name)
@@ -203,6 +223,9 @@ class AppearanceEncoder:
                     outputs[output_index] = feature
             except Exception as error:
                 self._disable_failed_profile(name, error)
+                for output_index, roi in zip(group["indices"], group["rois"]):
+                    outputs[output_index] = self._fallback_feature(
+                        group["profile"], roi)
         return outputs
 
     def encode_many_with_quality(self, image: np.ndarray, observations):
@@ -212,7 +235,7 @@ class AppearanceEncoder:
         if image is None or image.ndim != 3 or image.shape[2] != 3:
             return features, qualities
         height, width = image.shape[:2]
-        for index, ((bbox, _), feature) in enumerate(zip(observations, features)):
+        for index, ((bbox, class_id), feature) in enumerate(zip(observations, features)):
             if feature is None:
                 continue
             try:
@@ -222,15 +245,19 @@ class AppearanceEncoder:
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(width, x2), min(height, y2)
             if x2 > x1 and y2 > y1:
-                qualities[index] = self.quality(image[y1:y2, x1:x2])
+                _, profile = self._profile_for_class(class_id)
+                evidence_weight = min(1.0, max(0.0, float(
+                    profile.get("association_weight", 1.0))))
+                qualities[index] = evidence_weight * self.quality(
+                    image[y1:y2, x1:x2])
         return features, qualities
 
     def _disable_failed_profile(self, name, error) -> None:
         if name not in self._failed_deep_profiles:
             self._failed_deep_profiles.add(name)
             LOGGER.warning(
-                "deep ReID profile '%s' disabled; falling back to "
-                "motion/spatial association: %s", name, error)
+                "deep ReID profile '%s' disabled; using its configured "
+                "fallback before motion/spatial association: %s", name, error)
 
     def close(self) -> None:
         for model in self._deep_models.values():

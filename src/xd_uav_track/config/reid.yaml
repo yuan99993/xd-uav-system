@@ -26,16 +26,34 @@ reid:
 
   model_profiles:
     xd_vehicle_train7:
-      # train7: car=0, ar-car=1, tank=2.  Do not apply Market1501 person ReID.
+      # train7 detector contract: car=0, ar-car=1, tank=2.  Appearance uses
+      # Open Model Zoo's vehicle-domain OmniScaleNet rather than the
+      # Market1501 person checkpoint. Tank-domain calibration remains required.
       class_profiles:
         vehicle:
           class_ids: [0, 1, 2]
-          backend: hybrid
+          backend: onnx
+          model_path: "package://xd_uav_track/models/reid/vehicle-reid-0001.onnx"
+          sha256: 4aaad3e5db648618b0df3d2ff21c61323985ff9e50194c3d2edd4fb87c92d91f
+          require_sha256: true
+          device: cpu
+          fallback_to_cpu: true
+          input_height: 208
+          input_width: 208
+          embedding_dimension: 512
+          input_scale: 0.00392156862745098
+          pixel_mean_bgr: [0.0, 0.0, 0.0]
+          swap_rb: true
+          fallback_backend: hybrid
+          association_weight: 1.0
     coco_person:
       class_profiles:
         person:
           class_ids: [0]
           backend: deep
+          # The project is vehicle-first; person appearance is supporting
+          # evidence and must not dominate motion/world-coordinate gates.
+          association_weight: 0.35
           model_name: osnet_x0_25
           # This is a person-only model. The package URI keeps the feature
           # extractor tracker-owned while allowing the existing audited model
@@ -57,6 +75,7 @@ reid:
         person:
           class_ids: [0]
           backend: deep
+          association_weight: 0.35
           model_name: osnet_x0_25
           model_path: "package://sar_yolo_detector/models/person_reid/osnet_x0_25_market1501.pt"
           sha256: c0ff09177a21417a19bc73bbf5af4eb5d2b097c2074ed35e67819ee6cd93612c
@@ -76,22 +95,23 @@ reid:
         thermal_vehicle:
           class_ids: [2, 3]
           backend: hybrid
+          association_weight: 1.0
     xd_vehicle_onnx:
-      # Deployment template for a vehicle checkpoint trained on the actual
-      # camera domain. Keep this profile inactive until model_path and sha256
-      # are populated from the calibration report.
+      # Explicit alias of the production vehicle-domain deep profile.
       class_profiles:
         vehicle:
           class_ids: [0, 1, 2]
           backend: onnx
-          model_path: ""
-          sha256: ""
+          model_path: "package://xd_uav_track/models/reid/vehicle-reid-0001.onnx"
+          sha256: 4aaad3e5db648618b0df3d2ff21c61323985ff9e50194c3d2edd4fb87c92d91f
           require_sha256: true
           device: cpu
           fallback_to_cpu: true
-          input_height: 256
-          input_width: 128
-          embedding_dimension: 0
+          input_height: 208
+          input_width: 208
+          embedding_dimension: 512
           input_scale: 0.00392156862745098
-          pixel_mean_bgr: [0.406, 0.456, 0.485]
+          pixel_mean_bgr: [0.0, 0.0, 0.0]
           swap_rb: true
+          fallback_backend: hybrid
+          association_weight: 1.0

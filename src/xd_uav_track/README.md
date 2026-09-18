@@ -234,10 +234,11 @@ ID 管理。
 整幅图像。接入其他检测器时可设置 `inline_reid:=false`，恢复独立的
 `reid_encoder_node.py`。两种模式都只写入
 `DetectionCandidate.appearance_embedding`，不分配 ID、不保存丢失目标。模型和类别
-契约在 `config/reid.yaml`：默认 `xd_vehicle_train7` 对 car/ar-car/tank 使用低算力
-空间颜色、光照归一化和梯度纹理混合描述子；Market1501 的 OSNet 仅可在明确选择
-`coco_person` 且部署已校验权重时启用。编码不可用时会原样转发，轨迹管理自动退化
-为空间/运动关联。
+契约在 `config/reid.yaml`：默认 `xd_vehicle_train7` 对 car/ar-car/tank 使用
+Open Model Zoo `vehicle-reid-0001` 的 512 维车辆域深度特征，并以 hybrid 描述子作为
+模型加载失败时的降级路径。Market1501 的行人 OSNet 仅可在明确选择 `coco_person`
+时启用，而且其外观证据权重低于车辆。编码不可用时轨迹管理仍可退化为空间、运动和
+世界坐标关联。
 
 轨迹关联采用类别硬门控、Kalman 马氏距离、IoU/中心距离和有限外观 gallery 的两阶段
 全局分配。低置信检测只维持已有轨迹，不会创建新 ID。锁定目标进入短时失检时会保持
@@ -275,11 +276,10 @@ embedding 时还必须不与 `appearance_cosine` 矛盾。仅凭相似外观绝�
 `gimbal_image_topic/gimbal_camera_info_topic`。检测、ReID 和定位消息沿用相机采集
 时间戳；内联模式不需要图像时间近邻查找，独立模式使用 50 ms 同步窗、最多 80 ms
 的到达顺序等待。两者都使用单槽最新结果和 750 ms 输出新鲜度门限，避免低算力设备
-积压旧帧。车辆默认 `hybrid`
-外观描述子不依赖 PyTorch；若部署经过本机数据标定的车辆 ONNX 模型，选择
-`xd_vehicle_onnx` 并在 `config/reid.yaml` 填写模型路径、SHA-256 和输出维数。
-深度 OSNet 会把同一帧同一模型的多个 ROI 合并为一次 GPU batch；hybrid/ONNX 路径
-保持原有逐 ROI 数值语义。
+积压旧帧。车辆默认使用不依赖 PyTorch 的 ONNX 深度模型，同帧相同模型的多个 ROI
+合并为一次 batch；模型来源、摘要和车辆域限制记录在 `models/reid/README.md`。
+`xd_vehicle_onnx` 是同一生产配置的显式别名。行人深度 OSNet 同样支持 ROI batch，
+hybrid 仅作为车辆模型初始化失败时的安全降级。
 
 `.pt` YOLO 仍运行在工作区 `.venv-sar-gpu`（或 `SAR_YOLO_PYTHON` 指定的
 环境）中。该环境必须完整安装 `sar_yolo_detector/requirements-smart-tracker.txt`；
@@ -292,7 +292,7 @@ embedding 时还必须不与 `appearance_cosine` 矛盾。仅凭相似外观绝�
 这三个包。
 
 连接实机相机前可离线检查当前类别/ReID 合同；深度或 ONNX profile 会同时校验模型
-类型、路径和 SHA-256，默认车辆 `hybrid` profile 不要求权重：
+类型、路径和 SHA-256；默认车辆 profile 会校验随包安装的 ONNX 权重：
 
 ```bash
 rosrun xd_uav_track validate_tracking_config.py \

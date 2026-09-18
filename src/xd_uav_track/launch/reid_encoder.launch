@@ -9,7 +9,7 @@
   <arg name="output_detections_topic" default="detect/input/fixed/detections_2d" />
 
   <group ns="$(arg UAV_NAME)">
-    <node pkg="xd_uav_track" type="reid_encoder_node.py" name="$(arg node_name)" output="screen" required="true">
+    <node pkg="xd_uav_track" type="xd_uav_reid_encoder" name="$(arg node_name)" output="screen" required="true">
       <rosparam command="load" file="$(arg config)" />
       <param name="enabled" value="$(arg enabled)" />
       <param if="$(eval arg('model_profile') != '')" name="model_profile" value="$(arg model_profile)" />

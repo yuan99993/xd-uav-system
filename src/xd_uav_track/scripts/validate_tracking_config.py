@@ -498,6 +498,7 @@ def validate_reid(config, report, label, requested_profile=""):
         report.error(label + ".reid profile " + active + " has no class profiles")
         return
     allowed_backends = {"disabled", "none", "histogram", "hybrid", "deep", "onnx"}
+    allowed_fallbacks = {"disabled", "none", "histogram", "hybrid"}
     owned_classes = {}
     for name, raw_profile in class_profiles.items():
         profile_label = (label + ".reid.model_profiles." + active +
@@ -506,6 +507,14 @@ def validate_reid(config, report, label, requested_profile=""):
         backend = str(profile.get("backend", root.get("default_backend", "hybrid"))).lower()
         if backend not in allowed_backends:
             report.error(profile_label + ".backend is unsupported: " + backend)
+        fallback = str(profile.get("fallback_backend", "none") or "none").lower()
+        if fallback not in allowed_fallbacks:
+            report.error(profile_label + ".fallback_backend is unsupported: " + fallback)
+        association_weight = profile.get("association_weight", 1.0)
+        if (report.finite(association_weight,
+                          profile_label + ".association_weight") and
+                not 0.0 <= association_weight <= 1.0):
+            report.error(profile_label + ".association_weight must be in [0, 1]")
         class_ids = profile.get("class_ids")
         if not isinstance(class_ids, list) or not class_ids:
             report.error(profile_label + ".class_ids must be a non-empty list")

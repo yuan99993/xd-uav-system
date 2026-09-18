@@ -98,6 +98,55 @@ class ReIDEncoderTest(unittest.TestCase):
         self.assertEqual(2, len(features))
         self.assertTrue(all(feature is not None for feature in features))
 
+    def test_failed_vehicle_deep_profile_falls_back_to_hybrid(self):
+        image = self.vehicle((30, 80, 210))
+        config = {
+            "minimum_roi_width_px": 8,
+            "minimum_roi_height_px": 8,
+            "class_profiles": {
+                "vehicle": {
+                    "class_ids": [0],
+                    "backend": "onnx",
+                    "fallback_backend": "hybrid",
+                },
+            },
+        }
+        with mock.patch(
+                "xd_uav_track.reid.encoder.OnnxReIDModel",
+                side_effect=RuntimeError("synthetic model failure")):
+            encoder = AppearanceEncoder(config)
+            first = encoder.encode(image, (20, 16, 108, 80), 0)
+            second = encoder.encode(image, (20, 16, 108, 80), 0)
+            encoder.close()
+        self.assertEqual((170,), first.shape)
+        np.testing.assert_array_equal(first, second)
+
+    def test_class_profile_scales_appearance_evidence_quality(self):
+        image = self.vehicle((30, 80, 210))
+        config = {
+            "minimum_roi_width_px": 8,
+            "minimum_roi_height_px": 8,
+            "class_profiles": {
+                "vehicle": {
+                    "class_ids": [0], "backend": "hybrid",
+                    "association_weight": 1.0,
+                },
+                "person": {
+                    "class_ids": [1], "backend": "hybrid",
+                    "association_weight": 0.35,
+                },
+            },
+        }
+        encoder = AppearanceEncoder(config)
+        observations = [
+            ((20, 16, 108, 80), 0),
+            ((20, 16, 108, 80), 1),
+        ]
+        _, qualities = encoder.encode_many_with_quality(image, observations)
+        encoder.close()
+        self.assertGreater(qualities[0], 0.0)
+        self.assertAlmostEqual(qualities[1], qualities[0] * 0.35, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -106,6 +106,11 @@ install(DIRECTORY config launch models docs
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
+install(PROGRAMS
+  scripts/xd_uav_reid_encoder
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 catkin_install_python(PROGRAMS
   scripts/configure_px4_sitl.py
   scripts/record_tracking_decisions.py
