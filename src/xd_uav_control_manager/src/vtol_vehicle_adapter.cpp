@@ -23,6 +23,13 @@ VehicleCapabilities VtolVehicleAdapter::capabilities() const {
   return value;
 }
 
+bool VtolVehicleAdapter::allowsNegativeAirspeedClamp(
+    const control::FlightRegime regime) const {
+  return regime == control::FlightRegime::kHover ||
+         regime == control::FlightRegime::kTransitionToForward ||
+         regime == control::FlightRegime::kTransitionToHover;
+}
+
 control::FlightRegime VtolVehicleAdapter::observe(
     const uint8_t px4_vtol_state, const bool state_fresh) {
   if (!state_fresh || !control::isVtolAirframe(airframe_)) {

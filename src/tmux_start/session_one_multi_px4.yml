@@ -18,7 +18,12 @@ windows:
   - px4_sitl:
       layout: tiled
       panes:
-        - waitForRos; roslaunch px4 mavros_posix_sitl_ns.launch uav_name:=uav1 ID:=0
+        - >-
+          waitForRos;
+          roslaunch px4 mavros_posix_sitl_ns.launch
+          uav_name:=uav1 ID:=0
+          world:=/opt/ros/noetic/share/mavlink_sitl_gazebo/worlds/forest.world
+          paused:=true start_gazebo:=true unpause_after_spawn:=true
 
   - vehicle_stack:
       layout: tiled
@@ -26,12 +31,20 @@ windows:
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
         - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav1
 
-  - observe:
+  - world_tf:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo /uav1/control_manager/state
-        - waitForTime; rostopic echo /uav1/mavros/extended_state
-        - waitForTime; rostopic echo /uav1/controller/command
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch config:=/home/kzy/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world_single_uav1.yaml
+
+  - planning:
+      layout: tiled
+      panes:
+        - waitForTime; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav1 vehicle_type:=multirotor common_frame:=world output_frame:=uav1/odom ego_id:=0 flight_type:=1
+  
+  - rviz:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; rosrun rviz rviz -d rviz_cfg/xd_uav.rviz
 
   - takeoff:
       layout: tiled
@@ -44,3 +57,14 @@ windows:
       panes:
         - >-
           history -s 'rosservice call /uav1/control_manager/land_home'
+
+  - observe:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo /uav1/state_estimator/main/frames/world/odom       
+  
+  - goto:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rostopic pub -1 /uav1/planning/goal geometry_msgs/PoseStamped "{header: {stamp: now, frame_id: 'world'}, pose: {position: {x: 10.0, y: 10.0, z: 3.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}"'

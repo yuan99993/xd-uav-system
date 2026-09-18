@@ -39,6 +39,8 @@ class VtolVehicleAdapter : public VehicleAdapter {
 
   xd_uav_controller::AirframeType airframeType() const override;
   VehicleCapabilities capabilities() const override;
+  bool allowsNegativeAirspeedClamp(
+      xd_uav_controller::FlightRegime regime) const override;
 
   xd_uav_controller::FlightRegime observe(uint8_t px4_vtol_state,
                                                bool state_fresh);

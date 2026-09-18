@@ -16,8 +16,8 @@ safety:
     require_localization: false
     minimum_groundspeed_for_course: 0.5
 
-    # 固定翼SITL静止时VFR_HUD可能出现轻微负空速；容差内按0m/s处理。
-    # 小于此负值下限仍视为传感器异常。
+    # 地面静止以及VTOL悬停/转换的低速阶段，VFR_HUD可能有轻微负空速。
+    # 容差内按0m/s处理；稳定固定翼前飞时仍不允许负空速。
     airspeed_negative_tolerance: 3.0
 
   # 控制器输出超时或短暂失效时的处理。
