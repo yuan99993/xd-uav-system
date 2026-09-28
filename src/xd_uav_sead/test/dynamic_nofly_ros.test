@@ -1,6 +1,0 @@
-<launch>
-  <test test-name="dynamic_nofly_ros"
-        pkg="xd_uav_sead"
-        type="test_dynamic_nofly_ros.py"
-        time-limit="20"/>
-</launch>

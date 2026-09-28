@@ -1,3 +1,0 @@
-require_imu: false
-source_switching:
-  switch_back_to_higher_priority: false
