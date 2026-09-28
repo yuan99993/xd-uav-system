@@ -29,7 +29,7 @@ post_arrival:
   worker_overrides:
     uav3:
       task_type: track
-      follower_profile: fw_metric_orbit
+      follower_profile: mc_velocity_position
     uav4:
       task_type: track
       follower_profile: mc_velocity_position

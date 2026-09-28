@@ -103,6 +103,7 @@ struct DynamicRule {
   bool invert{false};
   ros::Subscriber subscriber;
   ros::Time last_message;
+  ros::Time last_transform_stamp;
   std::uint64_t published{0};
   std::uint64_t rejected{0};
 };
@@ -545,7 +546,13 @@ class SingleTfManager {
       rule->rejected++;
       return;
     }
+    // TF 对同一子坐标系的重复时间戳会报 TF_REPEATED_DATA。
+    if (transform.header.stamp == rule->last_transform_stamp) {
+      rule->rejected++;
+      return;
+    }
     dynamic_broadcaster_.sendTransform(transform);
+    rule->last_transform_stamp = transform.header.stamp;
     rule->last_message = ros::Time::now();
     rule->published++;
   }
