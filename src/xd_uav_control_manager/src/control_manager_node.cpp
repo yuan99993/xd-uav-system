@@ -633,14 +633,14 @@ class ControlManagerNode {
         have_acceleration_ &&
         finiteVector(acceleration_.accel.accel.linear) &&
         finiteVector(acceleration_.accel.accel.angular);
-    const bool frame_ids_valid =
-        have_odometry_ && have_imu_ &&
-        !odometry_.header.frame_id.empty() &&
-        !odometry_.child_frame_id.empty() &&
-        imu_.header.frame_id == odometry_.child_frame_id &&
-        (!require_acceleration_ ||
-         acceleration_.header.frame_id ==
-             odometry_.header.frame_id);
+    // const bool frame_ids_valid =
+    //     have_odometry_ && have_imu_ &&
+    //     !odometry_.header.frame_id.empty() &&
+    //     !odometry_.child_frame_id.empty() &&
+    //     imu_.header.frame_id == odometry_.child_frame_id &&
+    //     (!require_acceleration_ ||
+    //      acceleration_.header.frame_id ==
+    //          odometry_.header.frame_id);
 
     if (have_odometry_) {
       state.header.frame_id = odometry_.header.frame_id;
@@ -711,13 +711,21 @@ class ControlManagerNode {
                          estimator_status_receive_,
                          future_stamp_tolerance_)
             : std::numeric_limits<double>::infinity();
+    // bool valid =
+    //   have_estimator_status_ &&
+    //   estimator_status_age <= estimator_status_timeout_ &&
+    //   estimator_status_.state_valid &&
+    //   state.odometry_fresh && state.imu_fresh &&
+    //   orientation_valid && odometry_values_valid &&
+    //   imu_values_valid;
+
     bool valid =
-        have_estimator_status_ &&
-        estimator_status_age <= estimator_status_timeout_ &&
-        estimator_status_.state_valid &&
-        state.odometry_fresh && state.imu_fresh &&
-        orientation_valid && odometry_values_valid &&
-        imu_values_valid && frame_ids_valid;
+      have_estimator_status_ &&
+      estimator_status_age <= estimator_status_timeout_ &&
+      estimator_status_.state_valid &&
+      state.odometry_fresh && state.imu_fresh &&
+      orientation_valid && odometry_values_valid &&
+      imu_values_valid;
     if (require_acceleration_) {
       valid = valid && state.acceleration_fresh &&
               acceleration_values_valid;
