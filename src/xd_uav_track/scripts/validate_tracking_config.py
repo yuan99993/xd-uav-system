@@ -7,10 +7,7 @@ the detection timestamp; this tool checks the static part of that contract.
 """
 
 import argparse
-import hashlib
 import math
-import os
-from pathlib import Path
 import sys
 
 import yaml
@@ -106,12 +103,6 @@ def merge_mappings(base, overlay):
 
 
 def validate_tracker(config, report, label):
-    runtime = _mapping(config.get("runtime", {}), label + ".runtime", report)
-    for key in ("maximum_vehicle_state_history_samples",
-                "maximum_oosm_history_samples"):
-        value = runtime.get(key)
-        if not isinstance(value, int) or value < 2:
-            report.error(label + ".runtime." + key + " must be an integer >= 2")
     interfaces = _mapping(config.get("interfaces", {}), label + ".interfaces", report)
     inputs = _mapping(interfaces.get("input", {}), label + ".interfaces.input", report)
     outputs = _mapping(interfaces.get("output", {}), label + ".interfaces.output", report)
@@ -121,142 +112,6 @@ def validate_tracker(config, report, label):
         report.require_topic(outputs.get(key), label + ".interfaces.output." + key)
 
     tracker = _mapping(config.get("tracker", {}), label + ".tracker", report)
-    sources = _mapping(tracker.get("sources", {}),
-                       label + ".tracker.sources", report)
-    allowed_sources = sources.get("allowed")
-    if not isinstance(allowed_sources, list) or any(
-            not isinstance(value, str) or not value
-            for value in allowed_sources):
-        report.error(label + ".tracker.sources.allowed must be a string array")
-    for key in ("maximum_sources", "maximum_name_length"):
-        value = sources.get(key)
-        if not isinstance(value, int) or value <= 0:
-            report.error(label + ".tracker.sources." + key +
-                         " must be a positive integer")
-    report.finite(sources.get("ttl_sec"),
-                  label + ".tracker.sources.ttl_sec", positive=True)
-    global_identity = _mapping(tracker.get("global_identity", {}),
-                               label + ".tracker.global_identity", report)
-    maximum_entities = global_identity.get("maximum_entities")
-    if not isinstance(maximum_entities, int) or maximum_entities <= 0:
-        report.error(label + ".tracker.global_identity.maximum_entities "
-                     "must be a positive integer")
-    for key in ("maximum_distance_m", "minimum_margin_m",
-                "maximum_time_delta_sec", "ttl_sec"):
-        report.finite(global_identity.get(key),
-                      label + ".tracker.global_identity." + key, positive=True)
-    for key in ("process_noise_mps", "residual_consistency_m"):
-        value = global_identity.get(key)
-        if report.finite(value, label + ".tracker.global_identity." + key) and value < 0:
-            report.error(label + ".tracker.global_identity." + key +
-                         " must be non-negative")
-    global_confirmations = global_identity.get("confirmation_hits")
-    if not isinstance(global_confirmations, int) or global_confirmations < 2:
-        report.error(label +
-                     ".tracker.global_identity.confirmation_hits must be >= 2")
-    if not isinstance(global_identity.get("require_nonzero_timestamps"), bool):
-        report.error(label +
-                     ".tracker.global_identity.require_nonzero_timestamps must be boolean")
-
-    classification = _mapping(tracker.get("classification", {}),
-                              label + ".tracker.classification", report)
-    family = classification.get("class_family_by_id")
-    if not isinstance(family, list) or any(not isinstance(value, int)
-                                           for value in family):
-        report.error(label +
-                     ".tracker.classification.class_family_by_id must be an integer array")
-
-    association = _mapping(tracker.get("association", {}),
-                           label + ".tracker.association", report)
-    if association.get("low_confidence_birth_enabled", False):
-        weak_hits = association.get("low_confidence_birth_confirmation_hits")
-        if not isinstance(weak_hits, int) or weak_hits < 3:
-            report.error(label +
-                         ".tracker.association.low_confidence_birth_confirmation_hits must be >= 3")
-    for key in ("maximum_scale_ratio", "maximum_aspect_log_change"):
-        report.finite(association.get(key),
-                      label + ".tracker.association." + key, positive=True)
-    for key in ("short_minimum_margin", "selected_minimum_margin"):
-        value = association.get(key)
-        if report.finite(value, label + ".tracker.association." + key) and value < 0:
-            report.error(label + ".tracker.association." + key +
-                         " must be non-negative")
-    short_margin = association.get("short_minimum_margin")
-    selected_margin = association.get("selected_minimum_margin")
-    if isinstance(short_margin, (int, float)) and \
-            isinstance(selected_margin, (int, float)) and \
-            selected_margin < short_margin:
-        report.error(label +
-                     ".tracker.association.selected_minimum_margin must be >= short_minimum_margin")
-    group_reid = _mapping(tracker.get("group_reid", {}),
-                          label + ".tracker.group_reid", report)
-    if group_reid.get("enabled", False):
-        for key in ("appearance_cosine", "trigger_score_margin",
-                    "long_association_minimum_margin"):
-            value = group_reid.get(key)
-            if report.finite(value, label + ".tracker.group_reid." + key) and \
-                    not 0.0 <= value <= 1.0:
-                report.error(label + ".tracker.group_reid." + key +
-                             " must be in [0, 1]")
-        report.finite(group_reid.get("aspect_log_gate"),
-                      label + ".tracker.group_reid.aspect_log_gate", positive=True)
-        report.finite(group_reid.get("short_occlusion_sec"),
-                      label + ".tracker.group_reid.short_occlusion_sec")
-        for key in ("maximum_groups", "trigger_minimum_features"):
-            value = group_reid.get(key)
-            if not isinstance(value, int) or value <= 0:
-                report.error(label + ".tracker.group_reid." + key +
-                             " must be a positive integer")
-
-    long_term = _mapping(tracker.get("long_term_identity", {}),
-                         label + ".tracker.long_term_identity", report)
-    if long_term.get("enabled", False):
-        report.finite(long_term.get("ttl_sec"),
-                      label + ".tracker.long_term_identity.ttl_sec", positive=True)
-        for key in ("appearance_cosine", "minimum_margin", "maximum_cost"):
-            value = long_term.get(key)
-            if report.finite(value, label + ".tracker.long_term_identity." + key) and \
-                    not 0.0 <= value <= 1.0:
-                report.error(label + ".tracker.long_term_identity." + key +
-                             " must be in [0, 1]")
-        for key in ("maximum_identities", "reconfirmation_hits"):
-            value = long_term.get(key)
-            minimum = 2 if key == "reconfirmation_hits" else 1
-            if not isinstance(value, int) or value < minimum:
-                report.error(label + ".tracker.long_term_identity." + key +
-                             " must be an integer >= %d" % minimum)
-
-    identity_hints = _mapping(tracker.get("identity_hints", {}),
-                              label + ".tracker.identity_hints", report)
-    if identity_hints.get("enabled", False):
-        report.require_topic(inputs.get("identity_hints"),
-                             label + ".interfaces.input.identity_hints")
-        report.finite(identity_hints.get("maximum_time_delta_sec"),
-                      label + ".tracker.identity_hints.maximum_time_delta_sec",
-                      positive=True)
-        for key in ("minimum_confidence", "hard_confidence", "iou_gate"):
-            value = identity_hints.get(key)
-            if report.finite(value, label + ".tracker.identity_hints." + key) and \
-                    not 0.0 <= value <= 1.0:
-                report.error(label + ".tracker.identity_hints." + key +
-                             " must be in [0, 1]")
-        confirmations = identity_hints.get("confirmations")
-        if not isinstance(confirmations, int) or confirmations < 2:
-            report.error(label + ".tracker.identity_hints.confirmations must be >= 2")
-        minimum = identity_hints.get("minimum_confidence")
-        hard = identity_hints.get("hard_confidence")
-        if isinstance(minimum, (int, float)) and isinstance(hard, (int, float)) and \
-                hard < minimum:
-            report.error(label + ".tracker.identity_hints.hard_confidence must be >= minimum_confidence")
-
-    world_identity = _mapping(tracker.get("world_identity", {}),
-                              label + ".tracker.world_identity", report)
-    if world_identity:
-        report.finite(world_identity.get("innovation_gate_sigma"),
-                      label + ".tracker.world_identity.innovation_gate_sigma",
-                      positive=True)
-        report.finite(world_identity.get("process_noise_mps"),
-                      label + ".tracker.world_identity.process_noise_mps")
     source_quality = _mapping(tracker.get("source_quality_handover", {}),
                               label + ".tracker.source_quality_handover", report)
     if source_quality.get("enabled", False):
@@ -270,22 +125,6 @@ def validate_tracker(config, report, label):
                              " must be in [0, 1]")
         report.finite(source_quality.get("cooldown_sec"),
                       label + ".tracker.source_quality_handover.cooldown_sec")
-
-    camera_motion = _mapping(tracker.get("camera_motion_compensation", {}),
-                             label + ".tracker.camera_motion_compensation", report)
-    if camera_motion.get("enabled", False):
-        for key in ("fx", "fy", "maximum_pose_delta_sec"):
-            report.finite(camera_motion.get(key),
-                          label + ".tracker.camera_motion_compensation." + key,
-                          positive=True)
-        for key in ("cx", "cy"):
-            report.finite(camera_motion.get(key),
-                          label + ".tracker.camera_motion_compensation." + key)
-        report.vector3(camera_motion.get("optical_to_body_rpy"),
-                       label + ".tracker.camera_motion_compensation.optical_to_body_rpy")
-        history = camera_motion.get("pose_history_size")
-        if not isinstance(history, int) or history < 2:
-            report.error(label + ".tracker.camera_motion_compensation.pose_history_size must be >= 2")
 
     frames = _mapping(config.get("frames", {}), label + ".frames", report)
     if frames:
@@ -445,151 +284,15 @@ def validate_detector(config, report, label, strict_metric):
         report.error(label + ".localization.method must be lidar_camera, ground_plane, or gimbal_lrf")
 
 
-def _resolve_package_resource(value, report, label):
-    if not isinstance(value, str) or not value.strip():
-        report.error(label + " must be a non-empty model path")
-        return None
-    value = value.strip()
-    if not value.startswith("package://"):
-        return Path(value).expanduser()
-    package_and_path = value[len("package://"):]
-    package, separator, relative = package_and_path.partition("/")
-    if not package or not separator or not relative:
-        report.error(label + " has an invalid package URI")
-        return None
-    for root in os.environ.get("ROS_PACKAGE_PATH", "").split(":"):
-        candidate = Path(root) / package
-        if candidate.is_dir():
-            return candidate / relative
-    try:
-        import rospkg
-        return Path(rospkg.RosPack().get_path(package)) / relative
-    except Exception:
-        report.error(label + " cannot resolve package " + package)
-        return None
-
-
-def _validate_reid_model(profile, backend, report, label):
-    path = _resolve_package_resource(profile.get("model_path"), report,
-                                     label + ".model_path")
-    if path is None:
-        return
-    if path.is_symlink():
-        report.error(label + ".model_path must not be a symbolic link")
-        return
-    try:
-        resolved = path.resolve(strict=True)
-    except OSError as error:
-        report.error(label + ".model_path: " + str(error))
-        return
-    if not resolved.is_file():
-        report.error(label + ".model_path must be a regular file")
-        return
-    expected_suffix = ".onnx" if backend == "onnx" else ".pt"
-    if resolved.suffix.lower() != expected_suffix:
-        report.error(label + ".model_path must use " + expected_suffix)
-    expected = str(profile.get("sha256", "") or "").strip().lower()
-    require_digest = bool(profile.get("require_sha256", True))
-    if require_digest and (len(expected) != 64 or
-                           any(character not in "0123456789abcdef"
-                               for character in expected)):
-        report.error(label + ".sha256 must contain 64 hexadecimal characters")
-        return
-    if expected:
-        digest = hashlib.sha256()
-        try:
-            with resolved.open("rb") as stream:
-                for block in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(block)
-        except OSError as error:
-            report.error(label + ".model_path: " + str(error))
-            return
-        if digest.hexdigest() != expected:
-            report.error(label + ".sha256 does not match the model file")
-
-
-def validate_reid(config, report, label, requested_profile=""):
-    root = _mapping(config.get("reid", config), label + ".reid", report)
-    synchronization = _mapping(root.get("synchronization", {}),
-                               label + ".reid.synchronization", report)
-    runtime = _mapping(root.get("runtime", {}), label + ".reid.runtime", report)
-    for key in ("maximum_image_delta_sec", "maximum_image_wait_sec"):
-        value = synchronization.get(key)
-        if report.finite(value, label + ".reid.synchronization." + key) and value < 0.0:
-            report.error(label + ".reid.synchronization." + key + " must be >= 0")
-    for key in ("image_cache_size",):
-        value = synchronization.get(key)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 2:
-            report.error(label + ".reid.synchronization." + key + " must be an integer >= 2")
-    for key in ("maximum_rois_per_frame",):
-        value = runtime.get(key)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            report.error(label + ".reid.runtime." + key + " must be an integer >= 1")
-    report.finite(runtime.get("maximum_output_age_sec"),
-                  label + ".reid.runtime.maximum_output_age_sec", positive=True)
-
-    profiles = _mapping(root.get("model_profiles", {}),
-                        label + ".reid.model_profiles", report)
-    active = str(requested_profile or root.get("active_model_profile", "") or "").strip()
-    if not active:
-        report.error(label + ".reid.active_model_profile must be non-empty")
-        return
-    selected = profiles.get(active)
-    if not isinstance(selected, dict):
-        report.error(label + ".reid.model_profiles has no profile " + active)
-        return
-    class_profiles = _mapping(selected.get("class_profiles", {}),
-                              label + ".reid.model_profiles." + active +
-                              ".class_profiles", report)
-    if not class_profiles:
-        report.error(label + ".reid profile " + active + " has no class profiles")
-        return
-    allowed_backends = {"disabled", "none", "histogram", "hybrid", "deep", "onnx"}
-    allowed_fallbacks = {"disabled", "none", "histogram", "hybrid"}
-    owned_classes = {}
-    for name, raw_profile in class_profiles.items():
-        profile_label = (label + ".reid.model_profiles." + active +
-                         ".class_profiles." + str(name))
-        profile = _mapping(raw_profile, profile_label, report)
-        backend = str(profile.get("backend", root.get("default_backend", "hybrid"))).lower()
-        if backend not in allowed_backends:
-            report.error(profile_label + ".backend is unsupported: " + backend)
-        fallback = str(profile.get("fallback_backend", "none") or "none").lower()
-        if fallback not in allowed_fallbacks:
-            report.error(profile_label + ".fallback_backend is unsupported: " + fallback)
-        association_weight = profile.get("association_weight", 1.0)
-        if (report.finite(association_weight,
-                          profile_label + ".association_weight") and
-                not 0.0 <= association_weight <= 1.0):
-            report.error(profile_label + ".association_weight must be in [0, 1]")
-        class_ids = profile.get("class_ids")
-        if not isinstance(class_ids, list) or not class_ids:
-            report.error(profile_label + ".class_ids must be a non-empty list")
-            continue
-        for raw_class_id in class_ids:
-            if not isinstance(raw_class_id, int) or isinstance(raw_class_id, bool) or raw_class_id < 0:
-                report.error(profile_label + ".class_ids must contain non-negative integers")
-                continue
-            previous = owned_classes.get(raw_class_id)
-            if previous is not None:
-                report.error("class id %d belongs to both %s and %s" %
-                             (raw_class_id, previous, name))
-            owned_classes[raw_class_id] = name
-        if backend in ("deep", "onnx"):
-            _validate_reid_model(profile, backend, report, profile_label)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--track-config", action="append", default=[], metavar="YAML")
     parser.add_argument("--detector-config", action="append", default=[], metavar="YAML")
-    parser.add_argument("--reid-config", action="append", default=[], metavar="YAML")
-    parser.add_argument("--reid-profile", default="", metavar="NAME")
     parser.add_argument("--strict-metric", action="store_true",
                         help="reject uncalibrated metric detector configurations")
     args = parser.parse_args()
-    if not args.track_config and not args.detector_config and not args.reid_config:
-        parser.error("at least one track, detector, or ReID config is required")
+    if not args.track_config and not args.detector_config:
+        parser.error("at least one --track-config or --detector-config is required")
     report = Report()
     tracker_config = {}
     for path in args.track_config:
@@ -599,20 +302,14 @@ def main():
                          " + ".join(args.track_config))
     for path in args.detector_config:
         validate_detector(_load(path, report), report, path, args.strict_metric)
-    reid_config = {}
-    for path in args.reid_config:
-        reid_config = merge_mappings(reid_config, _load(path, report))
-    if args.reid_config:
-        validate_reid(reid_config, report, " + ".join(args.reid_config),
-                      args.reid_profile)
     for text in report.warnings:
         print("WARNING: " + text, file=sys.stderr)
     for text in report.errors:
         print("ERROR: " + text, file=sys.stderr)
     if report.errors:
         return 2
-    print("Configuration preflight passed (%d tracker, %d detector, %d ReID file(s))." %
-          (len(args.track_config), len(args.detector_config), len(args.reid_config)))
+    print("Configuration preflight passed (%d tracker, %d detector file(s))." %
+          (len(args.track_config), len(args.detector_config)))
     return 0
 
 

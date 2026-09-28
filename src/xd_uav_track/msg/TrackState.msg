@@ -22,9 +22,7 @@ bool reidentification_match
 bool selected
 bool control_measurement_ready
 float32 tracking_quality
-string association_method          # detector_id / global_spatial / appearance / group_reid
-                                   # long_term_reid / group_memory_reid / number_reid
-                                   # reid_confirming / new / predicted
+string association_method          # detector_id / spatial / appearance / new / predicted
 
 bool has_relative_position_body
 float32[3] relative_position_body
@@ -33,3 +31,4 @@ float32[3] relative_velocity_body
 float32[9] position_covariance
 float32[9] velocity_covariance
 bool range_valid
+

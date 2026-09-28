@@ -11,8 +11,6 @@ import stat
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
-
 from .detection_backend import DetectionBackend, DevicePreference
 from ..detection_adapter import NormalizedDetection
 from ..geometry_utils import obb_xywhr_to_aabb, validate_obb_xywhr
@@ -89,9 +87,6 @@ class UltralyticsBackend(DetectionBackend):
             return "bytetrack", False
         if requested == "custom_reid":
             return "bytetrack", True
-        # Detection-only ROS deployments call detect(), never track(). Keep
-        # this explicit so a production launch cannot accidentally enable an
-        # Ultralytics tracker or emit a misleading fallback warning.
         if requested in {"detection_only", "none"}:
             return "bytetrack", False
         if requested != "botsort":
@@ -219,13 +214,10 @@ class UltralyticsBackend(DetectionBackend):
             )
         suffix = path.suffix.lower()
         if path.is_file() and suffix not in {".pt", ".engine"}:
-            raise ValueError(
-                "Direct SmartTracker backend accepts .pt/.engine or NCNN directories"
-            )
-        if suffix == ".engine" and target_device != "cuda":
-            raise ValueError("TensorRT .engine artifacts require CUDA")
-        if suffix == ".engine" and not self._cuda_available():
-            raise RuntimeError("TensorRT .engine artifact requested without CUDA")
+            raise ValueError("Direct SmartTracker backend accepts .pt/.engine or NCNN directories")
+        if suffix == ".engine":
+            if target_device != "cuda" or not self._cuda_available():
+                raise RuntimeError("TensorRT .engine artifacts require CUDA")
         provenance = self._verify_file(path) if path.is_file() else {
             "verified": False,
             "sha256": None,
@@ -288,14 +280,10 @@ class UltralyticsBackend(DetectionBackend):
         self._runtime_info = {
             "requested_device": requested,
             "effective_device": selected_device,
-            "backend": (
-                "tensorrt_fp16" if selected_path.suffix.lower() == ".engine"
-                else ("cuda_torch" if selected_device == "cuda" else "cpu_torch")
-            ),
-            "model_format": (
-                "tensorrt_engine" if selected_path.suffix.lower() == ".engine"
-                else "ultralytics_pt"
-            ),
+            "backend": ("tensorrt_fp16" if selected_path.suffix.lower() == ".engine"
+                        else ("cuda_torch" if selected_device == "cuda" else "cpu_torch")),
+            "model_format": ("tensorrt_engine" if selected_path.suffix.lower() == ".engine"
+                              else "ultralytics_pt"),
             "model_path": str(selected_path),
             "model_name": selected_path.name,
             "fallback_enabled": bool(fallback_enabled),
@@ -353,18 +341,14 @@ class UltralyticsBackend(DetectionBackend):
         return self._normalize_results(results)
 
     def detect_many(
-        self, frames: List[np.ndarray], conf: float = 0.3,
-        iou: float = 0.3, max_det: int = 20,
+        self, frames: List[Any], conf: float = 0.3, iou: float = 0.3,
+        max_det: int = 20,
     ) -> List[Tuple[str, List[NormalizedDetection]]]:
-        """Infer compatible camera frames in one model call.
-
-        This preserves the detector's model, classes and inference arguments;
-        callers retain the one-frame path when source geometries differ.
-        """
+        """Run one Ultralytics call for same-shaped camera frames."""
         if not frames:
             return []
         if len(frames) == 1:
-            return [self.detect(frames[0], conf=conf, iou=iou, max_det=max_det)]
+            return [self.detect(frames[0], conf, iou, max_det)]
         if self._model is None:
             raise RuntimeError("SmartTracker model is not loaded")
         inference_args = {}
@@ -374,11 +358,10 @@ class UltralyticsBackend(DetectionBackend):
             inference_args["agnostic_nms"] = True
         results = list(self._model.predict(
             frames, conf=conf, iou=iou, max_det=max_det, verbose=False,
-            **inference_args,
-        ))
+            **inference_args))
         if len(results) != len(frames):
             raise RuntimeError("Ultralytics returned an incomplete inference batch")
-        return [self._normalize_result(result) for result in results]
+        return [self._normalize_results([result]) for result in results]
 
     def detect_and_track(
         self,
@@ -443,48 +426,6 @@ class UltralyticsBackend(DetectionBackend):
         boxes = getattr(result, "boxes", None)
         if boxes is None:
             return []
-        # Ultralytics stores xyxy/(optional id)/confidence/class in one tensor.
-        # Pull it to host once instead of synchronizing CUDA separately for
-        # xyxy, conf, cls and id. The fallback below preserves compatibility
-        # with older Ultralytics releases and the lightweight test doubles.
-        raw_data = getattr(boxes, "data", None)
-        try:
-            matrix = raw_data
-            if hasattr(matrix, "detach"):
-                matrix = matrix.detach()
-            if hasattr(matrix, "cpu"):
-                matrix = matrix.cpu()
-            if hasattr(matrix, "numpy"):
-                matrix = matrix.numpy()
-            matrix = np.asarray(matrix)
-            tracked = bool(getattr(boxes, "is_track", False))
-            required_columns = 7 if tracked else 6
-            if matrix.ndim == 2 and matrix.shape[1] >= required_columns:
-                output = []
-                for index, row in enumerate(matrix):
-                    values = tuple(float(value) for value in row[:4])
-                    confidence_column = 5 if tracked else 4
-                    class_column = 6 if tracked else 5
-                    confidence = float(row[confidence_column])
-                    class_id = float(row[class_column])
-                    if not (all(math.isfinite(value) for value in values) and
-                            math.isfinite(confidence) and math.isfinite(class_id)):
-                        continue
-                    aabb = tuple(int(value) for value in values)
-                    track_id = int(row[4]) if tracked else -(index + 1)
-                    output.append(NormalizedDetection(
-                        track_id=track_id,
-                        class_id=int(class_id),
-                        confidence=confidence,
-                        aabb_xyxy=aabb,
-                        center_xy=((aabb[0] + aabb[2]) // 2,
-                                   (aabb[1] + aabb[3]) // 2),
-                        geometry_type="aabb",
-                        track_id_is_stable=tracked,
-                    ))
-                return output
-        except (TypeError, ValueError, IndexError):
-            pass
         xyxy = cls._to_list(getattr(boxes, "xyxy", None))
         confs = cls._to_list(getattr(boxes, "conf", None))
         classes = cls._to_list(getattr(boxes, "cls", None))
@@ -549,10 +490,7 @@ class UltralyticsBackend(DetectionBackend):
     def _normalize_results(cls, results: Any) -> Tuple[str, List[NormalizedDetection]]:
         if not results:
             return "none", []
-        return cls._normalize_result(results[0])
-
-    @classmethod
-    def _normalize_result(cls, result: Any) -> Tuple[str, List[NormalizedDetection]]:
+        result = results[0]
         obb = getattr(result, "obb", None)
         boxes = getattr(result, "boxes", None)
         has_obb = obb is not None and len(getattr(obb, "data", [])) > 0

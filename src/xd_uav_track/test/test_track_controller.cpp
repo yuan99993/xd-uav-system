@@ -254,12 +254,12 @@ TEST(TrackController, FixedWingTargetLossReleasesVelocityReference) {
   EXPECT_DOUBLE_EQ(lost.up, 0.0);
 }
 
-TEST(TrackController, SupportsAllSevenVelocityProfiles) {
+TEST(TrackController, SupportsAllRegisteredFollowerProfiles) {
   const char* names[] = {
       "mc_velocity_ground", "mc_velocity_position",
       "mc_velocity_distance", "mc_velocity_chase",
       "gm_velocity_chase", "gm_velocity_vector",
-      "fw_velocity_vector"};
+      "fw_velocity_vector", "fw_metric_pursuit", "fw_metric_orbit"};
   for (const char* name : names) {
     xd_uav_track::FollowerProfile profile;
     ASSERT_TRUE(xd_uav_track::parseFollowerProfile(name, &profile));
@@ -267,6 +267,35 @@ TEST(TrackController, SupportsAllSevenVelocityProfiles) {
   }
   xd_uav_track::FollowerProfile rejected;
   EXPECT_FALSE(xd_uav_track::parseFollowerProfile("unknown", &rejected));
+}
+
+TEST(TrackController, MetricProfileAcceptsWorldFrameTaskTarget) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingMetricOrbit;
+  config.target_guidance.observation_policy = "metric_required";
+  config.target_guidance.orbit_radius_m = 40.0;
+  config.target_guidance.minimum_turn_radius_m = 20.0;
+  config.target_guidance.commanded_speed = 15.0;
+  config.target_guidance.publish_position_reference = true;
+  xd_uav_track::TrackController controller(config);
+  controller.setVehicleState(metricVehicleState());
+  const std::array<double, 3> target{{80.0, 0.0, 20.0}};
+  std::string reason;
+  ASSERT_TRUE(controller.updateMetricWorldTarget(
+      42, 10.0, 10.0, target, false, {{0.0, 0.0, 0.0}}, 1.0,
+      "task_execute", &reason)) << reason;
+  const auto output = controller.compute(10.01);
+  EXPECT_TRUE(output.valid) << output.invalid_reason << " state="
+                            << output.tracking_state;
+  EXPECT_TRUE(output.metric_target_valid);
+  EXPECT_TRUE(output.metric_active);
+  EXPECT_EQ(output.profile, "fw_metric_orbit");
+  EXPECT_EQ(output.track_id, 42);
+  EXPECT_FALSE(output.target_visible);
+  EXPECT_TRUE(output.position_reference_valid);
+  const auto stale = controller.compute(20.0);
+  EXPECT_FALSE(stale.valid);
+  EXPECT_TRUE(stale.release_reference_on_invalid);
 }
 
 TEST(TrackController, ConfidenceHysteresisKeepsAnAcquiredTarget) {
@@ -730,57 +759,6 @@ TEST(TrackController, FirstMetricCourseCommandIsRateLimited) {
   const auto output = controller.compute(10.01);
   EXPECT_TRUE(output.valid);
   EXPECT_LE(std::abs(output.yaw_rate), 0.35 + 1e-9);
-}
-
-TEST(TrackController, VehiclePoseHistoryRejectsDuplicatesAndHonorsCountCap) {
-  auto config = deterministicConfig();
-  config.maximum_vehicle_state_history_samples = 3;
-  xd_uav_track::TrackController controller(config);
-  for (int index = 0; index < 6; ++index) {
-    auto state = metricVehicleState();
-    state.receive_time = 10.0 + 0.01 * index;
-    state.observation_time = state.receive_time;
-    controller.setVehicleState(state);
-  }
-  auto duplicate = metricVehicleState();
-  duplicate.receive_time = 10.05;
-  duplicate.observation_time = 10.05;
-  controller.setVehicleState(duplicate);
-  const auto stats = controller.runtimeStatistics();
-  EXPECT_EQ(3U, stats.vehicle_state_history_samples);
-  EXPECT_EQ(1U, stats.duplicate_vehicle_states);
-  EXPECT_EQ(3U, stats.vehicle_history_capacity_drops);
-}
-
-TEST(TrackController, MetricHistoryRejectsSameSourceDuplicateAndHonorsCountCap) {
-  auto config = deterministicConfig();
-  config.target_guidance.world_filter_enabled = true;
-  config.target_guidance.world_filter_model = "cv";
-  config.target_guidance.world_filter_mahalanobis_gate = 1e6;
-  config.target_guidance.world_filter_max_innovation_m = 1e6;
-  config.maximum_oosm_history_samples = 3;
-  xd_uav_track::TrackController controller(config);
-  auto state = metricVehicleState();
-  state.observation_time = 10.0;
-  controller.setVehicleState(state);
-  auto measurement = box(280, 200, 360, 280, 1.0, 10.0);
-  measurement.image_source = "fixed_rgb";
-  measurement.has_relative_position_body = true;
-  measurement.range_valid = true;
-  measurement.position_sigma_m = 1.0;
-  measurement.relative_position_body = {{40.0, 0.0, 0.0}};
-  for (int index = 0; index < 6; ++index) {
-    measurement.receive_time = 10.0 + 0.05 * index;
-    measurement.observation_time = measurement.receive_time;
-    ASSERT_TRUE(controller.updateMetricMeasurement(measurement));
-  }
-  std::string reason;
-  EXPECT_FALSE(controller.updateMetricMeasurement(measurement, &reason));
-  EXPECT_NE(reason.find("duplicate"), std::string::npos);
-  const auto stats = controller.runtimeStatistics();
-  EXPECT_EQ(3U, stats.world_filter_history_samples);
-  EXPECT_EQ(1U, stats.duplicate_metric_observations);
-  EXPECT_EQ(3U, stats.oosm_history_capacity_drops);
 }
 
 }  // namespace

@@ -187,64 +187,6 @@ class PixEaglePortableTest(unittest.TestCase):
         self.assertEqual(detections[0].class_id, 0)
         self.assertFalse(detections[0].track_id_is_stable)
 
-    def test_ultralytics_box_tensor_uses_one_host_transfer(self):
-        class Tensor:
-            def __init__(self):
-                self.cpu_calls = 0
-
-            def __len__(self):
-                return 2
-
-            def detach(self):
-                return self
-
-            def cpu(self):
-                self.cpu_calls += 1
-                return self
-
-            def numpy(self):
-                return np.asarray([
-                    [10.2, 20.8, 30.9, 50.1, 0.8, 0.0],
-                    [40.0, 15.0, 70.0, 45.0, 0.7, 2.0],
-                ], dtype=np.float32)
-
-        tensor = Tensor()
-        boxes = SimpleNamespace(data=tensor, is_track=False)
-        mode, detections = UltralyticsBackend._normalize_results(
-            [SimpleNamespace(boxes=boxes, obb=None)]
-        )
-        self.assertEqual(mode, "detect")
-        self.assertEqual(tensor.cpu_calls, 1)
-        self.assertEqual([item.class_id for item in detections], [0, 2])
-        self.assertEqual(detections[0].aabb_xyxy, (10, 20, 30, 50))
-        self.assertTrue(all(not item.track_id_is_stable for item in detections))
-
-    def test_ultralytics_detect_many_preserves_one_result_per_source(self):
-        class Model:
-            def predict(self, frames, **kwargs):
-                self.frames = frames
-                self.kwargs = kwargs
-                return [SimpleNamespace(
-                    boxes=SimpleNamespace(data=[[0, 0, 10, 10, 0.8, index]],
-                                           is_track=False),
-                    obb=None) for index, _ in enumerate(frames)]
-
-        backend = UltralyticsBackend({
-            "SMART_TRACKER_REQUIRE_MODEL_SHA256": False,
-            "SMART_TRACKER_ALLOWED_CLASS_IDS": [0, 1, 2, 3],
-            "SMART_TRACKER_AGNOSTIC_NMS": True,
-        })
-        backend._model = Model()
-        outputs = backend.detect_many([
-            np.zeros((32, 32, 3), dtype=np.uint8),
-            np.zeros((32, 32, 3), dtype=np.uint8),
-        ])
-        self.assertEqual(len(outputs), 2)
-        self.assertEqual([detections[0].class_id for _, detections in outputs], [0, 1])
-        self.assertEqual(len(backend._model.frames), 2)
-        self.assertEqual(backend._model.kwargs["classes"], [0, 1, 2, 3])
-        self.assertTrue(backend._model.kwargs["agnostic_nms"])
-
     def test_model_integrity_accepts_only_matching_digest(self):
         payload = b"trusted-model-fixture"
         expected = hashlib.sha256(payload).hexdigest()

@@ -8,8 +8,6 @@
 runtime:
   publish_rate_hz: 30.0
   state_timeout_sec: 0.30
-  maximum_vehicle_state_history_samples: 400
-  maximum_oosm_history_samples: 128
   # true：直接接 xd_uav_controller；false：只观察 track 下的诊断输出。
   publish_control_reference: true
 
@@ -21,16 +19,14 @@ interfaces:
     vehicle_state: "state_estimator/main/odom"
     gimbal_state: "track/gimbal_state"
     gimbal_status: "track/gimbal_status"
-    # 可选 OCR/QR/AprilTag/人工编号证据；关闭 identity_hints 时无需发布。
-    identity_hints: "track/identity_hints"
+    # Shared world-frame target hand-off used by fw_metric_* profiles.
+    metric_target: "track/metric_target"
   output:
     # 真正送给现有控制器的速度参考。
     control_reference: "control/reference/setpoint"
     # 以下为可观测/调试输出，不是额外的飞控输入。
     body_velocity: "track/velocity_body"
     follower_command: "track/command"
-    # 各相机各自的轨迹快照；原 tracks 继续保持当前控制源的兼容语义。
-    tracks_by_source: "track/tracks_by_source"
     tracks: "track/tracks"
     status: "track/status"
 
@@ -50,53 +46,15 @@ tracker:
 
   # 空=接收全部；也可锁定 eo/ir/逻辑相机名。
   image_source: ""
-  sources:
-    # Empty keeps portable deployments configurable; production overlays should
-    # list their exact image_source values, e.g. [fixed_rgb, gimbal_rgb].
-    allowed: []
-    maximum_sources: 4
-    ttl_sec: 300.0
-    maximum_name_length: 128
   selection:
     auto_select: true              # 未手选时选择质量最高的 confirmed 轨迹
-    # 已锁定目标暂时失检时，不自动跳到画面内的另一对象。
-    # 与长期身份库一致：失联期间停止输出观测控制，但不自动锁定另一目标。
-    locked_target_release_timeout_sec: 60.0
-  global_identity:
-    # Fixed and gimbal streams keep independent local tracklets.  The global
-    # table merges any confirmed target only after capture-time metric/world
-    # gating; matching appearance can reject but never authorize a merge.
-    enabled: true
-    appearance_cosine: 0.78
-    maximum_distance_m: 8.0
-    minimum_margin_m: 0.75
-    # A global ID merge is a safety-sensitive handover, not a cosmetic label
-    # change. Require several monotonic, time-aligned world observations.
-    maximum_time_delta_sec: 0.12
-    confirmation_hits: 3
-    process_noise_mps: 2.0
-    residual_consistency_m: 2.0
-    require_nonzero_timestamps: true
-    ttl_sec: 120.0
-    maximum_entities: 512
   confidence:
     new_track: 0.20
     update: 0.05
-  classification:
-    # car/ar-car/tank/m142 are mutually compatible vehicle subclasses for
-    # identity association. Their public class is still smoothed separately.
-    class_family_by_id: [0, 0, 0, 0]
-    temporal_smoothing_enabled: true
-    smoothing_alpha: 0.25
-    switch_margin: 0.12
-    switch_confirmations: 3
   lifecycle:
     confirmation_hits: 2
     occlusion_frames: 5            # 该阶段允许 Kalman 预测继续短时控制
     removal_frames: 30
-    # 非负时按采集时间管理，避免 5/15/30 FPS 下行为不同；负值保留旧帧数语义。
-    occlusion_timeout_sec: 0.35
-    removal_timeout_sec: 5.0
   limits:
     maximum_tracks: 128
     maximum_embedding_dimension: 2048
@@ -104,92 +62,21 @@ tracker:
     iou_threshold: 0.20
     center_distance: 1.50
     appearance_cosine: 0.78        # 候选含 embedding 时启用外观重识别
-    high_confidence: 0.50          # 高置信检测可创建新 ID
-    low_confidence: 0.10           # 低置信检测只用于维持现有轨迹
-    # A weak first sighting may form an isolated tentative track, but needs
-    # four consistent frames before selection/control is allowed.
-    low_confidence_birth_enabled: true
-    low_confidence_birth_confirmation_hits: 4
-    appearance_gallery_size: 12    # 保留跨光照、视角与相机来源的多样原型
-    appearance_update_confidence: 0.60
-    appearance_minimum_quality: 0.35  # blur/exposure/small-ROI score gate
-    appearance_low_quality_weight: 0.20
-    mahalanobis_gate: 16.0
-    # Area ratio (not width ratio). Six still rejects full-frame/fragment
-    # glitches while tolerating fast apparent-scale change from UAV motion.
-    maximum_scale_ratio: 6.0
-    maximum_aspect_log_change: 0.80
-    # A single detector box that covers two confirmed predictions is treated
-    # as visual occlusion. It is never allowed to steal either public ID.
-    merged_observation_guard:
-      enabled: true
-      minimum_tracks: 2
-      minimum_area_ratio: 1.20
-      minimum_track_iou: 0.03
-    # Close score ties are treated as an unresolved crossing. Keeping both
-    # identities in prediction is safer than applying a plausible ID swap.
-    short_minimum_margin: 0.06
-    selected_minimum_margin: 0.12
-    metric_innovation_distance_m: 25.0
-  # Optional OC-SORT-style observation-centric velocity re-update. Keep CV
-  # Kalman as production default until replay A/B validation is available.
-  oc_sort:
-    enabled: false
-    velocity_blend: 0.50
-  # BoT-SORT-style rotation-only compensation. Enable only after the camera
-  # intrinsics/extrinsics and odometry timestamps are calibrated. Per-source
-  # overrides live below the same key using the image_source name.
-  camera_motion_compensation:
-    enabled: false
-    pose_history_size: 120
-    maximum_pose_delta_sec: 0.05
-    fx: 0.0
-    fy: 0.0
-    cx: 0.0
-    cy: 0.0
-    optical_to_body_rpy: [0.0, 0.0, 0.0]
-  # 普通 ReID 始终是主通道；仅当前两名接近，或多个身份有至少两项
-  # 粗特征一致时，才激活低频 Group-ReID 二次判别。
-  group_reid:
-    enabled: true
-    appearance_cosine: 0.55
-    aspect_log_gate: 0.55
-    source_strict: false
-    maximum_groups: 64
-    trigger_minimum_features: 2
-    trigger_score_margin: 0.12
-    short_occlusion_sec: 1.0
-    long_association_minimum_margin: 0.08
-  long_term_identity:
-    enabled: true
-    ttl_sec: 60.0
-    maximum_identities: 256
-    appearance_cosine: 0.84
-    minimum_margin: 0.08
-    maximum_cost: 0.55
-    reconfirmation_hits: 3
-  identity_hints:
-    # 接入实体喷涂号/OCR、二维码或 AprilTag 时启用。
-    enabled: false
-    maximum_time_delta_sec: 0.10
-    minimum_confidence: 0.55
-    hard_confidence: 0.90
-    iou_gate: 0.30
-    confirmations: 2
-  world_identity:
-    # 对每个有效 metric 候选按采集时刻姿态投影，而非使用接收时刻机体坐标。
-    innovation_gate_sigma: 5.0
-    # 失联后世界位置协方差随时间增长，避免长期使用过度自信的位置门控。
-    process_noise_mps: 2.0
   kalman:
     process_noise: 1.0
     measurement_noise: 1.0
 
 # 4. Follower：目标状态 -> 单一机体系速度向量 -------------------------------
 follower:
-  # mc_velocity_ground | mc_velocity_position | mc_velocity_distance
-  # mc_velocity_chase | gm_velocity_chase | gm_velocity_vector
-  # fw_velocity_vector
+  # mc_velocity_ground 从上往下看，下视相机对齐
+  # mc_velocity_position 控制飞机yaw和上下
+  # mc_velocity_distance 控制飞机左右平移
+  # mc_velocity_chase 带有固定前向速度的，同时可选转向或者侧移
+  # gm_velocity_chase 依据云台角度，进行转向或者侧移，同时前向速度固定
+  # gm_velocity_vector 依据云台三轴角度对一个前向速度向量分解
+  # fw_velocity_vector: 固定翼前视相机，向量跟踪
+  # fw_metric_pursuit: 固定翼目标跟踪
+  # fw_metric_orbit: 固定翼到目标附近盘旋
   profile: "mc_velocity_chase"
   lateral_guidance_mode: "coordinated_turn"  # coordinated_turn | sideslip
   enable_vertical_control: true
@@ -230,7 +117,7 @@ follower:
 
   chase:
     initial_forward_velocity: 0.0
-    forward_velocity: 3.0
+    forward_velocity: 0.0
     forward_ramp_rate: 0.5
 
   # 候选检测含 body forward/right/down 相对位置/速度时，追逐模式自动叠加米制控制。
@@ -270,8 +157,8 @@ follower:
   gm_velocity_chase:
     lateral_guidance_mode: "coordinated_turn"
     forward_mode: "CONSTANT"       # CONSTANT | PITCH_BASED
-    base_forward_speed: 2.0
-    forward_acceleration: 2.0
+    base_forward_speed: 0.0
+    forward_acceleration: 1.0
     pitch_velocity_scaling: 0.15
     pitch_deadzone: 0.035
     maximum_lateral_angle: 1.57

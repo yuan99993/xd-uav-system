@@ -1,14 +1,11 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include <std_msgs/Header.h>
-#include <ros/time.h>
 #include <xd_uav_track/DetectionArray.h>
 #include <xd_uav_track/DetectionCandidate.h>
 #include <xd_uav_track/TrackStateArray.h>
@@ -26,122 +23,8 @@ struct MultiTrackConfig {
   double association_iou_threshold{0.20};
   double association_center_distance{1.50};
   double appearance_minimum_cosine{0.78};
-  // ByteTrack-style association separates reliable detections from weak
-  // detections. A deployment may opt into a quarantined weak-detection birth
-  // path: it needs more consecutive observations and remains tentative until
-  // that independent threshold is reached.
-  double high_confidence_threshold{0.50};
-  double low_confidence_threshold{0.10};
-  bool low_confidence_birth_enabled{false};
-  int low_confidence_birth_confirmation_hits{4};
-  int appearance_gallery_size{12};
-  double appearance_update_minimum_confidence{0.60};
-  double appearance_minimum_quality{0.35};
-  // Quality is used as a soft association weight, never as a reason to drop
-  // a geometrically valid detection.
-  double appearance_low_quality_weight{0.20};
-  // Image-space innovation is evaluated against the Kalman covariance.  It
-  // makes large jumps fail even when their boxes happen to overlap.
-  double association_mahalanobis_gate{16.0};
-  double association_maximum_scale_ratio{6.0};
-  double association_maximum_aspect_log_change{0.80};
-  // A detector occasionally emits one box for two visually merged objects.
-  // When that box covers multiple confirmed predictions it must not update
-  // either identity: keeping both tracks in short-term prediction is safer
-  // than turning a detector merge into an irreversible ID switch.
-  bool merged_observation_guard_enabled{true};
-  int merged_observation_minimum_tracks{2};
-  double merged_observation_minimum_area_ratio{1.20};
-  double merged_observation_minimum_track_iou{0.03};
-  double short_association_minimum_margin{0.06};
-  double selected_association_minimum_margin{0.12};
-  double metric_innovation_distance_m{25.0};
-  // Non-negative values make the lifecycle independent of camera FPS.  A
-  // negative value retains the legacy frame-count behaviour.
-  double occlusion_timeout_sec{-1.0};
-  double removal_timeout_sec{-1.0};
   double process_noise{1.0};
   double measurement_noise{1.0};
-  // Optional semantic parent for every detector class ID. Entries with the
-  // same non-negative value are association-compatible while the published
-  // class remains the temporally smoothed detector subclass. An empty vector
-  // preserves strict legacy class matching.
-  std::vector<int> class_family_by_id;
-  bool class_temporal_smoothing_enabled{false};
-  double class_smoothing_alpha{0.25};
-  double class_switch_margin{0.12};
-  int class_switch_confirmations{3};
-  // OC-SORT observation-centric re-update is an opt-in A/B path. CV Kalman
-  // remains the default for existing deployments.
-  bool observation_centric_reupdate_enabled{false};
-  double observation_centric_velocity_blend{0.50};
-
-  // Group-ReID first narrows candidates by stable coarse attributes. The
-  // group identifier is deliberately internal: public track IDs remain the
-  // only identity exposed by TrackState/DetectionCandidate.
-  bool group_reid_enabled{true};
-  double group_appearance_minimum_cosine{0.55};
-  double group_aspect_log_gate{0.55};
-  bool group_source_strict{false};
-  int maximum_groups{64};
-  int group_trigger_minimum_features{2};
-  double group_trigger_score_margin{0.12};
-
-  // Active association changes its evidence balance as an observation ages.
-  double short_occlusion_sec{1.0};
-  double long_association_minimum_margin{0.08};
-
-  // A long-term identity memory is separate from the active Kalman tracks.
-  bool long_term_memory_enabled{true};
-  double long_term_memory_ttl_sec{60.0};
-  int long_term_memory_maximum_identities{256};
-  double long_term_memory_minimum_cosine{0.84};
-  double long_term_memory_minimum_margin{0.08};
-  double long_term_memory_maximum_cost{0.55};
-  int long_term_reconfirmation_hits{3};
-
-  // Optional OCR/QR/AprilTag/operator labels. A stable label requires more
-  // than one observation, so a single noisy recognition cannot overwrite an
-  // identity. A high-confidence conflict is a hard association rejection.
-  double identity_hint_minimum_confidence{0.55};
-  double identity_hint_hard_confidence{0.90};
-  double identity_hint_iou_gate{0.30};
-  int identity_hint_confirmations{2};
-  double world_innovation_gate_sigma{5.0};
-  double world_process_noise_mps{2.0};
-};
-
-// Transport-neutral identity evidence attached to one detection frame. The
-// node converts optional IdentityHintArray messages into this representation.
-struct TargetIdentityHint {
-  int class_id{-1};
-  std::array<double, 4> normalized_bbox{{0.0, 0.0, 0.0, 0.0}};
-  std::string identity_label;
-  std::string source_type;
-  double confidence{0.0};
-  ros::Time capture_stamp;
-};
-
-struct TargetWorldObservation {
-  std::size_t candidate_index{0};
-  std::array<double, 3> position{{0.0, 0.0, 0.0}};
-  std::array<double, 3> velocity{{0.0, 0.0, 0.0}};
-  bool velocity_valid{false};
-  double sigma_m{1.0};
-  ros::Time capture_stamp;
-};
-
-// Rotation-only image homography obtained from synchronized UAV pose and
-// calibrated camera intrinsics/extrinsics. It maps the previous normalized
-// image plane into the current one. Translation is intentionally excluded:
-// without a depth estimate it would fabricate parallax.
-struct CameraMotionCompensation {
-  bool valid{false};
-  std::array<double, 9> normalized_homography{{1.0, 0.0, 0.0,
-                                                 0.0, 1.0, 0.0,
-                                                 0.0, 0.0, 1.0}};
-  ros::Time previous_stamp;
-  ros::Time current_stamp;
 };
 
 struct MultiTrackStatistics {
@@ -153,18 +36,9 @@ struct MultiTrackStatistics {
   std::size_t active_tracks{0};
 };
 
-struct ManagedTrackWorldObservation {
-  int track_id{-1};
-  TargetWorldObservation observation;
-};
-
 struct ManagedDetectionFrame {
   xd_uav_track::DetectionArray candidates;
   xd_uav_track::TrackStateArray tracks;
-  // Accepted metric observations keyed by the assigned public track ID.
-  // Keeping this mapping inside the association result avoids using stale
-  // input candidate indices after malformed/outlier detections are removed.
-  std::vector<ManagedTrackWorldObservation> world_observations;
 };
 
 // Maintains an independent constant-velocity Kalman state and lifecycle for
@@ -188,29 +62,8 @@ class MultiTrackManager {
   ManagedDetectionFrame update(const xd_uav_track::DetectionArray& detections,
                                int image_width, int image_height,
                                const std::string& image_source);
-  ManagedDetectionFrame update(
-      const xd_uav_track::DetectionArray& detections, int image_width,
-      int image_height, const std::string& image_source,
-      const std::vector<TargetIdentityHint>& identity_hints);
-  ManagedDetectionFrame update(
-      const xd_uav_track::DetectionArray& detections, int image_width,
-      int image_height, const std::string& image_source,
-      const std::vector<TargetIdentityHint>& identity_hints,
-      const std::vector<TargetWorldObservation>& world_observations);
-  ManagedDetectionFrame update(
-      const xd_uav_track::DetectionArray& detections, int image_width,
-      int image_height, const std::string& image_source,
-      const std::vector<TargetIdentityHint>& identity_hints,
-      const std::vector<TargetWorldObservation>& world_observations,
-      const CameraMotionCompensation& camera_motion);
   bool latestCandidate(int track_id, xd_uav_track::DetectionCandidate* candidate,
                        std_msgs::Header* header = nullptr) const;
-  // Returns a repeatedly-confirmed physical label from either the active
-  // track or long-term memory. Unconfirmed OCR/QR samples are never exposed.
-  bool identityLabel(int track_id, std::string* label) const;
-  // Promote a source-local tracklet to a verified global public identity.
-  // The caller must perform cross-source time/world/class gating first.
-  bool adoptPublicId(int local_track_id, int global_public_id);
   void setSelectedTrackId(int track_id);
   int selectedTrackId() const;
   void reset();

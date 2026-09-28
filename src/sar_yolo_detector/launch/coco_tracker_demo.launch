@@ -1,0 +1,52 @@
+<launch>
+  <!--
+    Repeatable real-model smoke test:
+      image file -> sar_yolo_detector -> vision_msgs/Detection2DArray -> tracker
+    Paths are explicit arguments so no machine-local `pod` package or asset is
+    implicitly required.
+  -->
+  <arg name="model_path" default="" />
+  <arg name="image_path" default="" />
+  <arg name="image_topic" default="sar_yolo_demo/camera/image_raw" />
+  <arg name="publish_rate_hz" default="10.0" />
+  <arg name="config" default="$(find sar_yolo_detector)/config/detector.yaml" />
+  <arg name="inference_backend" default="opencv_darknet" />
+  <arg name="network_config_path" default="" />
+  <arg name="frame_width" default="640" />
+  <arg name="frame_height" default="424" />
+  <!-- CPU-only YOLOv3-tiny demo.  Keep this bounded below its 1 s OOSM
+       replay horizon; production TensorRT deployments retain the 0.5 s
+       detector default. -->
+  <arg name="maximum_capture_age_sec" default="0.8" />
+
+  <node pkg="sar_yolo_detector" type="sar_yolo_image_replay"
+        name="sar_yolo_image_replay" output="screen" required="true">
+    <param name="image_path" value="$(arg image_path)" />
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="publish_rate_hz" value="$(arg publish_rate_hz)" />
+  </node>
+
+  <include file="$(find sar_yolo_detector)/launch/tracker_integration.launch">
+    <arg name="model_path" value="$(arg model_path)" />
+    <arg name="config" value="$(arg config)" />
+    <arg name="image_topic" value="$(arg image_topic)" />
+    <arg name="camera_info_topic" value="sar_yolo_demo/camera/camera_info" />
+    <arg name="frame_width" value="$(arg frame_width)" />
+    <arg name="frame_height" value="$(arg frame_height)" />
+    <arg name="image_source" value="eo" />
+    <arg name="use_camera_info" value="false" />
+    <arg name="use_dynamic_camera_tf" value="false" />
+    <arg name="id_loss_tolerance_frames" value="30" />
+    <!-- CPU compatibility inference has materially higher latency than a
+         TensorRT deployment, so only this demonstration keeps a larger yet
+         bounded OOSM history. -->
+    <arg name="oosm_history_duration_sec" value="1.0" />
+    <arg name="oosm_max_snapshots" value="80" />
+    <arg name="inference_backend" value="$(arg inference_backend)" />
+    <arg name="network_config_path" value="$(arg network_config_path)" />
+    <arg name="roi_recheck_enabled" value="true" />
+    <arg name="roi_recheck_interval_sec" value="0.5" />
+    <arg name="roi_recheck_max_rate_hz" value="2.0" />
+    <arg name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
+  </include>
+</launch>
