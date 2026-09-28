@@ -3,6 +3,7 @@
 #include <clocale>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -21,6 +22,11 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <trajectory_msgs/MultiDOFJointTrajectory.h>
+
+#include <xd_uav_controller/control_types.h>
+#include <xd_uav_controller/backend_resolver.h>
+#include <xd_uav_controller/functional_controller_backends.h>
+#include <xd_uav_controller/unified_reference.h>
 
 #include <xd_uav_controller/ControlCommand.h>
 #include <xd_uav_controller/ControlState.h>
@@ -52,7 +58,8 @@ bool finite(const geometry_msgs::Point& value) {
          std::isfinite(value.z);
 }
 
-using AxisMask = std::array<bool, 3>;
+using AxisMask = xd_uav_controller::AxisMask;
+using Reference = xd_uav_controller::UnifiedReference;
 
 bool anyAxis(const AxisMask& mask) {
   return mask[0] || mask[1] || mask[2];
@@ -245,30 +252,7 @@ class FiniteHorizonAxisMpc {
   std::array<double, 2> terminal_q_{{1000.0, 300.0}};
 };
 
-struct ControllerResult {
-  Eigen::Vector3d body_rate{Eigen::Vector3d::Zero()};
-  double thrust{0.0};
-  bool valid{false};
-  std::string reason;
-};
-
-struct Reference {
-  std_msgs::Header header;
-  geometry_msgs::Point position;
-  geometry_msgs::Vector3 velocity;
-  geometry_msgs::Vector3 acceleration;
-  geometry_msgs::Vector3 jerk;
-  double yaw{0.0};
-  double yaw_rate{0.0};
-  AxisMask use_position{{false, false, false}};
-  AxisMask use_velocity{{false, false, false}};
-  AxisMask use_acceleration{{false, false, false}};
-  bool use_jerk{false};
-  bool use_yaw{false};
-  bool use_yaw_rate{false};
-  bool trajectory_reference{false};
-  bool path_reference{false};
-};
+using ControllerResult = xd_uav_controller::BackendOutput;
 
 // Canonical target consumed by the fixed-wing control law. Input adapters
 // may start from a trajectory, a masked PositionTarget or an internal mode,
@@ -292,6 +276,28 @@ class ControllerNode {
   ControllerNode()
       : private_nh_("~"), tf_listener_(tf_buffer_) {
     loadParameters();
+    if (load_multirotor_) {
+      multirotor_backend_ = std::make_unique<
+          xd_uav_controller::MultirotorControllerBackend>(
+          [this](const xd_uav_controller::ControlState&,
+                 const Reference& reference, const ros::Time& now,
+                 double) { return multirotorControl(reference, now); },
+          [this]() { resetMultirotorControlState(); });
+      if (!multirotor_backend_->configure(private_nh_)) {
+        throw std::runtime_error("multirotor backend配置失败");
+      }
+    }
+    if (load_fixedwing_) {
+      fixedwing_backend_ = std::make_unique<
+          xd_uav_controller::FixedWingControllerBackend>(
+          [this](const xd_uav_controller::ControlState&,
+                 const Reference& reference, const ros::Time& now,
+                 double) { return fixedwingControl(reference, now); },
+          [this]() { resetFixedwingControlState(); });
+      if (!fixedwing_backend_->configure(private_nh_)) {
+        throw std::runtime_error("fixed-wing backend配置失败");
+      }
+    }
     state_subscriber_ = nh_.subscribe(
         "state", 20, &ControllerNode::stateCallback, this);
     distance_sensor_subscriber_ = nh_.subscribe(
@@ -335,19 +341,38 @@ class ControllerNode {
 
  private:
   void loadParameters() {
-    private_nh_.param("vehicle_type", vehicle_type_,
-                      std::string("multirotor"));
-    if (vehicle_type_ != "multirotor" &&
-        vehicle_type_ != "fixedwing") {
-      throw std::runtime_error(
-          "vehicle_type必须是multirotor或fixedwing");
+    std::string configured_airframe;
+    if (!private_nh_.getParam("airframe_type", configured_airframe)) {
+      private_nh_.param("vehicle_type", configured_airframe,
+                        std::string("multirotor"));
+      ROS_WARN("[xd_uav_controller] vehicle_type已废弃，请使用airframe_type");
     }
+    airframe_type_ = xd_uav_controller::parseAirframeType(
+        configured_airframe);
+    if (airframe_type_ == xd_uav_controller::AirframeType::kUnknown) {
+      throw std::runtime_error(
+          "airframe_type必须是multirotor、fixedwing/fixed_wing、vtol或tiltrotor");
+    }
+    vehicle_type_ = configured_airframe;
+    load_multirotor_ =
+        airframe_type_ != xd_uav_controller::AirframeType::kFixedWing;
+    load_fixedwing_ =
+        airframe_type_ != xd_uav_controller::AirframeType::kMultirotor;
     vehicle_type_id_ =
-        vehicle_type_ == "multirotor"
-            ? xd_uav_controller::ControlState::VEHICLE_MULTIROTOR
-            : xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
+        airframe_type_ == xd_uav_controller::AirframeType::kFixedWing
+            ? xd_uav_controller::ControlState::VEHICLE_FIXEDWING
+            : xd_uav_controller::ControlState::VEHICLE_MULTIROTOR;
+    if (xd_uav_controller::isVtolAirframe(airframe_type_)) {
+      private_nh_.param("vtol/backend/transition_policy",
+                        vtol_transition_policy_,
+                        std::string("source_backend"));
+      if (vtol_transition_policy_ != "source_backend") {
+        throw std::runtime_error(
+            "vtol/backend/transition_policy当前仅支持source_backend");
+      }
+    }
     private_nh_.param("control_rate", control_rate_,
-                      vehicle_type_ == "multirotor" ? 100.0 : 50.0);
+                      load_multirotor_ ? 100.0 : 50.0);
     loadParameterWithLegacy(
         private_nh_, "state_input/timeout", "state_timeout",
         &state_timeout_, 0.20);
@@ -399,7 +424,7 @@ class ControllerNode {
     private_nh_.param(
         "reference_input/path/status_rate", path_status_rate_, 10.0);
 
-    if (vehicle_type_ == "multirotor") {
+    if (load_multirotor_) {
       loadParameterWithLegacy(
           private_nh_, "multirotor/model/gravity",
           "multirotor/gravity", &gravity_, 9.80665);
@@ -457,6 +482,24 @@ class ControllerNode {
           private_nh_, "multirotor/position_control/mpc/terminal_q",
           "multirotor/mpc/terminal_q", {{1000.0, 300.0}});
       mpc_.configure(horizon, dt, q, terminal_q, r);
+      int vertical_horizon = horizon;
+      double vertical_r = r;
+      private_nh_.param(
+          "multirotor/position_control/mpc_z/horizon",
+          vertical_horizon, horizon);
+      private_nh_.param(
+          "multirotor/position_control/mpc_z/r",
+          vertical_r, r);
+      const auto vertical_q = loadVector2WithLegacy(
+          private_nh_, "multirotor/position_control/mpc_z/q",
+          "multirotor/mpc_z/q", q);
+      const auto vertical_terminal_q = loadVector2WithLegacy(
+          private_nh_,
+          "multirotor/position_control/mpc_z/terminal_q",
+          "multirotor/mpc_z/terminal_q", terminal_q);
+      vertical_mpc_.configure(
+          vertical_horizon, dt, vertical_q,
+          vertical_terminal_q, vertical_r);
       mpc_dt_ = dt;
       loadParameterWithLegacy(
           private_nh_, "multirotor/limits/maximum_velocity_xy",
@@ -526,7 +569,8 @@ class ControllerNode {
           "acceleration_integral_acceleration_limit",
           "multirotor/mpc/acceleration_integral_acceleration_limit",
           {{1.0, 1.0, 1.0}});
-    } else {
+    }
+    if (load_fixedwing_) {
       loadParameterWithLegacy(
           private_nh_, "fixedwing/model/gravity",
           "fixedwing/gravity", &gravity_, 9.80665);
@@ -747,151 +791,155 @@ class ControllerNode {
           0.0, 0.5 * kPi);
     }
 
-    private_nh_.param("takeoff/default_altitude",
-                      takeoff_default_altitude_,
-                      vehicle_type_ == "multirotor" ? 2.0 : 30.0);
-    private_nh_.param("takeoff/max_velocity",
+    private_nh_.param("multirotor/takeoff/default_altitude",
+                      multirotor_takeoff_default_altitude_, 2.0);
+    private_nh_.param("fixedwing/takeoff/default_altitude",
+                      fixedwing_takeoff_default_altitude_, 30.0);
+    private_nh_.param("multirotor/takeoff/max_velocity",
                       takeoff_max_velocity_, 0.8);
-    private_nh_.param("takeoff/max_acceleration",
+    private_nh_.param("multirotor/takeoff/max_acceleration",
                       takeoff_max_acceleration_, 0.6);
-    private_nh_.param("takeoff/position_tolerance",
+    private_nh_.param("multirotor/takeoff/position_tolerance",
                       takeoff_position_tolerance_, 0.15);
-    private_nh_.param("takeoff/velocity_tolerance",
+    private_nh_.param("multirotor/takeoff/velocity_tolerance",
                       takeoff_velocity_tolerance_, 0.15);
-    private_nh_.param("takeoff/takeoff_throttle",
+    private_nh_.param("fixedwing/takeoff/takeoff_throttle",
                       fixedwing_takeoff_throttle_, 0.9);
-    private_nh_.param("takeoff/rotate_airspeed",
+    private_nh_.param("fixedwing/takeoff/rotate_airspeed",
                       fixedwing_rotate_airspeed_, 12.0);
-    private_nh_.param("takeoff/climb_airspeed",
+    private_nh_.param("fixedwing/takeoff/climb_airspeed",
                       fixedwing_climb_airspeed_, 15.0);
-    private_nh_.param("takeoff/climb_pitch",
+    private_nh_.param("fixedwing/takeoff/climb_pitch",
                       fixedwing_climb_pitch_, 0.21);
-    private_nh_.param("takeoff/altitude_tolerance",
+    private_nh_.param("fixedwing/takeoff/altitude_tolerance",
                       fixedwing_altitude_tolerance_, 3.0);
-    private_nh_.param("landing/height_source",
+    private_nh_.param("multirotor/landing/height_source",
                       landing_height_source_,
                       std::string("odom"));
     loadParameterWithLegacy(
-        private_nh_, "landing/return_max_velocity",
+        private_nh_, "multirotor/landing/return_max_velocity",
         "landing/return_velocity", &landing_return_max_velocity_, 1.0);
-    private_nh_.param("landing/position_tolerance",
+    private_nh_.param("multirotor/landing/capture_radius",
+                      landing_capture_radius_, 2.0);
+    private_nh_.param("multirotor/landing/position_tolerance",
                       landing_position_tolerance_, 0.20);
-    private_nh_.param("landing/velocity_tolerance",
+    private_nh_.param("multirotor/landing/velocity_tolerance",
                       landing_velocity_tolerance_, 0.20);
-    if (vehicle_type_ == "multirotor") {
+    if (load_multirotor_) {
       loadParameterWithLegacy(
-          private_nh_, "landing/distance_sensor_cfg/timeout",
+          private_nh_, "multirotor/landing/distance_sensor_cfg/timeout",
           "landing/distance_sensor_timeout",
           &distance_sensor_landing_config_.timeout, 0.5);
       loadParameterWithLegacy(
           private_nh_,
-          "landing/distance_sensor_cfg/velocity_filter_time_constant",
+          "multirotor/landing/distance_sensor_cfg/velocity_filter_time_constant",
           "landing/distance_sensor_velocity_filter_time_constant",
           &distance_sensor_landing_config_
                .velocity_filter_time_constant,
           0.30);
       loadParameterWithLegacy(
-          private_nh_, "landing/distance_sensor_cfg/descent_velocity",
+          private_nh_, "multirotor/landing/distance_sensor_cfg/descent_velocity",
           "landing/descent_velocity",
           &distance_sensor_landing_config_.descent_velocity, 0.35);
       loadParameterWithLegacy(
           private_nh_,
-          "landing/distance_sensor_cfg/final_descent_velocity",
+          "multirotor/landing/distance_sensor_cfg/final_descent_velocity",
           "landing/final_descent_velocity",
           &distance_sensor_landing_config_.final_descent_velocity,
           0.15);
       loadParameterWithLegacy(
-          private_nh_, "landing/distance_sensor_cfg/slow_height",
+          private_nh_, "multirotor/landing/distance_sensor_cfg/slow_height",
           "landing/slow_height",
           &distance_sensor_landing_config_.slow_height, 0.7);
       loadParameterWithLegacy(
-          private_nh_, "landing/distance_sensor_cfg/touchdown_offset",
+          private_nh_, "multirotor/landing/distance_sensor_cfg/touchdown_offset",
           "landing/touchdown_offset",
           &distance_sensor_landing_config_.touchdown_offset, 0.15);
       loadParameterWithLegacy(
           private_nh_,
-          "landing/distance_sensor_cfg/touchdown_height_tolerance",
+          "multirotor/landing/distance_sensor_cfg/touchdown_height_tolerance",
           "landing/touchdown_height_tolerance",
           &distance_sensor_landing_config_
                .touchdown_height_tolerance,
           0.10);
       loadParameterWithLegacy(
           private_nh_,
-          "landing/distance_sensor_cfg/touchdown_velocity_tolerance",
+          "multirotor/landing/distance_sensor_cfg/touchdown_velocity_tolerance",
           "landing/touchdown_velocity_tolerance",
           &distance_sensor_landing_config_
                .touchdown_velocity_tolerance,
           0.20);
 
       loadParameterWithLegacy(
-          private_nh_, "landing/odom_cfg/descent_velocity",
+          private_nh_, "multirotor/landing/odom_cfg/descent_velocity",
           "landing/descent_velocity",
           &odom_landing_config_.descent_velocity, 0.35);
       loadParameterWithLegacy(
-          private_nh_, "landing/odom_cfg/final_descent_velocity",
+          private_nh_, "multirotor/landing/odom_cfg/final_descent_velocity",
           "landing/final_descent_velocity",
           &odom_landing_config_.final_descent_velocity, 0.15);
       loadParameterWithLegacy(
-          private_nh_, "landing/odom_cfg/slow_height",
+          private_nh_, "multirotor/landing/odom_cfg/slow_height",
           "landing/slow_height",
           &odom_landing_config_.slow_height, 0.7);
       loadParameterWithLegacy(
-          private_nh_, "landing/odom_cfg/touchdown_offset",
+          private_nh_, "multirotor/landing/odom_cfg/touchdown_offset",
           "landing/touchdown_offset",
           &odom_landing_config_.touchdown_offset, 0.15);
       loadParameterWithLegacy(
           private_nh_,
-          "landing/odom_cfg/touchdown_height_tolerance",
+          "multirotor/landing/odom_cfg/touchdown_height_tolerance",
           "landing/touchdown_height_tolerance",
           &odom_landing_config_.touchdown_height_tolerance, 0.10);
       loadParameterWithLegacy(
           private_nh_,
-          "landing/odom_cfg/touchdown_velocity_tolerance",
+          "multirotor/landing/odom_cfg/touchdown_velocity_tolerance",
           "landing/touchdown_velocity_tolerance",
           &odom_landing_config_.touchdown_velocity_tolerance, 0.20);
-    } else {
-      private_nh_.param("landing/touchdown_offset",
+    }
+    if (load_fixedwing_) {
+      private_nh_.param("fixedwing/landing/touchdown_offset",
                         landing_touchdown_offset_, 0.15);
     }
-    private_nh_.param("landing/approach_distance",
+    private_nh_.param("fixedwing/landing/approach_distance",
                       fixedwing_landing_approach_distance_, 400.0);
-    private_nh_.param("landing/approach_height",
+    private_nh_.param("fixedwing/landing/approach_height",
                       fixedwing_landing_approach_height_, 30.0);
-    private_nh_.param("landing/approach_airspeed",
+    private_nh_.param("fixedwing/landing/approach_airspeed",
                       fixedwing_landing_approach_airspeed_, 15.0);
-    private_nh_.param("landing/approach_acceptance_radius",
+    private_nh_.param("fixedwing/landing/approach_acceptance_radius",
                       fixedwing_landing_approach_acceptance_radius_,
                       50.0);
-    private_nh_.param("landing/approach_altitude_tolerance",
+    private_nh_.param("fixedwing/landing/approach_altitude_tolerance",
                       fixedwing_landing_approach_altitude_tolerance_,
                       8.0);
-    private_nh_.param("landing/approach_course_tolerance",
+    private_nh_.param("fixedwing/landing/approach_course_tolerance",
                       fixedwing_landing_approach_course_tolerance_,
                       0.52);
     private_nh_.param(
-        "landing/approach_capture_turn_radius_factor",
+        "fixedwing/landing/approach_capture_turn_radius_factor",
         fixedwing_landing_approach_capture_turn_radius_factor_,
         2.0);
-    private_nh_.param("landing/line_lookahead_distance",
+    private_nh_.param("fixedwing/landing/line_lookahead_distance",
                       fixedwing_landing_line_lookahead_distance_,
                       80.0);
-    private_nh_.param("landing/max_course_correction",
+    private_nh_.param("fixedwing/landing/max_course_correction",
                       fixedwing_landing_max_course_correction_,
                       0.70);
-    private_nh_.param("landing/glide_slope_angle",
+    private_nh_.param("fixedwing/landing/glide_slope_angle",
                       fixedwing_landing_glide_slope_angle_, 0.08);
-    private_nh_.param("landing/local_touchdown_ahead",
+    private_nh_.param("fixedwing/landing/local_touchdown_ahead",
                       fixedwing_landing_local_touchdown_ahead_, 400.0);
-    private_nh_.param("landing/rollout_distance",
+    private_nh_.param("fixedwing/landing/rollout_distance",
                       fixedwing_landing_rollout_distance_, 200.0);
-    private_nh_.param("landing/max_roll",
+    private_nh_.param("fixedwing/landing/max_roll",
                       fixedwing_landing_max_roll_, 0.35);
-    private_nh_.param("landing/touchdown_height_tolerance",
+    private_nh_.param("fixedwing/landing/touchdown_height_tolerance",
                       fixedwing_landing_touchdown_height_tolerance_,
                       1.0);
-    private_nh_.param("landing/touchdown_groundspeed",
+    private_nh_.param("fixedwing/landing/touchdown_groundspeed",
                       fixedwing_landing_touchdown_groundspeed_, 2.0);
-    private_nh_.param("landing/touchdown_vertical_speed",
+    private_nh_.param("fixedwing/landing/touchdown_vertical_speed",
                       fixedwing_landing_touchdown_vertical_speed_, 2.0);
     private_nh_.param("home/mode", home_mode_,
                       std::string("takeoff"));
@@ -918,7 +966,7 @@ class ControllerNode {
       throw std::runtime_error(
           "landing/height_source必须是odom或distance_sensor");
     }
-    if (vehicle_type_ == "fixedwing" &&
+    if (load_fixedwing_ &&
         landing_height_source_ != "odom") {
       throw std::runtime_error(
           "固定翼landing/height_source目前只支持odom");
@@ -957,7 +1005,7 @@ class ControllerNode {
         !std::isfinite(fixed_home_yaw_)) {
       throw std::runtime_error("公共home配置包含空frame或非法数值");
     }
-    if (vehicle_type_ == "multirotor") {
+    if (load_multirotor_) {
       const auto vertical_landing_config_valid = [](
           const MultirotorVerticalLandingConfig& config) {
         return std::isfinite(config.descent_velocity) &&
@@ -993,6 +1041,8 @@ class ControllerNode {
                   .velocity_filter_time_constant <= 0.0 ||
           !std::isfinite(landing_return_max_velocity_) ||
           landing_return_max_velocity_ <= 0.0 ||
+          !std::isfinite(landing_capture_radius_) ||
+          landing_capture_radius_ <= landing_position_tolerance_ ||
           !std::isfinite(landing_position_tolerance_) ||
           landing_position_tolerance_ < 0.0 ||
           !std::isfinite(landing_velocity_tolerance_) ||
@@ -1048,7 +1098,7 @@ class ControllerNode {
       throw std::runtime_error(
           "固定翼landing参数不在安全范围内");
     }
-    if (vehicle_type_ == "fixedwing" &&
+    if (load_fixedwing_ &&
         (fixedwing_path_curvature_distance_ <= 0.0 ||
          fixedwing_path_curvature_preview_time_ < 0.0 ||
          fixedwing_guidance_lookahead_distance_ <= 0.0 ||
@@ -1114,6 +1164,55 @@ class ControllerNode {
     fixedwing_landing_max_roll_ = clamp(
         std::abs(fixedwing_landing_max_roll_),
         0.05, max_roll_);
+  }
+
+  xd_uav_controller::FlightRegime activeFlightRegime() const {
+    if (!have_state_) {
+      return xd_uav_controller::staticRegimeForAirframe(airframe_type_);
+    }
+    // 旧版ControlState没有机架/阶段字段。固定翼旧消息会保留默认的
+    // MULTIROTOR/HOVER，但其vehicle_type仍能可靠表示静态机型。
+    if (!xd_uav_controller::isVtolAirframe(airframe_type_) &&
+        state_.airframe_type != static_cast<uint8_t>(airframe_type_) &&
+        state_.vehicle_type == vehicle_type_id_) {
+      return xd_uav_controller::staticRegimeForAirframe(airframe_type_);
+    }
+    return static_cast<xd_uav_controller::FlightRegime>(
+        state_.flight_regime);
+  }
+
+  xd_uav_controller::BackendId activeBackend() const {
+    if (have_state_ &&
+        state_.airframe_type != static_cast<uint8_t>(airframe_type_) &&
+        (xd_uav_controller::isVtolAirframe(airframe_type_) ||
+         state_.vehicle_type != vehicle_type_id_)) {
+      return xd_uav_controller::BackendId::kNone;
+    }
+    const auto resolution = xd_uav_controller::resolveBackend(
+        airframe_type_, activeFlightRegime(), active_backend_);
+    return resolution.valid ? resolution.backend
+                            : xd_uav_controller::BackendId::kNone;
+  }
+
+  xd_uav_controller::ControllerBackend* backendById(
+      const xd_uav_controller::BackendId id) const {
+    if (id == xd_uav_controller::BackendId::kMultirotor) {
+      return multirotor_backend_.get();
+    }
+    if (id == xd_uav_controller::BackendId::kFixedWing) {
+      return fixedwing_backend_.get();
+    }
+    return nullptr;
+  }
+
+  bool isMultirotorBackendActive() const {
+    return activeBackend() ==
+           xd_uav_controller::BackendId::kMultirotor;
+  }
+
+  bool isFixedwingBackendActive() const {
+    return activeBackend() ==
+           xd_uav_controller::BackendId::kFixedWing;
   }
 
   static std::string canonicalFrame(const std::string& frame) {
@@ -1477,6 +1576,8 @@ class ControllerNode {
     }
 
     Reference reference;
+    reference.type = xd_uav_controller::ReferenceType::kPositionTarget;
+    reference.source = "position_target";
     reference.header = message.header;
     reference.header.frame_id =
         canonicalFrame(message.header.frame_id);
@@ -1569,7 +1670,7 @@ class ControllerNode {
   bool positionTargetSupportedByVehicle(
       const Reference& reference,
       std::string* reason) const {
-    if (vehicle_type_ != "fixedwing") {
+    if (!isFixedwingBackendActive()) {
       return true;
     }
     if (!anyAxis(reference.use_position) &&
@@ -1607,7 +1708,30 @@ class ControllerNode {
     state_ = *message;
     last_state_receive_ = ros::Time::now();
     have_state_ = true;
-    if (vehicle_type_ == "multirotor" &&
+    const xd_uav_controller::BackendId selected_backend =
+        activeBackend();
+    if (selected_backend != xd_uav_controller::BackendId::kNone &&
+        selected_backend != active_backend_) {
+      if (auto* previous = backendById(active_backend_)) {
+        previous->onDeactivate();
+      }
+      Reference handover_reference =
+          have_reference_ ? reference_ : Reference{};
+      if (auto* next = backendById(selected_backend)) {
+        next->onActivate(state_, handover_reference);
+      } else {
+        ROS_ERROR("[xd_uav_controller] 请求的控制后端未配置");
+        return;
+      }
+      active_backend_ = selected_backend;
+      ROS_INFO("[xd_uav_controller] 控制后端切换为%s，阶段代次=%u",
+               selected_backend ==
+                       xd_uav_controller::BackendId::kMultirotor
+                   ? "multirotor"
+                   : "fixedwing",
+               state_.regime_generation);
+    }
+    if (isMultirotorBackendActive() &&
         (!state_.state_valid ||
          !finite(state_.acceleration_odom))) {
       resetMultirotorControlState();
@@ -1788,7 +1912,7 @@ class ControllerNode {
   void updateFixedwingExternalSetpointGuidance(
       const Reference& reference,
       const bool starting_new_mode) {
-    if (vehicle_type_ != "fixedwing") {
+    if (!isFixedwingBackendActive()) {
       return;
     }
 
@@ -1895,6 +2019,12 @@ class ControllerNode {
       rejectExternalReference(reason);
       return;
     }
+    if (pending_simple_goal_sequence_ != 0U &&
+        message->header.seq == pending_simple_goal_sequence_) {
+      source.type = xd_uav_controller::ReferenceType::kSimpleGoal;
+      source.source = "simple_goal";
+      pending_simple_goal_sequence_ = 0U;
+    }
     if (!positionTargetSupportedByVehicle(source, &reason)) {
       rejectExternalReference(reason);
       return;
@@ -1998,6 +2128,7 @@ class ControllerNode {
         canonicalFrame(message->header.frame_id);
     reference.header.stamp = ros::Time::now();
     reference.header.seq = ++simple_goal_sequence_counter_;
+    pending_simple_goal_sequence_ = reference.header.seq;
     reference.coordinate_frame =
         mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
     reference.type_mask =
@@ -2022,6 +2153,21 @@ class ControllerNode {
       rejectExternalReference(reason);
       return;
     }
+    source.type = xd_uav_controller::ReferenceType::kSimpleGoal;
+    source.source = "simple_goal";
+    normalized.type = source.type;
+    normalized.source = source.source;
+    const bool starting_new_mode =
+        trajectory_active_ || internal_reference_active_ ||
+        idle_reference_active_ || fixedwing_loiter_active_ ||
+        !have_reference_;
+    updateFixedwingExternalSetpointGuidance(normalized, starting_new_mode);
+    reference_source_ = source;
+    reference_ = normalized;
+    path_active_ = false;
+    trajectory_active_ = false;
+    point_reference_latched_ = true;
+    activateExternalReference();
     reference_position_target_publisher_.publish(reference);
     ROS_INFO(
         "[xd_uav_controller] simple goal已从%s适配到%s: "
@@ -2116,6 +2262,8 @@ class ControllerNode {
       const std::string& frame_id,
       const ros::Time& stamp) const {
     Reference reference;
+    reference.type = xd_uav_controller::ReferenceType::kTrajectory;
+    reference.source = "trajectory";
     reference.header.stamp = stamp;
     reference.header.frame_id = canonicalFrame(frame_id);
     reference.trajectory_reference = true;
@@ -2466,7 +2614,7 @@ class ControllerNode {
     publishPathStatus(
         xd_uav_controller::PathStatus::FAILED, reason, true);
     path_active_ = false;
-    if (vehicle_type_ == "fixedwing") {
+    if (isFixedwingBackendActive()) {
       startFixedwingLoiter(
           state_.position_odom.z, "路径跟随失败");
       *reference = makeFixedwingLoiterReference();
@@ -2505,14 +2653,14 @@ class ControllerNode {
         state_.velocity_odom.y * state_.velocity_odom.y +
         state_.velocity_odom.z * state_.velocity_odom.z);
     const double completion_progress_tolerance =
-        vehicle_type_ == "multirotor"
+        isMultirotorBackendActive()
             ? std::max(multirotor_path_lookahead_distance_,
                        multirotor_path_completion_position_tolerance_)
             : fixedwing_path_completion_radius_;
     const bool near_path_end =
         path_progress_ >=
         std::max(0.0, path_total_length_ - completion_progress_tolerance);
-    const bool completed = vehicle_type_ == "multirotor"
+    const bool completed = isMultirotorBackendActive()
                                ? near_path_end && endpoint_error.norm() <=
                                          multirotor_path_completion_position_tolerance_ &&
                                      speed <= multirotor_path_completion_speed_tolerance_
@@ -2527,7 +2675,7 @@ class ControllerNode {
           xd_uav_controller::PathStatus::COMPLETED,
           "路径已按实际位置完成", true);
       path_active_ = false;
-      if (vehicle_type_ == "fixedwing") {
+      if (isFixedwingBackendActive()) {
         startFixedwingLoiter(endpoint.z(), "路径执行完成");
         *reference = makeFixedwingLoiterReference();
         return true;
@@ -2537,7 +2685,7 @@ class ControllerNode {
     Eigen::Vector3d path_point;
     Eigen::Vector3d tangent;
     double reference_distance = path_progress_;
-    if (vehicle_type_ == "multirotor") {
+    if (isMultirotorBackendActive()) {
       reference_distance = std::min(
           path_total_length_,
           path_progress_ + multirotor_path_lookahead_distance_);
@@ -2556,20 +2704,20 @@ class ControllerNode {
     reference->position.z = path_point.z();
     reference->use_position = {{true, true, true}};
 
-    double desired_speed = vehicle_type_ == "multirotor"
+    double desired_speed = isMultirotorBackendActive()
                                ? std::min(multirotor_path_nominal_speed_,
                                           max_velocity_xy_)
                                : cruise_airspeed_;
     const double remaining = std::max(
         0.0, path_total_length_ - path_progress_);
-    if (vehicle_type_ == "multirotor") {
+    if (isMultirotorBackendActive()) {
       desired_speed *= clamp(
           remaining /
               std::max(0.1, multirotor_path_terminal_slowdown_distance_),
           0.0, 1.0);
     }
     Eigen::Vector3d velocity = tangent * desired_speed;
-    if (vehicle_type_ == "fixedwing") {
+    if (isFixedwingBackendActive()) {
       const double horizontal_norm =
           std::hypot(tangent.x(), tangent.y());
       if (horizontal_norm < 1e-6) {
@@ -2590,11 +2738,11 @@ class ControllerNode {
     reference->use_yaw = true;
 
     const double curvature_window =
-        vehicle_type_ == "fixedwing"
+        isFixedwingBackendActive()
             ? fixedwing_path_curvature_distance_
             : std::max(1.0, multirotor_path_lookahead_distance_);
     double curvature_distance = path_progress_;
-    if (vehicle_type_ == "fixedwing") {
+    if (isFixedwingBackendActive()) {
       // Keep lateral position guidance attached to the local path tangent.
       // Only curvature is previewed by the short distance needed to establish
       // bank. Using the full geometric lookahead as the path sample makes the
@@ -2622,7 +2770,7 @@ class ControllerNode {
       reference->use_acceleration = {{true, true, true}};
     }
 
-    if (completed && vehicle_type_ == "multirotor") {
+    if (completed && isMultirotorBackendActive()) {
       reference->position.x = endpoint.x();
       reference->position.y = endpoint.y();
       reference->position.z = endpoint.z();
@@ -2635,7 +2783,7 @@ class ControllerNode {
     }
 
     const double reacquisition_distance =
-        vehicle_type_ == "multirotor"
+        isMultirotorBackendActive()
             ? multirotor_path_reacquisition_distance_
             : fixedwing_path_reacquisition_distance_;
     publishPathStatus(
@@ -2719,7 +2867,7 @@ class ControllerNode {
     path_active_ = true;
     trajectory_active_ = false;
     point_reference_latched_ = false;
-    if (vehicle_type_ == "fixedwing") {
+    if (isFixedwingBackendActive()) {
       resetFixedwingControlState();
     } else {
       resetMultirotorControlState();
@@ -2765,7 +2913,7 @@ class ControllerNode {
         message->header.stamp.isZero()
             ? ros::Time::now()
             : message->header.stamp;
-    if (vehicle_type_ == "fixedwing") {
+    if (isFixedwingBackendActive()) {
       resetFixedwingControlState();
     }
     publishTrajectoryPath(*message);
@@ -2798,6 +2946,8 @@ class ControllerNode {
 
   Reference makeIdleReference() const {
     Reference reference;
+    reference.type = xd_uav_controller::ReferenceType::kIdle;
+    reference.source = "idle";
     reference.header.stamp = ros::Time::now();
     reference.header.frame_id = state_.header.frame_id;
     reference.position.x = idle_position_.x();
@@ -2807,7 +2957,7 @@ class ControllerNode {
     reference.use_position = {{true, true, true}};
     reference.use_velocity = {{true, true, true}};
     reference.use_yaw = true;
-    if (vehicle_type_ == "multirotor") {
+    if (isMultirotorBackendActive()) {
       reference.use_acceleration = {{true, true, true}};
     } else {
       reference.velocity.x =
@@ -2821,46 +2971,172 @@ class ControllerNode {
   bool internalCommandCallback(
       xd_uav_controller::InternalCommand::Request& request,
       xd_uav_controller::InternalCommand::Response& response) {
+    const bool legacy_request =
+        request.action_generation == 0U &&
+        request.vehicle_action ==
+            xd_uav_controller::InternalCommand::Request::ACTION_NONE &&
+        request.action_phase ==
+            xd_uav_controller::InternalCommand::Request::PHASE_NONE;
+    if (!legacy_request) {
+      if (request.action_generation < active_action_generation_) {
+        response.success = false;
+        response.message = "拒绝过期的action_generation";
+        return true;
+      }
+      if (request.action_generation == active_action_generation_ &&
+          active_action_generation_ != 0U &&
+          request.vehicle_action != active_vehicle_action_) {
+        response.success = false;
+        response.message = "同一action_generation不能更改VehicleAction";
+        return true;
+      }
+      const bool valid_takeoff =
+          request.command ==
+              xd_uav_controller::InternalCommand::Request::TAKEOFF &&
+          request.vehicle_action ==
+              xd_uav_controller::InternalCommand::Request::ACTION_TAKEOFF &&
+          (request.action_phase ==
+               xd_uav_controller::InternalCommand::Request::PHASE_START ||
+           request.action_phase ==
+               xd_uav_controller::InternalCommand::Request::
+                   PHASE_REQUEST_HOVER ||
+           request.action_phase ==
+               xd_uav_controller::InternalCommand::Request::
+                   PHASE_WAIT_HOVER);
+      const bool valid_land =
+          ((request.command ==
+                xd_uav_controller::InternalCommand::Request::LAND &&
+            request.vehicle_action ==
+                xd_uav_controller::InternalCommand::Request::ACTION_LAND &&
+            !request.return_home) ||
+           (request.command ==
+                xd_uav_controller::InternalCommand::Request::LAND_HOME &&
+            request.vehicle_action ==
+                xd_uav_controller::InternalCommand::Request::
+                    ACTION_RETURN_HOME &&
+            request.return_home)) &&
+          (request.action_phase ==
+               xd_uav_controller::InternalCommand::Request::PHASE_APPROACH ||
+           request.action_phase ==
+               xd_uav_controller::InternalCommand::Request::
+                   PHASE_REQUEST_HOVER ||
+           request.action_phase ==
+               xd_uav_controller::InternalCommand::Request::PHASE_WAIT_HOVER ||
+           request.action_phase ==
+               xd_uav_controller::InternalCommand::Request::
+                   PHASE_VERTICAL_DESCENT);
+      const bool valid_cancel =
+          request.command ==
+              xd_uav_controller::InternalCommand::Request::CANCEL_LANDING &&
+          request.vehicle_action ==
+              xd_uav_controller::InternalCommand::Request::ACTION_HOLD &&
+          request.action_phase ==
+              xd_uav_controller::InternalCommand::Request::PHASE_CANCEL;
+      const bool valid_reset =
+          request.command ==
+              xd_uav_controller::InternalCommand::Request::RESET &&
+          request.vehicle_action ==
+              xd_uav_controller::InternalCommand::Request::ACTION_NONE &&
+          request.action_phase ==
+              xd_uav_controller::InternalCommand::Request::PHASE_RESET;
+      if (!(valid_takeoff || valid_land || valid_cancel || valid_reset)) {
+        response.success = false;
+        response.message = "InternalCommand的action/phase组合非法";
+        return true;
+      }
+      if (request.command ==
+              xd_uav_controller::InternalCommand::Request::LAND_HOME &&
+          !request.return_home) {
+        response.success = false;
+        response.message = "LAND_HOME必须携带return_home=true";
+        return true;
+      }
+    }
+
+    const auto finish = [&](const bool success, const std::string& detail) {
+      response.success = success;
+      response.message = detail;
+      if (!legacy_request && success) {
+        active_action_generation_ = request.action_generation;
+        active_vehicle_action_ = request.vehicle_action;
+        active_action_phase_ = request.action_phase;
+        action_status_ =
+            request.command ==
+                        xd_uav_controller::InternalCommand::Request::RESET ||
+                    request.command ==
+                        xd_uav_controller::InternalCommand::Request::
+                            CANCEL_LANDING
+                ? xd_uav_controller::ControlCommand::ACTION_SUCCEEDED
+                : xd_uav_controller::ControlCommand::ACTION_ACTIVE;
+        action_detail_ = detail;
+      }
+    };
+
     switch (request.command) {
       case xd_uav_controller::InternalCommand::Request::TAKEOFF: {
+        if (!legacy_request &&
+            (request.action_phase ==
+                 xd_uav_controller::InternalCommand::Request::
+                     PHASE_REQUEST_HOVER ||
+             request.action_phase ==
+                 xd_uav_controller::InternalCommand::Request::
+                     PHASE_WAIT_HOVER)) {
+          finish(true, "已记录VTOL起飞动作，等待manager确认旋翼模式");
+          return true;
+        }
         xd_uav_controller::Takeoff::Request takeoff_request;
         xd_uav_controller::Takeoff::Response takeoff_response;
         takeoff_request.altitude = request.altitude;
         takeoffCallback(takeoff_request, takeoff_response);
-        response.success = takeoff_response.success;
-        response.message = takeoff_response.message;
+        finish(takeoff_response.success, takeoff_response.message);
         return true;
       }
       case xd_uav_controller::InternalCommand::Request::LAND: {
+        if (!legacy_request &&
+            (request.action_phase ==
+                 xd_uav_controller::InternalCommand::Request::
+                     PHASE_REQUEST_HOVER ||
+             request.action_phase ==
+                 xd_uav_controller::InternalCommand::Request::
+                     PHASE_WAIT_HOVER)) {
+          finish(true, "已记录VTOL降落动作，等待manager确认悬停");
+          return true;
+        }
         std_srvs::Trigger::Request land_request;
         std_srvs::Trigger::Response land_response;
         landCallback(land_request, land_response);
-        response.success = land_response.success;
-        response.message = land_response.message;
+        finish(land_response.success, land_response.message);
         return true;
       }
       case xd_uav_controller::InternalCommand::Request::LAND_HOME: {
+        if (!legacy_request &&
+            (request.action_phase ==
+                 xd_uav_controller::InternalCommand::Request::
+                     PHASE_REQUEST_HOVER ||
+             request.action_phase ==
+                 xd_uav_controller::InternalCommand::Request::
+                     PHASE_WAIT_HOVER)) {
+          finish(true, "已记录VTOL返航降落动作，等待manager确认悬停");
+          return true;
+        }
         std_srvs::Trigger::Request land_request;
         std_srvs::Trigger::Response land_response;
         landHomeCallback(land_request, land_response);
-        response.success = land_response.success;
-        response.message = land_response.message;
+        finish(land_response.success, land_response.message);
         return true;
       }
       case xd_uav_controller::InternalCommand::Request::CANCEL_LANDING: {
         std_srvs::Trigger::Request cancel_request;
         std_srvs::Trigger::Response cancel_response;
         cancelLandingCallback(cancel_request, cancel_response);
-        response.success = cancel_response.success;
-        response.message = cancel_response.message;
+        finish(cancel_response.success, cancel_response.message);
         return true;
       }
       case xd_uav_controller::InternalCommand::Request::RESET: {
         std_srvs::Trigger::Request reset_request;
         std_srvs::Trigger::Response reset_response;
         resetCallback(reset_request, reset_response);
-        response.success = reset_response.success;
-        response.message = reset_response.message;
+        finish(reset_response.success, reset_response.message);
         return true;
       }
       default:
@@ -2879,7 +3155,7 @@ class ControllerNode {
       response.message = "当前控制状态无效，不能开始起飞";
       return true;
     }
-    if (vehicle_type_ == "fixedwing" && !state_.airspeed_valid) {
+    if (isFixedwingBackendActive() && !state_.airspeed_valid) {
       response.success = false;
       response.message = "固定翼空速无效，不能开始OFFBOARD起飞";
       return true;
@@ -2897,9 +3173,11 @@ class ControllerNode {
               : "起飞已经完成，保持原有目标";
       return true;
     }
-    const double altitude =
-        request.altitude > 0.0 ? request.altitude
-                               : takeoff_default_altitude_;
+    const double altitude = request.altitude > 0.0
+                                ? request.altitude
+                                : (isFixedwingBackendActive()
+                                       ? fixedwing_takeoff_default_altitude_
+                                       : multirotor_takeoff_default_altitude_);
     takeoff_course_ = state_.course;
     if (!std::isfinite(takeoff_course_)) {
       Eigen::Matrix3d rotation;
@@ -2934,7 +3212,7 @@ class ControllerNode {
 
     internal_reference_active_ = true;
     idle_reference_active_ = false;
-    if (vehicle_type_ == "multirotor") {
+    if (isMultirotorBackendActive()) {
       // Start a takeoff from hover. The acceleration command is then
       // slew-limited by the configured jerk limits.
       resetMultirotorControlState();
@@ -3132,7 +3410,7 @@ class ControllerNode {
       return true;
     }
     double initial_distance_sensor_height = 0.0;
-    if (vehicle_type_ == "multirotor" &&
+    if (isMultirotorBackendActive() &&
         landing_height_source_ == "distance_sensor") {
       std::string reason;
       if (!distanceSensorHeight(
@@ -3176,7 +3454,8 @@ class ControllerNode {
       landing_ground_z_ = takeoff_origin_.z();
     }
     landing_setpoint_ = current_position;
-    if (vehicle_type_ == "multirotor") {
+    landing_horizontal_capture_active_ = false;
+    if (isMultirotorBackendActive()) {
       landing_target_z_ =
           landing_ground_z_ -
           std::abs(odom_landing_config_.touchdown_offset);
@@ -3205,7 +3484,7 @@ class ControllerNode {
       landing_course_ = home_course;
     }
 
-    if (vehicle_type_ == "fixedwing") {
+    if (isFixedwingBackendActive()) {
       const Eigen::Vector2d landing_direction(
           std::cos(landing_course_),
           std::sin(landing_course_));
@@ -3253,7 +3532,7 @@ class ControllerNode {
     landing_active_ = true;
     landing_touchdown_ = false;
     landing_return_home_ = return_home;
-    if (vehicle_type_ == "multirotor") {
+    if (isMultirotorBackendActive()) {
       landing_phase_ =
           return_home ? LandingPhase::kApproach
                       : LandingPhase::kDescent;
@@ -3264,7 +3543,7 @@ class ControllerNode {
     internal_reference_active_ = true;
     idle_reference_active_ = false;
     response.success = true;
-    if (vehicle_type_ == "fixedwing") {
+    if (isFixedwingBackendActive()) {
       response.message =
           return_home
               ? "固定翼返航进近与降落参考已建立"
@@ -3304,6 +3583,7 @@ class ControllerNode {
     landing_return_home_ = false;
     landing_phase_ = LandingPhase::kNone;
     landing_agl_setpoint_initialized_ = false;
+    landing_horizontal_capture_active_ = false;
     landing_return_velocity_command_.setZero();
     fixedwing_landing_phase_ =
         FixedwingLandingPhase::kNone;
@@ -3324,7 +3604,7 @@ class ControllerNode {
     point_reference_latched_ = false;
     active_reference_transform_failure_since_ = ros::Time();
 
-    if (vehicle_type_ == "fixedwing") {
+    if (isFixedwingBackendActive()) {
       startFixedwingLoiter(
           state_.position_odom.z, "用户取消降落");
       response.message =
@@ -3352,6 +3632,7 @@ class ControllerNode {
     landing_return_home_ = false;
     landing_phase_ = LandingPhase::kNone;
     landing_agl_setpoint_initialized_ = false;
+    landing_horizontal_capture_active_ = false;
     landing_return_velocity_command_.setZero();
     fixedwing_landing_phase_ =
         FixedwingLandingPhase::kNone;
@@ -3467,6 +3748,8 @@ class ControllerNode {
 
   Reference makeFixedwingLoiterReference() const {
     Reference reference;
+    reference.type = xd_uav_controller::ReferenceType::kIdle;
+    reference.source = "fixedwing_loiter";
     reference.header.stamp = ros::Time::now();
     reference.header.frame_id = state_.header.frame_id;
     reference.use_position = {{true, true, true}};
@@ -3513,12 +3796,14 @@ class ControllerNode {
   }
 
   Reference makeTakeoffReference() {
-    if (vehicle_type_ == "fixedwing" &&
+    if (isFixedwingBackendActive() &&
         fixedwing_loiter_active_) {
       return makeFixedwingLoiterReference();
     }
 
     Reference reference;
+    reference.type = xd_uav_controller::ReferenceType::kInternal;
+    reference.source = "takeoff";
     reference.header.stamp = ros::Time::now();
     reference.header.frame_id = state_.header.frame_id;
     reference.use_position = {{true, true, true}};
@@ -3530,7 +3815,7 @@ class ControllerNode {
     reference.position.z = takeoff_target_z_;
     reference.yaw = takeoff_course_;
 
-    if (vehicle_type_ == "multirotor") {
+    if (isMultirotorBackendActive()) {
       const double error =
           takeoff_target_z_ - state_.position_odom.z;
       const double desired_velocity = clamp(
@@ -3743,6 +4028,8 @@ class ControllerNode {
     }
 
     Reference reference;
+    reference.type = xd_uav_controller::ReferenceType::kInternal;
+    reference.source = "landing";
     reference.header.stamp = now;
     reference.header.frame_id = state_.header.frame_id;
     reference.use_position = {{true, true, true}};
@@ -3869,7 +4156,7 @@ class ControllerNode {
   }
 
   Reference makeLandingReference() {
-    if (vehicle_type_ == "fixedwing") {
+    if (isFixedwingBackendActive()) {
       return makeFixedwingLandingReference();
     }
 
@@ -3896,7 +4183,7 @@ class ControllerNode {
             latest_home.z() - landing_ground_z_;
         landing_origin_ = latest_home;
         landing_ground_z_ = latest_home.z();
-        if (vehicle_type_ == "multirotor") {
+        if (isMultirotorBackendActive()) {
           landing_target_z_ =
               landing_ground_z_ -
               std::abs(odom_landing_config_.touchdown_offset);
@@ -3919,6 +4206,8 @@ class ControllerNode {
     }
 
     Reference reference;
+    reference.type = xd_uav_controller::ReferenceType::kInternal;
+    reference.source = "landing";
     reference.header.stamp = now;
     reference.header.frame_id = state_.header.frame_id;
     reference.use_position = {{true, true, true}};
@@ -3926,12 +4215,6 @@ class ControllerNode {
     reference.use_acceleration = {{true, true, true}};
     reference.use_yaw = true;
     if (landing_phase_ == LandingPhase::kApproach) {
-      // Horizontal return is velocity-controlled.  A moving position target
-      // ahead of the aircraft used to dominate the lower-weight velocity
-      // objective in the MPC and kept pulling toward home while the velocity
-      // profile was already asking to brake.
-      reference.use_position[0] = false;
-      reference.use_position[1] = false;
       const Eigen::Vector2d target_xy =
           landing_origin_.head<2>();
       const Eigen::Vector2d current_xy(
@@ -3942,78 +4225,96 @@ class ControllerNode {
           target_xy - current_xy;
       const double actual_distance = actual_remaining.norm();
 
-      // return_max_velocity is a ceiling, not a constant command.  Use only a
-      // conservative fraction of the hard acceleration limit for trajectory
-      // braking and include control/attitude response distance.  Solving
-      //   d = v * response_time + v^2 / (2 * braking_acceleration)
-      // for v starts braking well before home instead of assuming the hard
-      // acceleration limit is available instantaneously.
-      Eigen::Vector2d desired_return_velocity =
-          Eigen::Vector2d::Zero();
-      if (actual_distance > landing_position_tolerance_) {
-        const double braking_distance = std::max(
-            0.0, actual_distance - landing_position_tolerance_);
-        const double braking_acceleration = std::max(
-            0.20, 0.25 * max_acceleration_xy_);
-        constexpr double kControlResponseTime = 0.35;
-        const double response_velocity =
-            braking_acceleration * kControlResponseTime;
-        const double stopping_speed =
-            -response_velocity + std::sqrt(
-                response_velocity * response_velocity +
-                2.0 * braking_acceleration * braking_distance);
-        const double speed = std::min(
-            std::abs(landing_return_max_velocity_), stopping_speed);
-        desired_return_velocity =
-            speed * actual_remaining / actual_distance;
+      // Latch position capture once the aircraft enters the terminal region.
+      // Returning to velocity-only guidance after crossing home would flip the
+      // requested velocity direction every pass and sustain an oscillation.
+      if (!landing_horizontal_capture_active_ &&
+          actual_distance <= landing_capture_radius_) {
+        landing_horizontal_capture_active_ = true;
+        landing_return_velocity_command_.setZero();
+        ROS_INFO(
+            "[xd_uav_controller] land_home进入水平位置捕获: "
+            "distance=%.2f m, radius=%.2f m",
+            actual_distance, landing_capture_radius_);
       }
 
-      const bool reducing_speed =
-          desired_return_velocity.norm() + 1e-6 <
-              landing_return_velocity_command_.norm() ||
-          desired_return_velocity.dot(
-              landing_return_velocity_command_) < 0.0;
-      if (reducing_speed) {
-        // Do not slew-limit braking twice.  The multirotor controller below
-        // already enforces acceleration and jerk limits on the realizable
-        // command; delaying the velocity reference here caused overshoot.
-        landing_return_velocity_command_ =
-            desired_return_velocity;
+      if (landing_horizontal_capture_active_) {
+        // The tuned point controller is well damped at a fixed target.  Keep
+        // zero velocity/acceleration references so position and damping terms
+        // bring the aircraft to rest without a discontinuous direction flip.
+        reference.position.x = target_xy.x();
+        reference.position.y = target_xy.y();
+        reference.velocity.x = 0.0;
+        reference.velocity.y = 0.0;
+        reference.acceleration.x = 0.0;
+        reference.acceleration.y = 0.0;
+        landing_setpoint_.head<2>() = target_xy;
       } else {
-        Eigen::Vector2d velocity_delta =
-            desired_return_velocity -
-            landing_return_velocity_command_;
-        const double maximum_velocity_delta =
-            max_acceleration_xy_ * dt;
-        if (velocity_delta.norm() > maximum_velocity_delta &&
-            maximum_velocity_delta > 0.0) {
-          velocity_delta *=
-              maximum_velocity_delta / velocity_delta.norm();
+        // Use velocity-only guidance for the cruise portion so land_home obeys
+        // its configured speed ceiling instead of accelerating like a distant
+        // point goal.
+        reference.use_position[0] = false;
+        reference.use_position[1] = false;
+
+        // return_max_velocity is a ceiling, not a constant command.  Use only
+        // a conservative fraction of the hard acceleration limit for the
+        // braking profile and include control/attitude response distance.
+        Eigen::Vector2d desired_return_velocity =
+            Eigen::Vector2d::Zero();
+        if (actual_distance > landing_position_tolerance_) {
+          const double braking_distance = std::max(
+              0.0, actual_distance - landing_position_tolerance_);
+          const double braking_acceleration = std::max(
+              0.20, 0.25 * max_acceleration_xy_);
+          constexpr double kControlResponseTime = 0.35;
+          const double response_velocity =
+              braking_acceleration * kControlResponseTime;
+          const double stopping_speed =
+              -response_velocity + std::sqrt(
+                  response_velocity * response_velocity +
+                  2.0 * braking_acceleration * braking_distance);
+          const double speed = std::min(
+              std::abs(landing_return_max_velocity_), stopping_speed);
+          desired_return_velocity =
+              speed * actual_remaining / actual_distance;
         }
-        landing_return_velocity_command_ += velocity_delta;
-      }
-      reference.velocity.x =
-          landing_return_velocity_command_.x();
-      reference.velocity.y =
-          landing_return_velocity_command_.y();
 
-      // Feed the measured velocity tracking error forward as acceleration.
-      // The inner controller remains the single owner of acceleration/jerk
-      // limits, while this term makes braking depend on the aircraft's real
-      // closing speed rather than assuming it followed the previous target.
-      constexpr double kVelocityResponseTime = 0.35;
-      Eigen::Vector2d return_acceleration =
-          (landing_return_velocity_command_ - current_velocity_xy) /
-          kVelocityResponseTime;
-      if (return_acceleration.norm() > max_acceleration_xy_) {
-        return_acceleration *=
-            max_acceleration_xy_ / return_acceleration.norm();
-      }
-      reference.acceleration.x = return_acceleration.x();
-      reference.acceleration.y = return_acceleration.y();
-      landing_setpoint_.head<2>() = current_xy;
+        const bool reducing_speed =
+            desired_return_velocity.norm() + 1e-6 <
+                landing_return_velocity_command_.norm() ||
+            desired_return_velocity.dot(
+                landing_return_velocity_command_) < 0.0;
+        if (reducing_speed) {
+          landing_return_velocity_command_ =
+              desired_return_velocity;
+        } else {
+          Eigen::Vector2d velocity_delta =
+              desired_return_velocity -
+              landing_return_velocity_command_;
+          const double maximum_velocity_delta =
+              max_acceleration_xy_ * dt;
+          if (velocity_delta.norm() > maximum_velocity_delta &&
+              maximum_velocity_delta > 0.0) {
+            velocity_delta *=
+                maximum_velocity_delta / velocity_delta.norm();
+          }
+          landing_return_velocity_command_ += velocity_delta;
+        }
+        reference.velocity.x =
+            landing_return_velocity_command_.x();
+        reference.velocity.y =
+            landing_return_velocity_command_.y();
 
-      if ((target_xy - current_xy).norm() <=
+        // The MPC already closes the velocity loop.  Supplying measured
+        // velocity error here as acceleration applied a second feedback term,
+        // which doubled horizontal aggressiveness and produced large tilt.
+        reference.acceleration.x = 0.0;
+        reference.acceleration.y = 0.0;
+        landing_setpoint_.head<2>() = current_xy;
+      }
+
+      if (landing_horizontal_capture_active_ &&
+          (target_xy - current_xy).norm() <=
               landing_position_tolerance_ &&
           current_velocity_xy.norm() <=
               landing_velocity_tolerance_) {
@@ -4137,7 +4438,7 @@ class ControllerNode {
   bool validReference(
       const Reference& reference,
       std::string* reason) const {
-    if (vehicle_type_ == "multirotor" &&
+    if (isMultirotorBackendActive() &&
         !anyAxis(reference.use_position) &&
         !anyAxis(reference.use_velocity) &&
         !anyAxis(reference.use_acceleration) &&
@@ -4145,7 +4446,7 @@ class ControllerNode {
       *reason = "四旋翼参考未启用任何平移控制量";
       return false;
     }
-    if (vehicle_type_ == "fixedwing" &&
+    if (isFixedwingBackendActive() &&
         !anyAxis(reference.use_position) &&
         !anyAxis(reference.use_velocity)) {
       *reason = "固定翼参考至少需要位置或速度";
@@ -4320,7 +4621,8 @@ class ControllerNode {
           position(axis), velocity(axis));
       const Eigen::Vector2d desired(
           position_reference(axis), velocity_reference(axis));
-      desired_acceleration(axis) = mpc_.acceleration(
+      const auto& axis_mpc = axis == 2 ? vertical_mpc_ : mpc_;
+      desired_acceleration(axis) = axis_mpc.acceleration(
           current, desired, controlled,
           reference.use_acceleration[axis]
               ? acceleration_reference(axis)
@@ -5128,7 +5430,7 @@ class ControllerNode {
       const ros::Time& now,
       Reference* reference,
       std::string* reason) {
-    if (vehicle_type_ == "fixedwing" &&
+    if (isFixedwingBackendActive() &&
         trajectory_active_ &&
         !reference_trajectory_.points.empty()) {
       const double elapsed =
@@ -5164,17 +5466,34 @@ class ControllerNode {
     xd_uav_controller::ControlCommand command;
     command.header.stamp = now;
     command.vehicle_type = vehicle_type_id_;
+    command.airframe_type = static_cast<uint8_t>(airframe_type_);
+    command.flight_regime = static_cast<uint8_t>(activeFlightRegime());
+    command.regime_generation = have_state_ ? state_.regime_generation : 0;
+    command.active_backend = static_cast<uint8_t>(activeBackend());
+    command.action_generation = active_action_generation_;
+    command.action_status = action_status_;
+    command.action_detail = action_detail_;
+    const xd_uav_controller::BackendId backend = activeBackend();
+    if (backend == xd_uav_controller::BackendId::kFixedWing) {
+      command.vehicle_type =
+          xd_uav_controller::ControlCommand::VEHICLE_FIXEDWING;
+    } else if (backend == xd_uav_controller::BackendId::kMultirotor) {
+      command.vehicle_type =
+          xd_uav_controller::ControlCommand::VEHICLE_MULTIROTOR;
+    }
     command.controller =
-        vehicle_type_ == "multirotor"
+        backend == xd_uav_controller::BackendId::kMultirotor
             ? (path_active_ ? "path_finite_horizon_mpc_so3"
                             : "finite_horizon_mpc_so3")
-            : (landing_active_
+            : backend == xd_uav_controller::BackendId::kFixedWing
+            ? (landing_active_
                    ? "fixedwing_course_energy_landing"
                    : fixedwing_loiter_active_
                    ? "fixedwing_course_energy_loiter"
                    : path_active_
                    ? "fixedwing_path_course_energy"
-                   : "fixedwing_course_energy");
+                   : "fixedwing_course_energy")
+            : "backend_unavailable";
     command.takeoff_active = takeoff_active_;
     command.landing_active = landing_active_;
     command.landing_touchdown = landing_touchdown_;
@@ -5185,6 +5504,12 @@ class ControllerNode {
       return;
     }
     command.header.frame_id = state_.body_frame_id;
+    command.flight_regime = state_.flight_regime;
+    command.regime_generation = state_.regime_generation;
+    command.action_generation = active_action_generation_ != 0U
+                                    ? active_action_generation_
+                                    : state_.action_generation;
+    command.active_backend = static_cast<uint8_t>(backend);
     const double state_age =
         (now - last_state_receive_).toSec();
     if (state_age > state_timeout_ || !state_.state_valid ||
@@ -5195,8 +5520,20 @@ class ControllerNode {
       command_publisher_.publish(command);
       return;
     }
-    if (state_.vehicle_type != vehicle_type_id_) {
-      command.rejection_reason = "状态机型与控制器配置不一致";
+    const bool legacy_static_state =
+        !xd_uav_controller::isVtolAirframe(airframe_type_) &&
+        state_.airframe_type != static_cast<uint8_t>(airframe_type_) &&
+        state_.vehicle_type == vehicle_type_id_;
+    if ((!legacy_static_state &&
+         state_.airframe_type != static_cast<uint8_t>(airframe_type_)) ||
+        !xd_uav_controller::supportsRegime(
+            airframe_type_, activeFlightRegime())) {
+      command.rejection_reason = "状态机架类型或飞行阶段与控制器配置不一致";
+      command_publisher_.publish(command);
+      return;
+    }
+    if (backend == xd_uav_controller::BackendId::kNone) {
+      command.rejection_reason = "飞行阶段切换中，等待可用控制后端";
       command_publisher_.publish(command);
       return;
     }
@@ -5229,7 +5566,7 @@ class ControllerNode {
         if (!point_reference_latched_ &&
             (now - last_reference_receive_).toSec() >
                 reference_timeout_) {
-          if (vehicle_type_ == "fixedwing") {
+          if (isFixedwingBackendActive()) {
             startFixedwingLoiter(
                 state_.position_odom.z,
                 "外部PositionTarget参考超时");
@@ -5266,6 +5603,31 @@ class ControllerNode {
       return;
     }
 
+    if (path_active_) {
+      reference.type = xd_uav_controller::ReferenceType::kPath;
+      reference.source = "path";
+    } else if (trajectory_active_) {
+      reference.type = xd_uav_controller::ReferenceType::kTrajectory;
+      reference.source = "trajectory";
+    } else if (reference.type ==
+               xd_uav_controller::ReferenceType::kUnknown) {
+      reference.type = landing_active_ || internal_reference_active_
+                           ? xd_uav_controller::ReferenceType::kInternal
+                           : idle_reference_active_
+                                 ? xd_uav_controller::ReferenceType::kIdle
+                                 : xd_uav_controller::ReferenceType::
+                                       kPositionTarget;
+      reference.source = landing_active_
+                             ? "landing"
+                             : internal_reference_active_
+                                   ? "takeoff"
+                                   : idle_reference_active_ ? "idle"
+                                                            : "position_target";
+    }
+    command.reference_type =
+        xd_uav_controller::referenceTypeValue(reference.type);
+    command.reference_source = reference.source;
+
     std::string reference_reason;
     if (!validReference(reference, &reference_reason)) {
       command.rejection_reason = reference_reason;
@@ -5280,17 +5642,21 @@ class ControllerNode {
       command_publisher_.publish(command);
       return;
     }
-    const ControllerResult result =
-        vehicle_type_ == "multirotor"
-            ? multirotorControl(reference, now)
-            : fixedwingControl(reference, now);
+    auto* selected_backend = backendById(backend);
+    if (!selected_backend) {
+      command.rejection_reason = "选定的控制后端未配置";
+      command_publisher_.publish(command);
+      return;
+    }
+    const ControllerResult result = selected_backend->update(
+        state_, reference, now, 1.0 / std::max(1.0, control_rate_));
     command.body_rate.x = result.body_rate.x();
     command.body_rate.y = result.body_rate.y();
     command.body_rate.z = result.body_rate.z();
     command.thrust = result.thrust;
     command.valid = result.valid;
     command.rejection_reason = result.reason;
-    if (vehicle_type_ == "fixedwing") {
+    if (backend == xd_uav_controller::BackendId::kFixedWing) {
       if (landing_active_) {
         command.controller =
             "fixedwing_course_energy_landing";
@@ -5302,6 +5668,32 @@ class ControllerNode {
     command.takeoff_active = takeoff_active_;
     command.landing_active = landing_active_;
     command.landing_touchdown = landing_touchdown_;
+    if (active_action_generation_ == 0U) {
+      command.action_status =
+          (takeoff_active_ || landing_active_ || have_reference_)
+              ? xd_uav_controller::ControlCommand::ACTION_ACTIVE
+              : xd_uav_controller::ControlCommand::ACTION_IDLE;
+    } else if (action_status_ ==
+               xd_uav_controller::ControlCommand::ACTION_ACTIVE) {
+      if (active_vehicle_action_ ==
+              xd_uav_controller::InternalCommand::Request::ACTION_TAKEOFF &&
+          !takeoff_active_) {
+        action_status_ =
+            xd_uav_controller::ControlCommand::ACTION_SUCCEEDED;
+        action_detail_ = "起飞参考生成阶段已完成";
+      } else if ((active_vehicle_action_ ==
+                       xd_uav_controller::InternalCommand::Request::ACTION_LAND ||
+                   active_vehicle_action_ ==
+                       xd_uav_controller::InternalCommand::Request::
+                           ACTION_RETURN_HOME) &&
+                  landing_touchdown_) {
+        action_status_ =
+            xd_uav_controller::ControlCommand::ACTION_SUCCEEDED;
+        action_detail_ = "控制器检测到触地候选，等待manager联合确认";
+      }
+      command.action_status = action_status_;
+      command.action_detail = action_detail_;
+    }
     command_publisher_.publish(command);
   }
 
@@ -5353,6 +5745,7 @@ class ControllerNode {
   bool path_active_{false};
   bool point_reference_latched_{false};
   uint32_t simple_goal_sequence_counter_{0};
+  uint32_t pending_simple_goal_sequence_{0};
   uint32_t path_sequence_counter_{0};
   uint32_t active_path_id_{0};
   std::size_t path_current_segment_{0};
@@ -5367,6 +5760,15 @@ class ControllerNode {
   bool landing_active_{false};
   bool landing_return_home_{false};
   bool landing_touchdown_{false};
+  bool landing_horizontal_capture_active_{false};
+  uint32_t active_action_generation_{0U};
+  uint8_t active_vehicle_action_{
+      xd_uav_controller::InternalCommand::Request::ACTION_NONE};
+  uint8_t active_action_phase_{
+      xd_uav_controller::InternalCommand::Request::PHASE_NONE};
+  uint8_t action_status_{
+      xd_uav_controller::ControlCommand::ACTION_IDLE};
+  std::string action_detail_;
   bool have_takeoff_origin_{false};
   bool have_home_reference_{false};
   bool acceleration_command_initialized_{false};
@@ -5405,6 +5807,17 @@ class ControllerNode {
   double idle_airspeed_{15.0};
 
   std::string vehicle_type_;
+  xd_uav_controller::AirframeType airframe_type_{
+      xd_uav_controller::AirframeType::kMultirotor};
+  bool load_multirotor_{true};
+  bool load_fixedwing_{false};
+  std::unique_ptr<xd_uav_controller::ControllerBackend>
+      multirotor_backend_;
+  std::unique_ptr<xd_uav_controller::ControllerBackend>
+      fixedwing_backend_;
+  xd_uav_controller::BackendId active_backend_{
+      xd_uav_controller::BackendId::kNone};
+  std::string vtol_transition_policy_{"source_backend"};
   uint8_t vehicle_type_id_{
       xd_uav_controller::ControlState::VEHICLE_MULTIROTOR};
   double control_rate_{100.0};
@@ -5424,6 +5837,7 @@ class ControllerNode {
   std::string reference_input_error_;
 
   FiniteHorizonAxisMpc mpc_;
+  FiniteHorizonAxisMpc vertical_mpc_;
   double mpc_dt_{0.01};
   double gravity_{9.80665};
   double hover_throttle_{0.5};
@@ -5526,12 +5940,13 @@ class ControllerNode {
   double fixedwing_path_completion_altitude_tolerance_{5.0};
   double fixedwing_path_reacquisition_distance_{50.0};
 
-  double takeoff_default_altitude_{2.0};
+  double multirotor_takeoff_default_altitude_{2.0};
   double takeoff_max_velocity_{0.8};
   double takeoff_max_acceleration_{0.6};
   double takeoff_position_tolerance_{0.15};
   double takeoff_velocity_tolerance_{0.15};
   double fixedwing_takeoff_throttle_{0.9};
+  double fixedwing_takeoff_default_altitude_{30.0};
   double fixedwing_rotate_airspeed_{12.0};
   double fixedwing_climb_airspeed_{15.0};
   double fixedwing_climb_pitch_{0.21};
@@ -5555,6 +5970,7 @@ class ControllerNode {
   MultirotorVerticalLandingConfig odom_landing_config_;
   DistanceSensorLandingConfig distance_sensor_landing_config_;
   double landing_return_max_velocity_{1.0};
+  double landing_capture_radius_{2.0};
   double landing_position_tolerance_{0.20};
   double landing_velocity_tolerance_{0.20};
   // Fixed-wing still uses its independent flat landing configuration.

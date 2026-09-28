@@ -1,0 +1,35 @@
+# Visual-only fixed-wing tracking overlay.
+# track_fixedwing_sitl.launch loads track.yaml first and then this file.
+# No target world position, range estimate or ground projection is required.
+
+interfaces:
+  input:
+    detections: "track/detections"
+
+tracker:
+  # ColorTracker 的 confidence 表示颜色分割质量，不是 YOLO 类别置信度。
+  # 红色目标实测约为 0.047，不能沿用 YOLO 的 0.10/0.20 门限。
+  # 本覆盖层只用于手动红色目标的 SITL 验证，是否有框由 ColorTracker
+  # 的 valid/bbox 判定；因此不再用置信度二次拦截。
+  minimum_confidence: 0.005
+  confidence_hysteresis: 0.0
+  position_filter_alpha: 0.25
+  confidence:
+    new_track: 0.0
+    update: 0.0
+
+follower:
+  profile: "fw_velocity_vector"
+  # First validate horizontal course guidance. Enable later if you also want
+  # the image vertical error to command a climb/descent rate.
+  enable_vertical_control: true
+  horizontal_deadband: 0.05
+  
+  fw_velocity_vector:
+    pid:
+      course:     {kp: 0.8, ki: 0.0, kd: 0.0, integral_limit: 0.35}
+      climb_rate: {kp: 25, ki: 0.0, kd: 0.0, integral_limit: 0.8}
+    airspeed: 15.0
+    maximum_course_offset: 0.45
+    maximum_climb_rate: 25.0
+

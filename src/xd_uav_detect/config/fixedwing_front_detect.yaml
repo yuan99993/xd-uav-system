@@ -1,0 +1,44 @@
+# 固定翼前视相机：二维框 + 像素射线/地面平面交点定位。
+# 相机沿机头方向安装，目标需位于相机视场内且落在 ground_plane_z_m 平面上。
+
+localization:
+  enabled: true
+  method: "ground_plane"
+
+interfaces:
+  input:
+    detections_2d: "detect/input/detections_2d"
+    image: "camera/image_raw"
+    camera_info: "camera/camera_info"
+    point_cloud: "fastlio/points"
+  output:
+    detections_3d: "detect/detections"
+    status: "detect/status"
+    debug_image: "detect/debug/image"
+
+frames:
+  # detect.launch 会按 UAV_NAME 覆盖 world；CameraInfo.header.frame_id
+  # 应为 uav1/camera_optical_frame，因此 camera 留空由消息自动确定。
+  world: "uav1/local_origin"
+  camera: ""
+
+ground_projection:
+  ground_plane_z_m: 0.0
+  minimum_range_m: 1.0
+  maximum_range_m: 500.0
+  minimum_ray_plane_angle_deg: 5.0
+  box_anchor_y_ratio: 0.5
+  pixel_stddev_px: 2.0
+  ground_height_stddev_m: 1.0
+  position_stddev_m: 0.25
+  tf_timeout_sec: 0.05
+  tf_use_latest_on_failure: false
+  require_detection_timestamp: true
+  require_matching_camera_frame: true
+
+visualization:
+  enabled: true
+  point_stride: 1
+  point_radius_px: 1
+  minimum_depth_m: 0.30
+  maximum_depth_m: 500.0

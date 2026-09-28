@@ -1,0 +1,31 @@
+odometry_adapters:
+  mavros:
+    input_topic: integration/mavros_odom_guarded
+    reference_frame: fcu
+    tf_timeout: 0.03
+    max_input_delay: 0.50
+    fallback_covariance: {position: 0.05, velocity: 0.10, heading: 0.05, yaw_rate: 0.10}
+
+localization_sources: [mavros]
+sources:
+  mavros:
+    priority: 0
+    correction_defaults: {timeout: 0.25, required: true}
+    corrections:
+      - position_xy: mavros/position_xy
+      - position_z: mavros/position_z
+      - velocity_xy: mavros/velocity_xy
+      - velocity_z: mavros/velocity_z
+      - heading: mavros/heading
+      - yaw_rate: {topic: mavros/yaw_rate, timeout: 0.25, required: false}
+    alignment: {mode: align_on_activation}
+    reliability:
+      max_position_variance: 100.0
+      max_velocity_variance: 100.0
+      max_heading_variance: 10.0
+      max_yaw_rate_variance: 10.0
+      max_consecutive_rejections: 5
+      quarantine_duration: 1.0
+      recovery_min_samples: 20
+      recovery_stable_time: 0.5
+    republish_in_frames: [local_origin]

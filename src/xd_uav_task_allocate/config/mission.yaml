@@ -72,7 +72,7 @@ search_area:
 search_allocation:
   # Coverage is balanced by estimated flight time rather than raw distance.
   # A vehicle may override this with coverage/nominal_speed_mps.
-  multirotor_nominal_speed_mps: 4.0
+  hover_nominal_speed_mps: 4.0
   fixedwing_nominal_speed_mps: 15.0
 
 target_registry:
@@ -105,6 +105,10 @@ target_registry:
   # Reject confirmation while recent world positions are still widely spread.
   maximum_confirmation_position_spread_m: 3.0
   position_history_size: 30
+  # Same-frame same-class boxes with this much normalized-box overlap are one
+  # detector duplicate even if their independent range projection differs.
+  # This prevents two local track IDs on one physical object creating tasks.
+  duplicate_bbox_iou_threshold: 0.50
   # Applies only to unconfirmed candidates. Confirmed/task-linked targets stay
   # available for spatial deduplication while they wait for a worker.
   stale_timeout_sec: 15.0
@@ -146,30 +150,23 @@ allocation:
   # second worker task.  Keep below the minimum expected spacing of real
   # same-class targets, or set 0 to disable.
   task_deduplication_radius_m: 5.0
-  # Rescue tasks are assigned to hover-capable aircraft unless a class-specific
-  # rule explicitly allows fixed-wing workers.
-  default_worker_vehicle_types: [multirotor, fixedwing]
-  class_worker_vehicle_types: {}
-    # "0": [multirotor] 依据识别出来的classid确定哪个类型飞机接受任务
-    # "1": [fixedwing] 目标类别编号 → 允许执行这个任务的飞机类型
-    # "2": [multirotor, fixedwing]
-  worker_approach:
-    # Stop well before the detected object. The red box is 1 m wide and the
-    # aircraft body plus braking error also need clearance; 2 m was too small.
-    horizontal_standoff_m: 5.0
-    # Completion is measured around the standoff goal, not around the object.
-    # Require the aircraft to settle so a fast fly-through cannot complete it.
-    goal_tolerance_m: 0.5
-    arrival_dwell_sec: 1.0
-    maximum_arrival_speed_mps: 0.35
+  # Allocation is intentionally independent of airframe type. Every healthy,
+  # idle configured worker is eligible; route semantics are configured on the
+  # vehicle with mobility_profile instead of being used as an eligibility gate.
+  worker_execution:
+    # Visual handoff uses this radius together with a matching local camera
+    # detection. Position-only metric handoff uses the navigation REACHED
+    # result instead; this radius remains useful for visual-task safety
+    # checks and is not a camera requirement for metric workers.
+    target_radius_m: 20.0
   # Larger value is dispatched first. class_id 0 is the red-marker test target.
   class_priorities:
     "0": 10
 
 planner:
-  # Temporary clear-area validation backend. Change back to ego_swarm after the
-  # EGO adapter is ready; there is never an automatic fallback between them.
-  backend: direct_controller_test
+  # Production navigation always enters xd_uav_planning. The direct controller
+  # backend remains below only as an explicit clear-area test fallback.
+  backend: direct_controller_test  # planning | direct_controller_test
   direct_controller_test:
     # Mandatory acknowledgement: this backend sends multirotor mission points
     # and complete fixed-wing geometric paths directly to the controller;
@@ -180,6 +177,14 @@ planner:
     # Face the current waypoint in world ENU while flying each route segment.
     face_goal: true
     yaw_minimum_distance_m: 0.1
+
+  multirotor:
+    # Planning-backed multirotors receive the complete remaining route as one
+    # nav_msgs/Path. waypoint_gap is retained only for legacy PoseStamped
+    # integrations and is not used by the generic path interface.
+    waypoint_gap: 10.0
+    # Only the final path endpoint is used for route completion in path mode.
+    waypoint_acceptance_radius_m: 2.5
 
   fixedwing:
     # Used to replace instantaneous lawnmower reversals with sampled Dubins

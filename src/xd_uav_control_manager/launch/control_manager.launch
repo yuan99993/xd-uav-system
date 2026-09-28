@@ -3,6 +3,7 @@
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
   <arg name="uav_name" default="$(arg UAV_NAME)"/>
   <arg name="vehicle_type" default="multirotor"/>
+  <arg name="airframe_type" default="$(arg vehicle_type)"/>
   <arg name="offboard_config" default="$(find xd_uav_control_manager)/config/offboard.yaml"/>
   <arg name="safety_config" default="$(find xd_uav_control_manager)/config/safety.yaml"/>
 
@@ -14,7 +15,7 @@
           clear_params="true">
       <rosparam command="load" file="$(arg offboard_config)"/>
       <rosparam command="load" file="$(arg safety_config)"/>
-      <param name="vehicle_type" value="$(arg vehicle_type)"/>
+      <param name="airframe_type" value="$(arg airframe_type)"/>
 
       <remap from="main_odometry" to="state_estimator/main/odom"/>
       <remap from="main_acceleration" to="state_estimator/main/acceleration"/>

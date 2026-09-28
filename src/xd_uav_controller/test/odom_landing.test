@@ -1,7 +1,7 @@
 <launch>
   <group ns="odom_landing_test">
     <node pkg="xd_uav_controller"
-          type="controller_node"
+        type="controller_node"
           name="controller"
           output="screen"
           clear_params="true">
@@ -11,9 +11,9 @@
                 file="$(find xd_uav_controller)/config/multirotor.yaml"/>
       <param name="vehicle_type" value="multirotor"/>
       <param name="home/mode" value="takeoff"/>
-      <param name="landing/height_source" value="odom"/>
-      <param name="landing/odom_cfg/descent_velocity" value="2.0"/>
-      <param name="landing/odom_cfg/final_descent_velocity"
+      <param name="multirotor/landing/height_source" value="odom"/>
+      <param name="multirotor/landing/odom_cfg/descent_velocity" value="2.0"/>
+      <param name="multirotor/landing/odom_cfg/final_descent_velocity"
              value="2.0"/>
     </node>
     <test test-name="odom_landing"

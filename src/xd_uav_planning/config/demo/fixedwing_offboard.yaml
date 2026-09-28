@@ -1,0 +1,9 @@
+offboard:
+  stream:
+    setpoint_rate: 100.0
+    prestream_duration: 1.5
+  mode_request:
+    retry_interval: 1.0
+    timeout: 10.0
+  exit:
+    cancel_mode: AUTO.LOITER

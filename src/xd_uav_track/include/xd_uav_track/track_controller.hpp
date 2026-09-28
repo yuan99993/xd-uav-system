@@ -1,7 +1,11 @@
 #pragma once
 
 #include <array>
+#include <deque>
+#include <memory>
 #include <string>
+
+#include <xd_uav_track/target_guidance.hpp>
 
 namespace xd_uav_track {
 
@@ -13,6 +17,10 @@ enum class FollowerProfile {
   kGimbalVelocityChase,
   kGimbalVelocityVector,
   kFixedWingVelocityVector,
+  // Fixed-wing metric profiles consume an inertial/world-frame target and
+  // use TargetGuidance for pursuit or standoff orbit generation.
+  kFixedWingMetricPursuit,
+  kFixedWingMetricOrbit,
 };
 
 enum class LateralGuidanceMode {
@@ -138,26 +146,59 @@ struct TrackControllerConfig {
   double relative_position_gain{0.50};
   double relative_velocity_feedforward{1.0};
   double relative_maximum_correction{3.0};
+
+  // Optional metric/FOV guidance.  It is deliberately independent of the
+  // vehicle profile: fixed-wing consumes the vector as a course reference,
+  // while a multicopter can consume the same FLU vector directly.
+  TargetGuidanceConfig target_guidance;
 };
 
 struct VehicleState {
   double roll{0.0};
   double pitch{0.0};
   double altitude{0.0};
+  double x{0.0};
+  double y{0.0};
+  double z{0.0};
+  double yaw{0.0};
+  double receive_time{0.0};
+  // Optional odometry/header time.  receive_time stays in the local arrival
+  // clock used by safety timeouts; this value is used only for capture-time
+  // metric fusion and OOSM replay.
+  double observation_time{0.0};
+  bool pose_valid{false};
   bool valid{false};
 };
 
 struct GimbalStateData {
   double receive_time{0.0};
+  // GimbalStatus has an independent transport cadence from the angle stream.
+  // A zero value preserves compatibility with angle-only publishers and means
+  // that no status freshness check is required yet.
+  double status_receive_time{0.0};
   // PixEagle gimbal convention: +yaw right, +pitch down.
   double yaw{0.0};
   double pitch{0.0};
   double roll{0.0};
   bool valid{false};
+  // Optional GimbalStatus contract.  Angle-only publishers remain valid;
+  // when present, these fields gate metric guidance and live FOV use.
+  bool status_valid{false};
+  bool healthy{true};
+  bool tracking_active{true};
+  bool range_valid{true};
+  bool control_authority_available{true};
+  double zoom_ratio{0.0};
+  double horizontal_fov_rad{0.0};
+  double vertical_fov_rad{0.0};
+  double range_quality{0.0};
 };
 
 struct TargetMeasurement {
   double receive_time{0.0};
+  // Sensor capture time for metric fusion. receive_time remains the local
+  // arrival time used by the legacy image timeout path.
+  double observation_time{0.0};
   unsigned int image_width{0};
   unsigned int image_height{0};
   double x_min{0.0};
@@ -166,6 +207,7 @@ struct TargetMeasurement {
   double y_max{0.0};
   double confidence{0.0};
   int track_id{-1};
+  int class_id{-1};
   bool predicted{false};
   bool reidentification_match{false};
   double tracking_quality{1.0};
@@ -176,6 +218,10 @@ struct TargetMeasurement {
   bool has_relative_velocity_body{false};
   std::array<double, 3> relative_velocity_body{{0.0, 0.0, 0.0}};
   bool range_valid{false};
+  std::string image_source;
+  // Metric position uncertainty in metres when supplied by the detector.
+  // Zero means unknown and is conservatively replaced by 1 m.
+  double position_sigma_m{0.0};
 };
 
 struct TrackVelocity {
@@ -201,6 +247,13 @@ struct TrackVelocity {
   bool valid{false};
   bool uncertainty_limited{false};
   bool relative_state_active{false};
+  // Metric guidance status is separate from target_visible: a world-frame
+  // target can be valid while no camera box is available.
+  bool metric_target_valid{false};
+  bool metric_active{false};
+  bool orbit_active{false};
+  double metric_radial_error_m{0.0};
+  double metric_effective_radius_m{0.0};
   double tracking_quality{0.0};
   double uncertainty_scale{1.0};
   // Fixed-wing vector guidance intentionally supplies no separate yaw-rate;
@@ -209,6 +262,11 @@ struct TrackVelocity {
   // Fixed-wing cannot stop in place. On target loss, release the streaming
   // reference so xd_uav_controller can enter its configured timeout loiter.
   bool release_reference_on_invalid{false};
+  // Optional internal position anchor for fixed-wing orbit guidance.  These
+  // fields are consumed by xd_uav_track_node when publishing the existing
+  // MAVROS PositionTarget.
+  bool position_reference_valid{false};
+  std::array<double, 3> position_reference{{0.0, 0.0, 0.0}};
   std::string profile;
   std::string lateral_guidance_mode;
   std::string tracking_state;
@@ -222,6 +280,30 @@ class TrackController {
 
   bool updateMeasurement(const TargetMeasurement& measurement,
                          std::string* rejection_reason = nullptr);
+  // Update only the inertial metric state. This is used for a fresh standby
+  // camera in a dual-source setup without replacing the active image track.
+  bool updateMetricMeasurement(const TargetMeasurement& measurement,
+                               std::string* rejection_reason = nullptr);
+  // Update the inertial target directly in the shared world/odometry frame.
+  // This is the hand-off used by task execution when an allocator supplies a
+  // target pose instead of a camera-relative detection.
+  bool updateMetricWorldTarget(
+      int target_id, double receive_time, double observation_time,
+      const std::array<double, 3>& world_position, bool velocity_valid,
+      const std::array<double, 3>& world_velocity, double position_sigma_m,
+      const std::string& source = "task_execute",
+      std::string* rejection_reason = nullptr);
+  // ``updateMeasurement()`` may retain a valid 2-D image track after its
+  // metric component is rejected.  Callers that maintain a metric identity
+  // anchor must use this flag rather than treating the image update itself as
+  // proof that the world-frame observation was accepted.
+  bool lastMetricMeasurementAccepted() const;
+  // Read-only cross-camera association gate.  It projects the candidate at
+  // its capture time and compares it with the current inertial target state;
+  // callers use it before allowing a standby camera to update the filter.
+  bool metricMeasurementCompatible(const TargetMeasurement& measurement,
+                                   double maximum_distance_m,
+                                   std::string* rejection_reason = nullptr) const;
   TrackVelocity compute(double now);
   void setVehicleState(const VehicleState& state);
   void setGimbalState(const GimbalStateData& state);
@@ -256,6 +338,65 @@ class TrackController {
                           double* forward, double* right, double* down) const;
   void resetFollowerState();
   TrackVelocity baseOutput(double now) const;
+  bool integrateMetricMeasurement(const TargetMeasurement& incoming,
+                                  std::array<double, 3>* filtered_world,
+                                  std::string* rejection_reason);
+
+  static constexpr std::size_t kWorldFilterModelCount = 3;
+
+  enum class WorldMotionModel {
+    kStationary,
+    kConstantVelocity,
+    kCoordinatedTurn,
+  };
+
+  struct WorldFilterModel {
+    bool initialized{false};
+    WorldMotionModel motion_model{WorldMotionModel::kStationary};
+    double stamp{0.0};
+    std::array<double, 3> position{{0.0, 0.0, 0.0}};
+    std::array<double, 3> velocity{{0.0, 0.0, 0.0}};
+    std::array<double, 3> p_position{{1.0, 1.0, 1.0}};
+    std::array<double, 3> p_position_velocity{{0.0, 0.0, 0.0}};
+    std::array<double, 3> p_velocity{{25.0, 25.0, 25.0}};
+    // The coordinated-turn model rotates the horizontal velocity around ENU
+    // up.  Stationary/CV models keep this value at zero.
+    double turn_rate_radps{0.0};
+    double p_turn_rate{0.25};
+  };
+
+  struct MetricObservation {
+    double stamp{0.0};
+    std::array<double, 3> world_position{{0.0, 0.0, 0.0}};
+    std::array<double, 3> world_velocity{{0.0, 0.0, 0.0}};
+    bool velocity_valid{false};
+    double sigma_m{1.0};
+    int class_id{-1};
+    std::string image_source;
+  };
+
+  struct WorldFilterState {
+    bool initialized{false};
+    double stamp{0.0};
+    std::array<WorldFilterModel, kWorldFilterModelCount> models;
+    std::array<double, kWorldFilterModelCount> probabilities{{
+        1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0}};
+  };
+
+  struct WorldFilterHistory {
+    MetricObservation observation;
+    WorldFilterState state_after;
+  };
+
+  bool metricObservationFromMeasurement(const TargetMeasurement& incoming,
+                                        MetricObservation* observation,
+                                        std::string* rejection_reason) const;
+  bool vehicleStateAtObservationTime(double stamp, VehicleState* state) const;
+  bool applyMetricObservation(const MetricObservation& observation,
+                              bool enforce_gate,
+                              std::string* rejection_reason);
+  bool replayMetricHistory(std::string* rejection_reason);
+  void updateMetricStateFromWorldFilter();
 
   TrackControllerConfig config_;
   Pid lateral_pid_;
@@ -290,6 +431,29 @@ class TrackController {
   std::string cleared_reason_{"target box has not been received"};
   VehicleState vehicle_state_;
   GimbalStateData gimbal_state_;
+  std::unique_ptr<TargetGuidance> target_guidance_;
+  bool have_metric_state_{false};
+  // A task-assigned world target takes precedence over incidental image
+  // detections until the tracker is reset or the profile leaves metric mode.
+  bool external_metric_target_active_{false};
+  bool last_metric_measurement_accepted_{false};
+  double metric_state_time_{0.0};
+  std::array<double, 3> last_metric_position_frd_{{0.0, 0.0, 0.0}};
+  std::array<double, 3> last_metric_velocity_frd_{{0.0, 0.0, 0.0}};
+  bool last_metric_velocity_valid_{false};
+  double last_metric_sigma_m_{1.0};
+  bool have_metric_world_state_{false};
+  double metric_world_time_{0.0};
+  std::array<double, 3> last_metric_world_position_{{0.0, 0.0, 0.0}};
+  std::array<double, 3> last_metric_world_velocity_{{0.0, 0.0, 0.0}};
+  bool last_metric_world_velocity_valid_{false};
+  double last_metric_world_sigma_m_{1.0};
+  std::array<WorldFilterModel, kWorldFilterModelCount> world_filter_models_;
+  std::array<double, kWorldFilterModelCount> world_filter_probabilities_{{
+      1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0}};
+  WorldFilterState world_filter_baseline_;
+  std::deque<WorldFilterHistory> world_filter_history_;
+  std::deque<VehicleState> vehicle_state_history_;
   bool gimbal_filter_initialized_{false};
   double filtered_gimbal_yaw_{0.0};
   double filtered_gimbal_pitch_{0.0};
@@ -301,6 +465,10 @@ class TrackController {
 
 bool parseFollowerProfile(const std::string& value, FollowerProfile* profile);
 const char* followerProfileName(FollowerProfile profile);
+bool isFixedWingProfile(FollowerProfile profile);
+bool isMetricFixedWingProfile(FollowerProfile profile);
+TargetGuidanceMode targetGuidanceModeForFollowerProfile(
+    FollowerProfile profile);
 bool parseLateralGuidanceMode(const std::string& value,
                               LateralGuidanceMode* mode);
 const char* lateralGuidanceModeName(LateralGuidanceMode mode);

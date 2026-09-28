@@ -39,6 +39,10 @@ class TaskExecuteNode:
                 self.feedback_rate_hz,
             ),
         }
+        # Metric pursuit/orbit are tracker profiles, so the same action
+        # adapter handles the explicit OBSERVE/INTERCEPT task types too.
+        self.handlers[ExecuteTaskGoal.OBSERVE] = self.handlers[ExecuteTaskGoal.TRACK]
+        self.handlers[ExecuteTaskGoal.INTERCEPT] = self.handlers[ExecuteTaskGoal.TRACK]
         self.server = actionlib.SimpleActionServer(
             action_name,
             ExecuteTaskAction,
@@ -48,7 +52,7 @@ class TaskExecuteNode:
         self.server.start()
         self._publish_status(0, 0, 0, TaskExecutionStatus.IDLE, 0.0, "idle")
         rospy.loginfo(
-            "[task_execute] worker=%s ready, handlers=arrive,track action=%s",
+            "[task_execute] worker=%s ready, handlers=arrive,track,observe,intercept action=%s",
             self.worker_name,
             rospy.resolve_name(action_name),
         )
@@ -115,7 +119,11 @@ class TaskExecuteNode:
             )
 
         try:
-            if int(goal.task_type) == ExecuteTaskGoal.TRACK:
+            if int(goal.task_type) in (
+                ExecuteTaskGoal.TRACK,
+                ExecuteTaskGoal.OBSERVE,
+                ExecuteTaskGoal.INTERCEPT,
+            ):
                 outcome, elapsed = handler.execute(
                     goal,
                     self.server.is_preempt_requested,

@@ -39,6 +39,7 @@ generate_messages(
 )
 
 catkin_package(
+  INCLUDE_DIRS include
   CATKIN_DEPENDS
     geometry_msgs
     mavros_msgs
@@ -55,6 +56,7 @@ catkin_package(
 )
 
 include_directories(
+  include
   ${catkin_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
 )
@@ -74,6 +76,11 @@ catkin_install_python(PROGRAMS
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
+  catkin_add_gtest(test_control_types test/test_control_types.cpp)
+  if(TARGET test_control_types)
+    target_compile_features(test_control_types PRIVATE cxx_std_17)
+    target_link_libraries(test_control_types gtest_main ${catkin_LIBRARIES})
+  endif()
   add_rostest(test/controller.test)
   add_rostest(test/odom_landing.test)
   add_rostest(test/multirotor_anti_windup.test)
@@ -85,6 +92,9 @@ install(TARGETS controller_node
 )
 install(DIRECTORY config launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+install(DIRECTORY include/${PROJECT_NAME}/
+  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 install(FILES README.md
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}

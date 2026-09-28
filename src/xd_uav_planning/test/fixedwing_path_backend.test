@@ -1,0 +1,17 @@
+<launch>
+  <group ns="uav1">
+    <node pkg="xd_uav_planning" type="fixedwing_path_backend_node.py"
+          name="fixedwing_path_backend" output="screen" required="true">
+      <param name="common_frame" value="world"/>
+      <param name="state_timeout" value="0.50"/>
+      <param name="path_timeout" value="1.0"/>
+      <param name="turning_radius" value="5.0"/>
+      <param name="zone_clearance" value="2.0"/>
+      <param name="planning_sample_step" value="1.0"/>
+    </node>
+  </group>
+  <test test-name="fixedwing_path_backend"
+        pkg="xd_uav_planning"
+        type="test_fixedwing_path_backend.py"
+        time-limit="30"/>
+</launch>

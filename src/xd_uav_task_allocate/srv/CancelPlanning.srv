@@ -1,0 +1,5 @@
+uint32 goal_id
+string reason
+---
+bool success
+string message

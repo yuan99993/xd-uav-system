@@ -38,7 +38,7 @@ windows:
   - detect_and_track:
       layout: tiled
       panes:
-        - waitForTime; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_detect.yaml
+        - waitForTime; roslaunch xd_uav_detect detect.launch UAV_NAME:=uav1 config:=/home/kzy/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml image_topic:=down_camera/image_raw camera_info_topic:=down_camera/camera_info
         - >-
           waitForTime;
           rosparam load /home/kzy/xd-uavsystem-test/src/xd_uav_track/config/track.yaml /uav1/track;

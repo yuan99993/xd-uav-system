@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<sdf version="1.5">
+  <model name="visual_target">
+    <static>true</static>
+    <link name="target_link">
+      <pose>0 0 0.5 0 0 0</pose>
+      <collision name="collision">
+        <geometry><box><size>16 16 1</size></box></geometry>
+      </collision>
+      <visual name="red_visual">
+        <geometry><box><size>16 16 1</size></box></geometry>
+        <material>
+          <ambient>1 0 0 1</ambient><diffuse>1 0 0 1</diffuse>
+          <specular>0.1 0 0 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

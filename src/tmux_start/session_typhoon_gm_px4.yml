@@ -6,7 +6,7 @@ attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 
 # One namespaced Typhoon H480 and the complete red-target -> track -> gimbal loop.
-pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:$ROS_PACKAGE_PATH; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
+pre_window: source /opt/ros/noetic/setup.bash; source /home/kzy/xd-uavsystem-test/devel/setup.bash; export ROS_PACKAGE_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot:/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo:${ROS_PACKAGE_PATH:-}; export GAZEBO_PLUGIN_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:${GAZEBO_PLUGIN_PATH:-}; export GAZEBO_MODEL_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/Tools/sitl_gazebo/models:${GAZEBO_MODEL_PATH:-}; export LD_LIBRARY_PATH=/home/kzy/PX4-1.13.2/PX4-Autopilot/build/px4_sitl_default/build_gazebo:${LD_LIBRARY_PATH:-}; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE
 startup_window: closed_loop
 
 windows:
@@ -19,19 +19,19 @@ windows:
       layout: tiled
       panes:
         # Let the UDP receiver bind before Typhoon starts emitting its H264 stream.
-        - waitForRos; sleep 2; roslaunch px4 mavros_posix_sitl_typhoon_h480_ns.launch UAV_NAME:=uav1 ID:=0
+        - waitForRos; sleep 3; roslaunch px4 mavros_posix_sitl_typhoon_h480_ns.launch UAV_NAME:=uav1 ID:=0
 
   - vehicle_stack:
       layout: tiled
       panes:
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
-        - waitForTime; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav1 use_controller_override_config:=true controller_override_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_controller/config/typhoon_h480_override.yaml
+        - waitForTime; rostopic echo -n1 /uav1/mavros/imu/data >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 republish_world:=false tf_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+        - waitForTime; rostopic echo -n1 /uav1/mavros/imu/data >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav1 use_controller_override_config:=true controller_override_config:=/home/kzy/xd-uavsystem-test/src/xd_uav_controller/config/typhoon_h480_override.yaml
 
   - camera_and_target:
       layout: tiled
       panes:
         - waitForRos; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gazebo_udp_video_to_ros_image.py --udp-port 5600 --topic /uav1/cgo3_camera/image_raw --frame-id uav1/cgo3_camera_link --width 640 --height 360 --fps 10
-        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/spawn_red_boxes.py --position=12,-5,1 --size 2 2 2 --ground-z 0 --replace --prefix typhoon_target
+        #- waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/spawn_red_boxes.py --position=12,-5,1 --size 2 2 2 --ground-z 0 --replace --prefix typhoon_target
 
   - closed_loop:
       layout: tiled
@@ -40,7 +40,7 @@ windows:
         - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/red_box_detector.py --uavs uav1 --image-topic uav1=/uav1/cgo3_camera/image_raw --detections-template '/{uav}/detect/detections'
         - waitForTime; roslaunch xd_uav_track track.launch UAV_NAME:=uav1
         - waitForTime; roslaunch gm_control xd_track_gimbal_control.launch UAV_NAME:=uav1 image_topic:=/uav1/cgo3_camera/image_raw
-        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gm_control_to_gazebo_typhoon_gimbal.py --command-topic /uav1/gm_control/gimbal_cmd --state-topic /uav1/gm_control/gimbal_state --model typhoon_h4800 --frame-id uav1/cgo3_gimbal --yaw-sign -1 --pitch-sign -1 --rate 50
+        - waitForTime; /usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/gm_control_to_gazebo_typhoon_gimbal.py --command-topic /uav1/gm_control/gimbal_cmd --state-topic /uav1/gm_control/gimbal_state --gimbal-port 13280 --frame-id uav1/cgo3_gimbal --yaw-sign -1 --pitch-sign 1 --rate 50
 
   - observe:
       layout: tiled
@@ -60,10 +60,10 @@ windows:
       layout: tiled
       panes:
         - >-
-          history -s 'waitForTime; rosservice call /uav1/control_manager/takeoff "altitude: 4.0"'
+          history -s 'rosservice call /uav1/control_manager/takeoff "altitude: 6.0"'
 
   - stop_and_land:
       layout: tiled
       panes:
         - >-
-          history -s 'rosservice call /uav1/track/start_tracker "start: false"; rosservice call /uav1/control_manager/land_home'
+          history -s 'rosservice call /uav1/track/start_tracker "start: false";rosservice call /uav1/control_manager/land_home'

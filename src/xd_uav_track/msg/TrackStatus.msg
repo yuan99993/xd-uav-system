@@ -8,6 +8,9 @@ bool gimbal_state_valid
 bool control_reference_published
 bool uncertainty_limited
 bool relative_state_active
+bool metric_target_valid
+bool metric_active
+bool orbit_active
 bool gimbal_fallback_active
 bool emergency_stop_active
 int32 track_id
@@ -30,5 +33,7 @@ float32 command_forward
 float32 command_left
 float32 command_up
 float32 command_yaw_rate
+float32 metric_radial_error_m
+float32 metric_effective_radius_m
 string association_method
 string invalid_reason

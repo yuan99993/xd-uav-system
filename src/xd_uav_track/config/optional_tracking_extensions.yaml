@@ -1,0 +1,46 @@
+# Optional overlay: load after the vehicle-specific tracker config.
+# Camera calibration values below are examples, not measured installation data.
+tracker:
+  two_stage_association: false
+  high_confidence_threshold: 0.5
+  camera_motion_compensation:
+    # Rotation-only optical-flow compensation using timestamped camera TF.
+    # It reuses the predictive_fov intrinsics below and is safe to leave off
+    # until camera timestamps/extrinsics have been calibrated.
+    enabled: false
+follower:
+  target_guidance:
+    prediction_process_sigma_mps: 1.0
+    wind_feasibility_enabled: false
+    gimbal:
+      dynamic_fov_enabled: false
+      dynamic_fov_margin_ratio: 0.10
+      min_fov_rad: 0.10
+      zoom_reference_ratio: 1.0
+      zoom_margin_gain: 0.05
+    metric_velocity_estimation:
+      world_filter_enabled: false
+      world_filter_model: "cv"
+      # Use "imm" only after the capture-time odometry history and source
+      # covariance have been validated on recorded data.
+      world_filter_imm_turn_rate_stddev_radps2: 0.35
+      world_filter_imm_static_persistence: 0.96
+      world_filter_imm_cv_persistence: 0.92
+      world_filter_imm_turn_persistence: 0.90
+      world_filter_imm_max_turn_rate_radps: 1.20
+      world_filter_oosm_enabled: false
+      world_filter_oosm_window_sec: 0.50
+      world_filter_oosm_covariance_inflation: 4.0
+      world_filter_pose_history_sec: 2.0
+    predictive_fov:
+      enabled: false
+      fx: 400.0
+      fy: 400.0
+      cx: 320.0
+      cy: 240.0
+      width: 640.0
+      height: 480.0
+      # Optical -> body FLU; example forward camera.
+      optical_to_body_rpy: [-1.57079632679, 0.0, -1.57079632679]
+      translation: [0.18, 0.0, 0.0]
+      horizon_sec: 0.5

@@ -1,9 +1,98 @@
-# Typhoon H480 SITL-specific multirotor model override.
-#
-# The Gazebo model has about 2.665 kg total link mass, six rotors with
-# motorConstant=8.54858e-06 and maxRotVelocity=1500 rad/s. Balancing gravity
-# therefore requires a normalized rotor command near 0.476. Keep this separate
-# from multirotor.yaml so the existing fourfixed/other vehicles are unaffected.
+control_rate: 100.0
+
 multirotor:
   model:
-    hover_throttle: 0.48
+    gravity: 9.80665
+    hover_throttle: 0.45
+
+  attitude_control:
+    gain: [3.0, 3.0, 2.0]
+
+  position_control:
+    mpc:
+      horizon: 40
+      q: [500.0, 250.0]
+      terminal_q: [1000.0, 500.0]
+      # 当前组合对应的水平反馈约为Kp=0.59、Kv=1.52；相比r=30时的
+      # Kp=1.04、Kv=2.57，减少速度噪声和jerk限幅共同引起的0.7~0.8Hz摆动。
+      r: 80.0
+
+    # Z轴使用明显低于水平轴的反馈，避免起飞高度阶跃与速度/加速度前馈叠加后
+    # 放大垂向速度估计噪声。当前离散模型的首步反馈约为Kp=0.032、Kv=0.169。
+    mpc_z:
+      horizon: 30
+      q: [120.0, 100.0]
+      terminal_q: [180.0, 140.0]
+      r: 120.0
+
+    disturbance_rejection:
+      position_integral_gain: [0.015, 0.015, 0.01]
+      position_integral_acceleration_limit: [0.30, 0.30, 0.25]
+
+      velocity_integral_gain: [0.5, 0.5, 1.0]
+      velocity_integral_acceleration_limit: [0.5, 0.5, 0.6]
+
+      acceleration_feedback_gain: [0.12, 0.12, 0.20]
+      acceleration_integral_gain: [0.08, 0.08, 0.20]
+      acceleration_integral_acceleration_limit: [0.5, 0.5, 0.6]
+
+      anti_windup_gain: 1.5
+
+  limits:
+    minimum_throttle: 0.05
+    maximum_throttle: 0.90
+    maximum_tilt: 0.48
+    maximum_body_rate: [2.2, 2.2, 1.5]
+    maximum_velocity_xy: 4.0
+    maximum_velocity_z: 3.0
+    maximum_acceleration_xy: 2.6
+    maximum_acceleration_z: 2.0
+    maximum_jerk_xy: 3.0
+    maximum_jerk_z: 1.8
+
+# 起飞与降落保持为两种机型一致的顶层业务阶段；具体参数由当前机型文件定义。
+  takeoff:
+    default_altitude: 3.0
+    max_velocity: 0.8
+    max_acceleration: 0.6
+    position_tolerance: 0.15
+    velocity_tolerance: 0.15
+
+  landing:
+    # odom使用相对起飞/Home地面的Z，适用于没有下视测距的仿真；它不能识别
+    # 高于起飞点的平台。distance_sensor仅把纵向降落切换为下视AGL，XY仍使用
+    # 当前定位源；需要飞机模型和MAVROS distance_sensor插件提供Range话题。
+    height_source: odom
+
+    # land_home水平返航的速度上限。控制器会根据剩余距离和多旋翼最大加速度
+    # 自动提前减速，不会把该速度保持到目标点。
+    return_max_velocity: 1.0
+    # 仿真中H480在固定home附近存在约0.6m的稳定局部偏差；进入该捕获范围后
+    # 直接开始受控下降，同时继续用XY位置环修正，不再无限期保持悬停。
+    position_tolerance: 0.80
+    velocity_tolerance: 0.20
+
+    distance_sensor_cfg:
+      timeout: 0.5
+      descent_velocity: 0.35
+      final_descent_velocity: 0.15
+      slow_height: 0.7
+      # 触地时下视传感器到平台的预期距离；应按安装高度和最小量程设置。
+      touchdown_offset: 0.15
+      touchdown_height_tolerance: 0.10
+      # 使用滤波后的AGL变化率，不依赖当前定位源的odom.vz。
+      touchdown_velocity_tolerance: 0.20
+      velocity_filter_time_constant: 0.30
+
+    # 没有下视测距时保留原有的相对Home/起飞点高度降落逻辑。
+    odom_cfg:
+      descent_velocity: 0.35
+      final_descent_velocity: 0.15
+      slow_height: 0.7
+      touchdown_offset: 0.10
+      touchdown_height_tolerance: 0.05
+      touchdown_velocity_tolerance: 0.20
+
+home:
+  # H480 land_home不需要为了回到固定航向而额外旋转机体，避免起降瞬间的偏航扰动。
+  use_home_yaw: false

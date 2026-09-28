@@ -21,12 +21,13 @@
 #include <sensor_msgs/CameraInfo.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/Range.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include <std_msgs/String.h>
 #include <tf2/exceptions.h>
 #include <tf2_ros/transform_listener.h>
-#include <xd_uav_detect/ground_plane_projection.hpp>
-#include <xd_uav_detect/lidar_camera_fusion.hpp>
+#include <xd_uav_detect/WorldDetectionArray.h>
+#include <xd_uav_detect/localization/localization_backend.hpp>
 #include <xd_uav_track/DetectionArray.h>
 
 namespace {
@@ -103,37 +104,16 @@ cv::Scalar depthColor(const double depth, const double minimum,
 }  // namespace
 
 class XdUavDetectNode {
-  enum class LocalizationMethod {
-    kLidarCamera,
-    kGroundPlane,
-  };
-
  public:
   XdUavDetectNode()
       : private_nh_("~"), tf_listener_(tf_buffer_) {
     std::string localization_method{"lidar_camera"};
     private_nh_.param("localization/method", localization_method,
                       localization_method);
-    std::transform(localization_method.begin(), localization_method.end(),
-                   localization_method.begin(),
-                   [](const unsigned char value) {
-                     return static_cast<char>(std::tolower(value));
-                   });
-    if (localization_method == "lidar_camera" ||
-        localization_method == "multirotor") {
-      localization_method_ = LocalizationMethod::kLidarCamera;
-      localization_method_name_ = "lidar_camera";
-    } else if (localization_method == "ground_plane" ||
-               localization_method == "fixedwing") {
-      localization_method_ = LocalizationMethod::kGroundPlane;
-      localization_method_name_ = "ground_plane";
-    } else {
-      throw std::invalid_argument(
-          "~localization/method must be lidar_camera or ground_plane");
-    }
     private_nh_.param("localization/enabled", localization_enabled_, true);
 
-    xd_uav_detect::FusionConfig fusion_config;
+    xd_uav_detect::LocalizationBackendConfig backend_config;
+    auto& fusion_config = backend_config.lidar_camera;
     private_nh_.param("fusion/minimum_cluster_points",
                       fusion_config.minimum_cluster_points,
                       fusion_config.minimum_cluster_points);
@@ -149,9 +129,7 @@ class XdUavDetectNode {
     private_nh_.param("fusion/depth_cluster_tolerance_m",
                       fusion_config.depth_cluster_tolerance_m,
                       fusion_config.depth_cluster_tolerance_m);
-    fusion_.reset(new xd_uav_detect::LidarCameraFusion(fusion_config));
-
-    xd_uav_detect::GroundPlaneConfig ground_config;
+    auto& ground_config = backend_config.camera_ground_plane;
     private_nh_.param("ground_projection/ground_plane_z_m",
                       ground_config.ground_plane_z_m,
                       ground_config.ground_plane_z_m);
@@ -176,28 +154,66 @@ class XdUavDetectNode {
     private_nh_.param("ground_projection/position_stddev_m",
                       ground_config.position_stddev_m,
                       ground_config.position_stddev_m);
-    ground_projection_.reset(
-        new xd_uav_detect::GroundPlaneProjection(ground_config));
+    auto& gimbal_config = backend_config.gimbal_laser_range;
+    private_nh_.param("gimbal_range/bbox_gate_margin_px",
+                      gimbal_config.bbox_gate_margin_px,
+                      gimbal_config.bbox_gate_margin_px);
+    private_nh_.param("gimbal_range/range_stddev_m",
+                      gimbal_config.range_stddev_m,
+                      gimbal_config.range_stddev_m);
+    private_nh_.param("gimbal_range/angular_stddev_rad",
+                      gimbal_config.angular_stddev_rad,
+                      gimbal_config.angular_stddev_rad);
+    private_nh_.param("gimbal_range/position_stddev_m",
+                      gimbal_config.position_stddev_m,
+                      gimbal_config.position_stddev_m);
+    private_nh_.param("gimbal_range/require_laser_axis_in_bbox",
+                      gimbal_config.require_laser_axis_in_bbox,
+                      gimbal_config.require_laser_axis_in_bbox);
+    bool deprecated_alias = false;
+    localization_backend_ = xd_uav_detect::makeLocalizationBackend(
+        localization_method, backend_config, &deprecated_alias);
+    localization_method_ = localization_backend_->kind();
+    localization_method_name_ = localization_backend_->name();
+    if (deprecated_alias) {
+      ROS_WARN("[xd_uav_detect] localization method '%s' is deprecated; "
+               "use '%s'", localization_method.c_str(),
+               localization_method_name_.c_str());
+    }
 
     private_nh_.param("fusion/enabled", fusion_enabled_, true);
     private_nh_.param("calibration/calibrated", calibrated_, false);
     private_nh_.param("fusion/maximum_cloud_time_difference_sec",
                       maximum_cloud_time_difference_sec_, 0.12);
     private_nh_.param("fusion/cloud_buffer_size", cloud_buffer_size_, 10);
+    private_nh_.param("gimbal_range/maximum_time_difference_sec",
+                      maximum_range_time_difference_sec_, 0.05);
+    private_nh_.param("gimbal_range/range_buffer_size",
+                      range_buffer_size_, 20);
+    private_nh_.param("gimbal_range/require_detection_timestamp",
+                      gimbal_require_detection_timestamp_, true);
+    private_nh_.param("gimbal_range/require_matching_camera_frame",
+                      gimbal_require_matching_camera_frame_, true);
     private_nh_.param("fusion/point_stride", point_stride_, 1);
     private_nh_.param("fusion/tf_timeout_sec", tf_timeout_sec_, 0.03);
     private_nh_.param("frames/body", body_frame_, std::string("base_link"));
     private_nh_.param("frames/world", world_frame_, std::string("map"));
     private_nh_.param("frames/camera", configured_camera_frame_,
                       std::string());
+    private_nh_.param("frames/laser", configured_laser_frame_, std::string());
     private_nh_.param("ground_projection/tf_use_latest_on_failure",
                       ground_tf_use_latest_on_failure_, false);
     private_nh_.param("ground_projection/require_detection_timestamp",
                       ground_require_detection_timestamp_, true);
     private_nh_.param("ground_projection/require_matching_camera_frame",
                       ground_require_matching_camera_frame_, true);
-    if (localization_method_ == LocalizationMethod::kGroundPlane) {
+    if (localization_method_ ==
+        xd_uav_detect::LocalizationBackendKind::kCameraGroundPlane) {
       private_nh_.param("ground_projection/tf_timeout_sec", tf_timeout_sec_,
+                        tf_timeout_sec_);
+    } else if (localization_method_ ==
+               xd_uav_detect::LocalizationBackendKind::kGimbalLaserRange) {
+      private_nh_.param("gimbal_range/tf_timeout_sec", tf_timeout_sec_,
                         tf_timeout_sec_);
     }
     private_nh_.param("visualization/enabled", visualization_enabled_, true);
@@ -210,6 +226,7 @@ class XdUavDetectNode {
     private_nh_.param("visualization/maximum_depth_m",
                       visualization_maximum_depth_m_, 30.0);
     cloud_buffer_size_ = std::max(1, cloud_buffer_size_);
+    range_buffer_size_ = std::max(1, range_buffer_size_);
     point_stride_ = std::max(1, point_stride_);
     visualization_point_stride_ = std::max(1, visualization_point_stride_);
     visualization_point_radius_px_ = std::max(1, visualization_point_radius_px_);
@@ -220,6 +237,8 @@ class XdUavDetectNode {
         visualization_maximum_depth_m_);
     maximum_cloud_time_difference_sec_ = std::max(
         0.0, maximum_cloud_time_difference_sec_);
+    maximum_range_time_difference_sec_ = std::max(
+        0.0, maximum_range_time_difference_sec_);
     tf_timeout_sec_ = std::max(0.0, tf_timeout_sec_);
 
     Eigen::Vector3d translation_xyz;
@@ -248,7 +267,8 @@ class XdUavDetectNode {
       camera_from_lidar_.block<3, 1>(0, 3) =
           optical_from_rotated_camera * translation_xyz;
     }
-    if (localization_method_ == LocalizationMethod::kLidarCamera &&
+    if (localization_method_ ==
+            xd_uav_detect::LocalizationBackendKind::kLidarCamera &&
         calibrated_ && !calibration_parameters_valid_) {
       ROS_ERROR("[xd_uav_detect] calibrated=true but translation_xyz or "
                 "rotation_ypr is invalid; 3D fusion is disabled");
@@ -259,10 +279,13 @@ class XdUavDetectNode {
     // rosrun usable inside an explicitly supplied ROS namespace without
     // embedding a vehicle name in this node.
     std::string detections_input{"detect/input/detections_2d"};
-    std::string detections_output{"track/detections"};
+    std::string detections_output{"detect/detections"};
+    std::string compatibility_detections_output;
+    std::string world_detections_output{"detect/detections_world"};
     std::string image_topic{"camera/image_raw"};
     std::string camera_info_topic{"camera/camera_info"};
     std::string cloud_topic{"fastlio/points"};
+    std::string range_topic{"gimbal/range"};
     std::string status_topic{"detect/status"};
     std::string debug_image_topic{"detect/debug/image"};
     private_nh_.param("interfaces/input/detections_2d", detections_input,
@@ -271,14 +294,30 @@ class XdUavDetectNode {
     private_nh_.param("interfaces/input/camera_info", camera_info_topic,
                       camera_info_topic);
     private_nh_.param("interfaces/input/point_cloud", cloud_topic, cloud_topic);
+    private_nh_.param("interfaces/input/laser_range", range_topic, range_topic);
     private_nh_.param("interfaces/output/detections_3d", detections_output,
                       detections_output);
+    private_nh_.param("interfaces/output/detections_compat",
+                      compatibility_detections_output,
+                      compatibility_detections_output);
+    private_nh_.param("interfaces/output/detections_world",
+                      world_detections_output, world_detections_output);
     private_nh_.param("interfaces/output/status", status_topic, status_topic);
     private_nh_.param("interfaces/output/debug_image", debug_image_topic,
                       debug_image_topic);
 
     detections_publisher_ =
         nh_.advertise<xd_uav_track::DetectionArray>(detections_output, 10);
+    if (!compatibility_detections_output.empty() &&
+        nh_.resolveName(compatibility_detections_output) !=
+            nh_.resolveName(detections_output)) {
+      compatibility_detections_publisher_ =
+          nh_.advertise<xd_uav_track::DetectionArray>(
+              compatibility_detections_output, 10);
+    }
+    world_detections_publisher_ =
+        nh_.advertise<xd_uav_detect::WorldDetectionArray>(
+            world_detections_output, 10);
     status_publisher_ = nh_.advertise<std_msgs::String>(status_topic, 10);
     debug_image_publisher_ =
         nh_.advertise<sensor_msgs::Image>(debug_image_topic, 1);
@@ -291,18 +330,28 @@ class XdUavDetectNode {
     camera_info_subscriber_ = nh_.subscribe(
         camera_info_topic, 1, &XdUavDetectNode::cameraInfoCallback, this,
         ros::TransportHints().tcpNoDelay());
-    if (localization_method_ == LocalizationMethod::kLidarCamera) {
+    if (localization_method_ ==
+        xd_uav_detect::LocalizationBackendKind::kLidarCamera) {
       cloud_subscriber_ = nh_.subscribe(
           cloud_topic, 2, &XdUavDetectNode::cloudCallback, this,
+          ros::TransportHints().tcpNoDelay());
+    } else if (localization_method_ ==
+               xd_uav_detect::LocalizationBackendKind::kGimbalLaserRange) {
+      range_subscriber_ = nh_.subscribe(
+          range_topic, 10, &XdUavDetectNode::rangeCallback, this,
           ros::TransportHints().tcpNoDelay());
     }
 
     ROS_INFO("[xd_uav_detect] external detections=%s -> metric detections=%s; "
-             "method=%s; localization=%s; calibration=%s; debug_image=%s",
+             "compatibility output=%s; method=%s; localization=%s; "
+             "calibration=%s; debug_image=%s",
              detections_input.c_str(), detections_output.c_str(),
+             compatibility_detections_output.empty()
+                 ? "disabled" : compatibility_detections_output.c_str(),
              localization_method_name_.c_str(),
              localization_enabled_ ? "enabled" : "disabled",
-             localization_method_ == LocalizationMethod::kGroundPlane
+             localization_method_ !=
+                     xd_uav_detect::LocalizationBackendKind::kLidarCamera
                  ? "CameraInfo+TF"
                  : (calibrated_ ? "ready"
                                 : "waiting for calibration parameters"),
@@ -314,16 +363,19 @@ class XdUavDetectNode {
     if (message->width == 0 || message->height == 0) return;
     xd_uav_detect::CameraIntrinsics intrinsics;
     sensor_msgs::PointCloud2::ConstPtr cloud;
+    sensor_msgs::Range::ConstPtr range;
     xd_uav_track::DetectionArray detections;
     std::string reason;
     double cloud_difference = std::numeric_limits<double>::infinity();
+    double range_difference = std::numeric_limits<double>::infinity();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       image_width_ = message->width;
       image_height_ = message->height;
       image_stamp_ = message->header.stamp;
       intrinsics = intrinsics_;
-      if (localization_method_ == LocalizationMethod::kLidarCamera) {
+      if (localization_method_ ==
+          xd_uav_detect::LocalizationBackendKind::kLidarCamera) {
         cloud = closestCloud(message->header.stamp, &cloud_difference);
       }
       detections = latest_debug_detections_;
@@ -387,6 +439,34 @@ class XdUavDetectNode {
            static_cast<std::size_t>(cloud_buffer_size_)) {
       cloud_buffer_.pop_front();
     }
+  }
+
+  void rangeCallback(const sensor_msgs::Range::ConstPtr& message) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    range_buffer_.push_back(message);
+    while (range_buffer_.size() >
+           static_cast<std::size_t>(range_buffer_size_)) {
+      range_buffer_.pop_front();
+    }
+  }
+
+  sensor_msgs::Range::ConstPtr closestRange(
+      const ros::Time& requested_stamp, double* difference_sec) const {
+    sensor_msgs::Range::ConstPtr best;
+    double best_difference = std::numeric_limits<double>::infinity();
+    for (const auto& measurement : range_buffer_) {
+      if (requested_stamp.isZero() || measurement->header.stamp.isZero()) {
+        continue;
+      }
+      const double difference =
+          std::abs((measurement->header.stamp - requested_stamp).toSec());
+      if (difference < best_difference) {
+        best = measurement;
+        best_difference = difference;
+      }
+    }
+    if (difference_sec != nullptr) *difference_sec = best_difference;
+    return best;
   }
 
   sensor_msgs::PointCloud2::ConstPtr closestCloud(
@@ -503,7 +583,8 @@ class XdUavDetectNode {
     std::size_t projected_count = 0;
     double nearest_depth = std::numeric_limits<double>::infinity();
     double farthest_depth = 0.0;
-    if (localization_method_ == LocalizationMethod::kLidarCamera &&
+    if (localization_method_ ==
+            xd_uav_detect::LocalizationBackendKind::kLidarCamera &&
         calibrated_ && calibration_parameters_valid_ && intrinsics.valid()) {
       for (std::size_t index = 0; index < points.size();
            index += static_cast<std::size_t>(visualization_point_stride_)) {
@@ -564,15 +645,25 @@ class XdUavDetectNode {
                   cv::Scalar(15, 15, 15), cv::FILLED);
     cv::addWeighted(panel, 0.62, canvas, 0.38, 0.0, canvas);
     std::vector<std::string> lines;
-    lines.push_back(localization_method_ == LocalizationMethod::kLidarCamera
-                        ? "LiDAR -> camera projection"
-                        : "Down-camera -> ground plane");
+    if (localization_method_ ==
+        xd_uav_detect::LocalizationBackendKind::kLidarCamera) {
+      lines.push_back("LiDAR -> camera projection");
+    } else if (localization_method_ ==
+               xd_uav_detect::LocalizationBackendKind::kCameraGroundPlane) {
+      lines.push_back("Camera -> ground plane");
+    } else {
+      lines.push_back("Gimbal single-beam range");
+    }
     {
       std::ostringstream line;
-      if (localization_method_ == LocalizationMethod::kLidarCamera) {
+      if (localization_method_ ==
+          xd_uav_detect::LocalizationBackendKind::kLidarCamera) {
         line << "projected: " << projected_count << "/" << points.size();
-      } else {
+      } else if (localization_method_ ==
+                 xd_uav_detect::LocalizationBackendKind::kCameraGroundPlane) {
         line << "ground projected";
+      } else {
+        line << "range endpoint projected";
       }
       line << "  detections: " << detections.candidates.size()
            << "  metric: " << fused_count;
@@ -580,7 +671,8 @@ class XdUavDetectNode {
     }
     {
       std::ostringstream line;
-      if (localization_method_ == LocalizationMethod::kLidarCamera) {
+      if (localization_method_ ==
+          xd_uav_detect::LocalizationBackendKind::kLidarCamera) {
         line << std::fixed << std::setprecision(3)
              << "cloud-image dt: "
              << (std::isfinite(cloud_difference) ? cloud_difference : -1.0)
@@ -601,7 +693,8 @@ class XdUavDetectNode {
                   1, cv::LINE_AA);
     }
 
-    if (localization_method_ == LocalizationMethod::kLidarCamera) {
+    if (localization_method_ ==
+        xd_uav_detect::LocalizationBackendKind::kLidarCamera) {
       const int bar_height = std::min(180, std::max(60, canvas.rows - 80));
       const int bar_width = 16;
       const int bar_x = std::max(0, canvas.cols - 38);
@@ -649,7 +742,8 @@ class XdUavDetectNode {
     stream << "detections=" << detections << " metric=" << fused
            << " method=" << localization_method_name_
            << " calibrated="
-           << (localization_method_ == LocalizationMethod::kGroundPlane ||
+           << (localization_method_ !=
+                       xd_uav_detect::LocalizationBackendKind::kLidarCamera ||
                        calibrated_
                    ? "true"
                    : "false")
@@ -694,6 +788,100 @@ class XdUavDetectNode {
     candidate->range_valid = true;
   }
 
+  void publishDetections(
+      const xd_uav_track::DetectionArray& detections) {
+    detections_publisher_.publish(detections);
+    if (compatibility_detections_publisher_) {
+      compatibility_detections_publisher_.publish(detections);
+    }
+
+    xd_uav_detect::WorldDetectionArray world_output;
+    world_output.header = detections.header;
+    world_output.header.frame_id = world_frame_;
+    world_output.detections.resize(detections.candidates.size());
+
+    bool needs_transform = false;
+    for (const auto& candidate : detections.candidates) {
+      needs_transform = needs_transform ||
+          (candidate.range_valid && candidate.has_relative_position_body);
+    }
+
+    Eigen::Matrix4d world_from_body = Eigen::Matrix4d::Identity();
+    bool transform_valid = false;
+    if (needs_transform && !world_frame_.empty() && !body_frame_.empty() &&
+        !detections.header.stamp.isZero()) {
+      try {
+        world_from_body = transformMatrix(tf_buffer_.lookupTransform(
+            world_frame_, body_frame_, detections.header.stamp,
+            ros::Duration(tf_timeout_sec_)));
+        transform_valid = true;
+      } catch (const tf2::TransformException& error) {
+        ROS_WARN_THROTTLE(
+            2.0, "[xd_uav_detect] world/body TF unavailable: %s",
+            error.what());
+      }
+    }
+
+    const Eigen::Matrix3d frd_to_flu =
+        (Eigen::Vector3d(1.0, -1.0, -1.0)).asDiagonal();
+    const Eigen::Matrix3d world_from_body_rotation =
+        world_from_body.block<3, 3>(0, 0);
+    for (std::size_t index = 0; index < detections.candidates.size(); ++index) {
+      const auto& source = detections.candidates[index];
+      auto& target = world_output.detections[index];
+      target.source_candidate_index = index;
+      target.track_id = source.track_id;
+      target.class_id = source.class_id;
+      target.confidence = source.confidence;
+      target.image_source = detections.image_source;
+      target.sensor_id = detections.sensor_id;
+      target.detector_name = detections.detector_name;
+      target.model_version = detections.model_version;
+      target.position_valid = false;
+      if (!transform_valid || !source.range_valid ||
+          !source.has_relative_position_body) {
+        continue;
+      }
+
+      const Eigen::Vector3d position_frd(
+          source.relative_position_body[0],
+          source.relative_position_body[1],
+          source.relative_position_body[2]);
+      const Eigen::Vector4d position_body(
+          (frd_to_flu * position_frd).x(),
+          (frd_to_flu * position_frd).y(),
+          (frd_to_flu * position_frd).z(), 1.0);
+      const Eigen::Vector4d position_world = world_from_body * position_body;
+      Eigen::Matrix3d covariance_frd;
+      for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+          covariance_frd(row, column) =
+              source.position_covariance[3 * row + column];
+        }
+      }
+      const Eigen::Matrix3d covariance_body =
+          frd_to_flu * covariance_frd * frd_to_flu;
+      const Eigen::Matrix3d covariance_world =
+          world_from_body_rotation * covariance_body *
+          world_from_body_rotation.transpose();
+      if (!position_world.head<3>().array().isFinite().all() ||
+          !covariance_world.array().isFinite().all()) {
+        continue;
+      }
+      target.position_world.x = position_world.x();
+      target.position_world.y = position_world.y();
+      target.position_world.z = position_world.z();
+      for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+          target.position_covariance_world[3 * row + column] =
+              covariance_world(row, column);
+        }
+      }
+      target.position_valid = true;
+    }
+    world_detections_publisher_.publish(world_output);
+  }
+
   bool lookupGroundTransform(
       const std::string& target_frame, const std::string& camera_frame,
       const ros::Time& capture_stamp,
@@ -734,18 +922,24 @@ class XdUavDetectNode {
     xd_uav_track::DetectionArray output = *input;
     xd_uav_detect::CameraIntrinsics intrinsics;
     sensor_msgs::PointCloud2::ConstPtr cloud;
+    sensor_msgs::Range::ConstPtr range;
     unsigned int image_width = 0;
     unsigned int image_height = 0;
     std::string camera_info_frame;
     double cloud_difference = std::numeric_limits<double>::infinity();
+    double range_difference = std::numeric_limits<double>::infinity();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       intrinsics = intrinsics_;
       image_width = image_width_;
       image_height = image_height_;
       camera_info_frame = camera_info_frame_;
-      if (localization_method_ == LocalizationMethod::kLidarCamera) {
+      if (localization_method_ ==
+          xd_uav_detect::LocalizationBackendKind::kLidarCamera) {
         cloud = closestCloud(input->header.stamp, &cloud_difference);
+      } else if (localization_method_ ==
+                 xd_uav_detect::LocalizationBackendKind::kGimbalLaserRange) {
+        range = closestRange(input->header.stamp, &range_difference);
       }
     }
     if (output.image_width == 0) {
@@ -774,7 +968,7 @@ class XdUavDetectNode {
 
     auto publish_without_metric = [&](const std::string& reason) {
       for (auto& candidate : output.candidates) clearMetricState(&candidate);
-      detections_publisher_.publish(output);
+      publishDetections(output);
       publishStatus(output.candidates.size(), 0, reason);
       updateDebugState(output, reason);
     };
@@ -791,9 +985,108 @@ class XdUavDetectNode {
       return;
     }
 
-    if (localization_method_ == LocalizationMethod::kGroundPlane) {
+    if (localization_method_ ==
+        xd_uav_detect::LocalizationBackendKind::kGimbalLaserRange) {
+      if (gimbal_require_detection_timestamp_ &&
+          input->header.stamp.isZero()) {
+        publish_without_metric("gimbal detection timestamp unavailable");
+        return;
+      }
+      if (range == nullptr ||
+          range_difference > maximum_range_time_difference_sec_) {
+        publish_without_metric("synchronized laser range unavailable");
+        return;
+      }
+      if (range->header.stamp.isZero() || range->header.frame_id.empty() ||
+          !std::isfinite(range->range) ||
+          range->range <= range->min_range || range->range >= range->max_range) {
+        publish_without_metric("invalid laser range");
+        return;
+      }
+      const std::string camera_frame = !configured_camera_frame_.empty()
+          ? configured_camera_frame_
+          : (!camera_info_frame.empty() ? camera_info_frame
+                                        : input->header.frame_id);
+      const std::string laser_frame = !configured_laser_frame_.empty()
+          ? configured_laser_frame_ : range->header.frame_id;
+      if (body_frame_.empty() || camera_frame.empty() || laser_frame.empty()) {
+        publish_without_metric("body/camera/laser frame unavailable");
+        return;
+      }
+      if (gimbal_require_matching_camera_frame_ &&
+          !input->header.frame_id.empty() &&
+          input->header.frame_id != camera_frame) {
+        publish_without_metric(
+            "detection and CameraInfo camera frames do not match");
+        return;
+      }
+
+      geometry_msgs::TransformStamped camera_from_laser_message;
+      geometry_msgs::TransformStamped body_from_laser_message;
+      try {
+        camera_from_laser_message = tf_buffer_.lookupTransform(
+            camera_frame, laser_frame, input->header.stamp,
+            ros::Duration(tf_timeout_sec_));
+        body_from_laser_message = tf_buffer_.lookupTransform(
+            body_frame_, laser_frame, input->header.stamp,
+            ros::Duration(tf_timeout_sec_));
+      } catch (const tf2::TransformException& error) {
+        ROS_WARN_THROTTLE(
+            2.0, "[xd_uav_detect] gimbal laser TF unavailable: %s",
+            error.what());
+        publish_without_metric("camera/body laser TF unavailable");
+        return;
+      }
+
+      std::vector<xd_uav_detect::PixelBox> boxes(output.candidates.size());
+      for (std::size_t index = 0; index < output.candidates.size(); ++index) {
+        if (output.candidates[index].range_valid &&
+            output.candidates[index].has_relative_position_body) {
+          continue;
+        }
+        pixelBox(output.candidates[index], output.image_width,
+                 output.image_height, &boxes[index]);
+      }
+      xd_uav_detect::LocalizationInput localization_input;
+      localization_input.boxes = boxes;
+      localization_input.intrinsics = intrinsics;
+      localization_input.range_m = range->range;
+      localization_input.camera_from_sensor =
+          transformMatrix(camera_from_laser_message);
+      localization_input.body_from_sensor =
+          transformMatrix(body_from_laser_message);
+      const auto localized =
+          localization_backend_->localize(localization_input);
+      const bool backend_valid = std::any_of(
+          localized.begin(), localized.end(),
+          [](const xd_uav_detect::LocalizationEstimate& estimate) {
+            return estimate.valid;
+          });
+      std::size_t metric_count = 0;
+      for (std::size_t index = 0; index < output.candidates.size(); ++index) {
+        auto& candidate = output.candidates[index];
+        if (candidate.range_valid && candidate.has_relative_position_body) {
+          ++metric_count;
+        } else if (index < localized.size() && localized[index].valid) {
+          setMetricPosition(localized[index].position_body_flu,
+                            localized[index].covariance_body_flu, &candidate);
+          ++metric_count;
+        } else {
+          clearMetricState(&candidate);
+        }
+      }
+      publishDetections(output);
+      const std::string result_reason = backend_valid
+          ? "ok" : "laser axis does not identify exactly one detection";
+      publishStatus(output.candidates.size(), metric_count, result_reason);
+      updateDebugState(output, result_reason);
+      return;
+    }
+
+    if (localization_method_ ==
+        xd_uav_detect::LocalizationBackendKind::kCameraGroundPlane) {
       if (ground_require_detection_timestamp_ && input->header.stamp.isZero()) {
-        publish_without_metric("fixed-wing detection timestamp unavailable");
+        publish_without_metric("ground-plane detection timestamp unavailable");
         return;
       }
       const std::string camera_frame = !configured_camera_frame_.empty()
@@ -821,7 +1114,7 @@ class XdUavDetectNode {
               body_frame_, camera_frame, input->header.stamp,
               &body_from_camera_message, &tf_error)) {
         ROS_WARN_THROTTLE(
-            2.0, "[xd_uav_detect] fixed-wing camera TF unavailable: %s",
+            2.0, "[xd_uav_detect] ground-plane camera TF unavailable: %s",
             tf_error.c_str());
         publish_without_metric("world/body camera TF unavailable");
         return;
@@ -830,29 +1123,33 @@ class XdUavDetectNode {
           transformMatrix(world_from_camera_message);
       const Eigen::Matrix4d body_from_camera =
           transformMatrix(body_from_camera_message);
+      xd_uav_detect::LocalizationInput localization_input;
+      localization_input.intrinsics = intrinsics;
+      localization_input.world_from_camera = world_from_camera;
+      localization_input.body_from_sensor = body_from_camera;
+      localization_input.boxes.resize(output.candidates.size());
+      for (std::size_t index = 0; index < output.candidates.size(); ++index) {
+        pixelBox(output.candidates[index], output.image_width,
+                 output.image_height, &localization_input.boxes[index]);
+      }
+      const auto localized =
+          localization_backend_->localize(localization_input);
       std::size_t projected_count = 0;
-      for (auto& candidate : output.candidates) {
+      for (std::size_t index = 0; index < output.candidates.size(); ++index) {
+        auto& candidate = output.candidates[index];
         if (candidate.range_valid && candidate.has_relative_position_body) {
           ++projected_count;
           continue;
         }
-        xd_uav_detect::PixelBox box;
-        if (!pixelBox(candidate, output.image_width, output.image_height,
-                      &box)) {
+        if (index >= localized.size() || !localized[index].valid) {
           clearMetricState(&candidate);
           continue;
         }
-        const auto projected = ground_projection_->estimate(
-            box, intrinsics, world_from_camera, body_from_camera);
-        if (!projected.valid) {
-          clearMetricState(&candidate);
-          continue;
-        }
-        setMetricPosition(projected.position_body_flu,
-                          projected.covariance_body_flu, &candidate);
+        setMetricPosition(localized[index].position_body_flu,
+                          localized[index].covariance_body_flu, &candidate);
         ++projected_count;
       }
-      detections_publisher_.publish(output);
+      publishDetections(output);
       const std::string result_reason = projected_count > 0
           ? "ok"
           : "no valid camera/ground intersection";
@@ -896,28 +1193,33 @@ class XdUavDetectNode {
     }
     const Eigen::Matrix4d body_from_lidar =
         transformMatrix(body_from_lidar_message);
+    xd_uav_detect::LocalizationInput localization_input;
+    localization_input.intrinsics = intrinsics;
+    localization_input.points = points;
+    localization_input.camera_from_sensor = camera_from_lidar_;
+    localization_input.body_from_sensor = body_from_lidar;
+    localization_input.boxes.resize(output.candidates.size());
+    for (std::size_t index = 0; index < output.candidates.size(); ++index) {
+      pixelBox(output.candidates[index], output.image_width,
+               output.image_height, &localization_input.boxes[index]);
+    }
+    const auto localized = localization_backend_->localize(localization_input);
     std::size_t fused_count = 0;
-    for (auto& candidate : output.candidates) {
+    for (std::size_t index = 0; index < output.candidates.size(); ++index) {
+      auto& candidate = output.candidates[index];
       if (candidate.range_valid && candidate.has_relative_position_body) {
         ++fused_count;
         continue;  // Preserve a valid metric measurement from the upstream detector.
       }
-      xd_uav_detect::PixelBox box;
-      if (!pixelBox(candidate, output.image_width, output.image_height, &box)) {
+      if (index >= localized.size() || !localized[index].valid) {
         clearMetricState(&candidate);
         continue;
       }
-      const auto fused = fusion_->estimate(
-          points, box, intrinsics, camera_from_lidar_, body_from_lidar);
-      if (!fused.valid) {
-        clearMetricState(&candidate);
-        continue;
-      }
-      setMetricPosition(fused.position_body_flu,
-                        fused.covariance_body_flu, &candidate);
+      setMetricPosition(localized[index].position_body_flu,
+                        localized[index].covariance_body_flu, &candidate);
       ++fused_count;
     }
-    detections_publisher_.publish(output);
+    publishDetections(output);
     const std::string result_reason =
         fused_count > 0 ? "ok" : "no target cloud cluster";
     publishStatus(output.candidates.size(), fused_count, result_reason);
@@ -930,15 +1232,18 @@ class XdUavDetectNode {
   ros::Subscriber image_subscriber_;
   ros::Subscriber camera_info_subscriber_;
   ros::Subscriber cloud_subscriber_;
+  ros::Subscriber range_subscriber_;
   ros::Publisher detections_publisher_;
+  ros::Publisher compatibility_detections_publisher_;
+  ros::Publisher world_detections_publisher_;
   ros::Publisher status_publisher_;
   ros::Publisher debug_image_publisher_;
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
-  std::unique_ptr<xd_uav_detect::LidarCameraFusion> fusion_;
-  std::unique_ptr<xd_uav_detect::GroundPlaneProjection> ground_projection_;
+  std::unique_ptr<xd_uav_detect::LocalizationBackend> localization_backend_;
   mutable std::mutex mutex_;
   std::deque<sensor_msgs::PointCloud2::ConstPtr> cloud_buffer_;
+  std::deque<sensor_msgs::Range::ConstPtr> range_buffer_;
   xd_uav_detect::CameraIntrinsics intrinsics_;
   xd_uav_track::DetectionArray latest_debug_detections_;
   std::string latest_debug_reason_{"waiting for detections"};
@@ -949,14 +1254,17 @@ class XdUavDetectNode {
   unsigned int image_width_{0};
   unsigned int image_height_{0};
   int cloud_buffer_size_{10};
+  int range_buffer_size_{20};
   int point_stride_{1};
   double maximum_cloud_time_difference_sec_{0.12};
+  double maximum_range_time_difference_sec_{0.05};
   double tf_timeout_sec_{0.03};
   double visualization_minimum_depth_m_{0.3};
   double visualization_maximum_depth_m_{30.0};
   int visualization_point_stride_{1};
   int visualization_point_radius_px_{2};
-  LocalizationMethod localization_method_{LocalizationMethod::kLidarCamera};
+  xd_uav_detect::LocalizationBackendKind localization_method_{
+      xd_uav_detect::LocalizationBackendKind::kLidarCamera};
   std::string localization_method_name_{"lidar_camera"};
   bool localization_enabled_{true};
   bool fusion_enabled_{true};
@@ -967,9 +1275,12 @@ class XdUavDetectNode {
   std::string body_frame_{"base_link"};
   std::string world_frame_{"map"};
   std::string configured_camera_frame_;
+  std::string configured_laser_frame_;
   bool ground_tf_use_latest_on_failure_{false};
   bool ground_require_detection_timestamp_{true};
   bool ground_require_matching_camera_frame_{true};
+  bool gimbal_require_detection_timestamp_{true};
+  bool gimbal_require_matching_camera_frame_{true};
 };
 
 int main(int argc, char** argv) {

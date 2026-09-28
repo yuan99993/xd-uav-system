@@ -1,0 +1,24 @@
+<launch>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="body_to_laser"
+        args="0 0 0 0 0 0 test/base_link test/laser"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="laser_to_optical"
+        args="0 0 0 -1.57079632679 0 -1.57079632679 test/laser test/camera_optical"/>
+  <group ns="test">
+    <node pkg="xd_uav_detect" type="xd_uav_detect_node" name="detect" output="screen">
+      <rosparam command="load" file="$(find xd_uav_detect)/config/gimbal_laser_range.yaml"/>
+      <param name="frames/body" value="test/base_link"/>
+      <param name="frames/world" value="missing_world"/>
+      <param name="interfaces/input/detections_2d" value="input"/>
+      <param name="interfaces/input/camera_info" value="camera_info"/>
+      <param name="interfaces/input/image" value="image"/>
+      <param name="interfaces/input/laser_range" value="range"/>
+      <param name="interfaces/output/detections_3d" value="output"/>
+      <param name="interfaces/output/detections_compat" value="compat_output"/>
+      <param name="interfaces/output/detections_world" value="world"/>
+      <param name="gimbal_range/maximum_time_difference_sec" value="0.05"/>
+      <param name="gimbal_range/require_detection_timestamp" value="true"/>
+    </node>
+  </group>
+  <test pkg="xd_uav_detect" type="gimbal_range_node_test.py"
+        test-name="gimbal_range_node_fail_closed" time-limit="40"/>
+</launch>

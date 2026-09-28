@@ -1,0 +1,41 @@
+# Vehicle-independent camera + registered point-cloud localization.
+localization:
+  enabled: true
+  method: "lidar_camera"
+
+interfaces:
+  input:
+    detections_2d: "detect/input/detections_2d"
+    image: "camera/image_raw"
+    camera_info: "camera/camera_info"
+    point_cloud: "fastlio/points"
+  output:
+    detections_3d: "detect/detections"
+    detections_world: "detect/detections_world"
+    status: "detect/status"
+    debug_image: "detect/debug/image"
+
+calibration:
+  # Replace with the calibration of the selected sensor rig.
+  calibrated: true
+  translation_xyz: [-0.253366, -0.0435222, 0.185053]
+  rotation_ypr: [0.0100813, 0.00255071, -0.00259498]
+
+fusion:
+  enabled: true
+  maximum_cloud_time_difference_sec: 0.12
+  cloud_buffer_size: 10
+  tf_timeout_sec: 0.03
+  point_stride: 1
+  minimum_range_m: 0.30
+  maximum_range_m: 120.0
+  box_shrink_ratio: 0.10
+  minimum_cluster_points: 3
+  depth_cluster_tolerance_m: 0.75
+
+visualization:
+  enabled: true
+  point_stride: 1
+  point_radius_px: 1
+  minimum_depth_m: 0.30
+  maximum_depth_m: 30.0

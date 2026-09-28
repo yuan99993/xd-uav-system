@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="initial_owner" default="none"/>
+  <!-- The first owner acquisition is not a controller-to-controller handoff. -->
+  <arg name="allow_initial_ego_owner" default="false"/>
+  <arg name="common_frame" default="world"/>
+  <arg name="output_frame" default="$(arg common_frame)"/>
+  <arg name="healthy_topic" default="planning/healthy"/>
+  <arg name="diagnostics_topic" default="planning/diagnostics"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_planning" type="state_hold_baseline_node.py"
+          name="state_hold_baseline" output="screen" required="true">
+      <param name="common_frame" value="$(arg common_frame)"/>
+      <param name="output_frame" value="$(arg output_frame)"/>
+    </node>
+    <node pkg="xd_uav_planning" type="health_gate_node.py"
+          name="ego_system_health" output="screen" clear_params="true">
+      <rosparam param="inputs">[ego/bridge/healthy, ego/sensing/healthy]</rosparam>
+      <param name="timeout" value="0.30"/>
+      <param name="output" value="$(arg healthy_topic)"/>
+      <param name="diagnostics" value="$(arg diagnostics_topic)"/>
+    </node>
+    <node pkg="xd_uav_planning" type="reference_mux_node.py"
+          name="reference_mux" output="screen" clear_params="true">
+      <param name="common_frame" value="$(arg common_frame)"/>
+      <!-- Normalize the selected candidate in the frame requested by the
+           integration launch.  The controller can also perform this TF
+           conversion, but keeping the mux output contract explicit avoids
+           an accidental fallback to common_frame. -->
+      <param name="output_frame" value="$(arg output_frame)"/>
+      <param name="initial_owner" value="$(arg initial_owner)"/>
+      <param name="allow_initial_ego_owner" value="$(arg allow_initial_ego_owner)"/>
+      <param name="candidate_timeout" value="0.20"/>
+      <param name="health_timeout" value="0.30"/>
+      <param name="ego_healthy_topic" value="$(arg healthy_topic)"/>
+      <param name="switch_position_jump" value="0.20"/>
+      <param name="switch_velocity_jump" value="0.30"/>
+      <param name="output_topic" value="control/reference/setpoint"/>
+    </node>
+  </group>
+</launch>

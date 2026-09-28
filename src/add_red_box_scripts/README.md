@@ -66,6 +66,8 @@ python3 src/add_red_box_scripts/spawn_red_boxes.py --count 6 --area=-25,-5,-25,-
 
 # 在两个矩形区域之间轮流分配方块
 python3 src/add_red_box_scripts/spawn_red_boxes.py --count 8 --area=0,20,0,20 --area=-30,0,-30,0 --ground-z 0 --replace
+
+/usr/bin/python3 /home/kzy/xd-uavsystem-test/src/add_red_box_scripts/spawn_red_boxes.py --position=0,0,0.1 --size 5 5 3 --ground-z 0 --reference-frame world --replace --prefix fixedwing_track_target
 ```
 
 ### 在任务搜索区域内随机生成
@@ -78,7 +80,7 @@ python3 src/add_red_box_scripts/spawn_red_boxes.py --count 8 --area=0,20,0,20 --
 终端 1：
 
 ```bash
-cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red_box_scripts/spawn_red_boxes.py --count 5 --search-area-topic /task_allocate/search_areas --size 3 3 1 --ground-z 0 --replace --min-spacing 10
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red_box_scripts/spawn_red_boxes.py --count 3 --search-area-topic /task_allocate/search_areas --size 3 3 3 --ground-z 3 --replace --min-spacing 10
 ```
 
 终端 2：执行任务系统原有的搜索区域发布命令。收到区域消息后，终端 1 才会
@@ -152,7 +154,7 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red
 
 ```bash
 # 只使用六种小汽车，不生成公交车
-python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --replace --models car_beetle car_golf car_lexus car_opel car_polo car_volvo --min-gap 5
+python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --replace --models car_beetle car_golf car_lexus car_opel car_polo car_volvo --min-gap 8
 
 # 固定随机结果，方便重复测试
 python3 src/add_red_box_scripts/spawn_random_vehicles.py --count 10 --ground-z 0 --replace --seed 7
@@ -316,18 +318,41 @@ rqt_image_view /uav1/track/red_detector/debug_image
 如果实际使用的是下视相机，第一条检查命令也应改为
 `/uav1/down_camera/image_raw`，并确保启动检测器时使用了相同的输入话题。
 
+## 5. 生成红色方块和障碍物，用于检验规划算法是否可用
+
+
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && python3 src/add_red_box_scripts/spawn_red_boxesandblocks.py --count 5 --search-area-topic /task_allocate/search_areas --size 2 2 2 --ground-z 0 --min-spacing 30 --obstacle-count 40 --obstacle-height 25 --pillar-size 1 1 --replace
+
 ## 常见问题
 
 ### 发布了搜索区域，但脚本仍然超时
 
 `rostopic pub -1` 只发布一次。请先运行生成脚本，看到它开始等待区域消息后，
 再发布搜索区域；或者让区域发布者使用 latched topic。
-cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 30.0, y: 0.0, z: 0.0}, {x: 30.0, y: 30.0, z: 0.0}, {x: 0.0, y: 30.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 6.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -30.0, y: -30.0, z: 0.0}, {x: 0.0, y: -30.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -30.0, y: 0.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 5.0, priority: 1}]}"
+
+任务搜索区域发布：
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 50.0, y: 0.0, z: 0.0}, {x: 50.0, y: 50.0, z: 0.0}, {x: 0.0, y: 50.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 4.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -50.0, y: -50.0, z: 0.0}, {x: 0.0, y: -50.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -50.0, y: 0.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 4.0, priority: 1}]}"
 
 
-cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: -75.0, y: -75.0, z: 0.0}, {x: 75.0, y: -75.0, z: 0.0}, {x: 75.0, y: 75.0, z: 0.0}, {x: -75.0, y: 75.0, z: 0.0}]}, altitude: 30.0, lane_spacing: 5.0, priority: 1}]}"
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 50.0, y: 0.0, z: 0.0}, {x: 50.0, y: 50.0, z: 0.0}, {x: 0.0, y: 50.0, z: 0.0}]}, altitude: 5.0, lane_spacing: 5.0, priority: 1}]}"
 
 cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 100.0, y: 0.0, z: 0.0}, {x: 100.0, y: 100.0, z: 0.0}, {x: 0.0, y: 100.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 6.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -160.0, y: -160.0, z: 0.0}, {x: 0.0, y: -160.0, z: 0.0}, {x: -60.0, y: -60.0, z: 0.0}, {x: -160.0, y: 0.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 5.0, priority: 1}]}"
+
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 150.0, y: 0.0, z: 0.0}, {x: 150.0, y: 120.0, z: 0.0}, {x: 0.0, y: 120.0, z: 0.0}]}, altitude: 50.0, lane_spacing: 15.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -70.0, y: -60.0, z: 0.0}, {x: 0.0, y: -60.0, z: 0.0}, {x: 0.0, y: 0.0, z: 0.0}, {x: -70.0, y: 0.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 10.0, priority: 1}]}"
+
+
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 50.0, y: 50.0, z: 0.0}, {x: 200.0, y: 50.0, z: 0.0}, {x: 200.0, y: 200.0, z: 0.0}, {x: 50.0, y: 200.0, z: 0.0}]}, altitude: 8.0, lane_spacing: 8.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -0.0, y: -0.0, z: 0.0}, {x: -50.0, y: 0.0, z: 0.0}, {x: -50.0, y: -50.0, z: 0.0}, {x: 0.0, y: -50.0, z: 0.0}]}, altitude: 8.0, lane_spacing: 8.0, priority: 1}]}"
+
+
+两个500*500大区域
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /task_allocate/search_areas xd_uav_task_allocate/SearchAreaArray "{header: {frame_id: 'world'}, areas: [{area_id: 1, boundary: {points: [{x: 0.0, y: 0.0, z: 0.0}, {x: 500.0, y: 0.0, z: 0.0}, {x: 500.0, y: 500.0, z: 0.0}, {x: 0.0, y: 500.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 40.0, priority: 1}, {area_id: 2, boundary: {points: [{x: -600.0, y: 0.0, z: 0.0}, {x: -100.0, y: 0.0, z: 0.0}, {x: -100.0, y: 500.0, z: 0.0}, {x: -600.0, y: 500.0, z: 0.0}]}, altitude: 40.0, lane_spacing: 40.0, priority: 1}]}"
+
+
+禁飞区指令：
+
+
+cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /planning/no_fly_zones xd_uav_planning/NoFlyZoneArray "{header: {stamp: now, frame_id: 'world'}, zones: [{schema_version: 1, operation: 0, zone_id: 7101, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: 250.0, y: 250.0, z: 0.0}, {x: 350.0, y: 250.0, z: 0.0}, {x: 350.0, y: 350.0, z: 0.0}, {x: 250.0, y: 350.0, z: 0.0}]}}, {schema_version: 1, operation: 0, zone_id: 7102, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: 380.0, y: 380.0, z: 0.0}, {x: 480.0, y: 380.0, z: 0.0}, {x: 480.0, y: 480.0, z: 0.0}, {x: 380.0, y: 480.0, z: 0.0}]}}, {schema_version: 1, operation: 0, zone_id: 7201, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: -520.0, y: 250.0, z: 0.0}, {x: -420.0, y: 250.0, z: 0.0}, {x: -420.0, y: 350.0, z: 0.0}, {x: -520.0, y: 350.0, z: 0.0}]}}, {schema_version: 1, operation: 0, zone_id: 7202, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: -330.0, y: 380.0, z: 0.0}, {x: -230.0, y: 380.0, z: 0.0}, {x: -230.0, y: 480.0, z: 0.0}, {x: -330.0, y: 480.0, z: 0.0}]}}]}"
+
 ### Gazebo 提示模型名称已存在
 
 再次生成时加 `--replace`，或者通过 `--prefix` 使用新的模型名前缀。
@@ -346,7 +371,8 @@ cd /home/kzy/xd-uavsystem-test && source devel/setup.bash && rostopic pub -1 /ta
 ## Typhoon H480 云台闭环仿真
 
 `gm_control_to_gazebo_typhoon_gimbal.py` 是 Typhoon CGO3 的 Gazebo 后端：
-它订阅 `/uav1/gm_control/gimbal_cmd`，直接设置三个云台 joint，并把当前逻辑角度发布到
+它订阅 `/uav1/gm_control/gimbal_cmd`，通过 MAVLink 把角度发送给 SDF 内置的
+`gimbal_controller` PID，由 Gazebo 负责关节力矩和重力补偿，并把当前逻辑角度发布到
 `/uav1/gm_control/gimbal_state`。云台控制接口不使用 MAVROS mount-control。
 
 `gazebo_udp_video_to_ros_image.py` 监听 Typhoon CGO3 的 UDP 5600 RTP/H264 输出，
@@ -360,3 +386,32 @@ cd /home/kzy/xd-uavsystem-test
 会话自动启动图像端口桥、红色目标、红框识别、`xd_uav_track`、`gm_control` 和 Gazebo
 云台适配器。`enable_tracking` 和 `takeoff` 窗口只预填命令，分别按 Enter 后才会启用飞机
 跟随和起飞。
+
+### 固定翼高速云台单机验证
+
+`session_one_fixed_gimbal_px4.yml` 使用外部 `sar_yolo_detector` 产生检测框，启动
+`gm_control.launch` 而不是包含内部 `bbox_tracker` 的
+`gm_tracking_control.launch`。检测包仍发布原有 `xd_uav_track/DetectionArray`，Gazebo
+桥接脚本在测试边界内将其转换为原有 `gm_control/BoundingBox2D`，不修改两侧消息定义。
+
+同一启动文件中的 `FIXED_GIMBAL_TARGET_X/Y/Z` 只用于 `spawn_red_boxes.py` 生成测试目标；
+桥接器按 `fixedwing_gimbal_target` 前缀订阅 `/gazebo/model_states`，直接读取实际生成模型的
+世界坐标，因此不会因为手工复制坐标而指错目标。若没有 Gazebo 模型，也可以用
+`--target-position` 作为静态回退。
+桥接器根据 `/uav1/state_estimator/main/frames/world/odom` 的位置变化计算目标视线角速度，
+并用机体姿态把实际模型坐标转换成云台当前应指向的绝对 yaw/pitch。
+绝对位置指向还会对 body-frame yaw/pitch 目标角做差分，前馈目标角本身的瞬时变化；
+这部分已经包含飞机姿态和位移运动，因而不会再与原始 IMU 机体角速度补偿重复叠加。
+绝对位置指向、视线角速度前馈与图像误差 PID、机体角速度补偿只在这个启动文件显式开启：
+
+固定翼桥接器还订阅 `/uav1/mavros/state` 和状态估计器里程计。起飞前（未解锁或高度低于
+5 m）只发送 MAVLink `NEUTRAL`，不会启动 Gazebo 云台 PID；达到高度后才转发搜索/跟踪命令。
+这个门控只在固定翼会话的命令行中打开，不改变普通 Typhoon/多旋翼适配器。
+
+```bash
+cd /home/kzy/xd-uavsystem-test
+./src/tmux_start/start.sh ./src/tmux_start/session_one_fixed_gimbal_px4.yml
+```
+
+`recognition` 窗口当前为了红色方块仿真调用外部识别包的 `color_tracker` 模式；测试训练
+模型时只需替换该服务调用，不需要重新启用 `gm_control` 内部识别。

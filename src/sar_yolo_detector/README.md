@@ -239,6 +239,30 @@ ROS 接口：
 且不是预测或暂定重捕获时才为 `true`。时间戳为零、过期、未来、重复或乱序的图像会
 在推理前被拒绝。这个状态只表示感知测量新鲜，不代表飞行安全或允许控制。
 
+### 深度人员 ReID（可选）
+
+默认配置仍使用 BoT-SORT，不加载深度外观模型。需要真正的深度人员 ReID 时，使用包内
+已校验的 OSNet/Market-1501 权重和配置覆盖：
+
+```bash
+roslaunch sar_yolo_detector scout_perception.launch \
+  smart_tracker_overlay_config:=\
+$(rospack find sar_yolo_detector)/config/smart_tracker_person_reid.yaml \
+  python_executable:=$PWD/.venv-sar-gpu/bin/python
+```
+
+该覆盖将 `TRACKER_TYPE` 设为 `custom_reid`，由 OSNet 提取归一化深度嵌入；模型路径
+和 SHA-256 在加载前强制校验，不会在飞行中隐式下载权重。也可以把同一覆盖传给
+`smart_tracker.launch` 的 `overlay_config`。深度 ReID 只负责把已有的人员检测在短时
+遮挡后重新关联，不能弥补检测器漏检，也不等同于跨无人机或跨任务的人员身份认证。
+权重说明和后续灾害场景微调要求见
+[`models/person_reid/README.md`](models/person_reid/README.md)。
+注意：`rescue_profile.launch` 当前的 thermal/maritime 分支仍是独立的 C++
+TensorRT 检测链，不会因为安装该覆盖而自动启用 ReID；需要 ReID 时应运行
+面向 RGB/EO 的 `scout_perception.launch` 或直接运行 `smart_tracker.launch`。若要在
+现有 thermal TensorRT 链上使用 ReID，还需先增加热图像预处理与跟踪器适配，不能直接
+把该 RGB checkpoint 当作热红外身份模型。
+
 PixEagle 移植代码及 Ultralytics 运行时/权重的第三方来源和许可证见
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 与
 [`LICENSES/`](LICENSES/)。随包 YOLO11n 基线受 AGPL-3.0 或适用的 Ultralytics
@@ -480,6 +504,14 @@ roslaunch sar_yolo_detector tracker_integration.launch \
 frame，将中心点/宽高框转换为 `[x_min, y_min, x_max, y_max]`，并从 CameraInfo
 补充原图尺寸。二维检测进入 `xd_uav_detect` 前保持 `range_valid=false`，由地面投影或
 雷达相机融合成功后填写三维相对位置。
+
+如果相机驱动没有发布 CameraInfo，启动时必须传入 `image_width` 和 `image_height`；
+尺寸为 0 的 DetectionArray 会被 `xd_uav_track` 拒绝。例如：
+
+```bash
+roslaunch sar_yolo_detector xd_smart_tracker_integration.launch \
+  UAV_NAME:=uav3 image_width:=640 image_height:=360
+```
 
 固定翼 `uav1` 使用包内真实 `YOLO11n COCO` 权重和 SmartTracker，同时启动消息桥
 （原有 `xd_uav_detect` 继续独立运行）：

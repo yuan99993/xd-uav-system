@@ -1,0 +1,3 @@
+# The demo lifecycle helper calls uav_manager/takeoff after MRS preflight
+# checks have enabled control output and PX4 has entered OFFBOARD.
+handle_takeoff: false
