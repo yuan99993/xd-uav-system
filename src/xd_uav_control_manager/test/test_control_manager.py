@@ -102,6 +102,20 @@ class ControlManagerInterfaceTest(unittest.TestCase):
                 "controller_command", ControlCommand, queue_size=20
             ),
         }
+        # Keep the mocked FCU/sensor streams alive while service calls and
+        # assertions are in progress. Several launch tests intentionally use
+        # 100 ms MAVROS timeouts, so publishing only inside _wait_for made the
+        # fixture race its own safety watchdog.
+        self._input_timer = rospy.Timer(
+            rospy.Duration(0.02),
+            lambda _event: self._publish_inputs(),
+        )
+
+    def tearDown(self):
+        # Stop the background fixture before rospy closes its publishers.
+        # Otherwise the timer can race process shutdown and report a harmless
+        # publish-to-closed-topic exception after an otherwise successful test.
+        self._input_timer.shutdown()
 
     def _handle_arming(self, request):
         self._arming_requests.append(request.value)
@@ -236,6 +250,8 @@ class ControlManagerInterfaceTest(unittest.TestCase):
             else ControlCommand.VEHICLE_MULTIROTOR
         )
         command.thrust = 0.5
+        command.output_type = ControlCommand.OUTPUT_BODY_RATE
+        command.body_rate_valid = True
         command.valid = True
         command.takeoff_active = self._takeoff_active
         command.landing_active = self._landing_active
@@ -246,7 +262,10 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         deadline = time.time() + timeout
         while time.time() < deadline and not rospy.is_shutdown():
             self._publish_inputs()
-            value = predicate()
+            try:
+                value = predicate()
+            except rospy.ROSException:
+                value = None
             if value is not None:
                 return value
             rospy.sleep(0.02)
@@ -459,7 +478,7 @@ class ControlManagerInterfaceTest(unittest.TestCase):
                 else None
             )
         )
-        self.assertIn("人工切出OFFBOARD", status.data)
+        self.assertIn("人工切出飞控主动控制模式", status.data)
         self.assertEqual(self._mode, "POSCTL")
 
         response = offboard()

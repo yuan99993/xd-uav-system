@@ -1,14 +1,14 @@
 offboard:
-  # 向PX4连续发送AttitudeTarget；预发送完成后才请求OFFBOARD。
+  # 连续发送AttitudeTarget；预发送完成后才请求所选飞控的主动控制模式。
   stream:
     setpoint_rate: 100.0
     prestream_duration: 1.5
 
-  # PX4模式与解锁服务的请求节奏。
+  # 主动模式与解锁服务的请求节奏。
   mode_request:
     retry_interval: 1.0
     timeout: 10.0
 
-  # 用户主动取消OFFBOARD后交还给PX4的模式。
+  # 旧版兼容退出模式；飞控后端可以提供自己的退出模式。
   exit:
     cancel_mode: POSCTL

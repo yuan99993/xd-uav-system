@@ -1,7 +1,15 @@
 # xd_uav_controller
 
-控制算法包。节点只消费统一控制状态和控制参考，输出机体角速度与归一化推力/油门；
-它不调用MAVROS服务，也不直接维持OFFBOARD。
+控制算法包。节点只消费统一控制状态和控制参考，输出带明确类型/有效位的控制目标与
+归一化推力/油门；它不调用MAVROS服务，也不直接维持飞控模式。
+
+四旋翼控制律会同时计算原有body-rate和同一`desired_rotation`对应的单位 quaternion。
+`control_output/type`决定本次命令的主输出：默认`body_rate`保持PX4行为；
+`config/attitude_output.yaml`选择`attitude`供ArduCopter后端使用；固定版本SITL入口
+使用`config/arducopter_copter_4_7_sitl.yaml`，并把官方Copter 4.7.1 quad配置的
+`MOT_THST_HOVER=0.39`作为控制器悬停推力工作点。姿态不是由manager积分角速度伪造，
+两个输出都来自同一次SO(3)控制计算。第一阶段attitude策略仅允许`multirotor`，
+固定翼/VTOL继续使用body-rate。
 
 ## 接口
 
@@ -22,6 +30,9 @@
 /uavX/controller/path_status                xd_uav_controller/PathStatus
 /uavX/control/reference/trajectory_path      nav_msgs/Path
 ```
+
+`ControlCommand.output_type`、`body_rate_valid`和`attitude_valid`构成输出合同。接收方
+必须按所选飞控后端检查主输出，不能因另一个字段数值有限就隐式降级。
 
 服务：
 
@@ -227,7 +238,13 @@ OFFBOARD。固定翼完成起飞后会在切入点建立与当前航向相切的
 
 四旋翼参数也按职责分层：
 
-- `multirotor/model/*`：重力常量和悬停推力工作点。
+- `multirotor/model/*`：重力常量和悬停推力工作点。使用raw-thrust飞控后端时，
+  `ControlCommand.hover_throttle`会声明该工作点，由manager与FCU参数进行一致性检查。
+- `multirotor/takeoff/*`：解锁前起飞参考保持在当前地面位置；解锁后按配置的最大速度和
+  最大加速度生成连续垂直位置/速度/加速度参考，避免最终高度阶跃绕过起飞限幅；轨迹结束后
+  启用受限位置积分以消除悬停推力模型静差，实际高度进入容差后才结束起飞阶段。
+- 多旋翼降落期间只保留垂直位置积分，用于消除悬停推力模型静差；水平积分保持关闭，触地后仍由
+  manager的触地确认和零推力/上锁状态机接管。
 - `multirotor/attitude_control/*`：期望姿态到body-rate的内环增益。
 - `multirotor/position_control/mpc/*`：MPC预测长度和代价权重。
 - `multirotor/position_control/disturbance_rejection/*`：位置、速度和纯加速度模式的低频扰动补偿及抗积分饱和。

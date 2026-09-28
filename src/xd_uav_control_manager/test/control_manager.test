@@ -1,11 +1,17 @@
 <launch>
   <group ns="manager_test">
     <node pkg="xd_uav_control_manager"
-          type="control_manager_node"
+        type="control_manager_node"
           name="control_manager"
           output="screen"
           clear_params="true">
       <param name="vehicle_type" value="multirotor"/>
+      <!-- PX4 must ignore configuration that belongs exclusively to the
+           unselected ArduCopter backend. -->
+      <param name="autopilot/type" value="px4"/>
+      <param name="autopilot/arducopter/raw_thrust_mask" value="0"/>
+      <param name="autopilot/arducopter/hover_throttle_parameter" value=""/>
+      <param name="autopilot/arducopter/extended_state_message_id" value="0"/>
       <param name="offboard/stream/setpoint_rate" value="50.0"/>
       <param name="offboard/stream/prestream_duration" value="0.1"/>
       <param name="offboard/mode_request/retry_interval" value="0.05"/>

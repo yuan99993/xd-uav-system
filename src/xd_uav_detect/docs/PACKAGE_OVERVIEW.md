@@ -1,10 +1,10 @@
 # xd_uav_detect 包说明
 
-更新：2026-09-13
+更新：2026-09-20
 
 ## 职责与边界
 
-xd_uav_detect 是外部二维识别器和跟踪/任务层之间的米制定位层。它接收二维框，按 YAML 显式选择定位方法，输出目标的机体系 FRD 坐标；同时可并行输出局部世界坐标。包内另有独立的两轴云台控制模块，定位节点不依赖控制节点。它不运行 YOLO，不实现自动扫描/目标跟随，不负责任务分配、GPS 转换、规划或飞机控制。
+xd_uav_detect 是外部二维识别器和跟踪/任务层之间的定位层。它接收二维框，按 YAML 显式选择定位方法，输出目标的机体系 FRD 坐标；同时可并行输出局部世界坐标，并由独立 geodesy adapter 可选输出 WGS84 地理位置。包内另有独立的两轴云台控制模块，定位节点不依赖控制节点。它不运行 YOLO，不实现自动扫描/目标跟随，不负责任务分配、规划或飞机控制。
 
 定位方法只取决于可用传感器和几何模型，不取决于固定翼或旋翼机型。UAV_NAME 只用于 ROS 命名空间与默认 frame 前缀。
 
@@ -13,6 +13,7 @@ xd_uav_detect 是外部二维识别器和跟踪/任务层之间的米制定位�
 | 模块 | 职责 | 稳定边界 |
 |---|---|---|
 | `xd_uav_detect_node` | 三种传感器定位、FRD 与世界并行输出 | 标准检测消息、CameraInfo/Range/PointCloud2、TF |
+| `world_detection_georeferencer_node` | 世界位置转 local-origin ENU，再反投影到 WGS84 | `WorldDetectionArray`、`GeoPointStamped`、TF |
 | `gimbal_control_node` | yaw/pitch 位置、速度、回中及失效保护 | `GimbalCommand`、`GimbalState` |
 | `models/` 与演示 | x500/plane 及带吊舱派生模型、Gazebo 后端 | joint state 与内部 JointTrajectory |
 | 目标场景工具 | 红框二维识别、红方块/车辆生成 | 标准检测消息与 Gazebo 服务 |
@@ -21,15 +22,13 @@ xd_uav_detect 是外部二维识别器和跟踪/任务层之间的米制定位�
 可扩展控制消息/执行适配器和模型；定位算法仍只消费传感器消息与 TF，不需知道云台轴数。
 
 `scripts/demo/` 中的 `red_box_detector.py`、`spawn_red_boxes.py`、
-`spawn_random_vehicles.py` 和 `spawn_yolo_vehicle_targets.py` 同步自
-`origin/dev@e763836` 的四个正式目标测试脚本；前两个原样复制，后两个只适配 catkin 安装态
-的兄弟模块导入。它们是可选演示工具，不被定位节点加载：
+`spawn_random_vehicles.py` 和 `spawn_yolo_vehicle_targets.py` 是可选演示工具，不被定位节点加载：
 红框检测只发布统一二维候选，生成脚本只布置 Gazebo 目标，因此没有把机型、YOLO 或任务分配
 重新耦合进定位 backend。
 
 ## 当前内部结构
 
-M6/M7 已采用一个 ROS 包、多个内部模块：
+当前采用一个 ROS 包、多个内部模块：
 
 | 层 | 目标职责 | 扩展方式 |
 |---|---|---|
@@ -43,7 +42,7 @@ M6/M7 已采用一个 ROS 包、多个内部模块：
 公开入口为 `detect.launch`、`gimbal_control.launch` 和统一
 `demo.launch mode:=sensor|px4|flight`；`detect_track.launch` 单列为下游兼容入口。三个正式定位
 YAML 继续保留，避免把互不适用的标定和门限塞入巨型配置。测试、消息、许可证、四个可加载模型和
-运行时渲染 SDF 是必要交付物，不以减少文件数字为由删除。源码按 `src/localization`、
+运行时渲染 SDF 是必要交付物，不以减少文件数字为由删除。源码按 `src/localization`、`src/geodesy`、
 `src/gimbal`、`src/gazebo`，脚本按 `scripts/demo|model`，测试按 `test/unit|ros|gazebo|model`
 分层；demo 专用配置位于 `config/demo`。
 
@@ -67,11 +66,22 @@ gimbal_laser_range 不绑定厂商 SDK。外部适配器必须提供：检测图
 
 新输出 `/<uav>/detect/detections_world` 的类型为 xd_uav_detect/WorldDetectionArray。header.stamp 保持原图拍摄时间，header.frame_id 是配置世界 frame。每个元素保留源候选索引、track/class/confidence 和 provenance，并包含世界位置、世界协方差和 position_valid。检测时刻 world <- body TF 缺失时只让世界元素无效，不影响旧 FRD 输出。
 
+可选输出 `/<uav>/detect/detections_geodetic` 的类型为
+`xd_uav_detect/GeodeticDetectionArray`。数组时间戳仍是原检测时间；数组 `frame_id` 表示协方差所在
+的 local-origin ENU frame。每个元素保留源候选索引、track/class/confidence 和 provenance，
+`position` 是 WGS84 纬度/经度（deg）与椭球高（m），`position_covariance_enu` 是该局部 ENU
+frame 中的 3x3 行优先米制协方差（m²），不是经纬度角度协方差。
+
+geodesy adapter 使用 GeographicLib `LocalCartesian::Reverse()`，并在检测时间戳查询
+`local_origin_frame <- input.header.frame_id`；位置和协方差都应用真实 TF。默认原点 provider 为
+标准 `mavros/global_position/gp_origin` 话题，但代码只依赖 `geographic_msgs/GeoPointStamped`。
+仿真静态 datum 必须显式启用并给出全部三项参数；没有硬编码或隐式零原点回退。
+
 禁止将世界坐标写入 relative_position_body，否则当前任务层会再次执行 FRD 到世界的转换。
 
 ## 失效语义
 
-以下情况均转发二维候选但不产生新的有效三维位置：内参缺失、检测或 Range 零时间戳、Range 过期/非有限/位于量程边界、frame 缺失或不匹配、TF 缺失、视轴未落入框、多框歧义，以及各原有后端的点云簇或地面交点失败。
+以下情况均保留候选但不产生新的有效位置：内参缺失、检测或 Range 零时间戳、Range 过期/非有限/位于量程边界、frame 缺失或不匹配、TF 缺失、视轴未落入框、多框歧义，以及各原有后端的点云簇或地面交点失败。地理层另对原点缺失/非法、零检测时间戳、local-origin TF 缺失、无效 world 候选、非有限位置或非有限/非对称协方差 fail closed。
 
 ## 验证状态
 
@@ -94,9 +104,11 @@ gimbal_laser_range 不绑定厂商 SDK。外部适配器必须提供：检测图
 - 包内 Gazebo JointController PID 插件替代会暂停全局物理的通用 pose trajectory 插件；完整
   PX4/MRS 飞行复验在云台三阶段后保持 connected/armed/OFFBOARD 和约 1.52 m 稳定悬停，随后
   land 成功解锁。
-- dev 后续增加的四个正式目标测试工具已放入本包并加入安装与 smoke test；旧副本和
-  Typhoon/旧 `gm_control` 专用系统适配器不属于 detect 核心，未引入新的机型耦合。
+- 四个目标测试工具已加入安装与 smoke test；特定飞机和旧控制包的系统适配器不属于
+  detect 核心，未引入新的机型耦合。
 
-M8 后 `run_tests_xd_uav_detect` 汇总 45 tests、0 errors、0 failures、0 skipped。
+2026-09-20 增加 geodesy 后，`run_tests_xd_uav_detect` 汇总 58 tests、0 errors、0 failures、
+0 skipped；其中包含 GeographicLib 已知位移/往返、ROS origin/TF/时间戳 fail-closed、frame 与
+协方差旋转、三种 backend 构造输入，以及 Gazebo 实体目标的 FRD/world/WGS84 联合验收。
 
 真实设备尚未验证。设备话题、时间戳质量、相机—激光外参和噪声参数必须由实际驱动与标定提供。

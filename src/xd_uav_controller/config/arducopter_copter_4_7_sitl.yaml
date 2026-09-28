@@ -1,0 +1,23 @@
+# Fixed-version SITL override for ArduCopter 4.7.1.
+# Source: Tools/autotest/default_params/copter.parm at the pinned firmware
+# commit, where MOT_THST_HOVER=0.39.  The manager also checks this value
+# against the live FCU parameter before accepting GUIDED control.
+control_output:
+  type: attitude
+
+multirotor:
+  model:
+    hover_throttle: 0.39
+
+  # ArduCopter's GUID_OPTIONS raw-thrust path has more vertical response
+  # delay than the PX4 body-rate baseline.  Keep the dedicated SITL takeoff
+  # profile conservative so braking begins before the requested altitude.
+  takeoff:
+    max_velocity: 0.35
+    max_acceleration: 0.20
+
+  # The built-in sim_vehicle.py quad model has no downward Range publisher.
+  # Use the controller's ground-relative odometry branch for this fixture;
+  # real vehicles and range-equipped simulators keep their own profile.
+  landing:
+    height_source: odom

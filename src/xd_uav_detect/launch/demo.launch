@@ -6,6 +6,7 @@
   <arg name="stage_duration" default="7.0"/>
   <arg name="run_demo_sequence" default="true"/>
   <arg name="auto_takeoff" default="true"/>
+  <arg name="geodetic_enabled" default="false"/>
   <arg name="world_file"
        default="$(find xd_uav_detect)/worlds/gimbal_range_flight_demo.world"/>
   <arg name="x" default="0.0"/>
@@ -95,6 +96,16 @@
            value="$(find xd_uav_detect)/config/gimbal_laser_range.yaml"/>
       <arg name="body_frame" value="uav1/base_link"/>
       <arg name="world_frame" value="map"/>
+      <arg name="geodetic_enabled" value="$(arg geodetic_enabled)"/>
+      <arg name="geodetic_local_origin_frame" value="map"/>
+      <arg name="geodetic_origin_topic"
+           value="mavros/global_position/gp_origin"/>
+      <arg name="geodetic_use_static_origin"
+           value="$(eval arg('mode') == 'sensor')"/>
+      <!-- Static datum is the gimbal_range_demo.world spherical_coordinates. -->
+      <arg name="geodetic_static_latitude" value="47.397743"/>
+      <arg name="geodetic_static_longitude" value="8.545594"/>
+      <arg name="geodetic_static_altitude" value="0.0"/>
     </include>
     <param name="/uav1/detect/gimbal_range/maximum_time_difference_sec"
            value="0.15"/>

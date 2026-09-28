@@ -1,6 +1,6 @@
 # xd_uav_detect 解耦版使用说明
 
-更新：2026-09-13
+更新：2026-09-20
 
 ## 1. 包的职责
 
@@ -13,7 +13,7 @@ TF，就能使用同一节点。`UAV_NAME` 只控制 ROS 命名空间和默认 f
 包内把职责拆成互不依赖的节点：`xd_uav_detect_node` 负责定位，`gimbal_control_node` 负责标准
 两轴云台命令和状态。前者不依赖后者；没有可控云台时，仍可单独使用任一种定位方法。
 
-本包不负责 YOLO 推理、自动扫描、目标跟随、厂商协议、任务分配、WGS84 转换、航迹规划或
+本包不负责 YOLO 推理、自动扫描、目标跟随、厂商协议、任务分配、地理目标跟随、航迹规划或
 飞行控制。未来的搜索/跟随策略应作为包内独立节点向公共云台接口发命令，不写进定位算法。
 
 ## 2. 编译与环境
@@ -165,6 +165,7 @@ rosservice call /uav1/uav_manager/land
 | 输入 | 方法相关 | `CameraInfo`、图像、点云或 `Range` | 由 YAML 显式绑定 |
 | 输出 | `/uav1/detect/detections` | `xd_uav_track/DetectionArray` | 稳定旧接口，三维位置为 FRD |
 | 输出 | `/uav1/detect/detections_world` | `xd_uav_detect/WorldDetectionArray` | 新增世界位置和协方差 |
+| 可选输出 | `/uav1/detect/detections_geodetic` | `xd_uav_detect/GeodeticDetectionArray` | WGS84 位置及 local-origin ENU 协方差 |
 | 输出 | `/uav1/detect/status` | `std_msgs/String` | 当前方法、有效数量和失败原因 |
 | 输出 | `/uav1/detect/debug/image` | `sensor_msgs/Image` | 带框与状态的调试图像 |
 
@@ -175,6 +176,49 @@ rosservice call /uav1/uav_manager/land
 世界输出的 `header.stamp` 保持检测图像拍摄时间，`header.frame_id` 是 `frames/world`。每个元素
 通过 `source_candidate_index` 对应旧数组中的同序号候选。缺少检测时刻的 `world <- body` TF
 时，只会令 `position_valid=false`，不会影响旧 FRD 输出。
+
+### 3.1 可选 WGS84 输出
+
+`detect.launch` 默认 `geodetic_enabled:=false`，因此旧调用不会增加节点或改变两个既有输出。
+启用后，独立 adapter 消费 `WorldDetectionArray`，在原检测时间戳查询
+`geodetic_local_origin_frame <- world.header.frame_id` TF，把位置与 3x3 协方差旋转到局部 ENU，
+再用 GeographicLib 反投影：
+
+```bash
+roslaunch xd_uav_detect detect.launch \
+  UAV_NAME:=uav1 \
+  world_frame:=uav1/local_origin \
+  geodetic_enabled:=true \
+  geodetic_local_origin_frame:=uav1/local_origin \
+  geodetic_origin_topic:=mavros/global_position/gp_origin
+```
+
+默认原点话题在 UAV namespace 下解析为
+`/uav1/mavros/global_position/gp_origin`，消息类型必须是
+`geographic_msgs/GeoPointStamped`。实现不依赖 `mavros_msgs`；其他 provider 只要发布同一标准消息
+即可。`GeoPoint.position` 被解释为 WGS84 纬度/经度（deg）和椭球高（m）；adapter 不做 geoid
+改正，因此实机 provider 若给出海拔高而非椭球高，会形成固定高度偏差，接入前必须核对。
+
+地理数组继承输入检测时间戳。其 `header.frame_id` 是
+`position_covariance_enu` 所在的 local-origin ENU frame；协方差单位保持 m²，绝不换算为度²。
+缺原点、非法原点、零时间戳、缺 TF、无效或非有限 world 候选、非有限/非对称协方差都会
+`position_valid=false`，但源索引、track/class/confidence 和 provenance 仍保留。
+
+静态 datum 只用于具有明确地理基准的仿真，并且必须显式给全参数：
+
+```bash
+roslaunch xd_uav_detect detect.launch \
+  UAV_NAME:=uav1 world_frame:=map \
+  geodetic_enabled:=true geodetic_local_origin_frame:=map \
+  geodetic_use_static_origin:=true \
+  geodetic_static_latitude:=47.397743 \
+  geodetic_static_longitude:=8.545594 \
+  geodetic_static_altitude:=0.0
+```
+
+这组三元组来自本包两个 demo world 的 `<spherical_coordinates>`，不是源码回退值。sensor demo
+可用该静态 datum；flight demo 优先使用 MAVROS `gp_origin`。`mode:=px4` 只启动飞行底座，不启动
+detect，因此本身不产生 geodetic 输出。
 
 ## 4. 选择定位方法
 
@@ -391,7 +435,8 @@ MAVLink/动力插件在没有飞控时终止 Gazebo，launch 从同一目录加�
 ```bash
 source /opt/ros/noetic/setup.bash
 source /home/promise/catkin_ws/devel/setup.bash
-roslaunch xd_uav_detect demo.launch mode:=sensor gui:=true
+roslaunch xd_uav_detect demo.launch mode:=sensor gui:=true \
+  geodetic_enabled:=true
 ```
 
 Gazebo 中直接观察云台和红色目标。另开终端查看数值：
@@ -400,6 +445,7 @@ Gazebo 中直接观察云台和红色目标。另开终端查看数值：
 rostopic echo /uav1/gimbal/range
 rostopic echo /uav1/detect/detections
 rostopic echo /uav1/detect/detections_world
+rostopic echo /uav1/detect/detections_geodetic
 rostopic echo /uav1/gimbal/state
 ```
 
@@ -421,12 +467,10 @@ roslaunch xd_uav_detect demo.launch mode:=sensor \
 但这里不宣称运行了产品 YOLO。演示脚本本身也通过公共 `GimbalCommand` 接口转动关节，不直接
 调用 Gazebo 的模型配置服务。
 
-### 7.1 从 dev 同步的目标场景工具
+### 7.1 可选目标场景工具
 
-`origin/dev@e763836` 在仓库级 `add_red_box_scripts` 目录提供了四个正式测试工具。本分支为了让
-detect 能独立交付，把四个正式版本放入 `scripts/demo/` 并由 CMake 安装；红框和红方块脚本
-字节级原样复制，两个车辆脚本只增加 catkin devel wrapper 所需的同目录导入保护，算法、参数和
-默认话题均未改写。编译并加载工作区后可使用 `rosrun`，不依赖开发者个人绝对路径：
+四个可选场景工具位于`scripts/demo/`并由CMake安装。编译并加载工作区后可使用`rosrun`，
+不依赖开发者个人绝对路径：
 
 | 工具 | 用途 | 必需环境 |
 |---|---|---|
@@ -482,7 +526,7 @@ rosrun xd_uav_detect spawn_yolo_vehicle_targets.py \
 ```
 
 车辆脚本从 `--model-root`、`GAZEBO_MODEL_PATH`、`~/.gazebo/models` 和系统 Gazebo 模型目录依次
-查找模型。它们只负责布置目标，不运行 YOLO。远端 `sar_yolo_detector` 已通过消息桥发布同一个
+查找模型。它们只负责布置目标，不运行 YOLO。`sar_yolo_detector`可通过消息桥发布同一个
 `/<uav>/detect/input/detections_2d`，因此接入真实 YOLO 时继续启动其桥接 launch，无需复制或
 修改 YOLO 包，也无需改 detect：
 
@@ -490,11 +534,9 @@ rosrun xd_uav_detect spawn_yolo_vehicle_targets.py \
 roslaunch sar_yolo_detector xd_smart_tracker_integration.launch UAV_NAME:=uav1
 ```
 
-远端 `spawn_red_boxes copy.py` 是文档明确标记的过期副本，功能少于正式脚本，因此不纳入本包。
-同目录的 Typhoon UDP 视频桥和旧 `gm_control` Gazebo 适配器属于特定飞机/旧控制包的系统集成，
-不属于 detect 定位能力：其图像输入可由任意标准 ROS Image 替代，云台能力则由当前独立的
-`GimbalCommand/GimbalState`、真实 Camera/Range 和 x500/plane 载荷模型覆盖。为保持四模型契约
-和避免重新绑定旧 `gm_control`，本包不复制这两个特定适配器。
+特定飞机的视频桥或旧云台控制适配器不属于detect定位能力。图像输入使用标准ROS Image，
+云台能力通过`GimbalCommand/GimbalState`、真实Camera/Range和载荷模型接入，不把旧系统协议
+复制进本包。
 
 ## 8. 诊断顺序
 

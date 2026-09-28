@@ -2,7 +2,7 @@
 <package format="2">
   <name>xd_uav_control_manager</name>
   <version>0.1.0</version>
-  <description>统一控制状态、安全状态机与PX4 OFFBOARD管理。</description>
+  <description>统一控制状态、安全状态机与PX4/ArduCopter飞控后端管理。</description>
 
   <maintainer email="kzy@example.com">kzy</maintainer>
   <license>BSD-3-Clause</license>
@@ -11,8 +11,12 @@
   <depend>diagnostic_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>mavros_msgs</depend>
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
   <depend>nav_msgs</depend>
   <depend>roscpp</depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
+  <exec_depend>rospy</exec_depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
@@ -20,6 +24,9 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>xd_uav_controller</depend>
   <depend>xd_uav_state_estimators</depend>
+  <exec_depend>mavros</exec_depend>
+  <exec_depend>xd_uav_world_tf_manager</exec_depend>
   <test_depend>rospy</test_depend>
   <test_depend>rostest</test_depend>
+  <test_depend>gtest</test_depend>
 </package>

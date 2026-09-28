@@ -1,0 +1,4 @@
+autopilot:
+  type: px4
+  active_mode: OFFBOARD
+  exit_mode: POSCTL

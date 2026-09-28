@@ -1,0 +1,13 @@
+autopilot:
+  type: arducopter
+  # 固定固件版本的SITL门仍需确认GUIDED与GUIDED_NOGPS的最终选择。
+  active_mode: GUIDED
+  exit_mode: LOITER
+  arducopter:
+    required_parameter: GUID_OPTIONS
+    raw_thrust_mask: 8
+    hover_throttle_parameter: MOT_THST_HOVER
+    hover_throttle_tolerance: 0.01
+    # EXTENDED_SYS_STATE is not part of ArduPilot's EXTENDED_STATUS stream.
+    extended_state_message_id: 245
+    extended_state_rate_hz: 10.0

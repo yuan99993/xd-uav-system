@@ -1,0 +1,50 @@
+<launch>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="rotated_frame"
+        args="0 0 0 1.5707963267948966 0 0 map rotated_input"/>
+
+  <node pkg="xd_uav_detect" type="world_detection_georeferencer_node"
+        name="same_georeferencer" output="screen">
+    <param name="input_topic" value="/geodesy/same/input"/>
+    <param name="output_topic" value="/geodesy/same/output"/>
+    <param name="local_origin_frame" value="map"/>
+    <param name="use_static_origin" value="true"/>
+    <param name="static_origin/latitude" value="47.397743"/>
+    <param name="static_origin/longitude" value="8.545594"/>
+    <param name="static_origin/altitude" value="123.4"/>
+  </node>
+
+  <node pkg="xd_uav_detect" type="world_detection_georeferencer_node"
+        name="rotated_georeferencer" output="screen">
+    <param name="input_topic" value="/geodesy/rotated/input"/>
+    <param name="output_topic" value="/geodesy/rotated/output"/>
+    <param name="local_origin_frame" value="map"/>
+    <param name="use_static_origin" value="true"/>
+    <param name="static_origin/latitude" value="47.397743"/>
+    <param name="static_origin/longitude" value="8.545594"/>
+    <param name="static_origin/altitude" value="123.4"/>
+  </node>
+
+  <node pkg="xd_uav_detect" type="world_detection_georeferencer_node"
+        name="missing_tf_georeferencer" output="screen">
+    <param name="input_topic" value="/geodesy/missing_tf/input"/>
+    <param name="output_topic" value="/geodesy/missing_tf/output"/>
+    <param name="local_origin_frame" value="map"/>
+    <param name="tf_timeout_sec" value="0.01"/>
+    <param name="use_static_origin" value="true"/>
+    <param name="static_origin/latitude" value="47.397743"/>
+    <param name="static_origin/longitude" value="8.545594"/>
+    <param name="static_origin/altitude" value="123.4"/>
+  </node>
+
+  <node pkg="xd_uav_detect" type="world_detection_georeferencer_node"
+        name="topic_origin_georeferencer" output="screen">
+    <param name="input_topic" value="/geodesy/topic_origin/input"/>
+    <param name="output_topic" value="/geodesy/topic_origin/output"/>
+    <param name="origin_topic" value="/geodesy/origin"/>
+    <param name="local_origin_frame" value="map"/>
+    <param name="use_static_origin" value="false"/>
+  </node>
+
+  <test pkg="xd_uav_detect" type="world_detection_georeferencer_test.py"
+        test-name="world_detection_georeferencer" time-limit="40"/>
+</launch>

@@ -3,6 +3,7 @@ project(xd_uav_detect)
 
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
+  geographic_msgs
   geometry_msgs
   image_geometry
   message_generation
@@ -16,6 +17,7 @@ find_package(catkin REQUIRED COMPONENTS
   xd_uav_track
 )
 find_package(Eigen3 REQUIRED)
+find_package(GeographicLib REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(gazebo REQUIRED)
 
@@ -23,6 +25,8 @@ add_message_files(
   FILES
   WorldDetection.msg
   WorldDetectionArray.msg
+  GeodeticDetection.msg
+  GeodeticDetectionArray.msg
   GimbalCommand.msg
   GimbalState.msg
 )
@@ -30,6 +34,7 @@ add_message_files(
 generate_messages(
   DEPENDENCIES
   geometry_msgs
+  geographic_msgs
   std_msgs
 )
 
@@ -38,6 +43,7 @@ catkin_package(
   LIBRARIES xd_uav_detect_core
   CATKIN_DEPENDS
     cv_bridge
+    geographic_msgs
     geometry_msgs
     image_geometry
     message_runtime
@@ -48,6 +54,7 @@ catkin_package(
     tf2_ros
     trajectory_msgs
     xd_uav_track
+  DEPENDS GeographicLib
 )
 
 include_directories(
@@ -56,9 +63,11 @@ include_directories(
   ${EIGEN3_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
   ${GAZEBO_INCLUDE_DIRS}
+  ${GeographicLib_INCLUDE_DIRS}
 )
 
 add_library(xd_uav_detect_core
+  src/geodesy/local_cartesian_projector.cpp
   src/gimbal/gimbal_command_controller.cpp
   src/localization/gimbal_range_localization.cpp
   src/localization/ground_plane_projection.cpp
@@ -67,7 +76,21 @@ add_library(xd_uav_detect_core
 )
 target_compile_features(xd_uav_detect_core PUBLIC cxx_std_14)
 add_dependencies(xd_uav_detect_core ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-target_link_libraries(xd_uav_detect_core ${catkin_LIBRARIES})
+target_link_libraries(xd_uav_detect_core
+  ${catkin_LIBRARIES}
+  ${GeographicLib_LIBRARIES}
+)
+
+add_executable(world_detection_georeferencer_node
+  src/geodesy/world_detection_georeferencer_node.cpp
+)
+target_compile_features(world_detection_georeferencer_node PRIVATE cxx_std_14)
+add_dependencies(world_detection_georeferencer_node
+  ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(world_detection_georeferencer_node
+  xd_uav_detect_core
+  ${catkin_LIBRARIES}
+)
 
 add_executable(xd_uav_detect_node
   src/xd_uav_detect_node.cpp
@@ -102,6 +125,7 @@ target_link_libraries(xd_uav_detect_gimbal_joint_controller
 )
 
 install(TARGETS xd_uav_detect_core xd_uav_detect_node gimbal_control_node
+  world_detection_georeferencer_node
   xd_uav_detect_gimbal_joint_controller
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
@@ -112,8 +136,14 @@ install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
-install(DIRECTORY config docs launch models worlds
+install(DIRECTORY config launch models worlds
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+install(FILES
+  docs/PACKAGE_OVERVIEW.md
+  docs/USAGE.md
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/docs
 )
 
 install(FILES README.md
@@ -129,12 +159,25 @@ catkin_install_python(PROGRAMS
   scripts/demo/spawn_yolo_vehicle_targets.py
   scripts/model/render_payload_models.py
   test/ros/gimbal_range_node_test.py
+  test/geodesy/world_detection_georeferencer_test.py
   test/gazebo/gimbal_range_acceptance.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
+  catkin_add_gtest(test_local_cartesian_projector
+    test/geodesy/test_local_cartesian_projector.cpp
+  )
+  if(TARGET test_local_cartesian_projector)
+    target_compile_features(test_local_cartesian_projector PRIVATE cxx_std_14)
+    target_link_libraries(test_local_cartesian_projector
+      xd_uav_detect_core
+      ${catkin_LIBRARIES}
+    )
+  endif()
+
+  add_rostest(test/geodesy/world_detection_georeferencer.test)
   catkin_add_gtest(test_lidar_camera_fusion
     test/unit/test_lidar_camera_fusion.cpp
   )

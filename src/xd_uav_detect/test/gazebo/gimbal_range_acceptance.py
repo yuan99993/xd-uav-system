@@ -2,6 +2,7 @@
 import threading
 import unittest
 import math
+import subprocess
 
 import rospy
 import rostest
@@ -14,7 +15,8 @@ import tf2_ros
 from tf.transformations import (concatenate_matrices, inverse_matrix,
                                 quaternion_from_matrix, quaternion_matrix,
                                 translation_from_matrix, translation_matrix)
-from xd_uav_detect.msg import GimbalCommand, GimbalState, WorldDetectionArray
+from xd_uav_detect.msg import (GeodeticDetectionArray, GimbalCommand,
+                               GimbalState, WorldDetectionArray)
 from xd_uav_track.msg import DetectionArray, DetectionCandidate
 
 
@@ -27,8 +29,10 @@ class GimbalRangeGazeboAcceptance(unittest.TestCase):
         self._seen_image = False
         self._metric = None
         self._world = None
+        self._geodetic = None
         self._latest_metric = None
         self._latest_world = None
+        self._latest_geodetic = None
         self._gimbal_pose = None
         self._gimbal_state = None
         self._body_pose = None
@@ -52,6 +56,9 @@ class GimbalRangeGazeboAcceptance(unittest.TestCase):
                          self._metric_callback, queue_size=10)
         rospy.Subscriber("/uav1/detect/detections_world", WorldDetectionArray,
                          self._world_callback, queue_size=10)
+        rospy.Subscriber("/uav1/detect/detections_geodetic",
+                         GeodeticDetectionArray,
+                         self._geodetic_callback, queue_size=10)
         rospy.Subscriber("/uav1/gimbal/state", GimbalState,
                          self._gimbal_state_callback, queue_size=10)
 
@@ -122,6 +129,13 @@ class GimbalRangeGazeboAcceptance(unittest.TestCase):
         if message.detections and message.detections[0].position_valid:
             with self._lock:
                 self._world = message
+
+    def _geodetic_callback(self, message):
+        with self._lock:
+            self._latest_geodetic = message
+        if message.detections and message.detections[0].position_valid:
+            with self._lock:
+                self._geodetic = message
 
     def _gimbal_state_callback(self, message):
         with self._lock:
@@ -239,8 +253,20 @@ class GimbalRangeGazeboAcceptance(unittest.TestCase):
         with self._lock:
             self._metric = None
             self._world = None
+            self._geodetic = None
             self._latest_metric = None
             self._latest_world = None
+            self._latest_geodetic = None
+
+    @staticmethod
+    def _independent_geodetic(position):
+        result = subprocess.run(
+            ["CartConvert", "-r", "-l", "47.397743", "8.545594", "0.0",
+             "-p", "10"],
+            input="{} {} {}\n".format(*position), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        latitude, longitude, altitude = result.stdout.split()[:3]
+        return float(latitude), float(longitude), float(altitude)
 
     def _wait_for(self, predicate, timeout=15.0):
         deadline = rospy.Time.now() + rospy.Duration(timeout)
@@ -263,7 +289,8 @@ class GimbalRangeGazeboAcceptance(unittest.TestCase):
         while not rospy.is_shutdown():
             with self._lock:
                 complete = (self._seen_image and self._range is not None and
-                            self._metric is not None and self._world is not None)
+                            self._metric is not None and self._world is not None and
+                            self._geodetic is not None)
             if complete or rospy.Time.now() > deadline:
                 break
             rate.sleep()
@@ -271,6 +298,7 @@ class GimbalRangeGazeboAcceptance(unittest.TestCase):
             measured_range = self._range
             metric = self._metric
             world = self._world
+            geodetic = self._geodetic
             seen_image = self._seen_image
             body_pose = self._body_pose
         self.assertTrue(seen_image, "Gazebo camera published no decodable image")
@@ -298,6 +326,18 @@ class GimbalRangeGazeboAcceptance(unittest.TestCase):
                                delta=0.10)
         self.assertAlmostEqual(world.detections[0].position_world.z, endpoint[2],
                                delta=0.10)
+        self.assertIsNotNone(geodetic,
+                             "georeferencer published no valid WGS84 position")
+        expected_geodetic = self._independent_geodetic(endpoint)
+        self.assertAlmostEqual(
+            geodetic.detections[0].position.latitude,
+            expected_geodetic[0], delta=2e-6)
+        self.assertAlmostEqual(
+            geodetic.detections[0].position.longitude,
+            expected_geodetic[1], delta=2e-6)
+        self.assertAlmostEqual(
+            geodetic.detections[0].position.altitude,
+            expected_geodetic[2], delta=0.15)
 
         # Rotate the physical Gazebo yaw/pitch joints. Capture-time transforms
         # come from the actual x500 base and gimbal link poses.
@@ -310,7 +350,8 @@ class GimbalRangeGazeboAcceptance(unittest.TestCase):
         direction = self._set_target_on_axis(laser_pose, 10.0)
         self._reset_results()
         self.assertTrue(self._wait_for(
-            lambda: self._metric is not None and self._world is not None),
+            lambda: (self._metric is not None and self._world is not None and
+                     self._geodetic is not None)),
             "no valid localization after yaw/pitch rotation")
         with self._lock:
             rotated_metric = self._metric
@@ -366,16 +407,19 @@ class GimbalRangeGazeboAcceptance(unittest.TestCase):
             lambda: (self._latest_metric is not None and
                      self._latest_metric.candidates and
                      not self._latest_metric.candidates[0].range_valid and
-                     self._latest_world is not None)),
+                     self._latest_world is not None and
+                     self._latest_geodetic is not None)),
             "out-of-axis no-return did not produce fail-closed output: "
             "range={:.6f} max={:.6f}".format(
                 no_return_range.range, no_return_range.max_range))
         with self._lock:
             invalid_metric = self._latest_metric
             invalid_world = self._latest_world
+            invalid_geodetic = self._latest_geodetic
         self.assertFalse(
             invalid_metric.candidates[0].has_relative_position_body)
         self.assertFalse(invalid_world.detections[0].position_valid)
+        self.assertFalse(invalid_geodetic.detections[0].position_valid)
 
 
 if __name__ == "__main__":

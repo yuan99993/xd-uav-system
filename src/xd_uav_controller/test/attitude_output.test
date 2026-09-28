@@ -1,0 +1,31 @@
+<launch>
+  <group ns="attitude_controller_test">
+    <node pkg="xd_uav_controller"
+          type="controller_node"
+          name="controller"
+          output="screen"
+          clear_params="true">
+      <rosparam command="load"
+                file="$(find xd_uav_controller)/config/common_config.yaml"/>
+      <rosparam command="load"
+                file="$(find xd_uav_controller)/config/multirotor.yaml"/>
+      <param name="airframe_type" value="multirotor"/>
+      <param name="control_output/type" value="attitude"/>
+      <param name="home/mode" value="takeoff"/>
+      <param name="multirotor/landing/height_source"
+             value="distance_sensor"/>
+      <param name="multirotor/landing/distance_sensor_cfg/descent_velocity"
+             value="2.0"/>
+      <param name="multirotor/landing/distance_sensor_cfg/final_descent_velocity"
+             value="2.0"/>
+      <param name="multirotor/landing/distance_sensor_cfg/touchdown_offset"
+             value="0.15"/>
+    </node>
+    <test test-name="attitude_controller_interface"
+          pkg="xd_uav_controller"
+          type="test_controller.py"
+          time-limit="15">
+      <param name="expected_output_type" value="2"/>
+    </test>
+  </group>
+</launch>

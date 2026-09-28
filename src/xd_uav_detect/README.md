@@ -6,20 +6,21 @@
 完整接入、TF、参数、诊断和 Gazebo 演示说明见 `docs/USAGE.md`。
 四个统一 Gazebo 模型的来源、用途与飞行集成边界见 `models/README.md`。
 
-本包还保留了 `origin/dev` 后续增加的四个正式目标场景工具：红色目标二维识别、红色方块生成、
-搜索区随机车辆生成和 YOLO 车辆目标生成。脚本位于 `scripts/demo/`，源自
-`origin/dev@e763836:src/add_red_box_scripts/` 的对应正式版本；车辆脚本仅增加 catkin 安装态
-导入保护。安装后可直接通过 `rosrun xd_uav_detect <脚本名>` 使用，完整命令与可选依赖见
-`docs/USAGE.md`。
+包内另有四个可选目标场景工具：红色目标二维识别、红色方块生成、搜索区随机车辆生成和
+YOLO车辆目标生成。脚本位于`scripts/demo/`，安装后可直接通过
+`rosrun xd_uav_detect <脚本名>`使用；完整命令与可选依赖见`docs/USAGE.md`。
 
 ## 输出契约
 
 - `/<uav>/detect/detections`：原 `xd_uav_track/DetectionArray` 接口，`relative_position_body` 始终为机体系 FRD（m）。
 - `/<uav>/detect/detections_world`：新增 `xd_uav_detect/WorldDetectionArray`，在检测时刻输出配置 world frame 中的位置和协方差。
+- `/<uav>/detect/detections_geodetic`：可选 `xd_uav_detect/GeodeticDetectionArray`，输出 WGS84 经纬度、椭球高及局部 ENU 米制协方差。
 
 `detect_track.launch` 另将同一旧消息镜像到 `/<uav>/track/detections`，以兼容当前 track 输入配置；该镜像可通过 `track_detections_topic` 改名或置空关闭。
 
 世界 TF 缺失只使世界候选无效，不改变旧 FRD 输出。定位失败时保留二维候选并清除三维有效标志。
+地理输出 adapter 默认关闭；缺 datum、零时间戳、缺 TF 或非有限输入时保留候选但令
+`position_valid=false`，不会回退到硬编码原点。
 
 ## 定位方法
 
@@ -60,7 +61,9 @@ roslaunch xd_uav_detect demo.launch mode:=sensor gui:=true
 ```bash
 roslaunch xd_uav_detect detect.launch \
   UAV_NAME:=uav1 \
-  config:=$(rospack find xd_uav_detect)/config/gimbal_laser_range.yaml
+  config:=$(rospack find xd_uav_detect)/config/gimbal_laser_range.yaml \
+  geodetic_enabled:=true \
+  geodetic_local_origin_frame:=uav1/local_origin
 ```
 
 ```bash
@@ -92,7 +95,8 @@ roslaunch xd_uav_detect demo.launch mode:=px4 gui:=true
 飞行中的完整吊舱定位演示：
 
 ```bash
-roslaunch xd_uav_detect demo.launch mode:=flight gui:=true
+roslaunch xd_uav_detect demo.launch mode:=flight gui:=true \
+  geodetic_enabled:=true
 ```
 
 该入口在同一 Gazebo 中组合规范 `x500_gimbal`、PX4/MAVROS、MRS core、自动起飞和

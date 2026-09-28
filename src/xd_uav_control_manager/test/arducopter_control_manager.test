@@ -1,0 +1,39 @@
+<launch>
+  <group ns="arducopter_manager_test">
+    <node pkg="xd_uav_control_manager"
+          type="control_manager_node"
+          name="control_manager"
+          output="screen"
+          clear_params="true">
+      <param name="airframe_type" value="multirotor"/>
+      <param name="autopilot/type" value="arducopter"/>
+      <param name="autopilot/active_mode" value="GUIDED"/>
+      <param name="autopilot/exit_mode" value="LOITER"/>
+      <param name="autopilot/arducopter/required_parameter"
+             value="GUID_OPTIONS"/>
+      <param name="autopilot/arducopter/raw_thrust_mask" value="8"/>
+      <param name="autopilot/arducopter/hover_throttle_parameter"
+             value="MOT_THST_HOVER"/>
+      <param name="autopilot/arducopter/hover_throttle_tolerance"
+             value="0.01"/>
+      <param name="autopilot/arducopter/extended_state_message_id"
+             value="245"/>
+      <param name="autopilot/arducopter/extended_state_rate_hz"
+             value="10.0"/>
+      <param name="offboard/stream/setpoint_rate" value="50.0"/>
+      <param name="offboard/stream/prestream_duration" value="0.05"/>
+      <param name="offboard/mode_request/retry_interval" value="0.05"/>
+      <param name="offboard/mode_request/timeout" value="2.0"/>
+      <param name="safety/activation/stable_duration" value="0.05"/>
+      <param name="safety/inputs/odometry_timeout" value="0.5"/>
+      <param name="safety/inputs/imu_timeout" value="0.5"/>
+      <param name="safety/inputs/acceleration_timeout" value="0.5"/>
+      <param name="safety/inputs/estimator_status_timeout" value="0.5"/>
+      <param name="safety/controller_command/timeout" value="0.5"/>
+    </node>
+    <test test-name="arducopter_control_manager_interface"
+          pkg="xd_uav_control_manager"
+          type="test_arducopter_control_manager.py"
+          time-limit="15"/>
+  </group>
+</launch>

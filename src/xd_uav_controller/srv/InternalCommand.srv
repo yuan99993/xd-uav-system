@@ -4,8 +4,34 @@ uint8 LAND=2
 uint8 LAND_HOME=3
 uint8 CANCEL_LANDING=4
 
+uint8 ACTION_NONE=0
+uint8 ACTION_ARM=1
+uint8 ACTION_DISARM=2
+uint8 ACTION_TAKEOFF=3
+uint8 ACTION_HOLD=4
+uint8 ACTION_NAVIGATE=5
+uint8 ACTION_LAND=6
+uint8 ACTION_RETURN_HOME=7
+uint8 ACTION_EMERGENCY=8
+
+uint8 PHASE_NONE=0
+uint8 PHASE_START=1
+uint8 PHASE_HOLD=2
+uint8 PHASE_APPROACH=3
+uint8 PHASE_REQUEST_HOVER=4
+uint8 PHASE_WAIT_HOVER=5
+uint8 PHASE_VERTICAL_DESCENT=6
+uint8 PHASE_TOUCHDOWN_CONFIRM=7
+uint8 PHASE_DISARM=8
+uint8 PHASE_CANCEL=9
+uint8 PHASE_RESET=10
+
 uint8 command
 float64 altitude
+uint8 vehicle_action
+uint8 action_phase
+uint32 action_generation
+bool return_home
 ---
 bool success
 string message

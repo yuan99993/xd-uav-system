@@ -31,6 +31,9 @@ from xd_uav_controller.srv import (
 class ControllerInterfaceTest(unittest.TestCase):
 
     def setUp(self):
+        self._expected_output_type = rospy.get_param(
+            "~expected_output_type", ControlCommand.OUTPUT_BODY_RATE
+        )
         self._position_x = 0.0
         self._position_y = 0.0
         self._position_z = 0.0
@@ -80,6 +83,7 @@ class ControllerInterfaceTest(unittest.TestCase):
         state.header.frame_id = "uav1/odom"
         state.body_frame_id = "uav1/base_link"
         state.vehicle_type = ControlState.VEHICLE_MULTIROTOR
+        state.armed = True
         state.position_odom.x = self._position_x
         state.position_odom.y = self._position_y
         state.position_odom.z = self._position_z
@@ -526,6 +530,18 @@ class ControllerInterfaceTest(unittest.TestCase):
 
         command = self._wait_for_command(lambda value: value.valid)
         self.assertEqual(command.vehicle_type, ControlCommand.VEHICLE_MULTIROTOR)
+        self.assertEqual(
+            command.output_type, self._expected_output_type
+        )
+        self.assertTrue(command.body_rate_valid)
+        self.assertTrue(command.attitude_valid)
+        attitude_norm = math.sqrt(
+            command.attitude.x**2
+            + command.attitude.y**2
+            + command.attitude.z**2
+            + command.attitude.w**2
+        )
+        self.assertAlmostEqual(attitude_norm, 1.0, delta=1e-6)
         self.assertTrue(math.isfinite(command.body_rate.x))
         self.assertTrue(math.isfinite(command.body_rate.y))
         self.assertTrue(math.isfinite(command.body_rate.z))
@@ -747,7 +763,7 @@ class ControllerInterfaceTest(unittest.TestCase):
             "controller/internal/command", InternalCommand
         )
         response = internal_command(
-            InternalCommandRequest.TAKEOFF, 1.5
+            InternalCommandRequest.TAKEOFF, 1.5, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         takeoff_command = self._wait_for_command(
@@ -802,7 +818,7 @@ class ControllerInterfaceTest(unittest.TestCase):
 
         self._position_z = 1.5
         response = internal_command(
-            InternalCommandRequest.LAND, 0.0
+            InternalCommandRequest.LAND, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         landing_command = self._wait_for_command(
@@ -811,7 +827,7 @@ class ControllerInterfaceTest(unittest.TestCase):
         self.assertTrue(landing_command.landing_active)
 
         response = internal_command(
-            InternalCommandRequest.CANCEL_LANDING, 0.0
+            InternalCommandRequest.CANCEL_LANDING, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         cancelled_command = self._wait_for_command(
@@ -824,7 +840,7 @@ class ControllerInterfaceTest(unittest.TestCase):
         self.assertFalse(cancelled_command.landing_active)
 
         response = internal_command(
-            InternalCommandRequest.LAND, 0.0
+            InternalCommandRequest.LAND, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         self._wait_for_command(
@@ -851,12 +867,12 @@ class ControllerInterfaceTest(unittest.TestCase):
         self._velocity_z = 0.0
 
         response = internal_command(
-            InternalCommandRequest.RESET, 0.0
+            InternalCommandRequest.RESET, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
 
         response = internal_command(
-            InternalCommandRequest.TAKEOFF, 1.5
+            InternalCommandRequest.TAKEOFF, 1.5, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         self._wait_for_command(
@@ -865,7 +881,7 @@ class ControllerInterfaceTest(unittest.TestCase):
         self._position_x = 1.0
         self._position_z = 1.5
         response = internal_command(
-            InternalCommandRequest.LAND_HOME, 0.0
+            InternalCommandRequest.LAND_HOME, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         home_command = self._wait_for_command(

@@ -1,13 +1,17 @@
 # 四旋翼与固定翼共用的状态输入、参考输入和home配置。
 # controller.launch先加载本文件，再加载机型配置；机型配置可按需覆盖公共默认值。
 
+control_output:
+  # PX4默认消费body-rate；ArduCopter启动配置显式覆盖为attitude。
+  type: body_rate
+
 state_input:
   # control_manager/State消息停止更新后，控制器停止输出有效控制量。
   timeout: 0.20
 
 reference_input:
   # 流式PositionTarget停止更新后，控制器切换到安全保持参考。
-  timeout: 0.50
+  timeout: 2.0
 
   # 控制器保留参考原始frame，在计算控制量前转换到ControlState.header.frame_id。
   # 无斜杠名称只匹配与控制odom相同命名空间下的frame；

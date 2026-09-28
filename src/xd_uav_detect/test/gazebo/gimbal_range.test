@@ -21,6 +21,12 @@
     <arg name="config" value="$(find xd_uav_detect)/config/gimbal_laser_range.yaml"/>
     <arg name="body_frame" value="uav1/base_link"/>
     <arg name="world_frame" value="map"/>
+    <arg name="geodetic_enabled" value="true"/>
+    <arg name="geodetic_local_origin_frame" value="map"/>
+    <arg name="geodetic_use_static_origin" value="true"/>
+    <arg name="geodetic_static_latitude" value="47.397743"/>
+    <arg name="geodetic_static_longitude" value="8.545594"/>
+    <arg name="geodetic_static_altitude" value="0.0"/>
   </include>
   <param name="/uav1/detect/gimbal_range/maximum_time_difference_sec" value="0.15"/>
   <test pkg="xd_uav_detect" type="gimbal_range_acceptance.py"

@@ -1,0 +1,15 @@
+# ArduCopter Copter-4.7.1 SITL defaults for the MAVROS acceptance path.
+# GUID_OPTIONS bit 3 makes SET_ATTITUDE_TARGET thrust a raw 0..1 command.
+GUID_OPTIONS,8
+
+# MAVLink channel 1 is the SERIAL0 TCP connection used by sim_vehicle.py.
+# Copter 4.7 moved the old SR0_* parameters to MAV1_*.  Explicit rates avoid
+# depending on a GCS/MAVProxy process to request telemetry.
+MAV1_RAW_SENS,20
+MAV1_EXT_STAT,10
+MAV1_RC_CHAN,5
+MAV1_RAW_CTRL,10
+MAV1_POSITION,20
+MAV1_EXTRA1,20
+MAV1_EXTRA2,20
+MAV1_EXTRA3,10

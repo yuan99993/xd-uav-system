@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="fcu_url" default="tcp://127.0.0.1:5760"/>
+  <arg name="gcs_url" default=""/>
+  <arg name="target_system" default="1"/>
+  <arg name="target_component" default="1"/>
+  <arg name="use_steady_sim_time" default="true"/>
+  <arg name="start_world_tf" default="true"/>
+  <arg name="start_localization" default="true"/>
+  <arg name="start_control" default="true"/>
+  <arg name="controller_override_config"
+       default="$(find xd_uav_controller)/config/arducopter_copter_4_7_sitl.yaml"/>
+
+  <!--
+    ArduPilot's built-in physics does not publish /clock.  A monotonic clock
+    keeps safety timeouts deterministic on WSL hosts whose realtime clock can
+    be stepped by Windows.  Disable this when another simulator owns /clock.
+  -->
+  <param name="/use_sim_time" value="$(arg use_steady_sim_time)"/>
+  <node if="$(arg use_steady_sim_time)"
+        pkg="xd_uav_control_manager"
+        type="steady_sitl_clock.py"
+        name="steady_sitl_clock"
+        required="true"
+        output="screen"/>
+
+  <!--
+    Keep the official APM plugin/config files, but own the node declaration so
+    the namespaced body frame is applied after apm_config.yaml is loaded.
+  -->
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="mavros"
+          type="mavros_node"
+          name="mavros"
+          required="true"
+          clear_params="true"
+          output="screen">
+      <param name="fcu_url" value="$(arg fcu_url)"/>
+      <param name="gcs_url" value="$(arg gcs_url)"/>
+      <param name="target_system_id" value="$(arg target_system)"/>
+      <param name="target_component_id" value="$(arg target_component)"/>
+      <param name="fcu_protocol" value="v2.0"/>
+      <rosparam command="load"
+                file="$(find mavros)/launch/apm_pluginlists.yaml"/>
+      <rosparam command="load"
+                file="$(find mavros)/launch/apm_config.yaml"/>
+      <param name="imu/frame_id" value="$(arg UAV_NAME)/base_link"/>
+      <!-- /clock already defines ROS time; a second MAVLink sync is harmful. -->
+      <param name="time/timesync_mode" value="NONE"/>
+    </node>
+  </group>
+
+  <include if="$(arg start_world_tf)"
+           file="$(find xd_uav_world_tf_manager)/launch/world_tf.launch"/>
+
+  <include if="$(arg start_localization)"
+           file="$(find xd_uav_state_estimators)/launch/uav_localization_stack.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+  </include>
+
+  <include if="$(arg start_control)"
+           file="$(find xd_uav_control_manager)/launch/arducopter_multirotor_system.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="controller_override_config"
+         value="$(arg controller_override_config)"/>
+  </include>
+</launch>

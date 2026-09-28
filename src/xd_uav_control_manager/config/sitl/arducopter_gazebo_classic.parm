@@ -1,0 +1,5 @@
+# Gazebo Classic 11's legacy Iris plugin supplies IMU samples at about 400 Hz.
+# Copter 4.7.1 requires the gyro backend rate to be at least 1.8 times the
+# configured main loop rate, so the default 400 Hz loop cannot arm safely.
+# Keep this override isolated from the built-in SITL and real vehicles.
+SCHED_LOOP_RATE,200

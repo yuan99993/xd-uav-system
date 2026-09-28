@@ -25,6 +25,7 @@ class OdomLandingTest(unittest.TestCase):
 
     def _publish_state(self):
         state = ControlState()
+        state.armed = True
         state.header.stamp = rospy.Time.now()
         state.header.frame_id = "uav1/odom"
         state.body_frame_id = "uav1/base_link"
@@ -56,6 +57,22 @@ class OdomLandingTest(unittest.TestCase):
                 pass
         self.fail("没有在超时前收到预期控制输出")
 
+    def _command_after(self, duration, predicate):
+        deadline = time.time() + duration
+        latest = None
+        while time.time() < deadline and not rospy.is_shutdown():
+            self._publish_state()
+            try:
+                candidate = rospy.wait_for_message(
+                    "command", ControlCommand, timeout=0.2
+                )
+                if predicate(candidate):
+                    latest = candidate
+            except rospy.ROSException:
+                pass
+        self.assertIsNotNone(latest)
+        return latest
+
     def test_odom_landing_does_not_require_range(self):
         self._wait_for_command(lambda value: value.valid)
         rospy.wait_for_service(
@@ -66,11 +83,28 @@ class OdomLandingTest(unittest.TestCase):
         )
 
         response = internal_command(
-            InternalCommandRequest.TAKEOFF, 1.0
+            InternalCommandRequest.TAKEOFF, 1.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
         self._wait_for_command(
             lambda value: value.valid and value.takeoff_active
+        )
+
+        # Keep an intentional one-metre overshoot after the analytical
+        # takeoff profile has ended. The action must remain active while the
+        # position integrator removes persistent hover-model bias.
+        self._z = 2.0
+        initial_correction = self._command_after(
+            0.8,
+            lambda value: value.valid and value.takeoff_active
+        )
+        accumulated_correction = self._command_after(
+            1.0,
+            lambda value: value.valid and value.takeoff_active
+        )
+        self.assertLess(
+            accumulated_correction.thrust,
+            initial_correction.thrust - 0.003,
         )
 
         self._z = 1.0
@@ -79,7 +113,7 @@ class OdomLandingTest(unittest.TestCase):
         )
         self._x = 3.0
         response = internal_command(
-            InternalCommandRequest.LAND_HOME, 0.0
+            InternalCommandRequest.LAND_HOME, 0.0, 0, 0, 0, False
         )
         self.assertTrue(response.success, response.message)
 
@@ -106,6 +140,25 @@ class OdomLandingTest(unittest.TestCase):
         )
         self.assertLess(
             braking.body_rate.y * toward_home.body_rate.y, 0.0
+        )
+
+        # Hold above the odom touchdown region after the descent setpoint has
+        # reached the ground. The vertical position integrator must continue
+        # reducing thrust so a hover-model bias cannot stall the landing.
+        self._x = 0.0
+        self._vx = 0.0
+        self._z = 0.7
+        initial_descent_correction = self._command_after(
+            0.5,
+            lambda value: value.valid and value.landing_active
+        )
+        accumulated_descent_correction = self._command_after(
+            1.0,
+            lambda value: value.valid and value.landing_active
+        )
+        self.assertLess(
+            accumulated_descent_correction.thrust,
+            initial_descent_correction.thrust - 0.003,
         )
 
         # No Range messages are published in this test.  The odom branch
