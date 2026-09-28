@@ -29,6 +29,8 @@ interfaces:
     # 以下为可观测/调试输出，不是额外的飞控输入。
     body_velocity: "track/velocity_body"
     follower_command: "track/command"
+    # 各相机各自的轨迹快照；原 tracks 继续保持当前控制源的兼容语义。
+    tracks_by_source: "track/tracks_by_source"
     tracks: "track/tracks"
     status: "track/status"
 
@@ -68,11 +70,26 @@ tracker:
     appearance_cosine: 0.78
     maximum_distance_m: 8.0
     minimum_margin_m: 0.75
+    # A global ID merge is a safety-sensitive handover, not a cosmetic label
+    # change. Require several monotonic, time-aligned world observations.
+    maximum_time_delta_sec: 0.12
+    confirmation_hits: 3
+    process_noise_mps: 2.0
+    residual_consistency_m: 2.0
+    require_nonzero_timestamps: true
     ttl_sec: 120.0
     maximum_entities: 512
   confidence:
     new_track: 0.20
     update: 0.05
+  classification:
+    # car/ar-car/tank/m142 are mutually compatible vehicle subclasses for
+    # identity association. Their public class is still smoothed separately.
+    class_family_by_id: [0, 0, 0, 0]
+    temporal_smoothing_enabled: true
+    smoothing_alpha: 0.25
+    switch_margin: 0.12
+    switch_confirmations: 3
   lifecycle:
     confirmation_hits: 2
     occlusion_frames: 5            # 该阶段允许 Kalman 预测继续短时控制
@@ -89,11 +106,30 @@ tracker:
     appearance_cosine: 0.78        # 候选含 embedding 时启用外观重识别
     high_confidence: 0.50          # 高置信检测可创建新 ID
     low_confidence: 0.10           # 低置信检测只用于维持现有轨迹
+    # A weak first sighting may form an isolated tentative track, but needs
+    # four consistent frames before selection/control is allowed.
+    low_confidence_birth_enabled: true
+    low_confidence_birth_confirmation_hits: 4
     appearance_gallery_size: 12    # 保留跨光照、视角与相机来源的多样原型
     appearance_update_confidence: 0.60
     appearance_minimum_quality: 0.35  # blur/exposure/small-ROI score gate
     appearance_low_quality_weight: 0.20
     mahalanobis_gate: 16.0
+    # Area ratio (not width ratio). Six still rejects full-frame/fragment
+    # glitches while tolerating fast apparent-scale change from UAV motion.
+    maximum_scale_ratio: 6.0
+    maximum_aspect_log_change: 0.80
+    # A single detector box that covers two confirmed predictions is treated
+    # as visual occlusion. It is never allowed to steal either public ID.
+    merged_observation_guard:
+      enabled: true
+      minimum_tracks: 2
+      minimum_area_ratio: 1.20
+      minimum_track_iou: 0.03
+    # Close score ties are treated as an unresolved crossing. Keeping both
+    # identities in prediction is safer than applying a plausible ID swap.
+    short_minimum_margin: 0.06
+    selected_minimum_margin: 0.12
     metric_innovation_distance_m: 25.0
   # Optional OC-SORT-style observation-centric velocity re-update. Keep CV
   # Kalman as production default until replay A/B validation is available.

@@ -1,0 +1,31 @@
+<launch>
+  <!-- Low-load visual target benchmark; no PX4, MAVROS, detector or tracker is started. -->
+  <arg name="gui" default="true"/>
+  <arg name="paused" default="false"/>
+  <arg name="verbose" default="false"/>
+  <arg name="rate_hz" default="20.0"/>
+
+  <!-- Make only this package's procedural models visible to Gazebo. -->
+  <env name="GAZEBO_MODEL_PATH" value="$(find xd_uav_track)/models:$(optenv GAZEBO_MODEL_PATH)"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find xd_uav_track)/worlds/tracking_benchmark.world"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="verbose" value="$(arg verbose)"/>
+    <arg name="headless" value="false"/>
+  </include>
+
+  <node pkg="xd_uav_track" type="tracking_benchmark_driver.py"
+        name="tracking_benchmark_driver" output="screen" required="true">
+    <param name="rate_hz" value="$(arg rate_hz)"/>
+    <param name="gimbal_target_id" value="101"/>
+    <!-- Keep direct pose-driven targets well outside their visual envelopes.
+         SetModelState bypasses Gazebo contacts, so this is the authoritative
+         scenario separation rather than a cosmetic collision setting. -->
+    <param name="minimum_tank_clearance_m" value="12.0"/>
+    <param name="minimum_decoy_clearance_m" value="14.0"/>
+    <rosparam param="gimbal_anchor">[25.0, 0.0, 20.0]</rosparam>
+  </node>
+</launch>

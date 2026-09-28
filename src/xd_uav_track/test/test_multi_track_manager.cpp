@@ -41,13 +41,32 @@ xd_uav_track::TargetIdentityHint identityHint(
 }
 
 xd_uav_track::TargetWorldObservation worldObservation(
-    const double stamp, const double x) {
+    const double stamp, const double x, const std::size_t candidate_index = 0) {
   xd_uav_track::TargetWorldObservation result;
-  result.candidate_index = 0;
+  result.candidate_index = candidate_index;
   result.position = {{x, 0.0, 0.0}};
   result.sigma_m = 1.0;
   result.capture_stamp = ros::Time(stamp);
   return result;
+}
+
+TEST(MultiTrackManager, WorldObservationUsesTrackIdAfterCandidateFiltering) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  xd_uav_track::MultiTrackManager manager(config);
+  auto malformed = candidate(-1, false, 0.20F, 0.90F);
+  malformed.has_normalized_bbox = false;
+  malformed.has_bbox = false;
+  auto valid = candidate(-1, false, 0.70F, 0.90F);
+  const auto result = manager.update(
+      frame(0.90, {malformed, valid}), 640, 480, "fixed", {},
+      {worldObservation(0.90, 100.0, 0), worldObservation(0.90, 7.0, 1)});
+  ASSERT_EQ(1U, result.tracks.tracks.size());
+  ASSERT_EQ(1U, result.world_observations.size());
+  EXPECT_EQ(result.tracks.tracks.front().track_id,
+            result.world_observations.front().track_id);
+  EXPECT_DOUBLE_EQ(7.0,
+                   result.world_observations.front().observation.position[0]);
 }
 
 TEST(MultiTrackManager, PreservesStableDetectorIdsAndConfirmsTracks) {
@@ -82,6 +101,61 @@ TEST(MultiTrackManager, AssignsPersistentIdsToUnstableDetections) {
   ASSERT_EQ(1U, second.candidates.candidates.size());
   EXPECT_TRUE(second.candidates.candidates.front().track_id_is_stable);
   EXPECT_EQ(persistent_id, second.candidates.candidates.front().track_id);
+}
+
+TEST(MultiTrackManager, VehicleParentClassKeepsTankAndM142OnOneTrack) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  // train7: car=0, ar-car=1, tank=2, m142=3. All four are members of the
+  // vehicle association family, while their leaf labels remain observable.
+  config.class_family_by_id = {0, 0, 0, 0};
+  config.class_temporal_smoothing_enabled = true;
+  xd_uav_track::MultiTrackManager manager(config);
+
+  auto tank = candidate(-1, false, 0.40F, 0.90F);
+  tank.class_id = 2;
+  const auto first = manager.update(frame(2.20, {tank}), 640, 480);
+  ASSERT_EQ(1U, first.tracks.tracks.size());
+  const int persistent_id = first.tracks.tracks.front().track_id;
+
+  auto m142 = candidate(-1, false, 0.41F, 0.88F);
+  m142.class_id = 3;
+  const auto second = manager.update(frame(2.24, {m142}), 640, 480);
+  ASSERT_EQ(1U, second.tracks.tracks.size());
+  EXPECT_EQ(persistent_id, second.tracks.tracks.front().track_id);
+  EXPECT_EQ(2, second.tracks.tracks.front().class_id);
+}
+
+TEST(MultiTrackManager, ClassConfidenceSmoothingRejectsOneFrameFlicker) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.class_family_by_id = {0, 0, 0, 0};
+  config.class_temporal_smoothing_enabled = true;
+  config.class_smoothing_alpha = 0.50;
+  config.class_switch_margin = 0.05;
+  config.class_switch_confirmations = 2;
+  xd_uav_track::MultiTrackManager manager(config);
+
+  auto tank = candidate(-1, false, 0.50F, 0.90F);
+  tank.class_id = 2;
+  const auto initial = manager.update(frame(2.30, {tank}), 640, 480);
+  ASSERT_EQ(1U, initial.tracks.tracks.size());
+  const int persistent_id = initial.tracks.tracks.front().track_id;
+
+  auto m142 = candidate(-1, false, 0.505F, 0.90F);
+  m142.class_id = 3;
+  const auto flicker = manager.update(frame(2.34, {m142}), 640, 480);
+  ASSERT_EQ(1U, flicker.tracks.tracks.size());
+  EXPECT_EQ(persistent_id, flicker.tracks.tracks.front().track_id);
+  EXPECT_EQ(2, flicker.tracks.tracks.front().class_id);
+
+  // A sustained, higher-evidence leaf classification is eventually allowed
+  // to change the reported subtype without creating a new public identity.
+  manager.update(frame(2.38, {m142}), 640, 480);
+  const auto sustained = manager.update(frame(2.42, {m142}), 640, 480);
+  ASSERT_EQ(1U, sustained.tracks.tracks.size());
+  EXPECT_EQ(persistent_id, sustained.tracks.tracks.front().track_id);
+  EXPECT_EQ(3, sustained.tracks.tracks.front().class_id);
 }
 
 TEST(MultiTrackManager, RetainsStableDetectorIdentityAcrossIdDropout) {
@@ -178,6 +252,173 @@ TEST(MultiTrackManager, LowConfidenceDetectionCannotCreatePublicIdentity) {
       frame(6.0, {candidate(-1, false, 0.50F, 0.20F)}), 640, 480);
   EXPECT_TRUE(output.tracks.tracks.empty());
   EXPECT_TRUE(output.candidates.candidates.empty());
+}
+
+TEST(MultiTrackManager, SustainedWeakDetectionCanBootstrapTentativeTrack) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 2;
+  config.minimum_new_track_confidence = 0.10;
+  config.high_confidence_threshold = 0.50;
+  config.low_confidence_threshold = 0.10;
+  config.low_confidence_birth_enabled = true;
+  config.low_confidence_birth_confirmation_hits = 4;
+  xd_uav_track::MultiTrackManager manager(config);
+  const auto weak = candidate(-1, false, 0.50F, 0.30F);
+
+  const auto first = manager.update(frame(6.10, {weak}), 640, 480);
+  ASSERT_EQ(1U, first.tracks.tracks.size());
+  const int id = first.tracks.tracks.front().track_id;
+  EXPECT_EQ("tentative", first.tracks.tracks.front().lifecycle_state);
+  EXPECT_FALSE(first.tracks.tracks.front().control_measurement_ready);
+  manager.update(frame(6.14, {weak}), 640, 480);
+  const auto third = manager.update(frame(6.18, {weak}), 640, 480);
+  ASSERT_EQ(1U, third.tracks.tracks.size());
+  EXPECT_EQ("tentative", third.tracks.tracks.front().lifecycle_state);
+  const auto fourth = manager.update(frame(6.22, {weak}), 640, 480);
+  ASSERT_EQ(1U, fourth.tracks.tracks.size());
+  EXPECT_EQ(id, fourth.tracks.tracks.front().track_id);
+  EXPECT_EQ("confirmed", fourth.tracks.tracks.front().lifecycle_state);
+  EXPECT_TRUE(fourth.tracks.tracks.front().control_measurement_ready);
+}
+
+TEST(MultiTrackManager, WeakDuplicateCannotSpawnBesideExistingTarget) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.minimum_new_track_confidence = 0.10;
+  config.low_confidence_birth_enabled = true;
+  config.low_confidence_birth_confirmation_hits = 4;
+  xd_uav_track::MultiTrackManager manager(config);
+  const auto first = manager.update(
+      frame(6.24, {candidate(-1, false, 0.50F, 0.90F)}), 640, 480);
+  ASSERT_EQ(1U, first.tracks.tracks.size());
+  const int id = first.tracks.tracks.front().track_id;
+
+  auto duplicate = candidate(-1, false, 0.54F, 0.25F);
+  duplicate.normalized_bbox[2] = 0.24F;
+  const auto updated = manager.update(
+      frame(6.28, {candidate(-1, false, 0.51F, 0.90F), duplicate}),
+      640, 480);
+  ASSERT_EQ(1U, updated.tracks.tracks.size());
+  EXPECT_EQ(id, updated.tracks.tracks.front().track_id);
+}
+
+TEST(MultiTrackManager, AmbiguousCrossingFreezesIdsUntilTargetsSeparate) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.group_reid_enabled = false;
+  config.short_association_minimum_margin = 0.15;
+  config.selected_association_minimum_margin = 0.20;
+  xd_uav_track::MultiTrackManager manager(config);
+  const auto initial = manager.update(
+      frame(6.30, {candidate(-1, false, 0.35F, 0.90F),
+                   candidate(-1, false, 0.65F, 0.90F)}), 640, 480);
+  ASSERT_EQ(2U, initial.tracks.tracks.size());
+  const int left_id = initial.tracks.tracks[0].track_id;
+  const int right_id = initial.tracks.tracks[1].track_id;
+  manager.setSelectedTrackId(left_id);
+
+  const auto crossing = manager.update(
+      frame(6.34, {candidate(-1, false, 0.50F, 0.90F),
+                   candidate(-1, false, 0.50F, 0.90F)}), 640, 480);
+  ASSERT_EQ(2U, crossing.tracks.tracks.size());
+  EXPECT_EQ(left_id, crossing.tracks.tracks[0].track_id);
+  EXPECT_EQ(right_id, crossing.tracks.tracks[1].track_id);
+  EXPECT_FALSE(crossing.tracks.tracks[0].detected);
+  EXPECT_FALSE(crossing.tracks.tracks[1].detected);
+
+  const auto separated = manager.update(
+      frame(6.38, {candidate(-1, false, 0.36F, 0.90F),
+                   candidate(-1, false, 0.64F, 0.90F)}), 640, 480);
+  ASSERT_EQ(2U, separated.tracks.tracks.size());
+  EXPECT_EQ(left_id, separated.tracks.tracks[0].track_id);
+  EXPECT_EQ(right_id, separated.tracks.tracks[1].track_id);
+  EXPECT_TRUE(separated.tracks.tracks[0].detected);
+  EXPECT_TRUE(separated.tracks.tracks[1].detected);
+}
+
+TEST(MultiTrackManager, MergedObservationDoesNotStealEitherIdentity) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.group_reid_enabled = false;
+  config.merged_observation_guard_enabled = true;
+  config.merged_observation_minimum_area_ratio = 1.15;
+  xd_uav_track::MultiTrackManager manager(config);
+  const auto initial = manager.update(
+      frame(6.42, {candidate(-1, false, 0.40F, 0.95F),
+                   candidate(-1, false, 0.60F, 0.95F)}), 640, 480);
+  ASSERT_EQ(2U, initial.tracks.tracks.size());
+  const int left_id = initial.tracks.tracks[0].track_id;
+  const int right_id = initial.tracks.tracks[1].track_id;
+
+  auto merged = candidate(-1, false, 0.50F, 0.95F);
+  merged.normalized_bbox[2] = 0.46F;
+  merged.normalized_bbox[3] = 0.24F;
+  const auto occluded = manager.update(frame(6.46, {merged}), 640, 480);
+  ASSERT_EQ(2U, occluded.tracks.tracks.size());
+  EXPECT_EQ(left_id, occluded.tracks.tracks[0].track_id);
+  EXPECT_EQ(right_id, occluded.tracks.tracks[1].track_id);
+  EXPECT_FALSE(occluded.tracks.tracks[0].detected);
+  EXPECT_FALSE(occluded.tracks.tracks[1].detected);
+  EXPECT_TRUE(occluded.candidates.candidates.empty());
+
+  const auto separated = manager.update(
+      frame(6.50, {candidate(-1, false, 0.41F, 0.95F),
+                   candidate(-1, false, 0.59F, 0.95F)}), 640, 480);
+  ASSERT_EQ(2U, separated.tracks.tracks.size());
+  EXPECT_EQ(left_id, separated.tracks.tracks[0].track_id);
+  EXPECT_EQ(right_id, separated.tracks.tracks[1].track_id);
+  EXPECT_TRUE(separated.tracks.tracks[0].detected);
+  EXPECT_TRUE(separated.tracks.tracks[1].detected);
+}
+
+TEST(MultiTrackManager, RejectsOneFrameScaleOutlierWithoutSpawningTrack) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.association_maximum_scale_ratio = 3.0;
+  xd_uav_track::MultiTrackManager manager(config);
+  const auto first = manager.update(
+      frame(6.50, {candidate(-1, false, 0.50F, 0.90F)}), 640, 480);
+  ASSERT_EQ(1U, first.tracks.tracks.size());
+  const int id = first.tracks.tracks.front().track_id;
+
+  auto bad_box = candidate(-1, false, 0.50F, 0.95F);
+  bad_box.normalized_bbox[2] = 0.90F;
+  bad_box.normalized_bbox[3] = 0.90F;
+  const auto rejected = manager.update(frame(6.54, {bad_box}), 640, 480);
+  ASSERT_EQ(1U, rejected.tracks.tracks.size());
+  EXPECT_EQ(id, rejected.tracks.tracks.front().track_id);
+  EXPECT_FALSE(rejected.tracks.tracks.front().detected);
+
+  const auto recovered = manager.update(
+      frame(6.58, {candidate(-1, false, 0.51F, 0.90F)}), 640, 480);
+  ASSERT_EQ(1U, recovered.tracks.tracks.size());
+  EXPECT_EQ(id, recovered.tracks.tracks.front().track_id);
+  EXPECT_TRUE(recovered.tracks.tracks.front().detected);
+}
+
+TEST(MultiTrackManager, RepeatedPlausibleInnovationRecoversSelectedId) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.association_mahalanobis_gate = 0.10;
+  config.association_maximum_scale_ratio = 6.0;
+  xd_uav_track::MultiTrackManager manager(config);
+  const auto first = manager.update(
+      frame(6.60, {candidate(-1, false, 0.35F, 0.90F)}), 640, 480);
+  ASSERT_EQ(1U, first.tracks.tracks.size());
+  const int id = first.tracks.tracks.front().track_id;
+  manager.setSelectedTrackId(id);
+
+  const auto first_jump = manager.update(
+      frame(6.64, {candidate(-1, false, 0.52F, 0.90F)}), 640, 480);
+  ASSERT_EQ(1U, first_jump.tracks.tracks.size());
+  EXPECT_FALSE(first_jump.tracks.tracks.front().detected);
+  const auto repeated = manager.update(
+      frame(6.68, {candidate(-1, false, 0.52F, 0.90F)}), 640, 480);
+  ASSERT_EQ(1U, repeated.tracks.tracks.size());
+  EXPECT_EQ(id, repeated.tracks.tracks.front().track_id);
+  EXPECT_TRUE(repeated.tracks.tracks.front().detected);
+  EXPECT_EQ("innovation_recovery",
+            repeated.tracks.tracks.front().association_method);
 }
 
 TEST(MultiTrackManager, TimeLifecycleDoesNotDependOnFrameRate) {

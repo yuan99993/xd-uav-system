@@ -26,12 +26,12 @@ reid:
 
   model_profiles:
     xd_vehicle_train7:
-      # train7 detector contract: car=0, ar-car=1, tank=2.  Appearance uses
+      # train7 detector contract: car=0, ar-car=1, tank=2, m142=3. Appearance uses
       # Open Model Zoo's vehicle-domain OmniScaleNet rather than the
       # Market1501 person checkpoint. Tank-domain calibration remains required.
       class_profiles:
         vehicle:
-          class_ids: [0, 1, 2]
+          class_ids: [0, 1, 2, 3]
           backend: onnx
           model_path: "package://xd_uav_track/models/reid/vehicle-reid-0001.onnx"
           sha256: 4aaad3e5db648618b0df3d2ff21c61323985ff9e50194c3d2edd4fb87c92d91f
@@ -100,7 +100,7 @@ reid:
       # Explicit alias of the production vehicle-domain deep profile.
       class_profiles:
         vehicle:
-          class_ids: [0, 1, 2]
+          class_ids: [0, 1, 2, 3]
           backend: onnx
           model_path: "package://xd_uav_track/models/reid/vehicle-reid-0001.onnx"
           sha256: 4aaad3e5db648618b0df3d2ff21c61323985ff9e50194c3d2edd4fb87c92d91f

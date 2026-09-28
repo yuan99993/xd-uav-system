@@ -221,14 +221,19 @@ class PixEaglePortableTest(unittest.TestCase):
 
     def test_ultralytics_detect_many_preserves_one_result_per_source(self):
         class Model:
-            def predict(self, frames, **_kwargs):
+            def predict(self, frames, **kwargs):
                 self.frames = frames
+                self.kwargs = kwargs
                 return [SimpleNamespace(
                     boxes=SimpleNamespace(data=[[0, 0, 10, 10, 0.8, index]],
                                            is_track=False),
                     obb=None) for index, _ in enumerate(frames)]
 
-        backend = UltralyticsBackend({"SMART_TRACKER_REQUIRE_MODEL_SHA256": False})
+        backend = UltralyticsBackend({
+            "SMART_TRACKER_REQUIRE_MODEL_SHA256": False,
+            "SMART_TRACKER_ALLOWED_CLASS_IDS": [0, 1, 2, 3],
+            "SMART_TRACKER_AGNOSTIC_NMS": True,
+        })
         backend._model = Model()
         outputs = backend.detect_many([
             np.zeros((32, 32, 3), dtype=np.uint8),
@@ -237,6 +242,8 @@ class PixEaglePortableTest(unittest.TestCase):
         self.assertEqual(len(outputs), 2)
         self.assertEqual([detections[0].class_id for _, detections in outputs], [0, 1])
         self.assertEqual(len(backend._model.frames), 2)
+        self.assertEqual(backend._model.kwargs["classes"], [0, 1, 2, 3])
+        self.assertTrue(backend._model.kwargs["agnostic_nms"])
 
     def test_model_integrity_accepts_only_matching_digest(self):
         payload = b"trusted-model-fixture"

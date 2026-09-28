@@ -27,10 +27,13 @@ struct MultiTrackConfig {
   double association_center_distance{1.50};
   double appearance_minimum_cosine{0.78};
   // ByteTrack-style association separates reliable detections from weak
-  // detections. Weak detections may sustain an existing track but never
-  // create a new public identity.
+  // detections. A deployment may opt into a quarantined weak-detection birth
+  // path: it needs more consecutive observations and remains tentative until
+  // that independent threshold is reached.
   double high_confidence_threshold{0.50};
   double low_confidence_threshold{0.10};
+  bool low_confidence_birth_enabled{false};
+  int low_confidence_birth_confirmation_hits{4};
   int appearance_gallery_size{12};
   double appearance_update_minimum_confidence{0.60};
   double appearance_minimum_quality{0.35};
@@ -40,6 +43,18 @@ struct MultiTrackConfig {
   // Image-space innovation is evaluated against the Kalman covariance.  It
   // makes large jumps fail even when their boxes happen to overlap.
   double association_mahalanobis_gate{16.0};
+  double association_maximum_scale_ratio{6.0};
+  double association_maximum_aspect_log_change{0.80};
+  // A detector occasionally emits one box for two visually merged objects.
+  // When that box covers multiple confirmed predictions it must not update
+  // either identity: keeping both tracks in short-term prediction is safer
+  // than turning a detector merge into an irreversible ID switch.
+  bool merged_observation_guard_enabled{true};
+  int merged_observation_minimum_tracks{2};
+  double merged_observation_minimum_area_ratio{1.20};
+  double merged_observation_minimum_track_iou{0.03};
+  double short_association_minimum_margin{0.06};
+  double selected_association_minimum_margin{0.12};
   double metric_innovation_distance_m{25.0};
   // Non-negative values make the lifecycle independent of camera FPS.  A
   // negative value retains the legacy frame-count behaviour.
@@ -47,6 +62,15 @@ struct MultiTrackConfig {
   double removal_timeout_sec{-1.0};
   double process_noise{1.0};
   double measurement_noise{1.0};
+  // Optional semantic parent for every detector class ID. Entries with the
+  // same non-negative value are association-compatible while the published
+  // class remains the temporally smoothed detector subclass. An empty vector
+  // preserves strict legacy class matching.
+  std::vector<int> class_family_by_id;
+  bool class_temporal_smoothing_enabled{false};
+  double class_smoothing_alpha{0.25};
+  double class_switch_margin{0.12};
+  int class_switch_confirmations{3};
   // OC-SORT observation-centric re-update is an opt-in A/B path. CV Kalman
   // remains the default for existing deployments.
   bool observation_centric_reupdate_enabled{false};
@@ -129,9 +153,18 @@ struct MultiTrackStatistics {
   std::size_t active_tracks{0};
 };
 
+struct ManagedTrackWorldObservation {
+  int track_id{-1};
+  TargetWorldObservation observation;
+};
+
 struct ManagedDetectionFrame {
   xd_uav_track::DetectionArray candidates;
   xd_uav_track::TrackStateArray tracks;
+  // Accepted metric observations keyed by the assigned public track ID.
+  // Keeping this mapping inside the association result avoids using stale
+  // input candidate indices after malformed/outlier detections are removed.
+  std::vector<ManagedTrackWorldObservation> world_observations;
 };
 
 // Maintains an independent constant-velocity Kalman state and lifecycle for

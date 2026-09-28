@@ -493,7 +493,10 @@ roslaunch xd_uav_track vision_tracking_stack.launch \
 ```
 
 默认使用 `models/xd_vehicle_train7/xd_vehicle_train7.pt` 和精简的
-`config/xd_vehicle_detection.yaml`，类别合同为 `car=0, ar-car=1, tank=2`。
+`config/xd_vehicle_detection.yaml`，类别合同为
+`car=0, ar-car=1, tank=2, m142=3`。四个叶子类别均属于车辆父类；检测端采用
+跨类别 NMS，跟踪端保留叶子类别并使用车辆父类做关联，以避免同一车辆在
+`tank/m142` 间抖动时断开轨迹。
 `config/smart_tracker_xd_vehicle.yaml` 只服务于下面的旧手动框/颜色兼容入口，不进入
 正式自动跟踪链路。
 

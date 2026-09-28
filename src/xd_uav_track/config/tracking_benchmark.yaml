@@ -1,0 +1,42 @@
+# Overlay for the generic tracker configuration used only by tracking_benchmark.
+# No aircraft/controller state is required and no control reference is published.
+runtime:
+  publish_control_reference: false
+
+interfaces:
+  input:
+    detections: "track/detections"
+
+tracker:
+  enabled_at_startup: true
+  sources:
+    allowed: [benchmark_fixed, benchmark_gimbal]
+    maximum_sources: 2
+    ttl_sec: 30.0
+  global_identity:
+    # The scene has image truth but intentionally supplies no calibrated metric
+    # observation.  Keep local identities separate rather than fabricating a
+    # cross-camera merge from appearance alone.
+    enabled: false
+  selection:
+    auto_select: true
+  lifecycle:
+    # Preserve a confirmed identity briefly through an actual detector gap.
+    # The overlay marks this state PRED; it is never relabelled as a live
+    # detection.  Long-lost tracks remain only in ReID memory.
+    occlusion_timeout_sec: 1.20
+    removal_timeout_sec: 8.0
+  association:
+    # Synthetic vehicles are intentionally similar. During close crossings,
+    # prefer coast over assigning one detector-merged box to the wrong tank.
+    merged_observation_guard:
+      enabled: true
+      minimum_tracks: 2
+      minimum_area_ratio: 1.15
+      minimum_track_iou: 0.02
+    short_minimum_margin: 0.15
+    selected_minimum_margin: 0.25
+    # A single detector box spanning two well-separated predicted tanks must
+    # not grow enough to absorb either identity after an occlusion.
+    maximum_scale_ratio: 3.5
+    maximum_aspect_log_change: 0.60

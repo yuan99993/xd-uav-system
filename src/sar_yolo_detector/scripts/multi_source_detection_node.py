@@ -13,6 +13,7 @@ import resource
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -21,7 +22,7 @@ import rospkg
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from sensor_msgs.msg import Image
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
-from xd_uav_track.msg import DetectionArray, DetectionCandidate
+from xd_uav_track.msg import DetectionArray, DetectionCandidate, TrackStateArray
 from xd_uav_track.reid import AppearanceEncoder
 
 from sar_yolo_detector.pixeagle.backends import DevicePreference, create_backend
@@ -74,6 +75,20 @@ def _xd_candidate(detection, width: int, height: int):
     return output
 
 
+def _box_iou(first, second) -> float:
+    """Small allocation-free IoU helper used by prediction-ROI recovery."""
+    ax1, ay1, ax2, ay2 = [float(value) for value in first]
+    bx1, by1, bx2, by2 = [float(value) for value in second]
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if intersection <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    return intersection / max(1e-6, area_a + area_b - intersection)
+
+
 class MultiSourceDetectionNode:
     def __init__(self) -> None:
         self._condition = threading.Condition()
@@ -97,6 +112,27 @@ class MultiSourceDetectionNode:
         self._startup_error = ""
         self._startup_started_wall = time.monotonic()
         self._startup_duration_sec = 0.0
+        self._tracking_lock = threading.Lock()
+        self._priority_source = str(rospy.get_param(
+            "~priority_source", "") or "").strip()
+        self._priority_source_wall = time.monotonic() if self._priority_source else 0.0
+        self._priority_source_timeout_sec = max(0.1, float(rospy.get_param(
+            "~priority_source_timeout_sec", 0.75)))
+        self._priority_lost_max_frames = max(0, int(rospy.get_param(
+            "~priority_lost_max_frames", 30)))
+        self._discovery_max_fps = max(0.0, float(rospy.get_param(
+            "~discovery_max_fps", 8.0)))
+        self._priority_max_fps = max(0.0, float(rospy.get_param(
+            "~priority_max_fps", 12.0)))
+        self._standby_max_fps = max(0.0, float(rospy.get_param(
+            "~standby_max_fps", 6.0)))
+        self._tracked_boxes: Dict[str, Tuple[Tuple[int, int, int, int], int, float]] = {}
+        self._tracking_tracks_topic = str(rospy.get_param(
+            "~tracking_tracks_topic", "") or "").strip()
+        self._rate_limited = 0
+        self._roi_attempts = 0
+        self._roi_hits = 0
+        self._roi_ms_ewma = 0.0
         self._warmup_frames = max(0, min(4, int(rospy.get_param(
             "~startup_warmup_frames", 1))))
         self._warmup_width = max(32, int(rospy.get_param("~warmup_width", 640)))
@@ -123,8 +159,27 @@ class MultiSourceDetectionNode:
         self._backend = create_backend("ultralytics", config=config)
         if not self._backend.is_available:
             raise RuntimeError("Ultralytics backend is unavailable on this host")
-        requested_model = str(rospy.get_param(
+        inference_backend = str(rospy.get_param(
+            "~inference_backend", "ultralytics") or "ultralytics").strip().lower()
+        model_path = str(rospy.get_param(
             "~model_path", config.get("SMART_TRACKER_GPU_MODEL_PATH", "")) or "").strip()
+        engine_path = str(rospy.get_param("~engine_path", "") or "").strip()
+        if inference_backend in {"tensorrt", "tensorrt_fp16", "engine"}:
+            if not engine_path:
+                raise RuntimeError(
+                    "~engine_path is required when ~inference_backend=tensorrt_fp16"
+                )
+            requested_model = engine_path
+            engine_sha256 = str(rospy.get_param("~engine_sha256", "") or "").strip()
+            if not engine_sha256:
+                raise RuntimeError(
+                    "~engine_sha256 is required for a TensorRT engine artifact"
+                )
+            config["SMART_TRACKER_MODEL_SHA256_BY_NAME"] = {
+                Path(engine_path).name: engine_sha256
+            }
+        else:
+            requested_model = model_path
         if not requested_model:
             raise RuntimeError("~model_path or SmartTracker GPU model path is required")
         self._runtime = self._backend.load_model(
@@ -169,10 +224,29 @@ class MultiSourceDetectionNode:
             source["reid_enabled"] = enabled
             source["reid_profile"] = profile
             source["maximum_reid_rois"] = max(1, int(raw.get("maximum_reid_rois_per_frame", 32)))
+            source["last_accept_wall"] = 0.0
+            source["roi_recovery_enabled"] = bool(raw.get(
+                "roi_recovery_enabled", name == "fixed"))
+            source["roi_padding_ratio"] = max(0.25, min(3.0, float(raw.get(
+                "roi_padding_ratio", 1.0))))
+            source["roi_target_short_side"] = max(16, int(raw.get(
+                "roi_target_short_side", 56)))
+            source["roi_min_padding_ratio"] = max(0.20, min(1.0, float(raw.get(
+                "roi_min_padding_ratio", 0.35))))
+            source["roi_max_padding_ratio"] = max(
+                source["roi_min_padding_ratio"], min(2.0, float(raw.get(
+                    "roi_max_padding_ratio", source["roi_padding_ratio"]))))
+            source["roi_min_short_side"] = max(8, int(raw.get(
+                "roi_min_short_side", 24)))
             source["subscriber"] = rospy.Subscriber(
                 input_topic, Image, lambda message, key=name: self._image_callback(key, message),
                 queue_size=1, buff_size=16 * 1024 * 1024, tcp_nodelay=True)
             self._sources[name] = source
+        self._tracking_subscriber = None
+        if self._tracking_tracks_topic:
+            self._tracking_subscriber = rospy.Subscriber(
+                self._tracking_tracks_topic, TrackStateArray,
+                self._tracking_callback, queue_size=1, tcp_nodelay=True)
         self._worker = threading.Thread(target=self._worker_loop,
                                         name="multi_source_yolo", daemon=True)
         self._reid_worker = None
@@ -187,10 +261,15 @@ class MultiSourceDetectionNode:
         self._diagnostics_timer = rospy.Timer(
             rospy.Duration(1.0), self._publish_diagnostics)
         rospy.on_shutdown(self.close)
-        rospy.loginfo("shared YOLO ready: model=%s device=%s sources=%s batch_wait_ms=%.1f",
+        rospy.loginfo("shared YOLO ready: model=%s backend=%s device=%s sources=%s batch_wait_ms=%.1f discovery_fps=%.1f priority_fps=%.1f standby_fps=%.1f roi=%s",
                       self._runtime.get("model_path", requested_model),
+                      self._runtime.get("backend", inference_backend),
                       self._runtime.get("effective_device", "unknown"),
-                      ",".join(sorted(self._sources)), self._batch_wait_sec * 1000.0)
+                      ",".join(sorted(self._sources)), self._batch_wait_sec * 1000.0,
+                      self._discovery_max_fps, self._priority_max_fps,
+                      self._standby_max_fps,
+                      "on" if any(source["roi_recovery_enabled"]
+                                  for source in self._sources.values()) else "off")
 
     def close(self) -> None:
         with self._condition:
@@ -219,6 +298,9 @@ class MultiSourceDetectionNode:
             if (source["xd_publisher"].get_num_connections() +
                     (vision.get_num_connections() if vision is not None else 0) == 0):
                 return
+        if not self._source_rate_available(source_name, source):
+            self._rate_limited += 1
+            return
         stamp = message.header.stamp
         if self._require_stamp and stamp.is_zero():
             rospy.logwarn_throttle(2.0, "shared YOLO rejected zero image timestamp")
@@ -239,6 +321,60 @@ class MultiSourceDetectionNode:
                 source["last_stamp"] = stamp
             self._condition.notify()
 
+    def _tracking_callback(self, message: TrackStateArray) -> None:
+        """Feed only source priority and prediction ROI hints from the tracker.
+
+        This is a one-way scheduling hint.  Detection remains authoritative for
+        observations and the tracker continues to own identity and lifecycle.
+        """
+        source = str(message.image_source or "").strip()
+        if not source:
+            return
+        selected = None
+        for track in message.tracks:
+            if not track.selected:
+                continue
+            if track.lifecycle_state not in ("confirmed", "occluded", "lost"):
+                continue
+            if (track.lifecycle_state == "lost" and
+                    int(track.frames_since_detection) > self._priority_lost_max_frames):
+                continue
+            x1, y1, x2, y2 = [int(value) for value in track.bbox]
+            if x2 <= x1 or y2 <= y1:
+                continue
+            selected = ((x1, y1, x2, y2), int(track.class_id),
+                        time.monotonic())
+            break
+        with self._tracking_lock:
+            if selected is not None:
+                self._priority_source = source
+                self._priority_source_wall = time.monotonic()
+                self._tracked_boxes[source] = selected
+
+    def _current_priority_source(self) -> str:
+        with self._tracking_lock:
+            if (self._priority_source and
+                    time.monotonic() - self._priority_source_wall <=
+                    self._priority_source_timeout_sec):
+                return self._priority_source
+            self._priority_source = ""
+            return ""
+
+    def _source_rate_available(self, source_name: str, source: Dict[str, Any]) -> bool:
+        priority = self._current_priority_source()
+        if priority:
+            limit = self._priority_max_fps if source_name == priority else self._standby_max_fps
+        else:
+            limit = self._discovery_max_fps
+        if limit <= 0.0:
+            return True
+        now = time.monotonic()
+        last = float(source.get("last_accept_wall", 0.0))
+        if last > 0.0 and now - last < 1.0 / limit:
+            return False
+        source["last_accept_wall"] = now
+        return True
+
     def _worker_loop(self) -> None:
         if not self._run_startup_warmup():
             return
@@ -254,7 +390,11 @@ class MultiSourceDetectionNode:
                 while (len(self._pending) < self._maximum_batch_size and
                        time.monotonic() < deadline and not self._closing):
                     self._condition.wait(timeout=max(0.0, deadline - time.monotonic()))
-                items = list(self._pending.items())[:self._maximum_batch_size]
+                priority = self._current_priority_source()
+                items = sorted(
+                    self._pending.items(),
+                    key=lambda item: (0 if priority and item[0] == priority else 1)
+                )[:self._maximum_batch_size]
                 for name, _ in items:
                     self._pending.pop(name, None)
             try:
@@ -295,6 +435,7 @@ class MultiSourceDetectionNode:
 
     def _publish(self, name: str, message: Image, frame, detections) -> None:
         source = self._sources[name]
+        detections = self._recover_with_prediction_roi(name, frame, detections)
         xd_output = DetectionArray()
         xd_output.header = message.header
         xd_output.image_width = message.width
@@ -326,6 +467,88 @@ class MultiSourceDetectionNode:
                 self._reid_dropped_backlog += 1
             self._pending_reid[name] = (frame, xd_output)
             self._reid_condition.notify()
+
+    def _recover_with_prediction_roi(self, name: str, frame, detections):
+        source = self._sources[name]
+        if not source.get("roi_recovery_enabled", False):
+            return detections
+        with self._tracking_lock:
+            hint = self._tracked_boxes.get(name)
+        if hint is None:
+            return detections
+        predicted_box, predicted_class, hint_wall = hint
+        if time.monotonic() - hint_wall > self._priority_source_timeout_sec:
+            return detections
+        if any(_box_iou(predicted_box, item.aabb_xyxy) >= 0.20
+               for item in detections if item.aabb_xyxy is not None):
+            return detections
+        height, width = int(frame.shape[0]), int(frame.shape[1])
+        x1, y1, x2, y2 = predicted_box
+        box_width, box_height = max(1, x2 - x1), max(1, y2 - y1)
+        nominal_padding = float(source.get("roi_padding_ratio", 1.0))
+        minimum_padding = float(source.get("roi_min_padding_ratio", 0.35))
+        maximum_padding = float(source.get("roi_max_padding_ratio", nominal_padding))
+        target_short_side = float(source.get("roi_target_short_side", 56))
+        # A small target benefits from a tighter crop: the detector still gets
+        # the complete frame on every scheduled full-frame pass, while this
+        # recovery pass spends pixels only around the predicted target.
+        adaptive_padding = 0.5 * (
+            min(box_width, box_height) / max(1.0, target_short_side) - 1.0)
+        padding = max(minimum_padding, min(maximum_padding, adaptive_padding))
+        left = max(0, int(round(x1 - padding * box_width)))
+        top = max(0, int(round(y1 - padding * box_height)))
+        right = min(width, int(round(x2 + padding * box_width)))
+        bottom = min(height, int(round(y2 + padding * box_height)))
+        if right - left < source.get("roi_min_short_side", 24) or \
+                bottom - top < source.get("roi_min_short_side", 24):
+            return detections
+        self._roi_attempts += 1
+        start = time.perf_counter()
+        try:
+            _, roi_detections = self._backend.detect(
+                frame[top:bottom, left:right], self._confidence, self._iou,
+                self._maximum_detections)
+        except Exception as error:
+            rospy.logwarn_throttle(2.0, "prediction ROI recovery failed for %s: %s",
+                                   name, error)
+            return detections
+        elapsed_ms = 1000.0 * (time.perf_counter() - start)
+        self._roi_ms_ewma = elapsed_ms if self._roi_attempts == 1 else \
+            self._roi_ms_ewma + 0.10 * (elapsed_ms - self._roi_ms_ewma)
+        recovered = []
+        for item in roi_detections:
+            if item.aabb_xyxy is None:
+                continue
+            rx1, ry1, rx2, ry2 = item.aabb_xyxy
+            shifted = (max(0, min(width, int(rx1 + left))),
+                       max(0, min(height, int(ry1 + top))),
+                       max(0, min(width, int(rx2 + left))),
+                       max(0, min(height, int(ry2 + top))))
+            if shifted[2] <= shifted[0] or shifted[3] <= shifted[1]:
+                continue
+            recovered.append(replace(
+                item, aabb_xyxy=shifted,
+                center_xy=(int((shifted[0] + shifted[2]) * 0.5),
+                           int((shifted[1] + shifted[3]) * 0.5)),
+                track_id=-1, track_id_is_stable=False))
+        if not recovered:
+            return detections
+        merged = list(detections)
+        for item in recovered:
+            overlaps = [index for index, existing in enumerate(merged)
+                        if existing.aabb_xyxy is not None and
+                        _box_iou(item.aabb_xyxy, existing.aabb_xyxy) >= 0.20]
+            if not overlaps:
+                merged.append(item)
+                continue
+            best = max(overlaps, key=lambda index: merged[index].confidence)
+            if item.confidence > merged[best].confidence:
+                merged[best] = item
+        if len(merged) > self._maximum_detections:
+            merged.sort(key=lambda item: float(item.confidence), reverse=True)
+            merged = merged[:self._maximum_detections]
+        self._roi_hits += 1
+        return merged
 
     def _reid_worker_loop(self) -> None:
         while not rospy.is_shutdown():
@@ -418,11 +641,15 @@ class MultiSourceDetectionNode:
             "startup_error": self._startup_error,
             "startup_seconds": round(self._startup_duration_sec, 3),
             "device": self._runtime.get("effective_device", "unknown"),
+            "backend": self._runtime.get("backend", "unknown"),
+            "model_format": self._runtime.get("model_format", "unknown"),
             "sources": len(self._sources),
             "received_frames": self._received,
             "processed_frames": self._processed,
             "pending_images": pending_images,
             "dropped_image_backlog": self._dropped_backlog,
+            "rate_limited_frames": self._rate_limited,
+            "priority_source": self._current_priority_source(),
             "last_batch_size": self._last_batch_size,
             "inference_ms_ewma": round(self._inference_ms_ewma, 3),
             "pending_reid": pending_reid,
@@ -430,6 +657,9 @@ class MultiSourceDetectionNode:
             "reid_dropped_backlog": self._reid_dropped_backlog,
             "reid_stale": self._reid_stale,
             "reid_ms_ewma": round(self._reid_ms_ewma, 3),
+            "roi_attempts": self._roi_attempts,
+            "roi_hits": self._roi_hits,
+            "roi_ms_ewma": round(self._roi_ms_ewma, 3),
             "rss_peak_mib": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2),
         }
         torch_module = sys.modules.get("torch")

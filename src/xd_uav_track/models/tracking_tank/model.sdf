@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <!-- Deliberately primitive-only: low GPU load, no unverified external mesh licence. -->
+  <model name="tracking_tank">
+    <static>false</static>
+    <allow_auto_disable>false</allow_auto_disable>
+    <link name="base_link">
+      <gravity>false</gravity>
+      <self_collide>false</self_collide>
+      <kinematic>false</kinematic>
+      <inertial>
+        <mass>1800.0</mass>
+        <inertia><ixx>900</ixx><iyy>1400</iyy><izz>1700</izz></inertia>
+      </inertial>
+      <visual name="left_track">
+        <pose>0 1.35 0.48 0 0 0</pose>
+        <geometry><box><size>4.9 0.44 0.72</size></box></geometry>
+        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/TrackRubber</name></script></material>
+      </visual>
+      <visual name="right_track">
+        <pose>0 -1.35 0.48 0 0 0</pose>
+        <geometry><box><size>4.9 0.44 0.72</size></box></geometry>
+        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/TrackRubber</name></script></material>
+      </visual>
+      <visual name="hull">
+        <pose>0 0 0.85 0 0 0</pose>
+        <geometry><box><size>5.0 2.55 0.78</size></box></geometry>
+        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
+      </visual>
+      <visual name="upper_hull">
+        <pose>-0.25 0 1.46 0 0 0</pose>
+        <geometry><box><size>3.55 2.18 0.58</size></box></geometry>
+        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
+      </visual>
+      <visual name="turret">
+        <pose>0.45 0 1.93 0 0 0</pose>
+        <geometry><cylinder><radius>0.86</radius><length>0.46</length></cylinder></geometry>
+        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
+      </visual>
+      <visual name="barrel">
+        <pose>2.10 0 1.96 0 1.57079632679 0</pose>
+        <geometry><cylinder><radius>0.14</radius><length>3.05</length></cylinder></geometry>
+        <material><ambient>0.09 0.10 0.07 1</ambient><diffuse>0.15 0.17 0.11 1</diffuse></material>
+      </visual>
+      <visual name="commander_hatch">
+        <pose>0.18 0 2.23 0 0 0</pose>
+        <geometry><cylinder><radius>0.34</radius><length>0.16</length></cylinder></geometry>
+        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
+      </visual>
+    </link>
+  </model>
+</sdf>

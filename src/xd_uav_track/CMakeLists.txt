@@ -124,6 +124,8 @@ catkin_install_python(PROGRAMS
   scripts/validate_tracking_config.py
   scripts/verify_fixedwing_sitl.py
   scripts/reid_encoder_node.py
+  scripts/tracking_benchmark_driver.py
+  scripts/tracking_overlay_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

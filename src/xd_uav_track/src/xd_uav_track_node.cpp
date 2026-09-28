@@ -619,12 +619,30 @@ class XdUavTrackNode {
                       global_identity_max_distance_m_, 8.0);
     private_nh_.param("tracker/global_identity/minimum_margin_m",
                       global_identity_minimum_margin_m_, 0.75);
+    private_nh_.param("tracker/global_identity/maximum_time_delta_sec",
+                      global_identity_maximum_time_delta_sec_, 0.12);
+    private_nh_.param("tracker/global_identity/confirmation_hits",
+                      global_identity_confirmation_hits_, 3);
+    private_nh_.param("tracker/global_identity/process_noise_mps",
+                      global_identity_process_noise_mps_, 2.0);
+    private_nh_.param("tracker/global_identity/residual_consistency_m",
+                      global_identity_residual_consistency_m_, 2.0);
+    private_nh_.param("tracker/global_identity/require_nonzero_timestamps",
+                      global_identity_require_nonzero_timestamps_, true);
     private_nh_.param("tracker/global_identity/ttl_sec",
                       global_identity_ttl_sec_, 120.0);
     private_nh_.param("tracker/global_identity/maximum_entities",
                       global_identity_maximum_entities_, 512);
     global_identity_maximum_entities_ = std::max(1,
         global_identity_maximum_entities_);
+    global_identity_maximum_time_delta_sec_ = std::max(
+        0.0, global_identity_maximum_time_delta_sec_);
+    global_identity_confirmation_hits_ = std::max(
+        1, global_identity_confirmation_hits_);
+    global_identity_process_noise_mps_ = std::max(
+        0.0, global_identity_process_noise_mps_);
+    global_identity_residual_consistency_m_ = std::max(
+        0.0, global_identity_residual_consistency_m_);
     private_nh_.param("tracker/image_source",
                       accepted_image_source_, std::string());
     loadStringSet(private_nh_, "tracker/sources/allowed", &allowed_sources_);
@@ -690,6 +708,21 @@ class XdUavTrackNode {
     private_nh_.param("tracker/confidence/update",
                       multi_config.minimum_update_confidence,
                       multi_config.minimum_update_confidence);
+    private_nh_.getParam("tracker/classification/class_family_by_id",
+                         multi_config.class_family_by_id);
+    class_family_by_id_ = multi_config.class_family_by_id;
+    private_nh_.param("tracker/classification/temporal_smoothing_enabled",
+                      multi_config.class_temporal_smoothing_enabled,
+                      multi_config.class_temporal_smoothing_enabled);
+    private_nh_.param("tracker/classification/smoothing_alpha",
+                      multi_config.class_smoothing_alpha,
+                      multi_config.class_smoothing_alpha);
+    private_nh_.param("tracker/classification/switch_margin",
+                      multi_config.class_switch_margin,
+                      multi_config.class_switch_margin);
+    private_nh_.param("tracker/classification/switch_confirmations",
+                      multi_config.class_switch_confirmations,
+                      multi_config.class_switch_confirmations);
     private_nh_.param("tracker/association/iou_threshold",
                       multi_config.association_iou_threshold,
                       multi_config.association_iou_threshold);
@@ -705,6 +738,13 @@ class XdUavTrackNode {
     private_nh_.param("tracker/association/low_confidence",
                       multi_config.low_confidence_threshold,
                       multi_config.low_confidence_threshold);
+    private_nh_.param("tracker/association/low_confidence_birth_enabled",
+                      multi_config.low_confidence_birth_enabled,
+                      multi_config.low_confidence_birth_enabled);
+    private_nh_.param(
+        "tracker/association/low_confidence_birth_confirmation_hits",
+        multi_config.low_confidence_birth_confirmation_hits,
+        multi_config.low_confidence_birth_confirmation_hits);
     private_nh_.param("tracker/association/appearance_gallery_size",
                       multi_config.appearance_gallery_size,
                       multi_config.appearance_gallery_size);
@@ -720,6 +760,30 @@ class XdUavTrackNode {
     private_nh_.param("tracker/association/mahalanobis_gate",
                       multi_config.association_mahalanobis_gate,
                       multi_config.association_mahalanobis_gate);
+    private_nh_.param("tracker/association/maximum_scale_ratio",
+                      multi_config.association_maximum_scale_ratio,
+                      multi_config.association_maximum_scale_ratio);
+    private_nh_.param("tracker/association/maximum_aspect_log_change",
+                      multi_config.association_maximum_aspect_log_change,
+                      multi_config.association_maximum_aspect_log_change);
+    private_nh_.param("tracker/association/merged_observation_guard/enabled",
+                      multi_config.merged_observation_guard_enabled,
+                      multi_config.merged_observation_guard_enabled);
+    private_nh_.param("tracker/association/merged_observation_guard/minimum_tracks",
+                      multi_config.merged_observation_minimum_tracks,
+                      multi_config.merged_observation_minimum_tracks);
+    private_nh_.param("tracker/association/merged_observation_guard/minimum_area_ratio",
+                      multi_config.merged_observation_minimum_area_ratio,
+                      multi_config.merged_observation_minimum_area_ratio);
+    private_nh_.param("tracker/association/merged_observation_guard/minimum_track_iou",
+                      multi_config.merged_observation_minimum_track_iou,
+                      multi_config.merged_observation_minimum_track_iou);
+    private_nh_.param("tracker/association/short_minimum_margin",
+                      multi_config.short_association_minimum_margin,
+                      multi_config.short_association_minimum_margin);
+    private_nh_.param("tracker/association/selected_minimum_margin",
+                      multi_config.selected_association_minimum_margin,
+                      multi_config.selected_association_minimum_margin);
     private_nh_.param("tracker/association/metric_innovation_distance_m",
                       multi_config.metric_innovation_distance_m,
                       multi_config.metric_innovation_distance_m);
@@ -826,6 +890,7 @@ class XdUavTrackNode {
     std::string state_topic{"state_estimator/main/odom"};
     std::string detections_topic{"track/detections"};
     std::string tracks_topic{"track/tracks"};
+    std::string tracks_by_source_topic{"track/tracks_by_source"};
     std::string body_velocity_topic{"track/velocity_body"};
     std::string follower_command_topic{"track/command"};
     std::string gimbal_state_topic{"track/gimbal_state"};
@@ -836,6 +901,8 @@ class XdUavTrackNode {
     private_nh_.param("interfaces/input/detections", detections_topic,
                       detections_topic);
     private_nh_.param("interfaces/output/tracks", tracks_topic, tracks_topic);
+    private_nh_.param("interfaces/output/tracks_by_source",
+                      tracks_by_source_topic, tracks_by_source_topic);
     private_nh_.param("interfaces/output/body_velocity", body_velocity_topic,
                       body_velocity_topic);
     private_nh_.param("interfaces/output/follower_command", follower_command_topic,
@@ -892,6 +959,11 @@ class XdUavTrackNode {
         status_topic, 10);
     tracks_publisher_ = nh_.advertise<xd_uav_track::TrackStateArray>(
         tracks_topic, 10);
+    // Keep the established tracks topic limited to the active control source.
+    // This additive telemetry topic exposes every source-local frame for
+    // displays and recording without changing control ownership.
+    tracks_by_source_publisher_ = nh_.advertise<xd_uav_track::TrackStateArray>(
+        tracks_by_source_topic, 10);
     if (publish_control_reference_) {
       reference_publisher_ = nh_.advertise<mavros_msgs::PositionTarget>(
           reference_topic, 10);
@@ -1026,11 +1098,21 @@ class XdUavTrackNode {
     bool world_valid{false};
     std::array<double, 3> world_position{{0.0, 0.0, 0.0}};
     std::array<double, 3> world_velocity{{0.0, 0.0, 0.0}};
+    bool world_velocity_valid{false};
     double position_sigma_m{1.0};
     ros::Time observation_stamp;
     ros::WallTime last_seen;
     std::vector<float> appearance_embedding;
     std::map<std::string, int> local_track_ids;
+    std::string last_evidence_source;
+  };
+
+  struct PendingGlobalMerge {
+    int candidate_global_id{-1};
+    int hits{0};
+    double residual_mean_m{0.0};
+    ros::Time last_observation_stamp;
+    ros::WallTime last_seen;
   };
 
   struct PendingControlMeasurement {
@@ -1191,12 +1273,10 @@ class XdUavTrackNode {
 
   const xd_uav_track::TargetWorldObservation* worldForTrack(
       const xd_uav_track::ManagedDetectionFrame& frame,
-      const std::vector<xd_uav_track::TargetWorldObservation>& observations,
       const int track_id) const {
-    for (const auto& observation : observations) {
-      if (observation.candidate_index < frame.candidates.candidates.size() &&
-          frame.candidates.candidates[observation.candidate_index].track_id == track_id) {
-        return &observation;
+    for (const auto& managed : frame.world_observations) {
+      if (managed.track_id == track_id) {
+        return &managed.observation;
       }
     }
     return nullptr;
@@ -1210,6 +1290,7 @@ class XdUavTrackNode {
     if (entity == nullptr) return;
     entity->local_track_ids[source] = track_id;
     entity->last_seen = now;
+    entity->last_evidence_source = source;
     if (candidate != nullptr && !candidate->appearance_embedding.empty()) {
       entity->appearance_embedding = candidate->appearance_embedding;
     }
@@ -1217,9 +1298,24 @@ class XdUavTrackNode {
       entity->world_valid = true;
       entity->world_position = observation->position;
       entity->world_velocity = observation->velocity;
+      entity->world_velocity_valid = observation->velocity_valid;
       entity->position_sigma_m = std::max(0.05, observation->sigma_m);
       entity->observation_stamp = observation->capture_stamp;
     }
+  }
+
+  int classFamily(const int class_id) const {
+    if (class_id < 0) return class_id;
+    const std::size_t index = static_cast<std::size_t>(class_id);
+    if (index < class_family_by_id_.size() &&
+        class_family_by_id_[index] >= 0) {
+      return class_family_by_id_[index];
+    }
+    return class_id;
+  }
+
+  bool classesCompatible(const int lhs, const int rhs) const {
+    return lhs < 0 || rhs < 0 || classFamily(lhs) == classFamily(rhs);
   }
 
   void pruneGlobalEntities(const ros::WallTime& now) {
@@ -1244,7 +1340,46 @@ class XdUavTrackNode {
       global_entities_.erase(oldest);
       ++global_entity_capacity_evictions_;
     }
+    for (auto pending = pending_global_merges_.begin();
+         pending != pending_global_merges_.end();) {
+      const bool source_missing = global_entities_.count(pending->first) == 0;
+      const bool candidate_missing = global_entities_.count(
+          pending->second.candidate_global_id) == 0;
+      const bool stale = !pending->second.last_seen.isZero() &&
+          (now - pending->second.last_seen).toSec() >
+              std::max(1.0, 2.0 * global_identity_maximum_time_delta_sec_);
+      if (source_missing || candidate_missing || stale) {
+        pending = pending_global_merges_.erase(pending);
+      } else {
+        ++pending;
+      }
+    }
     global_entity_count_.store(global_entities_.size());
+  }
+
+  void resetGlobalSource(const std::string& source,
+                         const ros::WallTime& now) {
+    for (auto entity = global_entities_.begin();
+         entity != global_entities_.end();) {
+      entity->second.local_track_ids.erase(source);
+      if (entity->second.local_track_ids.empty()) {
+        entity = global_entities_.erase(entity);
+        continue;
+      }
+      if (entity->second.last_evidence_source == source) {
+        // The surviving source will repopulate fresh metric/appearance
+        // evidence on its next frame. Never reuse evidence owned by a reset
+        // camera to authorize a new cross-source merge.
+        entity->second.world_valid = false;
+        entity->second.world_velocity_valid = false;
+        entity->second.appearance_embedding.clear();
+        entity->second.observation_stamp = ros::Time();
+        entity->second.last_evidence_source.clear();
+      }
+      ++entity;
+    }
+    pending_global_merges_.clear();
+    pruneGlobalEntities(now);
   }
 
   bool reserveGlobalEntitySlot(const ros::WallTime& now) {
@@ -1267,7 +1402,6 @@ class XdUavTrackNode {
   void normalizeGlobalEntities(
       const std::string& source, xd_uav_track::MultiTrackManager* tracker,
       xd_uav_track::ManagedDetectionFrame* frame,
-      const std::vector<xd_uav_track::TargetWorldObservation>& observations,
       const ros::WallTime& now) {
     if (!global_identity_enabled_ || tracker == nullptr || frame == nullptr) return;
     pruneGlobalEntities(now);
@@ -1306,15 +1440,28 @@ class XdUavTrackNode {
       if (current == global_entities_.end()) continue;
       xd_uav_track::DetectionCandidate candidate;
       const bool have_candidate = tracker->latestCandidate(current_id, &candidate);
-      const auto* observation = worldForTrack(*frame, observations, current_id);
+      const auto* observation = worldForTrack(*frame, current_id);
       int best_id = -1;
       double best_distance = std::numeric_limits<double>::infinity();
       double runner_up_distance = std::numeric_limits<double>::infinity();
       if (observation != nullptr) {
         for (const auto& pair : global_entities_) {
           const GlobalEntity& entity = pair.second;
-          if (entity.global_id == current_id || entity.class_id != state.class_id ||
+          if (entity.global_id == current_id ||
+              !classesCompatible(entity.class_id, state.class_id) ||
               !entity.world_valid || entity.local_track_ids.count(source) != 0) {
+            continue;
+          }
+          if (global_identity_require_nonzero_timestamps_ &&
+              (observation->capture_stamp.isZero() ||
+               entity.observation_stamp.isZero())) {
+            continue;
+          }
+          const double time_delta = observation->capture_stamp.isZero() ||
+              entity.observation_stamp.isZero() ? 0.0 :
+              (observation->capture_stamp - entity.observation_stamp).toSec();
+          if (!std::isfinite(time_delta) ||
+              std::abs(time_delta) > global_identity_maximum_time_delta_sec_) {
             continue;
           }
           if (have_candidate && !entity.appearance_embedding.empty()) {
@@ -1322,13 +1469,22 @@ class XdUavTrackNode {
                                                    entity.appearance_embedding);
             if (cosine >= -1.0 && cosine < global_identity_appearance_cosine_) continue;
           }
-          const double dx = observation->position[0] - entity.world_position[0];
-          const double dy = observation->position[1] - entity.world_position[1];
-          const double dz = observation->position[2] - entity.world_position[2];
+          std::array<double, 3> predicted_position = entity.world_position;
+          if (entity.world_velocity_valid) {
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+              predicted_position[axis] += entity.world_velocity[axis] * time_delta;
+            }
+          }
+          const double dx = observation->position[0] - predicted_position[0];
+          const double dy = observation->position[1] - predicted_position[1];
+          const double dz = observation->position[2] - predicted_position[2];
           const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+          const double propagated_sigma = std::hypot(
+              entity.position_sigma_m,
+              global_identity_process_noise_mps_ * std::abs(time_delta));
           const double gate = std::min(global_identity_max_distance_m_, std::max(
               1.0, 3.0 * (std::max(0.05, observation->sigma_m) +
-                          entity.position_sigma_m)));
+                          propagated_sigma)));
           if (distance > gate) continue;
           if (distance < best_distance) {
             runner_up_distance = best_distance;
@@ -1341,8 +1497,33 @@ class XdUavTrackNode {
       }
       // Ambiguous world matches retain separate public IDs until later frames
       // resolve them.  This is safer than a visually plausible ID switch.
+      bool merge_confirmed = false;
       if (best_id >= 0 && (runner_up_distance - best_distance) >=
-              global_identity_minimum_margin_m_) {
+              global_identity_minimum_margin_m_ && observation != nullptr) {
+        auto& pending = pending_global_merges_[current_id];
+        const bool monotonic = pending.last_observation_stamp.isZero() ||
+            observation->capture_stamp.isZero() ||
+            observation->capture_stamp > pending.last_observation_stamp;
+        const bool residual_consistent = pending.hits == 0 ||
+            std::abs(best_distance - pending.residual_mean_m) <=
+                global_identity_residual_consistency_m_;
+        if (pending.candidate_global_id != best_id || !monotonic ||
+            !residual_consistent) {
+          pending = PendingGlobalMerge{};
+          pending.candidate_global_id = best_id;
+        }
+        if (monotonic && residual_consistent) {
+          ++pending.hits;
+          pending.residual_mean_m +=
+              (best_distance - pending.residual_mean_m) / pending.hits;
+          pending.last_observation_stamp = observation->capture_stamp;
+          pending.last_seen = now;
+        }
+        merge_confirmed = pending.hits >= global_identity_confirmation_hits_;
+      } else {
+        pending_global_merges_.erase(current_id);
+      }
+      if (merge_confirmed) {
         if (tracker->adoptPublicId(current_id, best_id)) {
           rewritePublicId(frame, current_id, best_id);
           auto accepted = global_entities_.find(best_id);
@@ -1351,6 +1532,7 @@ class XdUavTrackNode {
                 have_candidate ? &candidate : nullptr, observation, now);
           }
           global_entities_.erase(current_id);
+          pending_global_merges_.erase(current_id);
           continue;
         }
       }
@@ -1370,9 +1552,9 @@ class XdUavTrackNode {
     // re-acquisition. Spatial consistency is still enforced by the shared
     // world-filter innovation gate in TrackController.
     if (!std::isfinite(age) || age > source_identity_max_age_sec_) return true;
-    if (source_cross_class_reject_ && metric_identity_class_id_.load() >= 0 &&
-        measurement.class_id >= 0 &&
-        measurement.class_id != metric_identity_class_id_.load()) {
+    if (source_cross_class_reject_ &&
+        !classesCompatible(
+            measurement.class_id, metric_identity_class_id_.load())) {
       if (reason != nullptr) *reason =
           "cross-source class conflicts with the fresh selected target";
       return false;
@@ -1443,6 +1625,21 @@ class XdUavTrackNode {
       if (jump <= source_clock_reset_jump_sec_) return;
       auto tracker_it = source_trackers_.find(source);
       if (tracker_it != source_trackers_.end()) tracker_it->second->reset();
+      resetGlobalSource(source, callback_now);
+      latest_identity_hints_.erase(source);
+      source_hint_last_receive_.erase(source);
+      if (locked_target_source_ == source) {
+        std::lock_guard<std::mutex> control_lock(control_mutex_);
+        controller_->reset();
+        clearPendingControlMailbox();
+        metric_identity_valid_ = false;
+        locked_target_active_ = false;
+        locked_target_id_ = -1;
+        locked_target_source_.clear();
+        locked_target_last_detected_ = ros::WallTime();
+      }
+      ROS_WARN_STREAM("[xd_uav_track] source clock restart reset tracking state: "
+                      << source << " jump=" << jump << " s");
     }
     if (!stamp.isZero()) source_last_stamp_[source] = stamp;
     const unsigned int image_width = message->image_width;
@@ -1455,11 +1652,17 @@ class XdUavTrackNode {
     source_registry_size_.store(registeredSourceCount());
     if (message->command == "reset") {
       tracker->reset();
+      resetGlobalSource(source, callback_now);
       std::lock_guard<std::mutex> control_lock(control_mutex_);
       controller_->reset();
       clearPendingControlMailbox();
       metric_identity_valid_ = false;
-      if (locked_target_source_ == source) locked_target_active_ = false;
+      if (locked_target_source_ == source) {
+        locked_target_active_ = false;
+        locked_target_id_ = -1;
+        locked_target_source_.clear();
+        locked_target_last_detected_ = ros::WallTime();
+      }
       latest_identity_hints_.erase(source);
       source_hint_last_receive_.erase(source);
     } else if (message->command == "start_track") {
@@ -1471,6 +1674,9 @@ class XdUavTrackNode {
       clearPendingControlMailbox();
       metric_identity_valid_ = false;
       locked_target_active_ = false;
+      locked_target_id_ = -1;
+      locked_target_source_.clear();
+      locked_target_last_detected_ = ros::WallTime();
     }
 
     std::vector<xd_uav_track::TargetIdentityHint> identity_hints;
@@ -1551,7 +1757,7 @@ class XdUavTrackNode {
         static_cast<int>(image_height), source, identity_hints,
         world_observations, camera_motion);
     const ros::WallTime wall_now = ros::WallTime::now();
-    normalizeGlobalEntities(source, tracker, &frame, world_observations, wall_now);
+    normalizeGlobalEntities(source, tracker, &frame, wall_now);
     active_track_count_.store(frame.tracks.tracks.size());
     global_entity_count_.store(global_entities_.size());
     const double perception_ms =
@@ -1562,6 +1768,7 @@ class XdUavTrackNode {
         : previous_ewma + 0.10 * (perception_ms - previous_ewma));
     latest_tracks_by_source_[source] = frame.tracks;
     source_last_receive_[source] = ros::WallTime::now();
+    tracks_by_source_publisher_.publish(frame.tracks);
     const std::string previous_active_source = active_source_;
     if (active_source_.empty()) active_source_ = source;
     auto active_receive = source_last_receive_.find(active_source_);
@@ -1611,6 +1818,27 @@ class XdUavTrackNode {
     // A source is selected only by source policy/staleness, never merely
     // because it observed the same entity in this frame.
     latest_tracks_by_source_[source] = frame.tracks;
+    if (locked_target_active_ && source != locked_target_source_ &&
+        !locked_target_last_detected_.isZero() &&
+        (wall_now - locked_target_last_detected_).toSec() >
+            source_handover_timeout_sec_) {
+      const auto safely_reidentified = std::find_if(
+          frame.tracks.tracks.begin(), frame.tracks.tracks.end(),
+          [this](const xd_uav_track::TrackState& track) {
+            return track.track_id == locked_target_id_ && track.detected &&
+                   track.lifecycle_state == "confirmed" &&
+                   track.control_measurement_ready;
+          });
+      // Reaching the same global ID already required time-aligned metric
+      // observations, a unique spatial winner and repeated confirmation.
+      // Only then may a stale camera hand control ownership to this source.
+      if (safely_reidentified != frame.tracks.tracks.end()) {
+        locked_target_source_ = source;
+        active_source_ = source;
+        last_source_switch_ = wall_now;
+        locked_target_last_detected_ = wall_now;
+      }
+    }
     int selected_id = tracker->selectedTrackId();
     if (locked_target_active_ && source == locked_target_source_) {
       selected_id = locked_target_id_;
@@ -2346,6 +2574,7 @@ class XdUavTrackNode {
   ros::Publisher reference_publisher_;
   ros::Publisher status_publisher_;
   ros::Publisher tracks_publisher_;
+  ros::Publisher tracks_by_source_publisher_;
   ros::ServiceServer profile_service_;
   ros::ServiceServer start_tracker_service_;
   ros::ServiceServer select_track_service_;
@@ -2393,8 +2622,13 @@ class XdUavTrackNode {
   double global_identity_appearance_cosine_{0.78};
   double global_identity_max_distance_m_{8.0};
   double global_identity_minimum_margin_m_{0.75};
+  double global_identity_maximum_time_delta_sec_{0.12};
+  double global_identity_process_noise_mps_{2.0};
+  double global_identity_residual_consistency_m_{2.0};
   double global_identity_ttl_sec_{120.0};
+  int global_identity_confirmation_hits_{3};
   int global_identity_maximum_entities_{512};
+  bool global_identity_require_nonzero_timestamps_{true};
   int maximum_sources_{4};
   int maximum_source_name_length_{128};
   double source_registry_ttl_sec_{300.0};
@@ -2435,6 +2669,7 @@ class XdUavTrackNode {
   int locked_target_id_{-1};
   int next_global_entity_id_{1000000};
   std::map<int, GlobalEntity> global_entities_;
+  std::map<int, PendingGlobalMerge> pending_global_merges_;
   ros::WallTime locked_target_last_detected_;
   double source_handover_timeout_sec_{0.75};
   double select_capture_tolerance_sec_{0.10};
@@ -2450,6 +2685,7 @@ class XdUavTrackNode {
   bool multi_source_fusion_enabled_{false};
   bool source_identity_gate_enabled_{true};
   bool source_cross_class_reject_{true};
+  std::vector<int> class_family_by_id_;
   double source_identity_max_age_sec_{0.50};
   double source_identity_max_distance_m_{25.0};
   std::atomic<bool> metric_identity_valid_{false};

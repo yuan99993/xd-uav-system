@@ -63,6 +63,9 @@ class UltralyticsBackend(DetectionBackend):
             if raw_allowed_class_ids is not None
             else None
         )
+        self._agnostic_nms = bool(
+            self._config.get("SMART_TRACKER_AGNOSTIC_NMS", False)
+        )
         self.tracker_type_str, self.use_custom_reid = self._select_tracker_type()
         self.tracker_args = {"persist": True, "verbose": False}
 
@@ -175,7 +178,7 @@ class UltralyticsBackend(DetectionBackend):
         try:
             before = os.fstat(descriptor)
             if not stat.S_ISREG(before.st_mode):
-                raise ValueError("SmartTracker .pt artifact must be a regular file")
+                raise ValueError("SmartTracker model artifact must be a regular file")
             if before.st_size <= 0 or before.st_size > self._max_model_bytes:
                 raise ValueError("SmartTracker model size is outside the configured limit")
             if stat.S_IMODE(before.st_mode) & 0o022:
@@ -214,15 +217,22 @@ class UltralyticsBackend(DetectionBackend):
             raise RuntimeError(
                 "Ultralytics is unavailable: " + ULTRALYTICS_IMPORT_ERROR
             )
-        if path.is_file() and path.suffix.lower() != ".pt":
-            raise ValueError("Direct SmartTracker backend accepts .pt or NCNN directories")
+        suffix = path.suffix.lower()
+        if path.is_file() and suffix not in {".pt", ".engine"}:
+            raise ValueError(
+                "Direct SmartTracker backend accepts .pt/.engine or NCNN directories"
+            )
+        if suffix == ".engine" and target_device != "cuda":
+            raise ValueError("TensorRT .engine artifacts require CUDA")
+        if suffix == ".engine" and not self._cuda_available():
+            raise RuntimeError("TensorRT .engine artifact requested without CUDA")
         provenance = self._verify_file(path) if path.is_file() else {
             "verified": False,
             "sha256": None,
             "size_bytes": None,
         }
         model = YOLO(str(path))
-        if target_device == "cuda":
+        if target_device == "cuda" and suffix != ".engine":
             if not self._cuda_available():
                 raise RuntimeError("CUDA requested but torch.cuda.is_available() is false")
             model.to("cuda")
@@ -278,7 +288,14 @@ class UltralyticsBackend(DetectionBackend):
         self._runtime_info = {
             "requested_device": requested,
             "effective_device": selected_device,
-            "backend": "cuda_torch" if selected_device == "cuda" else "cpu_torch",
+            "backend": (
+                "tensorrt_fp16" if selected_path.suffix.lower() == ".engine"
+                else ("cuda_torch" if selected_device == "cuda" else "cpu_torch")
+            ),
+            "model_format": (
+                "tensorrt_engine" if selected_path.suffix.lower() == ".engine"
+                else "ultralytics_pt"
+            ),
             "model_path": str(selected_path),
             "model_name": selected_path.name,
             "fallback_enabled": bool(fallback_enabled),
@@ -323,6 +340,8 @@ class UltralyticsBackend(DetectionBackend):
         inference_args = {}
         if self._allowed_class_ids is not None:
             inference_args["classes"] = self._allowed_class_ids
+        if self._agnostic_nms:
+            inference_args["agnostic_nms"] = True
         results = self._model.predict(
             frame,
             conf=conf,
@@ -351,6 +370,8 @@ class UltralyticsBackend(DetectionBackend):
         inference_args = {}
         if self._allowed_class_ids is not None:
             inference_args["classes"] = self._allowed_class_ids
+        if self._agnostic_nms:
+            inference_args["agnostic_nms"] = True
         results = list(self._model.predict(
             frames, conf=conf, iou=iou, max_det=max_det, verbose=False,
             **inference_args,
@@ -373,6 +394,8 @@ class UltralyticsBackend(DetectionBackend):
         args = dict(tracker_args or self.tracker_args)
         if self._allowed_class_ids is not None:
             args["classes"] = self._allowed_class_ids
+        if self._agnostic_nms:
+            args["agnostic_nms"] = True
         results = self._model.track(
             frame,
             conf=conf,

@@ -309,3 +309,26 @@ roslaunch xd_uav_track record_tracking_evidence.launch UAV_NAME:=uav1 \
 
 该入口只录制两路原图、相机内参、检测各阶段、轨迹、状态、里程计和云台状态，
 不会启动飞控或改变控制参考。
+# Gazebo visual tracking benchmark
+
+`tracking_benchmark.launch` is an independent, low-load visual test scene. It
+starts only Gazebo plus `tracking_benchmark_driver.py`—never PX4, MAVROS,
+detector or follower—and provides the following ROS interfaces:
+
+```bash
+roslaunch xd_uav_track tracking_benchmark.launch
+# fixed:  /tracking_benchmark/fixed_camera/image_raw
+# gimbal: /tracking_benchmark/gimbal_camera/image_raw
+# truth:  /tracking_benchmark/ground_truth/catalog
+# truth:  /tracking_benchmark/ground_truth/state_json
+```
+
+The primary tank (`public_id=101`) performs a circle, straight transit,
+right-angle turn, stop/restart and four solid-wall fixed-camera occlusions of
+1, 3, 5 and 10 seconds. A visually similar tank (`102`) crosses it on a
+figure-eight trajectory; a differently sized, similarly camouflaged armored
+decoy (`201`) starts and stops independently. Truth odometry is available per
+model below `/tracking_benchmark/ground_truth/*/odom`; it is test evidence,
+not a detector input. The side-view gimbal camera tracks target 101, so it
+continues viewing the target during the south fixed camera's designed wall
+occlusions.

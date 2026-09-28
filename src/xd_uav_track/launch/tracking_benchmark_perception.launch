@@ -1,0 +1,72 @@
+<launch>
+  <!-- Attach one shared real YOLO detector and xd_uav_track to a running
+       tracking_benchmark.launch scene. PX4/MAVROS/control-manager are absent. -->
+  <arg name="UAV_NAME" default="tracking_benchmark"/>
+  <arg name="use_gpu" default="true"/>
+  <arg name="enable_reid" default="false"/>
+  <arg name="show_overlay" default="true"/>
+  <arg name="detector_config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml"/>
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt"/>
+  <arg name="track_config" default="$(find xd_uav_track)/config/track.yaml"/>
+  <arg name="benchmark_config" default="$(find xd_uav_track)/config/tracking_benchmark.yaml"/>
+
+  <!-- Use Qt's rqt_image_view rather than the legacy GTK image_view binary:
+       the latter can abort while destroying a non-registered GTK window on
+       this desktop.  Keep the viewer on the X11 backend for a stable demo. -->
+  <env name="QT_QPA_PLATFORM" value="xcb"/>
+
+  <include file="$(find sar_yolo_detector)/launch/xd_yolo_multi_source_detection_integration.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="config" value="$(arg detector_config)"/>
+    <arg name="model_path" value="$(arg model_path)"/>
+    <arg name="use_gpu" value="$(arg use_gpu)"/>
+    <arg name="fixed_image_topic" value="fixed_camera/image_raw"/>
+    <arg name="gimbal_image_topic" value="gimbal_camera/image_raw"/>
+    <arg name="fixed_output_topic" value="track/detections"/>
+    <arg name="gimbal_output_topic" value="track/detections"/>
+    <arg name="fixed_image_source" value="benchmark_fixed"/>
+    <arg name="gimbal_image_source" value="benchmark_gimbal"/>
+    <arg name="fixed_sensor_id" value="benchmark_fixed_camera"/>
+    <arg name="gimbal_sensor_id" value="benchmark_gimbal_camera"/>
+    <arg name="reid_enabled" value="$(arg enable_reid)"/>
+    <arg name="tracking_tracks_topic" value="track/tracks"/>
+    <arg name="discovery_max_fps" value="8.0"/>
+    <arg name="priority_max_fps" value="12.0"/>
+    <arg name="standby_max_fps" value="6.0"/>
+  </include>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_track" type="xd_uav_track_node" name="track" output="screen"
+          clear_params="true">
+      <rosparam command="load" file="$(arg track_config)"/>
+      <rosparam command="load" file="$(arg benchmark_config)"/>
+      <param name="frames/body" value="base_link"/>
+    </node>
+
+    <node pkg="xd_uav_track" type="tracking_overlay_node.py" name="fixed_tracking_overlay" output="screen">
+      <param name="image_source" value="benchmark_fixed"/>
+      <param name="input_image_topic" value="fixed_camera/image_raw"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="status_topic" value="track/status"/>
+      <param name="output_image_topic" value="fixed_camera/tracking_overlay"/>
+      <param name="fallback_render_rate_hz" value="4.0"/>
+    </node>
+    <node pkg="xd_uav_track" type="tracking_overlay_node.py" name="gimbal_tracking_overlay" output="screen">
+      <param name="image_source" value="benchmark_gimbal"/>
+      <param name="input_image_topic" value="gimbal_camera/image_raw"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="status_topic" value="track/status"/>
+      <param name="output_image_topic" value="gimbal_camera/tracking_overlay"/>
+      <param name="fallback_render_rate_hz" value="4.0"/>
+    </node>
+
+    <node if="$(arg show_overlay)" pkg="rqt_image_view" type="rqt_image_view"
+          name="fixed_tracking_overlay_view"
+          args="/tracking_benchmark/fixed_camera/tracking_overlay"
+          output="screen"/>
+    <node if="$(arg show_overlay)" pkg="rqt_image_view" type="rqt_image_view"
+          name="gimbal_tracking_overlay_view"
+          args="/tracking_benchmark/gimbal_camera/tracking_overlay"
+          output="screen"/>
+  </group>
+</launch>

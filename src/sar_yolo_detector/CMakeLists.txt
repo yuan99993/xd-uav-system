@@ -318,6 +318,7 @@ install(PROGRAMS
   scripts/detection_only_node.py
   scripts/multi_source_detection_node.py
   scripts/smart_tracker_node.py
+  scripts/export_xd_vehicle_tensorrt.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 catkin_install_python(PROGRAMS

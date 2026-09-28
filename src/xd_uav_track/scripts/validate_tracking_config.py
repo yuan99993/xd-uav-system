@@ -141,6 +141,53 @@ def validate_tracker(config, report, label):
     if not isinstance(maximum_entities, int) or maximum_entities <= 0:
         report.error(label + ".tracker.global_identity.maximum_entities "
                      "must be a positive integer")
+    for key in ("maximum_distance_m", "minimum_margin_m",
+                "maximum_time_delta_sec", "ttl_sec"):
+        report.finite(global_identity.get(key),
+                      label + ".tracker.global_identity." + key, positive=True)
+    for key in ("process_noise_mps", "residual_consistency_m"):
+        value = global_identity.get(key)
+        if report.finite(value, label + ".tracker.global_identity." + key) and value < 0:
+            report.error(label + ".tracker.global_identity." + key +
+                         " must be non-negative")
+    global_confirmations = global_identity.get("confirmation_hits")
+    if not isinstance(global_confirmations, int) or global_confirmations < 2:
+        report.error(label +
+                     ".tracker.global_identity.confirmation_hits must be >= 2")
+    if not isinstance(global_identity.get("require_nonzero_timestamps"), bool):
+        report.error(label +
+                     ".tracker.global_identity.require_nonzero_timestamps must be boolean")
+
+    classification = _mapping(tracker.get("classification", {}),
+                              label + ".tracker.classification", report)
+    family = classification.get("class_family_by_id")
+    if not isinstance(family, list) or any(not isinstance(value, int)
+                                           for value in family):
+        report.error(label +
+                     ".tracker.classification.class_family_by_id must be an integer array")
+
+    association = _mapping(tracker.get("association", {}),
+                           label + ".tracker.association", report)
+    if association.get("low_confidence_birth_enabled", False):
+        weak_hits = association.get("low_confidence_birth_confirmation_hits")
+        if not isinstance(weak_hits, int) or weak_hits < 3:
+            report.error(label +
+                         ".tracker.association.low_confidence_birth_confirmation_hits must be >= 3")
+    for key in ("maximum_scale_ratio", "maximum_aspect_log_change"):
+        report.finite(association.get(key),
+                      label + ".tracker.association." + key, positive=True)
+    for key in ("short_minimum_margin", "selected_minimum_margin"):
+        value = association.get(key)
+        if report.finite(value, label + ".tracker.association." + key) and value < 0:
+            report.error(label + ".tracker.association." + key +
+                         " must be non-negative")
+    short_margin = association.get("short_minimum_margin")
+    selected_margin = association.get("selected_minimum_margin")
+    if isinstance(short_margin, (int, float)) and \
+            isinstance(selected_margin, (int, float)) and \
+            selected_margin < short_margin:
+        report.error(label +
+                     ".tracker.association.selected_minimum_margin must be >= short_minimum_margin")
     group_reid = _mapping(tracker.get("group_reid", {}),
                           label + ".tracker.group_reid", report)
     if group_reid.get("enabled", False):

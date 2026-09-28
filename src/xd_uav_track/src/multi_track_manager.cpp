@@ -93,6 +93,19 @@ double intersectionOverUnion(const NormalizedBox& lhs,
   return area > 1e-12 ? intersection / area : 0.0;
 }
 
+double boxArea(const NormalizedBox& box) {
+  return std::max(0.0, box.width) * std::max(0.0, box.height);
+}
+
+bool containsCenter(const NormalizedBox& box, const NormalizedBox& candidate) {
+  const double left = box.cx - 0.5 * box.width;
+  const double right = box.cx + 0.5 * box.width;
+  const double top = box.cy - 0.5 * box.height;
+  const double bottom = box.cy + 0.5 * box.height;
+  return candidate.cx >= left && candidate.cx <= right &&
+      candidate.cy >= top && candidate.cy <= bottom;
+}
+
 double normalizedCenterDistance(const NormalizedBox& lhs,
                                 const NormalizedBox& rhs) {
   const double scale = std::max(1e-6, std::hypot(lhs.width, lhs.height));
@@ -305,6 +318,8 @@ struct PreparedDetection {
   double identity_confidence{0.0};
   ros::Time identity_stamp;
   bool memory_ambiguous{false};
+  bool association_ambiguous{false};
+  bool near_rejected_track{false};
   bool world_valid{false};
   std::array<double, 3> world_position{{0.0, 0.0, 0.0}};
   std::array<double, 3> world_velocity{{0.0, 0.0, 0.0}};
@@ -318,6 +333,13 @@ struct PersistentTrack {
   int detector_track_id{-1};
   bool detector_id_stable{false};
   int class_id{-1};
+  std::map<int, double> class_evidence;
+  int pending_class_id{-1};
+  int pending_class_hits{0};
+  bool low_confidence_birth{false};
+  NormalizedBox pending_innovation_box;
+  int pending_innovation_hits{0};
+  ros::Time pending_innovation_stamp;
   double confidence{0.0};
   BoxKalmanFilter filter;
   NormalizedBox last_observation_box;
@@ -361,6 +383,8 @@ struct GroupPrototype {
 struct MemoryIdentity {
   int public_id{-1};
   int class_id{-1};
+  std::map<int, double> class_evidence;
+  bool low_confidence_birth{false};
   int group_id{-1};
   NormalizedBox last_box;
   std::vector<std::vector<float>> appearance_gallery;
@@ -596,6 +620,9 @@ struct MultiTrackManager::Impl {
         clampValue(config.high_confidence_threshold, 0.0, 1.0);
     config.low_confidence_threshold = clampValue(
         config.low_confidence_threshold, 0.0, config.high_confidence_threshold);
+    config.low_confidence_birth_confirmation_hits = std::max(
+        config.confirmation_hits + 1,
+        config.low_confidence_birth_confirmation_hits);
     config.appearance_gallery_size = std::max(1, config.appearance_gallery_size);
     config.appearance_update_minimum_confidence = clampValue(
         config.appearance_update_minimum_confidence, 0.0, 1.0);
@@ -607,6 +634,15 @@ struct MultiTrackManager::Impl {
         config.observation_centric_velocity_blend, 0.0, 1.0);
     config.association_mahalanobis_gate =
         std::max(1e-3, config.association_mahalanobis_gate);
+    config.association_maximum_scale_ratio = std::max(
+        1.01, config.association_maximum_scale_ratio);
+    config.association_maximum_aspect_log_change = std::max(
+        0.01, config.association_maximum_aspect_log_change);
+    config.short_association_minimum_margin = std::max(
+        0.0, config.short_association_minimum_margin);
+    config.selected_association_minimum_margin = std::max(
+        config.short_association_minimum_margin,
+        config.selected_association_minimum_margin);
     config.metric_innovation_distance_m =
         std::max(0.0, config.metric_innovation_distance_m);
     config.group_appearance_minimum_cosine = clampValue(
@@ -645,6 +681,124 @@ struct MultiTrackManager::Impl {
         1.0, config.world_innovation_gate_sigma);
     config.world_process_noise_mps = std::max(
         0.0, config.world_process_noise_mps);
+    config.class_smoothing_alpha = clampValue(
+        config.class_smoothing_alpha, 0.01, 1.0);
+    config.class_switch_margin = std::max(0.0, config.class_switch_margin);
+    config.class_switch_confirmations = std::max(
+        1, config.class_switch_confirmations);
+    for (int& family : config.class_family_by_id) {
+      if (family < 0) family = -1;
+    }
+  }
+
+  int classFamily(const int class_id) const {
+    if (class_id < 0) return class_id;
+    const std::size_t index = static_cast<std::size_t>(class_id);
+    if (index < config.class_family_by_id.size() &&
+        config.class_family_by_id[index] >= 0) {
+      return config.class_family_by_id[index];
+    }
+    return class_id;
+  }
+
+  bool classCompatible(const int lhs, const int rhs) const {
+    return lhs < 0 || rhs < 0 || classFamily(lhs) == classFamily(rhs);
+  }
+
+  bool shapeInnovationCompatible(const NormalizedBox& predicted,
+                                 const NormalizedBox& observed,
+                                 const double unseen_sec) const {
+    // Scale changes during a long coast can be real. The strict gate protects
+    // continuous observations from a one-frame full-image/partial-box YOLO
+    // failure without preventing a later, separately gated re-acquisition.
+    if (unseen_sec > config.short_occlusion_sec) return true;
+    const double predicted_area = std::max(
+        1e-8, predicted.width * predicted.height);
+    const double observed_area = std::max(
+        1e-8, observed.width * observed.height);
+    const double area_ratio = std::max(
+        predicted_area / observed_area, observed_area / predicted_area);
+    if (area_ratio > config.association_maximum_scale_ratio) return false;
+    return aspectDistance(predicted, observed) <=
+        config.association_maximum_aspect_log_change;
+  }
+
+  bool repeatedInnovationRecovery(PersistentTrack* track,
+                                  const PreparedDetection& detection,
+                                  const ros::Time& stamp) const {
+    if (track == nullptr ||
+        detection.message.confidence < config.high_confidence_threshold) {
+      return false;
+    }
+    const bool fresh = track->pending_innovation_hits > 0 &&
+        !stamp.isZero() && !track->pending_innovation_stamp.isZero() &&
+        stamp > track->pending_innovation_stamp &&
+        (stamp - track->pending_innovation_stamp).toSec() <= 0.50;
+    const bool consistent = fresh &&
+        normalizedCenterDistance(
+            track->pending_innovation_box, detection.box) <= 0.50 &&
+        aspectDistance(track->pending_innovation_box, detection.box) <= 0.35;
+    track->pending_innovation_hits = consistent
+        ? track->pending_innovation_hits + 1 : 1;
+    track->pending_innovation_box = detection.box;
+    track->pending_innovation_stamp = stamp;
+    return track->pending_innovation_hits >= 2;
+  }
+
+  void initializeClass(PersistentTrack* track, const int class_id,
+                       const double confidence) const {
+    if (track == nullptr) return;
+    track->class_id = class_id;
+    track->class_evidence.clear();
+    if (class_id >= 0) {
+      track->class_evidence[class_id] = clampValue(confidence, 0.0, 1.0);
+    }
+    track->pending_class_id = -1;
+    track->pending_class_hits = 0;
+  }
+
+  void updateClass(PersistentTrack* track, const int observed_class,
+                   const double confidence) const {
+    if (track == nullptr || observed_class < 0) return;
+    if (!config.class_temporal_smoothing_enabled || track->class_id < 0) {
+      initializeClass(track, observed_class, confidence);
+      return;
+    }
+    const double alpha = config.class_smoothing_alpha;
+    for (auto& entry : track->class_evidence) {
+      entry.second *= 1.0 - alpha;
+    }
+    track->class_evidence[observed_class] +=
+        alpha * clampValue(confidence, 0.0, 1.0);
+    auto best = std::max_element(
+        track->class_evidence.begin(), track->class_evidence.end(),
+        [](const auto& lhs, const auto& rhs) {
+          return lhs.second < rhs.second;
+        });
+    if (best == track->class_evidence.end() || best->first == track->class_id) {
+      track->pending_class_id = -1;
+      track->pending_class_hits = 0;
+      return;
+    }
+    const auto current = track->class_evidence.find(track->class_id);
+    const double current_score = current == track->class_evidence.end()
+        ? 0.0 : current->second;
+    if (best->second < current_score + config.class_switch_margin) {
+      track->pending_class_id = -1;
+      track->pending_class_hits = 0;
+      return;
+    }
+    if (track->pending_class_id == best->first) {
+      ++track->pending_class_hits;
+    } else {
+      track->pending_class_id = best->first;
+      track->pending_class_hits = 1;
+    }
+    if (track->pending_class_hits >= config.class_switch_confirmations) {
+      track->class_id = best->first;
+      track->pending_class_id = -1;
+      track->pending_class_hits = 0;
+    }
   }
 
   int allocateId(const PreparedDetection& detection) {
@@ -767,8 +921,7 @@ struct MultiTrackManager::Impl {
   bool groupCompatible(const GroupPrototype& group,
                        const PreparedDetection& detection,
                        const std::string& source) const {
-    if (group.class_id >= 0 && detection.message.class_id >= 0 &&
-        group.class_id != detection.message.class_id) return false;
+    if (!classCompatible(group.class_id, detection.message.class_id)) return false;
     if (config.group_source_strict && !group.image_source.empty() &&
         !source.empty() && group.image_source != source) return false;
     const double log_aspect = std::log(detection.box.width /
@@ -860,12 +1013,17 @@ struct MultiTrackManager::Impl {
 
   void remember(PersistentTrack* track) {
     if (track == nullptr) return;
+    const int required_confirmation_hits = track->low_confidence_birth
+        ? config.low_confidence_birth_confirmation_hits
+        : config.confirmation_hits;
     if (!config.long_term_memory_enabled ||
         track->identity_ambiguous ||
-        track->hits < static_cast<std::uint32_t>(config.confirmation_hits)) return;
+        track->hits < static_cast<std::uint32_t>(required_confirmation_hits)) return;
     MemoryIdentity memory;
     memory.public_id = track->public_id;
     memory.class_id = track->class_id;
+    memory.class_evidence = std::move(track->class_evidence);
+    memory.low_confidence_birth = track->low_confidence_birth;
     memory.group_id = track->group_id;
     memory.last_box = track->filter.box();
     memory.appearance_gallery = std::move(track->appearance_gallery);
@@ -1047,8 +1205,8 @@ ManagedDetectionFrame MultiTrackManager::update(
       if (used_hints.count(i) != 0 || hint.identity_label.empty() ||
           !std::isfinite(hint.confidence) ||
           hint.confidence < impl_->config.identity_hint_minimum_confidence ||
-          (hint.class_id >= 0 && detection.message.class_id >= 0 &&
-           hint.class_id != detection.message.class_id)) continue;
+          !impl_->classCompatible(
+              hint.class_id, detection.message.class_id)) continue;
       const double overlap = hintIntersectionOverUnion(hint, detection.box);
       if (overlap >= best_overlap) {
         best_overlap = overlap;
@@ -1096,7 +1254,7 @@ ManagedDetectionFrame MultiTrackManager::update(
     }
   }
   for (std::size_t index = 0; index < prepared.size(); ++index) {
-    const auto& detection = prepared[index];
+    auto& detection = prepared[index];
     if (!detection.message.track_id_is_stable || detection.message.track_id < 0) continue;
     const auto stable = stable_detector_index.find(detection.message.track_id);
     if (stable == stable_detector_index.end() ||
@@ -1104,9 +1262,22 @@ ManagedDetectionFrame MultiTrackManager::update(
     const auto track_it = impl_->tracks.find(stable->second);
     if (track_it == impl_->tracks.end()) continue;
     const auto& track = track_it->second;
-    if ((track.class_id >= 0 && detection.message.class_id >= 0 &&
-         track.class_id != detection.message.class_id) ||
+    if (!impl_->classCompatible(
+            track.class_id, detection.message.class_id) ||
         impl_->hardLabelConflict(track.stable_identity_label, detection)) continue;
+    const NormalizedBox predicted = track.filter.box();
+    const double distance = normalizedCenterDistance(predicted, detection.box);
+    const double unseen_sec = !frame_stamp.isZero() &&
+        !track.last_detection_stamp.isZero() && frame_stamp >= track.last_detection_stamp
+        ? (frame_stamp - track.last_detection_stamp).toSec() : 0.0;
+    const double mahalanobis = track.filter.mahalanobisDistance(
+        detection.box, clampValue(detection.message.confidence, 0.0, 1.0));
+    if (!impl_->shapeInnovationCompatible(predicted, detection.box, unseen_sec) ||
+        mahalanobis > impl_->config.association_mahalanobis_gate) {
+      if (distance <= impl_->config.association_center_distance)
+        detection.near_rejected_track = true;
+      continue;
+    }
     assigned_ids[index] = stable->second;
     assigned_methods[index] = "detector_id";
     used_tracks.insert(stable->second);
@@ -1117,8 +1288,8 @@ ManagedDetectionFrame MultiTrackManager::update(
   // low-confidence detections may only sustain an unmatched existing track.
   const auto associate = [&](const std::vector<std::size_t>& detection_indices) {
     std::vector<int> track_ids;
-    std::vector<const PersistentTrack*> track_refs;
-    for (const auto& entry : impl_->tracks) {
+    std::vector<PersistentTrack*> track_refs;
+    for (auto& entry : impl_->tracks) {
       if (used_tracks.count(entry.first) == 0 &&
           !entry.second.identity_ambiguous) {
         track_ids.push_back(entry.first);
@@ -1137,23 +1308,42 @@ ManagedDetectionFrame MultiTrackManager::update(
         detection_indices.size(), std::vector<std::uint8_t>(track_ids.size(), 0));
     std::vector<std::vector<double>> group_costs(
         detection_indices.size(), std::vector<double>(track_ids.size(), 1.0));
+    std::vector<std::vector<bool>> innovation_recoveries(
+        detection_indices.size(), std::vector<bool>(track_ids.size(), false));
     for (std::size_t row = 0; row < detection_indices.size(); ++row) {
-      const auto& detection = prepared[detection_indices[row]];
+      auto& detection = prepared[detection_indices[row]];
       for (std::size_t column = 0; column < track_ids.size(); ++column) {
-        const auto& track = *track_refs[column];
-        if (track.class_id >= 0 && detection.message.class_id >= 0 &&
-            track.class_id != detection.message.class_id) continue;
+        auto& track = *track_refs[column];
+        if (!impl_->classCompatible(
+                track.class_id, detection.message.class_id)) continue;
         if (impl_->hardLabelConflict(track.stable_identity_label, detection)) continue;
         const NormalizedBox predicted = track.filter.box();
         const double overlap = intersectionOverUnion(predicted, detection.box);
         const double distance = normalizedCenterDistance(predicted, detection.box);
         const double mahalanobis = track.filter.mahalanobisDistance(
             detection.box, clampValue(detection.message.confidence, 0.0, 1.0));
-        if ((overlap < impl_->config.association_iou_threshold &&
-             distance > impl_->config.association_center_distance) ||
-            mahalanobis > impl_->config.association_mahalanobis_gate) {
+        const double unseen_sec = !frame_stamp.isZero() &&
+            !track.last_detection_stamp.isZero() && frame_stamp >= track.last_detection_stamp
+            ? (frame_stamp - track.last_detection_stamp).toSec() : 0.0;
+        const bool spatially_near = overlap >=
+            impl_->config.association_iou_threshold ||
+            distance <= impl_->config.association_center_distance;
+        const bool shape_compatible = impl_->shapeInnovationCompatible(
+            predicted, detection.box, unseen_sec);
+        const bool innovation_valid =
+            mahalanobis <= impl_->config.association_mahalanobis_gate;
+        bool innovation_recovery = false;
+        if (spatially_near && shape_compatible && !innovation_valid) {
+          innovation_recovery = impl_->repeatedInnovationRecovery(
+              &track, detection, frame_stamp);
+        }
+        if (!spatially_near || !shape_compatible ||
+            (!innovation_valid && !innovation_recovery)) {
+          if (distance <= impl_->config.association_center_distance)
+            detection.near_rejected_track = true;
           continue;
         }
+        innovation_recoveries[row][column] = innovation_recovery;
         // Metric observations are an additional same-camera innovation gate.
         // Cross-camera/world consistency is deliberately evaluated in the
         // controller's world-state filter, where vehicle pose and timestamps
@@ -1206,10 +1396,6 @@ ManagedDetectionFrame MultiTrackManager::update(
             raw_appearance_term + (1.0 - appearance_reliability) * 0.5;
         const double innovation = std::min(1.0, mahalanobis /
             impl_->config.association_mahalanobis_gate);
-        const double unseen_sec = !frame_stamp.isZero() &&
-            !track.last_detection_stamp.isZero() &&
-            frame_stamp >= track.last_detection_stamp
-            ? (frame_stamp - track.last_detection_stamp).toSec() : 0.0;
         double world_cost = 0.5;
         const bool have_world_pair = track.world_valid && detection.world_valid;
         if (have_world_pair) {
@@ -1259,8 +1445,8 @@ ManagedDetectionFrame MultiTrackManager::update(
                                world_weight * world_cost;
         }
         int feature_matches = 0;
-        if (track.class_id < 0 || detection.message.class_id < 0 ||
-            track.class_id == detection.message.class_id) ++feature_matches;
+        if (impl_->classCompatible(
+                track.class_id, detection.message.class_id)) ++feature_matches;
         const double shape_distance = aspectDistance(predicted, detection.box);
         if (shape_distance <= impl_->config.group_aspect_log_gate)
           ++feature_matches;
@@ -1333,6 +1519,52 @@ ManagedDetectionFrame MultiTrackManager::update(
         }
       }
     }
+    // A single detector box covering the predicted centres of two confirmed
+    // tracks is a merged visual observation, not evidence that one vehicle
+    // teleported onto the other.  Do not update either Kalman state from it.
+    // A trusted physical label is the only exception because it is explicit
+    // identity evidence rather than an appearance guess.
+    if (impl_->config.merged_observation_guard_enabled) {
+      const int required_tracks = std::max(
+          2, impl_->config.merged_observation_minimum_tracks);
+      const double minimum_area_ratio = std::max(
+          1.0, impl_->config.merged_observation_minimum_area_ratio);
+      const double minimum_overlap = clampValue(
+          impl_->config.merged_observation_minimum_track_iou, 0.0, 1.0);
+      for (std::size_t row = 0; row < costs.size(); ++row) {
+        auto& detection = prepared[detection_indices[row]];
+        std::vector<std::size_t> covered_tracks;
+        int exact_label_matches = 0;
+        for (std::size_t column = 0; column < track_ids.size(); ++column) {
+          if (costs[row][column] >= kInvalidCost) continue;
+          const auto& track = *track_refs[column];
+          const NormalizedBox predicted = track.filter.box();
+          const double predicted_area = boxArea(predicted);
+          if (predicted_area <= 1e-9 ||
+              boxArea(detection.box) < minimum_area_ratio * predicted_area ||
+              intersectionOverUnion(predicted, detection.box) < minimum_overlap ||
+              !containsCenter(detection.box, predicted)) {
+            continue;
+          }
+          covered_tracks.push_back(column);
+          if (!detection.identity_label.empty() &&
+              detection.identity_confidence >=
+                  impl_->config.identity_hint_hard_confidence &&
+              track.stable_identity_label == detection.identity_label) {
+            ++exact_label_matches;
+          }
+        }
+        if (static_cast<int>(covered_tracks.size()) < required_tracks ||
+            exact_label_matches == 1) {
+          continue;
+        }
+        detection.association_ambiguous = true;
+        for (const std::size_t column : covered_tracks) {
+          costs[row][column] = kInvalidCost;
+          track_refs[column]->association = "merged_observation_guard";
+        }
+      }
+    }
     const auto assignment = sparseHungarianAssignment(
         costs, kUnmatchedCost, kInvalidCost);
     for (std::size_t row = 0; row < assignment.size(); ++row) {
@@ -1343,32 +1575,41 @@ ManagedDetectionFrame MultiTrackManager::update(
       const double unseen_sec = !frame_stamp.isZero() &&
           !track.last_detection_stamp.isZero() && frame_stamp >= track.last_detection_stamp
           ? (frame_stamp - track.last_detection_stamp).toSec() : 0.0;
-      if (unseen_sec > impl_->config.short_occlusion_sec) {
-        double best = std::numeric_limits<double>::infinity();
-        double second = std::numeric_limits<double>::infinity();
-        std::size_t alternative_count = 0;
-        for (double value : costs[row]) {
-          if (value >= kUnmatchedCost) continue;
-          ++alternative_count;
-          if (value < best) {
-            second = best;
-            best = value;
-          } else if (value < second) {
-            second = value;
-          }
+      double best = std::numeric_limits<double>::infinity();
+      double second = std::numeric_limits<double>::infinity();
+      std::size_t alternative_count = 0;
+      for (double value : costs[row]) {
+        if (value >= kUnmatchedCost) continue;
+        ++alternative_count;
+        if (value < best) {
+          second = best;
+          best = value;
+        } else if (value < second) {
+          second = value;
         }
-        if (alternative_count > 0 && costs[row][column] > best + 1e-9) {
-          continue;
-        }
-        if (alternative_count > 1 && second - best <
-                impl_->config.long_association_minimum_margin) {
-          continue;
-        }
+      }
+      if (alternative_count > 0 && costs[row][column] > best + 1e-9) {
+        prepared[detection_indices[row]].association_ambiguous = true;
+        continue;
+      }
+      double required_margin = unseen_sec > impl_->config.short_occlusion_sec
+          ? impl_->config.long_association_minimum_margin
+          : impl_->config.short_association_minimum_margin;
+      if (track_ids[static_cast<std::size_t>(column)] ==
+          impl_->selected_track_id) {
+        required_margin = std::max(
+            required_margin, impl_->config.selected_association_minimum_margin);
+      }
+      if (alternative_count > 1 && second - best < required_margin) {
+        prepared[detection_indices[row]].association_ambiguous = true;
+        continue;
       }
       const std::size_t detection_index = detection_indices[row];
       const int track_id = track_ids[static_cast<std::size_t>(column)];
       assigned_ids[detection_index] = track_id;
-      assigned_methods[detection_index] = associationName(methods[row][column]);
+      assigned_methods[detection_index] =
+          innovation_recoveries[row][static_cast<std::size_t>(column)]
+          ? "innovation_recovery" : associationName(methods[row][column]);
       used_tracks.insert(track_id);
     }
   };
@@ -1415,8 +1656,8 @@ ManagedDetectionFrame MultiTrackManager::update(
       const auto& detection = prepared[unmatched_high[row]];
       for (std::size_t column = 0; column < memory_ids.size(); ++column) {
         const MemoryIdentity& memory = *memory_refs[column];
-        if (memory.class_id >= 0 && detection.message.class_id >= 0 &&
-            memory.class_id != detection.message.class_id) continue;
+        if (!impl_->classCompatible(
+                memory.class_id, detection.message.class_id)) continue;
         if (impl_->hardLabelConflict(memory.stable_identity_label, detection)) continue;
         const bool label_matches = !memory.stable_identity_label.empty() &&
             memory.stable_identity_label == detection.identity_label &&
@@ -1546,7 +1787,12 @@ ManagedDetectionFrame MultiTrackManager::update(
       const std::size_t detection_index = unmatched_high[row];
       PersistentTrack restored;
       restored.public_id = memory.public_id;
-      restored.class_id = memory.class_id;
+      impl_->initializeClass(
+          &restored, memory.class_id, memory.confidence);
+      if (!memory.class_evidence.empty()) {
+        restored.class_evidence = std::move(memory.class_evidence);
+      }
+      restored.low_confidence_birth = memory.low_confidence_birth;
       restored.confidence = memory.confidence;
       restored.filter.initialize(prepared[detection_index].box, impl_->config);
       restored.latest_detection = prepared[detection_index].message;
@@ -1573,8 +1819,8 @@ ManagedDetectionFrame MultiTrackManager::update(
       // to the recovered public track.
       for (auto pending = impl_->tracks.begin(); pending != impl_->tracks.end();) {
         if (pending->second.identity_ambiguous &&
-            (pending->second.class_id < 0 || restored.class_id < 0 ||
-             pending->second.class_id == restored.class_id) &&
+            impl_->classCompatible(
+                pending->second.class_id, restored.class_id) &&
             (intersectionOverUnion(pending->second.filter.box(),
                                    prepared[detection_index].box) >=
                  impl_->config.association_iou_threshold ||
@@ -1620,8 +1866,8 @@ ManagedDetectionFrame MultiTrackManager::update(
         const auto& detection = prepared[ambiguous_detections[row]];
         for (std::size_t column = 0; column < ambiguous_tracks.size(); ++column) {
           const auto& track = impl_->tracks.at(ambiguous_tracks[column]);
-          if (track.class_id >= 0 && detection.message.class_id >= 0 &&
-              track.class_id != detection.message.class_id) continue;
+          if (!impl_->classCompatible(
+                  track.class_id, detection.message.class_id)) continue;
           const NormalizedBox predicted = track.filter.box();
           const double overlap = intersectionOverUnion(predicted, detection.box);
           const double distance = normalizedCenterDistance(predicted, detection.box);
@@ -1647,10 +1893,38 @@ ManagedDetectionFrame MultiTrackManager::update(
 
   // Create bounded new tracks for the unmatched detections.
   for (std::size_t index = 0; index < prepared.size(); ++index) {
+    const double confidence = prepared[index].message.confidence;
+    const bool high_confidence_birth = confidence >=
+        std::max(impl_->config.minimum_new_track_confidence,
+                 impl_->config.high_confidence_threshold);
+    const bool low_confidence_birth =
+        impl_->config.low_confidence_birth_enabled &&
+        confidence >= std::max(impl_->config.minimum_new_track_confidence,
+                               impl_->config.low_confidence_threshold);
+    bool weak_duplicate_of_existing_track = false;
+    if (low_confidence_birth && !high_confidence_birth) {
+      for (const auto& entry : impl_->tracks) {
+        if (!impl_->classCompatible(
+                entry.second.class_id, prepared[index].message.class_id)) {
+          continue;
+        }
+        const NormalizedBox predicted = entry.second.filter.box();
+        const double overlap = intersectionOverUnion(
+            predicted, prepared[index].box);
+        const double distance = normalizedCenterDistance(
+            predicted, prepared[index].box);
+        if (overlap >= 0.5 * impl_->config.association_iou_threshold ||
+            distance <= impl_->config.association_center_distance) {
+          weak_duplicate_of_existing_track = true;
+          break;
+        }
+      }
+    }
     if (assigned_ids[index] >= 0 ||
-        prepared[index].message.confidence <
-            std::max(impl_->config.minimum_new_track_confidence,
-                     impl_->config.high_confidence_threshold) ||
+        (!high_confidence_birth && !low_confidence_birth) ||
+        weak_duplicate_of_existing_track ||
+        prepared[index].association_ambiguous ||
+        prepared[index].near_rejected_track ||
         impl_->tracks.size() >=
             static_cast<std::size_t>(impl_->config.maximum_tracks)) {
       continue;
@@ -1667,11 +1941,14 @@ ManagedDetectionFrame MultiTrackManager::update(
     } else if (!track.detector_id_stable) {
       track.detector_track_id = prepared[index].message.track_id;
     }
-    track.class_id = prepared[index].message.class_id;
+    impl_->initializeClass(&track, prepared[index].message.class_id,
+                           prepared[index].message.confidence);
+    track.low_confidence_birth = !high_confidence_birth;
     track.confidence = clampValue(prepared[index].message.confidence, 0.0, 1.0);
     track.filter.initialize(prepared[index].box, impl_->config);
     track.last_observation_box = prepared[index].box;
     track.latest_detection = prepared[index].message;
+    track.latest_detection.class_id = track.class_id;
     track.latest_header = detections.header;
     track.appearance = prepared[index].message.appearance_embedding;
     impl_->updateAppearance(&track, track.appearance);
@@ -1709,9 +1986,16 @@ ManagedDetectionFrame MultiTrackManager::update(
     const bool freshly_created = assigned_methods[index] == "new" ||
         (assigned_methods[index] == "identity_ambiguous" && track.age == 1);
     if (!freshly_created && !freshly_restored) {
-      track.filter.update(prepared[index].box,
-                          clampValue(prepared[index].message.confidence, 0.0, 1.0));
-      if (impl_->config.observation_centric_reupdate_enabled &&
+      const bool innovation_recovery =
+          assigned_methods[index] == "innovation_recovery";
+      if (innovation_recovery) {
+        track.filter.initialize(prepared[index].box, impl_->config);
+      } else {
+        track.filter.update(prepared[index].box,
+                            clampValue(prepared[index].message.confidence, 0.0, 1.0));
+      }
+      if (!innovation_recovery &&
+          impl_->config.observation_centric_reupdate_enabled &&
           !frame_stamp.isZero() && !track.last_detection_stamp.isZero() &&
           frame_stamp > track.last_detection_stamp) {
         track.filter.observationCentricReupdate(track.last_observation_box,
@@ -1720,6 +2004,8 @@ ManagedDetectionFrame MultiTrackManager::update(
       }
       ++track.hits;
     }
+    track.pending_innovation_hits = 0;
+    track.pending_innovation_stamp = ros::Time();
     bool reacquisition_confirmed = false;
     if (!freshly_restored && track.reacquisition_hits_remaining > 0) {
       --track.reacquisition_hits_remaining;
@@ -1733,7 +2019,12 @@ ManagedDetectionFrame MultiTrackManager::update(
         !freshly_restored ? "reid_confirming" : assigned_methods[index];
     track.confidence = 0.75 * clampValue(prepared[index].message.confidence, 0.0, 1.0) +
                        0.25 * track.confidence;
-    track.class_id = prepared[index].message.class_id;
+    if (prepared[index].message.confidence >=
+        impl_->config.high_confidence_threshold) {
+      track.low_confidence_birth = false;
+    }
+    impl_->updateClass(&track, prepared[index].message.class_id,
+                       prepared[index].message.confidence);
     if (prepared[index].message.track_id_is_stable &&
         prepared[index].message.track_id >= 0) {
       track.detector_track_id = prepared[index].message.track_id;
@@ -1753,6 +2044,7 @@ ManagedDetectionFrame MultiTrackManager::update(
     impl_->updateWorld(&track, prepared[index]);
     impl_->updateGroup(track, prepared[index], frame_stamp);
     track.latest_detection = prepared[index].message;
+    track.latest_detection.class_id = track.class_id;
     track.latest_detection.track_id = assigned_id;
     track.latest_detection.track_id_is_stable = true;
     track.latest_header = detections.header;
@@ -1760,6 +2052,19 @@ ManagedDetectionFrame MultiTrackManager::update(
     track.last_stamp = frame_stamp;
     track.last_detection_stamp = frame_stamp;
     output.candidates.candidates.push_back(track.latest_detection);
+    if (prepared[index].world_valid) {
+      ManagedTrackWorldObservation managed_world;
+      managed_world.track_id = assigned_id;
+      managed_world.observation.candidate_index =
+          output.candidates.candidates.size() - 1;
+      managed_world.observation.position = prepared[index].world_position;
+      managed_world.observation.velocity = prepared[index].world_velocity;
+      managed_world.observation.velocity_valid =
+          prepared[index].world_velocity_valid;
+      managed_world.observation.sigma_m = prepared[index].world_sigma_m;
+      managed_world.observation.capture_stamp = prepared[index].world_stamp;
+      output.world_observations.push_back(std::move(managed_world));
+    }
     ++impl_->stats.accepted_detections;
   }
 
@@ -1819,8 +2124,11 @@ ManagedDetectionFrame MultiTrackManager::update(
     const bool occluded = impl_->config.occlusion_timeout_sec >= 0.0
         ? unseen_sec <= impl_->config.occlusion_timeout_sec
         : track.missing <= static_cast<std::uint32_t>(impl_->config.occlusion_frames);
+    const int required_confirmation_hits = track.low_confidence_birth
+        ? impl_->config.low_confidence_birth_confirmation_hits
+        : impl_->config.confirmation_hits;
     if (track.identity_ambiguous || track.reacquisition_hits_remaining > 0 ||
-        track.hits < static_cast<std::uint32_t>(impl_->config.confirmation_hits)) {
+        track.hits < static_cast<std::uint32_t>(required_confirmation_hits)) {
       state.lifecycle_state = "tentative";
     } else if (track.missing == 0) {
       state.lifecycle_state = "confirmed";
