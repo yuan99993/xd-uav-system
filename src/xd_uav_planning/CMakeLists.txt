@@ -7,7 +7,6 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   message_generation
   mavros_msgs
-  mrs_msgs
   nav_msgs
   rospy
   sensor_msgs
