@@ -1,5 +1,41 @@
 # xd_uav_track
 
+车辆识别/跟踪统一入口是
+[`vision_tracking_stack.launch`](launch/vision_tracking_stack.launch)。它默认使用
+train7 TensorRT FP16、单实例双相机检测、预测 ROI、像素辅助、车辆 ReID 和
+tracker 统一 ID 管理；不启动 Gazebo 或 PX4。它默认订阅固定相机与云台两路，
+可先于设备驱动启动，任一路图像上线即自动进入识别/跟踪，不会额外加载第二份模型。
+设备驱动本身并不会凭空启动此 launch；部署时应将它加入无人机的 bringup，且每机只启动一次。
+目前工作区没有固定相机/云台的设备级图像发布 launch。将来接入驱动后，
+由统一的设备 bringup 包含一次本 launch，再包含实际驱动 launch；不要让两路驱动各自
+启动一套识别模型。示例（设备 launch 路径换成真实驱动）：
+
+```xml
+<include file="$(find xd_uav_track)/launch/vision_tracking_stack.launch">
+  <arg name="UAV_NAME" value="uav1"/>
+</include>
+<!-- 此处包含固定相机及/或云台的真实设备驱动 launch -->
+```
+
+识别和多目标公开 ID 会随图像自动运行；飞行跟随/控制仍需明确选择并启动 tracker，
+不会仅因相机上线而自动解锁或下发飞行指令。
+只识别时传
+`enable_tracking:=false`，仍从每路 `detect/input/*/detections_2d` 输出检测。
+
+```bash
+roslaunch xd_uav_track vision_tracking_stack.launch UAV_NAME:=uav1
+roslaunch xd_uav_track vision_tracking_stack.launch UAV_NAME:=uav1 enable_tracking:=false
+```
+
+以上两条是互斥的启动方式，不要同时运行。真实设备还需把各相机图像、内参、
+TF 和云台状态话题映射到该 launch 的参数；没有标定不能声称已完成 metric 锁定。
+固定翼传 `vehicle_type:=fixedwing`；不使用云台时传
+`enable_sar_gimbal:=false enable_gimbal_lrf:=false`。云台/LRF 的测距标定默认
+`calibrated: false`，未标定时只允许安全降级，不把背景测距当目标距离。旧四种组合 launch 是
+同一入口的兼容别名，不再运行上游 SmartTracker。Gazebo 演示使用
+[`moving_uav_vehicle_search_demo.launch`](launch/moving_uav_vehicle_search_demo.launch)，
+其中的场景高度和运动模型不能直接用于实机。
+
 `xd_uav_track` 把 PixEagle/现有 ROS 包中与“选定目标框跟随”直接相关的 Tracker 和
 Follower 能力合并到一个 ROS 包中：
 

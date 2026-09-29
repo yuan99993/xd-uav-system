@@ -1,9 +1,21 @@
 # sar_yolo_detector
 
-面向多无人机应急搜救的 ROS1 感知与任务网关包。**主要入口是部署在侦察机上的
-PixEagle SmartTracker**：相机图像经 YOLO 识别和稳定跟踪后，目标连同可验证的方位或
-世界坐标被转换为规划器可消费的任务候选。规划器完成全局去重、定位融合、分配与航线规划后，再通过每架工作机
-自己的任务网关下发任务。
+当前车辆识别的正式入口由 `xd_uav_track/launch/vision_tracking_stack.launch`
+统一编排。默认 train7 TensorRT FP16；固定相机和云台共享一份 YOLO，
+目标身份、遮挡重捕获和锁定由 `xd_uav_track` 负责。
+将统一入口加入无人机 bringup 后，任一路相机上线都会自动处理；仅启动一个
+外部相机驱动不会反向启动 ROS launch，因此不要分别为两路重复运行检测入口。
+`enable_tracking:=false` 可仅运行识别。单相机兼容入口
+[`detection_only.launch`](launch/detection_only.launch) 也使用同一检测实现，
+但它本身不会产生稳定目标 ID。旧 COCO/救援/SmartTracker 启动入口已移至
+[`archive/launch`](archive/launch)，不再是生产入口。
+
+以下原有搜救/任务网关说明属于历史兼容资料，不代表当前车辆任务的默认部署合同。
+
+## 已归档的搜救功能说明
+
+相机图像经旧 YOLO/SmartTracker 后，目标可转换为规划器可消费的任务候选。
+规划器完成全局去重、定位融合、分配与航线规划后，再通过每架工作机自己的任务网关下发任务。
 
 包内按 `scout`（侦察感知上行）和 `worker`（规划任务下行）隔离职责。SmartTracker
 及任务候选节点不发布飞控命令；工作机网关只把通过身份、地理参考、鉴权、能力和
@@ -63,7 +75,7 @@ engine 后端；不能在控制电脑上静默换模型。
 ## 主要飞机识别链与兼容 profile
 
 飞机识别不通过下表的旧 `rescue_profile.launch` 切换，而由
-[`scout_perception.launch`](launch/scout_perception.launch) 作为侦察机主要入口。
+[`scout_perception.launch`](archive/launch/scout_perception.launch) 曾作为侦察机主要入口。
 该入口加载 `aircraft_coco` profile：SmartTracker 可以跟踪和显示模型识别的所有
 COCO 类别，但任务生成器只允许类别 4 `airplane` 进入规划接口。
 

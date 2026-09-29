@@ -4,7 +4,7 @@
   <arg name="flood_regions_topic" default="sar_yolo_detector/floodnet/regions" />
   <arg name="mission_id" default="mission_unset" />
   <arg name="uav_id" default="uav_01" />
-  <include file="$(find sar_yolo_detector)/launch/rescue_profile.launch">
+  <include file="$(find sar_yolo_detector)/archive/launch/rescue_profile.launch">
     <arg name="profile" value="floodnet" />
     <arg name="flood_mask_topic" value="$(arg flood_mask_topic)" />
     <arg name="flood_regions_topic" value="$(arg flood_regions_topic)" />

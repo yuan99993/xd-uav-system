@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived rescue profile; retained for reference only. -->
   <!-- Include once per aircraft. Relative topics are isolated under uav_id. -->
   <arg name="profile" default="thermal_uav" />
   <arg name="mission_id" default="mission_unset" />
@@ -71,7 +72,7 @@
 
   <group ns="$(arg uav_id)">
     <group if="$(eval arg('profile') == 'wildfire_ir')">
-      <include file="$(find sar_yolo_detector)/launch/detector.launch">
+      <include file="$(find sar_yolo_detector)/archive/launch/detector.launch">
         <arg name="config" value="$(find sar_yolo_detector)/config/profile_wildfire_ir.yaml" />
         <arg name="model_path" value="$(arg model_path)" />
         <arg name="engine_path" value="$(eval arg('engine_path') if arg('engine_path') else arg('wildfire_engine_path'))" />
@@ -84,7 +85,7 @@
         <arg name="calibration_version" value="$(arg calibration_version)" />
         <arg name="model_sha256" value="$(arg model_sha256)" />
       </include>
-      <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+      <include file="$(find sar_yolo_detector)/archive/launch/task_point_generator.launch">
         <arg name="config" value="$(find sar_yolo_detector)/config/task_profile_wildfire_ir.yaml" />
         <arg name="input_detections_topic" value="sar_yolo_detector/wildfire_ir/detections" />
         <arg name="camera_info_topic" value="$(arg ir_camera_info_topic)" />
@@ -106,7 +107,7 @@
     </group>
 
     <group if="$(eval arg('profile') == 'wildfire_ir_fire_smoke')">
-      <include file="$(find sar_yolo_detector)/launch/detector.launch">
+      <include file="$(find sar_yolo_detector)/archive/launch/detector.launch">
         <arg name="config" value="$(find sar_yolo_detector)/config/profile_wildfire_ir_fire_smoke.yaml" />
         <arg name="model_path" value="$(arg model_path)" />
         <arg name="engine_path" value="$(eval arg('engine_path') if arg('engine_path') else arg('wildfire_fire_smoke_engine_path'))" />
@@ -119,7 +120,7 @@
         <arg name="calibration_version" value="$(arg calibration_version)" />
         <arg name="model_sha256" value="$(arg model_sha256)" />
       </include>
-      <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+      <include file="$(find sar_yolo_detector)/archive/launch/task_point_generator.launch">
         <arg name="config" value="$(find sar_yolo_detector)/config/task_profile_wildfire_ir_fire_smoke.yaml" />
         <arg name="input_detections_topic" value="sar_yolo_detector/wildfire_ir_fire_smoke/detections" />
         <arg name="camera_info_topic" value="$(arg ir_camera_info_topic)" />
@@ -140,7 +141,7 @@
     </group>
 
     <group if="$(eval arg('profile') == 'maritime_person')">
-      <include file="$(find sar_yolo_detector)/launch/detector.launch">
+      <include file="$(find sar_yolo_detector)/archive/launch/detector.launch">
         <arg name="config" value="$(find sar_yolo_detector)/config/profile_maritime_person.yaml" />
         <arg name="model_path" value="$(arg model_path)" />
         <arg name="engine_path" value="$(eval arg('engine_path') if arg('engine_path') else arg('maritime_engine_path'))" />
@@ -153,7 +154,7 @@
         <arg name="calibration_version" value="$(arg calibration_version)" />
         <arg name="model_sha256" value="$(arg model_sha256)" />
       </include>
-      <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+      <include file="$(find sar_yolo_detector)/archive/launch/task_point_generator.launch">
         <arg name="config" value="$(find sar_yolo_detector)/config/task_profile_maritime_person.yaml" />
         <arg name="input_detections_topic" value="sar_yolo_detector/maritime_person/detections" />
         <arg name="camera_info_topic" value="$(arg eo_camera_info_topic)" />
@@ -174,7 +175,7 @@
     </group>
 
     <group if="$(eval arg('profile') == 'thermal_uav')">
-      <include file="$(find sar_yolo_detector)/launch/detector.launch">
+      <include file="$(find sar_yolo_detector)/archive/launch/detector.launch">
         <arg name="config" value="$(find sar_yolo_detector)/config/profile_thermal_uav.yaml" />
         <arg name="model_path" value="$(arg model_path)" />
         <arg name="engine_path" value="$(eval arg('engine_path') if arg('engine_path') else arg('thermal_engine_path'))" />
@@ -187,7 +188,7 @@
         <arg name="calibration_version" value="$(arg calibration_version)" />
         <arg name="model_sha256" value="$(arg model_sha256)" />
       </include>
-      <include file="$(find sar_yolo_detector)/launch/task_point_generator.launch">
+      <include file="$(find sar_yolo_detector)/archive/launch/task_point_generator.launch">
         <arg name="config" value="$(find sar_yolo_detector)/config/task_profile_thermal_uav.yaml" />
         <arg name="input_detections_topic" value="sar_yolo_detector/thermal_uav/detections" />
         <arg name="camera_info_topic" value="$(arg ir_camera_info_topic)" />
@@ -239,7 +240,7 @@
     </group>
 
     <include if="$(arg start_decision_bridge)"
-             file="$(find sar_yolo_detector)/launch/decision_bridge.launch">
+             file="$(find sar_yolo_detector)/archive/launch/decision_bridge.launch">
       <arg name="mission_id" value="$(arg mission_id)" />
       <arg name="uav_id" value="$(arg uav_id)" />
       <arg name="session_uuid" value="$(arg session_uuid)" />

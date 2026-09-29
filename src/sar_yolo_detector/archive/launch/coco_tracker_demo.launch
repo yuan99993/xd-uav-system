@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived COCO demo; not part of the production vehicle pipeline. -->
   <!--
     Repeatable real-model smoke test:
       image file -> sar_yolo_detector -> vision_msgs/Detection2DArray -> tracker
@@ -26,7 +27,7 @@
     <param name="publish_rate_hz" value="$(arg publish_rate_hz)" />
   </node>
 
-  <include file="$(find sar_yolo_detector)/launch/tracker_integration.launch">
+  <include file="$(find sar_yolo_detector)/archive/launch/tracker_integration.launch">
     <arg name="model_path" value="$(arg model_path)" />
     <arg name="config" value="$(arg config)" />
     <arg name="image_topic" value="$(arg image_topic)" />

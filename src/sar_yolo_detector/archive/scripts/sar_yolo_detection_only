@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Archived pre-shared-detector wrapper; not installed or used by launch files.
+
 export YOLO_AUTOINSTALL=false
 
 package_dir="$(rospack find sar_yolo_detector)"

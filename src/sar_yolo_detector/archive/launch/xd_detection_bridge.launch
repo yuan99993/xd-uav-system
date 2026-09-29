@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived vision_msgs adapter for legacy detector entries. -->
   <!-- Message-only adapter. Keep xd_uav_detect running with its existing
        launch/config and place this launch in the same UAV namespace. -->
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />

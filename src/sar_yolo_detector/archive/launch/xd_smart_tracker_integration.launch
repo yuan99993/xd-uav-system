@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived double-tracking integration. -->
   <!-- Real Ultralytics .pt inference for the XD detection/localization stack.
        This replaces the synthetic red-box detector but leaves xd_uav_detect
        independently configured and running. -->
@@ -28,7 +29,7 @@
   <arg name="sensor_id" default="fixed_camera" />
 
   <group ns="$(arg UAV_NAME)">
-    <include file="$(find sar_yolo_detector)/launch/smart_tracker.launch">
+    <include file="$(find sar_yolo_detector)/archive/launch/smart_tracker.launch">
       <arg name="node_name" value="sar_yolo_smart_tracker_$(arg instance_name)" />
       <arg name="config" value="$(arg config)" />
       <arg name="overlay_config" value="$(arg vehicle_config)" />
@@ -53,7 +54,7 @@
     </include>
   </group>
 
-  <include file="$(find sar_yolo_detector)/launch/xd_detection_bridge.launch">
+  <include file="$(find sar_yolo_detector)/archive/launch/xd_detection_bridge.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="node_name" value="vision_to_xd_bridge_$(arg instance_name)" />
     <arg name="input_detections_topic"

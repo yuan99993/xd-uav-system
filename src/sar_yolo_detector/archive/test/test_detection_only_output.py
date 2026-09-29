@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fast contract checks for the direct YOLO -> XD conversion path."""
+"""Archived tests for the superseded single-source adapter."""
 
 import importlib.util
 from pathlib import Path

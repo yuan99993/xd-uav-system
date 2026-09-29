@@ -360,8 +360,8 @@ class MultiSourceDetectionNode:
         self._masked_detections = 0
 
         raw_sources = rospy.get_param("~sources", [])
-        if not isinstance(raw_sources, list) or len(raw_sources) < 2:
-            raise RuntimeError("~sources must contain at least two camera mappings")
+        if not isinstance(raw_sources, list) or not raw_sources:
+            raise RuntimeError("~sources must contain at least one camera mapping")
         reid_config = dict(rospy.get_param("~reid", {}))
         # Read once: this runs in the per-frame ReID worker, where parameter
         # server RPCs would add avoidable jitter.
@@ -377,14 +377,19 @@ class MultiSourceDetectionNode:
             name = str(raw.get("name", "")).strip()
             input_topic = str(raw.get("input_image_topic", "")).strip()
             xd_topic = str(raw.get("xd_detections_topic", "")).strip()
-            if not name or not input_topic or not xd_topic or name in self._sources:
-                raise RuntimeError("each source needs unique name, input_image_topic and xd_detections_topic")
+            vision_topic = str(raw.get("detections_topic", "") or "").strip()
+            publish_vision = bool(raw.get("publish_vision_detections", True))
+            if (not name or not input_topic or name in self._sources or
+                    (not xd_topic and (not vision_topic or not publish_vision))):
+                raise RuntimeError("each source needs a unique name, input_image_topic and at least one output topic")
             image_source = str(raw.get("image_source", name) or name).strip()
             if image_source in self._source_name_by_image_source:
                 raise RuntimeError("each source needs a unique image_source")
             self._source_name_by_image_source[image_source] = name
             profile = str(raw.get("reid_model_profile", "") or "").strip()
             enabled = bool(raw.get("reid_enabled", False))
+            if enabled and not xd_topic:
+                raise RuntimeError("ReID requires an XD DetectionArray output topic")
             if enabled and profile not in self._encoders:
                 profile_config = dict(reid_config)
                 if profile:
@@ -392,10 +397,11 @@ class MultiSourceDetectionNode:
                 self._encoders[profile] = AppearanceEncoder(profile_config)
             source = dict(raw)
             source["last_stamp"] = rospy.Time(0)
-            source["xd_publisher"] = rospy.Publisher(xd_topic, DetectionArray, queue_size=1)
-            vision_topic = str(raw.get("detections_topic", "") or "").strip()
+            source["xd_publisher"] = (rospy.Publisher(
+                xd_topic, DetectionArray, queue_size=1) if xd_topic else None)
             source["vision_publisher"] = (rospy.Publisher(
-                vision_topic, Detection2DArray, queue_size=1) if vision_topic else None)
+                vision_topic, Detection2DArray, queue_size=1)
+                if vision_topic and publish_vision else None)
             source["reid_enabled"] = enabled
             source["reid_profile"] = profile
             source["maximum_reid_rois"] = max(1, int(raw.get("maximum_reid_rois_per_frame", 32)))
@@ -481,7 +487,8 @@ class MultiSourceDetectionNode:
         self._received += 1
         if self._pause_without_subscribers:
             vision = source["vision_publisher"]
-            if (source["xd_publisher"].get_num_connections() +
+            xd = source["xd_publisher"]
+            if ((xd.get_num_connections() if xd is not None else 0) +
                     (vision.get_num_connections() if vision is not None else 0) == 0):
                 return
         if not self._source_rate_available(source_name, source):
@@ -651,14 +658,15 @@ class MultiSourceDetectionNode:
             name, message, frame, detections)
         detections = self._filter_detection_area(
             source, detections, message.width, message.height)
-        xd_output = DetectionArray()
-        xd_output.header = message.header
-        xd_output.image_width = message.width
-        xd_output.image_height = message.height
-        xd_output.image_source = str(source.get("image_source", name))
-        xd_output.sensor_id = str(source.get("sensor_id", name))
-        xd_output.detector_name = str(source.get("detector_name", "sar_yolo_detector"))
-        xd_output.model_version = str(source.get("model_version", "unknown"))
+        xd_output = DetectionArray() if source["xd_publisher"] is not None else None
+        if xd_output is not None:
+            xd_output.header = message.header
+            xd_output.image_width = message.width
+            xd_output.image_height = message.height
+            xd_output.image_source = str(source.get("image_source", name))
+            xd_output.sensor_id = str(source.get("sensor_id", name))
+            xd_output.detector_name = str(source.get("detector_name", "sar_yolo_detector"))
+            xd_output.model_version = str(source.get("model_version", "unknown"))
         vision = Detection2DArray() if source["vision_publisher"] is not None else None
         if vision is not None:
             vision.header = message.header
@@ -670,13 +678,16 @@ class MultiSourceDetectionNode:
             is_pixel_assist = id(detection) in pixel_assist_ids
             if vision is not None and not is_pixel_assist:
                 vision.detections.append(_vision_detection(message.header, detection))
-            candidate = _xd_candidate(detection, int(message.width), int(message.height))
-            if candidate is not None:
-                xd_output.candidates.append(candidate)
-                if is_pixel_assist:
-                    pixel_candidate_indices.add(len(xd_output.candidates) - 1)
+            if xd_output is not None:
+                candidate = _xd_candidate(detection, int(message.width), int(message.height))
+                if candidate is not None:
+                    xd_output.candidates.append(candidate)
+                    if is_pixel_assist:
+                        pixel_candidate_indices.add(len(xd_output.candidates) - 1)
         if vision is not None:
             source["vision_publisher"].publish(vision)
+        if xd_output is None:
+            return
         reid_indices = [index for index in range(len(xd_output.candidates))
                         if index not in pixel_candidate_indices]
         if source["reid_enabled"] and reid_indices:
@@ -684,7 +695,8 @@ class MultiSourceDetectionNode:
         # Tracking observations must never wait for a slow appearance model.
         # The worker caches descriptors for a later geometrically matched
         # frame, instead of dropping this DetectionArray on ReID timeout.
-        source["xd_publisher"].publish(xd_output)
+        if source["xd_publisher"] is not None:
+            source["xd_publisher"].publish(xd_output)
         if not source["reid_enabled"] or not reid_indices:
             return
         # ReID is intentionally decoupled from YOLO. One newest job is retained

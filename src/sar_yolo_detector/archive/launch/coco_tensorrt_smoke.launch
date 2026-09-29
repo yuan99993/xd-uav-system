@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived COCO smoke entry; not part of the production vehicle pipeline. -->
   <!--
     GPU deployment smoke test:
       still COCO image -> TensorRT FP16 engine -> Detection2DArray

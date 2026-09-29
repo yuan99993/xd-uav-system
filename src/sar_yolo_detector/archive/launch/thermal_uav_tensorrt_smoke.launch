@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived thermal smoke entry; not part of the vehicle pipeline. -->
   <!-- Still-image smoke test for the trained HIT-UAV thermal profile. -->
   <arg name="image_path" default="" />
   <arg name="engine_path"

@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived EO/IR rescue fusion entry. -->
   <!--
     Detection-level EO/IR fusion.  Start this only after measuring the IR to
     EO homography, clock alignment and residual registration error.  The node

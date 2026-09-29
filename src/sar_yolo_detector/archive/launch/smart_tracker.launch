@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived upstream SmartTracker; production identity is owned by xd_uav_track. -->
   <arg name="config" default="$(find sar_yolo_detector)/config/smart_tracker.yaml" />
   <arg name="node_name" default="sar_yolo_smart_tracker" />
   <arg name="overlay_config" default="" />

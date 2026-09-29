@@ -141,6 +141,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_video_tracking_eval.py)
   catkin_add_nosetests(test/test_benchmark_trajectories.py)
   catkin_add_nosetests(test/test_moving_uav_search_dynamics.py)
+  catkin_add_nosetests(test/test_vehicle_perception_launch.py)
   catkin_add_nosetests(test/test_benchmark_baseline.py)
   catkin_add_gtest(test_track_controller
     test/test_track_controller.cpp

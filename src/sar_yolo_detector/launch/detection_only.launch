@@ -1,59 +1,78 @@
 <launch>
-  <!-- Ultralytics .pt detector without ByteTrack/BoT-SORT/SmartTracker state. -->
-  <arg name="config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml" />
-  <arg name="overlay_config" default="" />
-  <arg name="node_name" default="sar_yolo_detection_only" />
-  <arg name="input_image_topic" default="camera/image_raw" />
-  <arg name="detections_topic" default="sar_yolo_detector/detections" />
-  <arg name="publish_vision_detections" default="true" />
-  <arg name="xd_detections_topic" default="" />
-  <arg name="image_source" default="eo" />
-  <arg name="sensor_id" default="camera_primary" />
-  <arg name="detector_name" default="sar_yolo_detector" />
-  <arg name="model_version" default="unknown" />
-  <arg name="reid_enabled" default="false" />
-  <arg name="reid_config" default="$(find xd_uav_track)/config/reid.yaml" />
-  <arg name="reid_model_profile" default="" />
-  <arg name="reid_async" default="true" />
-  <arg name="startup_warmup_frames" default="1" />
-  <arg name="model_path" default="" />
-  <arg name="model_sha256" default="" />
-  <arg name="use_gpu" default="true" />
-  <arg name="fallback_to_cpu" default="false" />
-  <arg name="maximum_capture_age_sec" default="0.5" />
-  <arg name="pause_without_subscribers" default="false" />
+  <!-- Single-camera entry to the same TensorRT/ROI/pixel-assist detector used
+       by the shared-camera vehicle stack. It never allocates track IDs. -->
+  <arg name="config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml"/>
+  <arg name="overlay_config" default=""/>
+  <arg name="node_name" default="sar_yolo_detection_only"/>
+  <arg name="input_image_topic" default="camera/image_raw"/>
+  <arg name="detections_topic" default="sar_yolo_detector/detections"/>
+  <arg name="publish_vision_detections" default="true"/>
+  <arg name="xd_detections_topic" default=""/>
+  <arg name="image_source" default="eo"/>
+  <arg name="sensor_id" default="camera_primary"/>
+  <arg name="detector_name" default="sar_yolo_detector"/>
+  <arg name="model_version" default="xd_vehicle_train7_best"/>
+  <arg name="reid_enabled" default="false"/>
+  <arg name="reid_config" default="$(find xd_uav_track)/config/reid.yaml"/>
+  <arg name="reid_model_profile" default="xd_vehicle_train7"/>
+  <arg name="startup_warmup_frames" default="1"/>
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt"/>
+  <arg name="model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54"/>
+  <arg name="inference_backend" default="tensorrt_fp16"/>
+  <arg name="engine_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.engine"/>
+  <arg name="engine_sha256" default="88ed19419dcefdf64f6c90f31aa7961ef906c31d3581633afba69fa586bc850f"/>
+  <arg name="engine_source_model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54"/>
+  <arg name="auto_export_engine" default="true"/>
+  <arg name="engine_cache_dir" default="~/.cache/sar_yolo_detector/tensorrt"/>
+  <arg name="use_gpu" default="true"/>
+  <arg name="fallback_to_cpu" default="false"/>
+  <arg name="maximum_capture_age_sec" default="0.5"/>
+  <arg name="pause_without_subscribers" default="false"/>
+  <arg name="tracking_tracks_topic" default=""/>
+  <arg name="discovery_max_fps" default="4.0"/>
 
-  <node pkg="sar_yolo_detector" type="sar_yolo_detection_only"
+  <node pkg="sar_yolo_detector" type="sar_yolo_multi_source_detection"
         name="$(arg node_name)" output="screen" required="true">
-    <env name="SAR_YOLO_PYTHON" value="$(optenv SAR_YOLO_PYTHON)" />
-    <rosparam command="load" file="$(arg config)" />
+    <env name="SAR_YOLO_PYTHON" value="$(optenv SAR_YOLO_PYTHON)"/>
+    <rosparam command="load" file="$(arg config)"/>
     <rosparam if="$(eval arg('overlay_config') != '')" command="load"
-              file="$(arg overlay_config)" />
-    <rosparam if="$(arg reid_enabled)" command="load"
-              file="$(arg reid_config)" />
-    <param name="input_image_topic" value="$(arg input_image_topic)" />
-    <param name="detections_topic" value="$(arg detections_topic)" />
-    <param name="publish_vision_detections" value="$(arg publish_vision_detections)" />
-    <param name="xd_detections_topic" value="$(arg xd_detections_topic)" />
-    <param name="image_source" value="$(arg image_source)" />
-    <param name="sensor_id" value="$(arg sensor_id)" />
-    <param name="detector_name" value="$(arg detector_name)" />
-    <param name="model_version" value="$(arg model_version)" />
-    <param name="reid_enabled" value="$(arg reid_enabled)" />
-    <param name="reid_async" value="$(arg reid_async)" />
-    <param name="startup_warmup_frames" value="$(arg startup_warmup_frames)" />
-    <param if="$(eval arg('reid_model_profile') != '')"
-           name="reid_model_profile" value="$(arg reid_model_profile)" />
-    <param name="model_path" value="$(arg model_path)" />
-    <param name="use_gpu" value="$(arg use_gpu)" />
-    <param name="fallback_to_cpu" value="$(arg fallback_to_cpu)" />
-    <param name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
-    <param name="pause_without_subscribers" value="$(arg pause_without_subscribers)" />
-    <param if="$(eval arg('model_path') != '')"
-           name="SmartTracker/SMART_TRACKER_GPU_MODEL_PATH" value="$(arg model_path)" />
-    <param if="$(eval arg('model_path') != '')"
-           name="SmartTracker/SMART_TRACKER_CPU_MODEL_PATH" value="$(arg model_path)" />
-    <param if="$(eval arg('model_sha256') != '')"
-           name="SmartTracker/SMART_TRACKER_MODEL_SHA256" value="$(arg model_sha256)" />
+              file="$(arg overlay_config)"/>
+    <rosparam if="$(arg reid_enabled)" command="load" file="$(arg reid_config)"/>
+    <param name="SmartTracker/SMART_TRACKER_MODEL_SHA256" value="$(arg model_sha256)"/>
+    <param name="model_path" value="$(arg model_path)"/>
+    <param name="inference_backend" value="$(arg inference_backend)"/>
+    <param name="engine_path" value="$(arg engine_path)"/>
+    <param name="engine_sha256" value="$(arg engine_sha256)"/>
+    <param name="engine_source_model_sha256" value="$(arg engine_source_model_sha256)"/>
+    <param name="auto_export_engine" value="$(arg auto_export_engine)"/>
+    <param name="engine_cache_dir" value="$(arg engine_cache_dir)"/>
+    <param name="use_gpu" value="$(arg use_gpu)"/>
+    <param name="fallback_to_cpu" value="$(arg fallback_to_cpu)"/>
+    <param name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)"/>
+    <param name="pause_without_subscribers" value="$(arg pause_without_subscribers)"/>
+    <param name="tracking_tracks_topic" value="$(arg tracking_tracks_topic)"/>
+    <param name="startup_warmup_frames" value="$(arg startup_warmup_frames)"/>
+    <param name="maximum_batch_size" value="1"/>
+    <param name="discovery_max_fps" value="$(arg discovery_max_fps)"/>
+    <param name="priority_max_fps" value="$(arg discovery_max_fps)"/>
+    <param name="standby_max_fps" value="$(arg discovery_max_fps)"/>
+    <param name="pixel_assist_enabled" value="true"/>
+    <rosparam param="sources" subst_value="true">
+      - name: fixed
+        input_image_topic: $(arg input_image_topic)
+        xd_detections_topic: "$(arg xd_detections_topic)"
+        detections_topic: "$(arg detections_topic)"
+        publish_vision_detections: $(arg publish_vision_detections)
+        image_source: $(arg image_source)
+        sensor_id: $(arg sensor_id)
+        detector_name: $(arg detector_name)
+        model_version: $(arg model_version)
+        reid_enabled: $(arg reid_enabled)
+        reid_model_profile: $(arg reid_model_profile)
+        roi_recovery_enabled: true
+        roi_padding_ratio: 1.0
+        roi_target_short_side: 56
+        roi_min_short_side: 24
+    </rosparam>
   </node>
 </launch>

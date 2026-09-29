@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived rescue decision bridge. -->
   <!-- Include under a UAV namespace, or set ns when launching this file. -->
   <arg name="mission_id" />
   <arg name="uav_id" />

@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived rescue task gateway. -->
   <!-- Run once on each work aircraft. It receives planner assignments and
        forwards only validated assignments to that aircraft's local executor. -->
   <arg name="mission_id" default="mission_unset" />
@@ -27,7 +28,7 @@
   <arg name="state_database_path" default="" />
 
   <group ns="$(arg worker_uav_id)">
-    <include file="$(find sar_yolo_detector)/launch/decision_bridge.launch">
+    <include file="$(find sar_yolo_detector)/archive/launch/decision_bridge.launch">
       <arg name="mission_id" value="$(arg mission_id)" />
       <arg name="uav_id" value="$(arg worker_uav_id)" />
       <arg name="session_uuid" value="$(arg session_uuid)" />

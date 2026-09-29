@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived COCO tracker integration. -->
   <!-- Optional integration for this workspace. The detector itself has no
        build- or run-time dependency on tracker or pod packages. -->
   <arg name="model_path" default="" />
@@ -22,7 +23,7 @@
   <arg name="roi_recheck_max_rate_hz" default="2.0" />
   <arg name="maximum_capture_age_sec" default="0.5" />
 
-  <include file="$(find sar_yolo_detector)/launch/detector.launch">
+  <include file="$(find sar_yolo_detector)/archive/launch/detector.launch">
     <arg name="config" value="$(arg config)" />
     <arg name="model_path" value="$(arg model_path)" />
     <arg name="input_image_topic" value="$(arg image_topic)" />

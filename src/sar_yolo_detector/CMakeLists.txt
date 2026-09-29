@@ -314,7 +314,7 @@ install(PROGRAMS
   scripts/sar_yolo_smart_tracker
   scripts/sar_yolo_multi_source_detection
   scripts/smart_tracker_node.py
-  # The shared two-source wrapper executes this sibling in both devel and
+  # The shared one/two-source wrapper executes this sibling in both devel and
   # install spaces.  Installing only the wrapper made a source workspace work
   # while an installed deployment failed at launch.
   scripts/multi_source_detection_node.py
@@ -345,6 +345,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_pixeagle_portable.py)
   catkin_add_nosetests(test/test_smart_tracker_image_codec.py)
   catkin_add_nosetests(test/test_manual_box_tracker.py)
+  catkin_add_nosetests(test/test_shared_detector_outputs.py)
   catkin_add_nosetests(test/test_interface_v1_md5.py)
   catkin_add_gtest(test_yolo_postprocessor
     test/test_yolo_postprocessor.cpp

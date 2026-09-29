@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ROS adapter for Ultralytics YOLO detection without any temporal tracker.
+"""Archived ROS adapter superseded by multi_source_detection_node.py.
 
 This node is intentionally narrower than ``smart_tracker_node.py``: one input
 image produces one ``vision_msgs/Detection2DArray`` and it never allocates a

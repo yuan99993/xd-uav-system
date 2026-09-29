@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived OpenCV detector integration. -->
   <!-- Start the standard YOLO detector and the XD message adapter together.
        xd_uav_detect itself remains independently owned and is not started or
        reconfigured here. -->
@@ -21,7 +22,7 @@
   <arg name="model_version" default="unknown" />
 
   <group ns="$(arg UAV_NAME)">
-    <include file="$(find sar_yolo_detector)/launch/detector.launch">
+    <include file="$(find sar_yolo_detector)/archive/launch/detector.launch">
       <arg name="config" value="$(arg config)" />
       <arg name="model_path" value="$(arg model_path)" />
       <arg name="engine_path" value="$(arg engine_path)" />
@@ -33,7 +34,7 @@
     </include>
   </group>
 
-  <include file="$(find sar_yolo_detector)/launch/xd_detection_bridge.launch">
+  <include file="$(find sar_yolo_detector)/archive/launch/xd_detection_bridge.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="input_detections_topic" value="$(arg detections_topic)" />
     <arg name="output_detections_topic"

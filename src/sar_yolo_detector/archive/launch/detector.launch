@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived generic OpenCV detector entry. -->
   <arg name="config" default="$(find sar_yolo_detector)/config/detector.yaml" />
   <arg name="model_path" default="" />
   <arg name="input_image_topic" default="camera/image_raw" />

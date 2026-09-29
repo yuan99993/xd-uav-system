@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived rescue task-point generator. -->
   <arg name="config" default="$(find sar_yolo_detector)/config/task_point_generator.yaml" />
   <arg name="input_detections_topic" default="sar_yolo_detector/detections" />
   <arg name="use_tracked_detections" default="false" />

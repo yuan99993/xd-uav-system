@@ -1,4 +1,5 @@
 <launch>
+  <!-- Archived pre-train7 launch backup. -->
   <!-- Real Ultralytics .pt inference for the XD detection/localization stack.
        This replaces the synthetic red-box detector but leaves xd_uav_detect
        independently configured and running. -->
