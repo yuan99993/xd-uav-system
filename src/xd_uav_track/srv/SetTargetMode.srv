@@ -1,0 +1,10 @@
+# mode: "all" keeps every confirmed track and clears flight-follow selection;
+# mode: "follow" selects target_id as the sole flight-follow target.
+string mode
+int32 target_id
+string image_source
+time capture_timestamp
+---
+bool success
+string message
+int32 selected_target_id

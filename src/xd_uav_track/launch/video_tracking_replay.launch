@@ -1,0 +1,93 @@
+<launch>
+  <!-- Single video: video_a only. Dual: set video_b to a genuinely synchronized
+       second recording. No Gazebo, PX4, TF or controller is started. -->
+  <arg name="UAV_NAME" default="video_replay"/>
+  <arg name="video_a"/>
+  <arg name="video_b" default=""/>
+  <arg name="fps" default="8.0"/>
+  <arg name="frame_step" default="1"/>
+  <arg name="source_fps" default="30.0"/>
+  <arg name="lockstep" default="false"/>
+  <arg name="max_width" default="1280"/>
+  <arg name="max_frames" default="0"/>
+  <arg name="start_frame_a" default="0"/>
+  <arg name="start_frame_b" default="0"/>
+  <arg name="show_overlay" default="false"/>
+  <!-- Identity evaluation should exercise the same vehicle ReID path as a
+       deployment.  It can still be disabled explicitly for throughput A/B. -->
+  <arg name="reid_enabled" default="true"/>
+  <arg name="use_gpu" default="true"/>
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt"/>
+  <arg name="detector_config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml"/>
+  <arg name="source_a" default="replay_fixed"/>
+  <arg name="source_b" default="replay_gimbal"/>
+  <arg name="record_path" default=""/>
+  <!-- This standalone entry is intentionally independent of Gazebo /clock. -->
+  <param name="/use_sim_time" value="false"/>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_track" type="video_replay_node.py" name="video_replay" output="screen" required="true">
+      <param name="video_a" value="$(arg video_a)"/>
+      <param name="video_b" value="$(arg video_b)"/>
+      <param name="fps" value="$(arg fps)"/>
+      <param name="frame_step" value="$(arg frame_step)"/>
+      <param name="source_fps" value="$(arg source_fps)"/>
+      <param name="lockstep" value="$(arg lockstep)"/>
+      <param name="source_a" value="$(arg source_a)"/>
+      <param name="source_b" value="$(arg source_b)"/>
+      <param name="max_width" value="$(arg max_width)"/>
+      <param name="max_frames" value="$(arg max_frames)"/>
+      <param name="start_frame_a" value="$(arg start_frame_a)"/>
+      <param name="start_frame_b" value="$(arg start_frame_b)"/>
+    </node>
+  </group>
+
+  <include file="$(find sar_yolo_detector)/launch/xd_yolo_multi_source_detection_integration.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="config" value="$(arg detector_config)"/>
+    <arg name="overlay_config" value="$(find xd_uav_track)/config/video_detector_replay.yaml"/>
+    <arg name="model_path" value="$(arg model_path)"/>
+    <arg name="use_gpu" value="$(arg use_gpu)"/>
+    <arg name="reid_enabled" value="$(arg reid_enabled)"/>
+    <arg name="fixed_image_source" value="$(arg source_a)"/>
+    <arg name="gimbal_image_source" value="$(arg source_b)"/>
+    <arg name="fixed_output_topic" value="track/detections"/>
+    <arg name="gimbal_output_topic" value="track/detections"/>
+    <arg name="tracking_tracks_topic" value="track/tracks_by_source"/>
+    <!-- Replay pacing is already owned by video_replay_node. A second,
+         wall-time detector limiter can drop one member of a paired tick. -->
+    <arg name="discovery_max_fps" value="0.0"/>
+    <arg name="priority_max_fps" value="0.0"/>
+    <arg name="standby_max_fps" value="0.0"/>
+  </include>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_track" type="xd_uav_track_node" name="track" output="screen" clear_params="true">
+      <rosparam command="load" file="$(find xd_uav_track)/config/track.yaml"/>
+      <rosparam command="load" file="$(find xd_uav_track)/config/video_tracking_replay.yaml"/>
+    </node>
+    <node pkg="xd_uav_track" type="tracking_overlay_node.py" name="fixed_tracking_overlay" output="screen">
+      <param name="image_source" value="$(arg source_a)"/>
+      <param name="input_image_topic" value="fixed_camera/image_raw"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="status_topic" value="track/status"/>
+      <param name="output_image_topic" value="fixed_camera/tracking_overlay"/>
+      <param name="show_confirmed_only" value="true"/>
+    </node>
+    <node if="$(eval arg('video_b') != '')" pkg="xd_uav_track" type="tracking_overlay_node.py" name="gimbal_tracking_overlay" output="screen">
+      <param name="image_source" value="$(arg source_b)"/>
+      <param name="input_image_topic" value="gimbal_camera/image_raw"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="status_topic" value="track/status"/>
+      <param name="output_image_topic" value="gimbal_camera/tracking_overlay"/>
+      <param name="show_confirmed_only" value="true"/>
+    </node>
+    <node if="$(eval arg('record_path') != '')" pkg="xd_uav_track" type="video_tracking_record_node.py" name="video_tracking_record" output="screen">
+      <param name="output_path" value="$(arg record_path)"/>
+      <param name="source_a" value="$(arg source_a)"/>
+      <param name="source_b" value="$(arg source_b)"/>
+    </node>
+    <node if="$(arg show_overlay)" pkg="rqt_image_view" type="rqt_image_view" name="fixed_tracking_view" args="/$(arg UAV_NAME)/fixed_camera/tracking_overlay"/>
+    <node if="$(eval arg('show_overlay') and arg('video_b') != '')" pkg="rqt_image_view" type="rqt_image_view" name="gimbal_tracking_view" args="/$(arg UAV_NAME)/gimbal_camera/tracking_overlay"/>
+  </group>
+</launch>

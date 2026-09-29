@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .detection_backend import DetectionBackend, DevicePreference
 from ..detection_adapter import NormalizedDetection
 from ..geometry_utils import obb_xywhr_to_aabb, validate_obb_xywhr
+from .tensorrt_compat import import_tensorrt
 
 # Runtime dependency installation is inappropriate on an aircraft or other
 # managed ROS host. Missing packages must cause an explicit startup/inference
@@ -64,6 +65,14 @@ class UltralyticsBackend(DetectionBackend):
         self._agnostic_nms = bool(
             self._config.get("SMART_TRACKER_AGNOSTIC_NMS", False)
         )
+        configured_size = int(self._config.get(
+            "SMART_TRACKER_INFERENCE_IMAGE_SIZE", 640))
+        if (configured_size < 320 or configured_size > 1536 or
+                configured_size % 32 != 0):
+            raise ValueError(
+                "SMART_TRACKER_INFERENCE_IMAGE_SIZE must be a multiple of 32 "
+                "within 320..1536")
+        self._inference_image_size = configured_size
         self.tracker_type_str, self.use_custom_reid = self._select_tracker_type()
         self.tracker_args = {"persist": True, "verbose": False}
 
@@ -218,6 +227,13 @@ class UltralyticsBackend(DetectionBackend):
         if suffix == ".engine":
             if target_device != "cuda" or not self._cuda_available():
                 raise RuntimeError("TensorRT .engine artifacts require CUDA")
+            try:
+                import_tensorrt()
+            except Exception as exc:
+                raise RuntimeError(
+                    "TensorRT Python bindings are unavailable or incompatible: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
         provenance = self._verify_file(path) if path.is_file() else {
             "verified": False,
             "sha256": None,
@@ -320,45 +336,52 @@ class UltralyticsBackend(DetectionBackend):
             self._runtime_info = previous_info
             raise
 
-    def detect(
-        self, frame, conf: float = 0.3, iou: float = 0.3, max_det: int = 20
-    ) -> Tuple[str, List[NormalizedDetection]]:
-        if self._model is None:
-            raise RuntimeError("SmartTracker model is not loaded")
-        inference_args = {}
+    def _resolve_image_size(self, image_size: Optional[int]) -> int:
+        if image_size is None:
+            return self._inference_image_size
+        requested = int(image_size)
+        if requested < 320 or requested > 1536 or requested % 32 != 0:
+            raise ValueError("inference image_size must be a multiple of 32 within 320..1536")
+        return requested
+
+    def _inference_args(self, image_size: Optional[int]) -> Dict[str, Any]:
+        inference_args: Dict[str, Any] = {"imgsz": self._resolve_image_size(image_size)}
         if self._allowed_class_ids is not None:
             inference_args["classes"] = self._allowed_class_ids
         if self._agnostic_nms:
             inference_args["agnostic_nms"] = True
+        return inference_args
+
+    def detect(
+        self, frame, conf: float = 0.3, iou: float = 0.3, max_det: int = 20,
+        image_size: Optional[int] = None,
+    ) -> Tuple[str, List[NormalizedDetection]]:
+        if self._model is None:
+            raise RuntimeError("SmartTracker model is not loaded")
         results = self._model.predict(
             frame,
             conf=conf,
             iou=iou,
             max_det=max_det,
             verbose=False,
-            **inference_args,
+            **self._inference_args(image_size),
         )
         return self._normalize_results(results)
 
     def detect_many(
         self, frames: List[Any], conf: float = 0.3, iou: float = 0.3,
-        max_det: int = 20,
+        max_det: int = 20, image_size: Optional[int] = None,
     ) -> List[Tuple[str, List[NormalizedDetection]]]:
         """Run one Ultralytics call for same-shaped camera frames."""
         if not frames:
             return []
         if len(frames) == 1:
-            return [self.detect(frames[0], conf, iou, max_det)]
+            return [self.detect(frames[0], conf, iou, max_det, image_size)]
         if self._model is None:
             raise RuntimeError("SmartTracker model is not loaded")
-        inference_args = {}
-        if self._allowed_class_ids is not None:
-            inference_args["classes"] = self._allowed_class_ids
-        if self._agnostic_nms:
-            inference_args["agnostic_nms"] = True
         results = list(self._model.predict(
             frames, conf=conf, iou=iou, max_det=max_det, verbose=False,
-            **inference_args))
+            **self._inference_args(image_size)))
         if len(results) != len(frames):
             raise RuntimeError("Ultralytics returned an incomplete inference batch")
         return [self._normalize_results([result]) for result in results]

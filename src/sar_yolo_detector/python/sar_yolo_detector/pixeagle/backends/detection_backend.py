@@ -108,9 +108,14 @@ class DetectionBackend(ABC):
         conf: float = 0.3,
         iou: float = 0.3,
         max_det: int = 20,
+        image_size: Optional[int] = None,
     ) -> Tuple[str, List[NormalizedDetection]]:
         """
-        Run detection only (no multi-frame tracking).
+        Run detection only (no multi-frame tracking).  ``image_size`` is an
+        optional backend input size override for a single pass; ``None`` uses
+        the deployment default.  It lets a full-frame search and a small
+        prediction ROI use different compute budgets without loading a second
+        model.
 
         Returns:
             (mode, detections) where mode is "detect", "obb", or "none".

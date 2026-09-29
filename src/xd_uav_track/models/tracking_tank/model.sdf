@@ -13,39 +13,107 @@
         <inertia><ixx>900</ixx><iyy>1400</iyy><izz>1700</izz></inertia>
       </inertial>
       <visual name="left_track">
-        <pose>0 1.35 0.48 0 0 0</pose>
-        <geometry><box><size>4.9 0.44 0.72</size></box></geometry>
+        <pose>0 1.55 0.62 0 0 0</pose>
+        <geometry><box><size>6.25 0.54 0.94</size></box></geometry>
         <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/TrackRubber</name></script></material>
       </visual>
       <visual name="right_track">
-        <pose>0 -1.35 0.48 0 0 0</pose>
-        <geometry><box><size>4.9 0.44 0.72</size></box></geometry>
+        <pose>0 -1.55 0.62 0 0 0</pose>
+        <geometry><box><size>6.25 0.54 0.94</size></box></geometry>
         <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/TrackRubber</name></script></material>
       </visual>
+      <!-- Six road wheels on each track add a recognizable lower silhouette. -->
+      <visual name="road_wheel_left_1"><pose>-2.25 1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_left_2"><pose>-1.35 1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_left_3"><pose>-0.45 1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_left_4"><pose>0.45 1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_left_5"><pose>1.35 1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_left_6"><pose>2.25 1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_right_1"><pose>-2.25 -1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_right_2"><pose>-1.35 -1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_right_3"><pose>-0.45 -1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_right_4"><pose>0.45 -1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_right_5"><pose>1.35 -1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
+      <visual name="road_wheel_right_6"><pose>2.25 -1.62 0.60 0 1.57079632679 0</pose><geometry><cylinder><radius>0.34</radius><length>0.12</length></cylinder></geometry><material><ambient>0.13 0.14 0.12 1</ambient><diffuse>0.22 0.23 0.20 1</diffuse></material></visual>
       <visual name="hull">
-        <pose>0 0 0.85 0 0 0</pose>
-        <geometry><box><size>5.0 2.55 0.78</size></box></geometry>
+        <pose>0 0 1.10 0 0 0</pose>
+        <geometry><box><size>6.50 3.20 1.00</size></box></geometry>
         <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
       </visual>
       <visual name="upper_hull">
-        <pose>-0.25 0 1.46 0 0 0</pose>
-        <geometry><box><size>3.55 2.18 0.58</size></box></geometry>
+        <pose>-0.32 0 1.88 0 0 0</pose>
+        <geometry><box><size>4.62 2.72 0.74</size></box></geometry>
         <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
+      </visual>
+      <visual name="turret_ring">
+        <pose>0.58 0 2.25 0 0 0</pose>
+        <geometry><cylinder><radius>1.10</radius><length>0.18</length></cylinder></geometry>
+        <material><ambient>0.18 0.20 0.15 1</ambient><diffuse>0.30 0.32 0.24 1</diffuse></material>
       </visual>
       <visual name="turret">
-        <pose>0.45 0 1.93 0 0 0</pose>
-        <geometry><cylinder><radius>0.86</radius><length>0.46</length></cylinder></geometry>
+        <pose>0.58 0 2.55 0 0 0</pose>
+        <geometry><cylinder><radius>1.12</radius><length>0.56</length></cylinder></geometry>
         <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
+      </visual>
+      <visual name="turret_left_cheek">
+        <pose>1.10 0.88 2.55 0 0 0</pose>
+        <geometry><box><size>1.18 0.30 0.50</size></box></geometry>
+        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
+      </visual>
+      <visual name="turret_right_cheek">
+        <pose>1.10 -0.88 2.55 0 0 0</pose>
+        <geometry><box><size>1.18 0.30 0.50</size></box></geometry>
+        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
+      </visual>
+      <visual name="gun_mantlet">
+        <pose>1.67 0 2.57 0 1.57079632679 0</pose>
+        <geometry><cylinder><radius>0.38</radius><length>0.62</length></cylinder></geometry>
+        <material><ambient>0.22 0.24 0.18 1</ambient><diffuse>0.36 0.38 0.29 1</diffuse></material>
       </visual>
       <visual name="barrel">
-        <pose>2.10 0 1.96 0 1.57079632679 0</pose>
-        <geometry><cylinder><radius>0.14</radius><length>3.05</length></cylinder></geometry>
-        <material><ambient>0.09 0.10 0.07 1</ambient><diffuse>0.15 0.17 0.11 1</diffuse></material>
+        <pose>3.15 0 2.58 0 1.57079632679 0</pose>
+        <geometry><cylinder><radius>0.15</radius><length>3.45</length></cylinder></geometry>
+        <material><ambient>0.10 0.11 0.08 1</ambient><diffuse>0.19 0.21 0.15 1</diffuse></material>
+      </visual>
+      <visual name="muzzle_brake">
+        <pose>4.98 0 2.58 0 1.57079632679 0</pose>
+        <geometry><cylinder><radius>0.22</radius><length>0.42</length></cylinder></geometry>
+        <material><ambient>0.08 0.09 0.07 1</ambient><diffuse>0.15 0.16 0.12 1</diffuse></material>
+      </visual>
+      <visual name="coaxial_barrel">
+        <pose>2.45 0.43 2.48 0 1.57079632679 0</pose>
+        <geometry><cylinder><radius>0.045</radius><length>1.45</length></cylinder></geometry>
+        <material><ambient>0.08 0.09 0.07 1</ambient><diffuse>0.16 0.17 0.13 1</diffuse></material>
+      </visual>
+      <visual name="commander_cupola">
+        <pose>0.22 0 2.92 0 0 0</pose>
+        <geometry><cylinder><radius>0.40</radius><length>0.22</length></cylinder></geometry>
+        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
       </visual>
       <visual name="commander_hatch">
-        <pose>0.18 0 2.23 0 0 0</pose>
-        <geometry><cylinder><radius>0.34</radius><length>0.16</length></cylinder></geometry>
-        <material><script><uri>model://tracking_tank/materials/scripts</uri><uri>model://tracking_tank/materials/textures</uri><name>XdUavTrack/BenchmarkCamo</name></script></material>
+        <pose>0.22 0 3.07 0 0 0</pose>
+        <geometry><cylinder><radius>0.30</radius><length>0.08</length></cylinder></geometry>
+        <material><ambient>0.18 0.20 0.15 1</ambient><diffuse>0.30 0.32 0.24 1</diffuse></material>
+      </visual>
+      <visual name="sight_left">
+        <pose>0.98 0.36 2.91 0 0.10 0</pose>
+        <geometry><box><size>0.42 0.24 0.20</size></box></geometry>
+        <material><ambient>0.10 0.14 0.12 1</ambient><diffuse>0.20 0.27 0.22 1</diffuse></material>
+      </visual>
+      <visual name="sight_right">
+        <pose>0.98 -0.36 2.91 0 -0.10 0</pose>
+        <geometry><box><size>0.42 0.24 0.20</size></box></geometry>
+        <material><ambient>0.10 0.14 0.12 1</ambient><diffuse>0.20 0.27 0.22 1</diffuse></material>
+      </visual>
+      <visual name="turret_stowage_left">
+        <pose>-0.45 1.00 2.53 0 0 0</pose>
+        <geometry><box><size>0.88 0.28 0.42</size></box></geometry>
+        <material><ambient>0.25 0.27 0.20 1</ambient><diffuse>0.39 0.40 0.31 1</diffuse></material>
+      </visual>
+      <visual name="turret_stowage_right">
+        <pose>-0.45 -1.00 2.53 0 0 0</pose>
+        <geometry><box><size>0.88 0.28 0.42</size></box></geometry>
+        <material><ambient>0.25 0.27 0.20 1</ambient><diffuse>0.39 0.40 0.31 1</diffuse></material>
       </visual>
     </link>
   </model>

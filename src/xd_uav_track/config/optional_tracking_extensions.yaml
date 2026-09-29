@@ -1,13 +1,7 @@
 # Optional overlay: load after the vehicle-specific tracker config.
-# Camera calibration values below are examples, not measured installation data.
-tracker:
-  two_stage_association: false
-  high_confidence_threshold: 0.5
-  camera_motion_compensation:
-    # Rotation-only optical-flow compensation using timestamped camera TF.
-    # It reuses the predictive_fov intrinsics below and is safe to leave off
-    # until camera timestamps/extrinsics have been calibrated.
-    enabled: false
+# Do not add toggles here unless they reach a tested runtime path.  ByteTrack
+# high/low-confidence association is always active in MultiTrackManager; a
+# separate switch would only create a misleading deployment state.
 follower:
   target_guidance:
     prediction_process_sigma_mps: 1.0

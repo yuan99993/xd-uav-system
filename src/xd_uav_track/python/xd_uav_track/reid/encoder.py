@@ -259,6 +259,16 @@ class AppearanceEncoder:
                 "deep ReID profile '%s' disabled; using its configured "
                 "fallback before motion/spatial association: %s", name, error)
 
+    def runtime_status(self):
+        """Return effective runtime/device for loaded deep/ONNX profiles."""
+        status = {}
+        for name, model in tuple(self._deep_models.items()):
+            runtime_status = getattr(model, "runtime_status", None)
+            status[name] = runtime_status() if callable(runtime_status) else "deep/unknown"
+        for name in tuple(self._failed_deep_profiles):
+            status.setdefault(name, "fallback")
+        return status
+
     def close(self) -> None:
         for model in self._deep_models.values():
             model.close()

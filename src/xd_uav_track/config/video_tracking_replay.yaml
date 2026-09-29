@@ -1,0 +1,20 @@
+# Video-only 2-D identity test: no pose, ground projection or flight control.
+runtime:
+  publish_control_reference: false
+interfaces:
+  input:
+    detections: track/detections
+    vehicle_state: unused/video_replay_odom
+tracker:
+  enabled_at_startup: true
+  sources:
+    allowed: []  # video source names are launch arguments
+    maximum_sources: 2
+    ttl_sec: 30.0
+  global_identity:
+    enabled: true
+    # Cross-view merging requires calibrated common-world measurements. Raw
+    # videos cannot safely establish that two similar vehicles share an ID.
+    cross_source_metric_enabled: true
+  selection:
+    auto_select: false

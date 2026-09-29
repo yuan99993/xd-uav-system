@@ -236,3 +236,48 @@ interfaces:
 `follower/fw_velocity_vector/airspeed`（metric 模式也可在
 `follower/fw_metric_pursuit` 或 `follower/fw_metric_orbit` 下覆盖）配置；实际空速测量、
 空速上下限和油门控制属于 `xd_uav_controller`，本包不再重复订阅或配置。
+
+不启动 Gazebo/PX4 的实拍视频检测与 ID 回归入口见
+[`docs/video_replay.md`](docs/video_replay.md)：支持单路、双路同步回放，
+以及有 MOT 真值时的轻量指标计算。
+
+### 车辆 ReID、低分框与短时漏框
+
+`sar_yolo_detector/config/xd_vehicle_detection.yaml` 保留置信度 ≥0.10 的框。
+Tracker 的 ByteTrack 两阶段关联先处理 ≥0.50 的框，再用 0.10–0.50 的框更新
+已有轨迹；低分框不能创建新 ID。train7 的四种车辆标签
+`car(0)/ar-car(1)/tank(2)/m142(3)` 均可在运动、位置与外观门控通过后
+沿用同一 ID。仅靠两框接近不会合并目标。固定相机预测 ROI 使用同一类别
+兼容规则，避免二次检测成功却因 YOLO 类别翻转被丢弃。
+轨迹确认前累计类别置信度，确认后将类别作为实体属性固定；后续 YOLO 临时把
+其他车辆类别时，检测框仍可更新原轨迹的位置，但不会改写公开
+类别和 ID。原始 YOLO 类别仍保留在检测话题中，方便诊断。可通过
+`tracker/association/compatible_class_ids` 调整允许互换的类别集合；不要把
+外观和运动差异很大的类别无条件放在同一集合中。
+叠框画面在轨迹未确认时只显示 ID 与跟踪状态；确认后才显示固定的类别。
+
+车辆外观默认使用经哈希校验的 `vehicle-reid-0001.onnx` 和 OpenCV DNN。
+`sar_yolo_detector` 的独立 ReID 工作线程对同帧 ROI 批量编码，并在
+`/diagnostics` 报告 `reid_runtime_*` 与 `reid_ms_ewma`。目标短暂漏检时，
+`tracking_benchmark.yaml` 最多显示 2 秒标注为 `PRED` 的 Kalman 预测框；
+预测框不是新的检测结果，也不会作为新测量更新目标。
+双坦克地图的非退化回归门槛与执行方式见
+[tracking_benchmark_standard.md](docs/tracking_benchmark_standard.md)。
+
+本机 `.venv-sar-gpu` 安装了 `onnxruntime-gpu==1.23.2`。RTX 3050 上该车辆
+ONNX 的两框批次稳态实测为 OpenCV CPU 84–94 毫秒、ONNX Runtime CPU
+110–127 毫秒、ONNX Runtime CUDA 约 1.1 秒。所以生产配置
+`xd_vehicle_train7` 仍使用 OpenCV CPU；
+`xd_vehicle_onnx` 是显式 CUDA 配置，可在完成本机延迟验证后通过
+`fixed_reid_profile:=xd_vehicle_onnx` 选择。ReID 加速只影响外观身份关联，
+YOLO 检测模型和 TensorRT engine 不受这个配置切换影响。
+
+### 多目标持续像素跟踪
+
+共享检测节点对每条符合类别条件的活动轨迹持续运行稀疏 LK 光流，运动速度为
+光流搜索提供有界提前量；没有增加另一种颜色或公开 ID。匹配 YOLO 框时由
+检测框重新锚定；无匹配框时才把
+合格光流结果作为 0.45 置信度候选补入。该值低于 0.50 新轨迹创建门限，因此
+光流只更新已有 ID，不创建身份，也不进入 ReID 特征库。前后向误差、运动一致性、
+速度、时间间隔、状态新鲜度及与其他检测框碰撞检查仍会拒绝不可信位移；YOLO
+保持运行以搜索新目标和校正漂移。

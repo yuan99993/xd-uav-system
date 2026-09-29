@@ -1,38 +1,31 @@
 #!/usr/bin/env python3
-"""Drive the low-load Gazebo visual tracking benchmark and publish its truth.
-
-This is a test-scene coordinator, not a detector or a flight controller.  It
-sets three visual target poses through Gazebo, continuously publishes their
-public identities and ground-truth odometry, and points a side camera at the
-primary tank.  The south-facing fixed camera is physically occluded by solid
-walls during the documented 1/3/5/10 second hold intervals.
-"""
+"""Drive the fixed-camera Gazebo benchmark tanks and truth feed."""
 
 import json
 import math
+import os
+import sys
 
 import rospy
 from gazebo_msgs.msg import ModelState
 from gazebo_msgs.srv import SetModelState
-from geometry_msgs.msg import Pose, Twist
+from geometry_msgs.msg import Pose, TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
+import tf2_ros
+import tf.transformations as transformations
 from visualization_msgs.msg import Marker, MarkerArray
+
+# catkin's devel relay sets __file__ to this source script, while an installed
+# package resolves the ordinary sibling module from its lib directory.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from benchmark_trajectories import alpha as alpha_trajectory
+from benchmark_trajectories import bravo as bravo_trajectory
+from benchmark_trajectories import heading as trajectory_heading
 
 
 WORLD_FRAME = "world"
 GROUND_Z = 0.0
-
-
-def _smoothstep(value):
-    value = max(0.0, min(1.0, value))
-    return value * value * (3.0 - 2.0 * value)
-
-
-def _mix(first, second, amount):
-    amount = _smoothstep(amount)
-    return (first[0] + (second[0] - first[0]) * amount,
-            first[1] + (second[1] - first[1]) * amount)
 
 
 def _quaternion_from_pitch_yaw(pitch, yaw):
@@ -45,31 +38,22 @@ def _quaternion_from_pitch_yaw(pitch, yaw):
 
 
 class BenchmarkDriver:
-    """Owns scene timing, target truth, and the simulated gimbal attitude."""
+    """Owns scene timing, tank poses, and their public truth records."""
 
     def __init__(self):
         self.rate_hz = float(rospy.get_param("~rate_hz", 20.0))
         if self.rate_hz < 2.0 or self.rate_hz > 60.0:
             raise ValueError("~rate_hz must be in [2, 60]")
-        self.gimbal_anchor = tuple(rospy.get_param(
-            "~gimbal_anchor", [25.0, 0.0, 20.0]))
-        if len(self.gimbal_anchor) != 3:
-            raise ValueError("~gimbal_anchor must contain [x, y, z]")
-        self.gimbal_target_id = int(rospy.get_param("~gimbal_target_id", 101))
-        # ModelState is intentionally used for deterministic benchmark paths;
-        # it bypasses Gazebo contact resolution. Maintain visual clearance in
-        # the driver so close targets test association rather than artefacts
-        # where two solid models occupy the same space.
-        self.minimum_tank_clearance_m = float(rospy.get_param(
-            "~minimum_tank_clearance_m", 12.0))
-        self.minimum_decoy_clearance_m = float(rospy.get_param(
-            "~minimum_decoy_clearance_m", 14.0))
-        if self.minimum_tank_clearance_m <= 0.0 or self.minimum_decoy_clearance_m <= 0.0:
-            raise ValueError("visual-clearance distances must be positive")
+        self.benchmark_namespace = str(rospy.get_param(
+            "~benchmark_namespace", "tracking_benchmark")).strip("/")
         self.start_time = None
         self.last_time = None
+        self.previous_loop_time = None
+        self.last_yaw = {}
         self.state_client = rospy.ServiceProxy("/gazebo/set_model_state",
                                                SetModelState, persistent=True)
+        self.tf_static_broadcaster = tf2_ros.StaticTransformBroadcaster()
+        self._publish_static_frames()
         self.marker_pub = rospy.Publisher("/tracking_benchmark/ground_truth/markers",
                                           MarkerArray, queue_size=2)
         self.catalog_pub = rospy.Publisher("/tracking_benchmark/ground_truth/catalog",
@@ -78,13 +62,14 @@ class BenchmarkDriver:
                                          String, queue_size=2)
         self.phase_pub = rospy.Publisher("/tracking_benchmark/scenario_phase",
                                          String, queue_size=1, latch=True)
+        self.vehicle_state_pub = rospy.Publisher(
+            "/{}/state_estimator/benchmark/odom".format(
+                self.benchmark_namespace), Odometry, queue_size=1)
         self.targets = (
-            {"id": 101, "model": "benchmark_tank_alpha", "class": "tank",
-             "trajectory": self._alpha},
-            {"id": 102, "model": "benchmark_tank_bravo", "class": "tank",
-             "trajectory": self._bravo},
-            {"id": 201, "model": "benchmark_armored_decoy",
-             "class": "armored_decoy", "trajectory": self._decoy},
+            {"id": 101, "model": "benchmark_tank_alpha",
+             "class": "tank", "trajectory": alpha_trajectory},
+            {"id": 102, "model": "benchmark_tank_bravo",
+             "class": "tank", "trajectory": bravo_trajectory},
         )
         self.odom_pubs = {
             target["id"]: rospy.Publisher(
@@ -98,101 +83,13 @@ class BenchmarkDriver:
             "targets": [{"public_id": target["id"], "model": target["model"],
                          "class": target["class"]} for target in self.targets],
             "fixed_camera": "/tracking_benchmark/fixed_camera/image_raw",
-            "gimbal_camera": "/tracking_benchmark/gimbal_camera/image_raw",
-            "fixed_camera_occlusion_holds_sec": [1, 3, 5, 10],
+            "scene_profile": "fixed_camera_two_tanks_no_occluders",
+            "trajectory_model": "parallel_quintic_courses_16m_spacing",
+            "speed_limit_mps": 3.6,
         }, sort_keys=True)))
 
     @staticmethod
-    def _alpha(time_sec):
-        """64 s loop: circle, line, sharp turn, stop/restart, 1/3/5/10 s holds."""
-        time_sec %= 64.0
-        if time_sec < 12.0:
-            angle = 2.0 * math.pi * time_sec / 12.0
-            return (-13.0 + 4.5 * math.cos(angle),
-                    -11.0 + 4.5 * math.sin(angle), "circle", False)
-        if time_sec < 16.0:
-            x, y = _mix((-8.5, -11.0), (-12.0, -4.0), (time_sec - 12.0) / 4.0)
-            return x, y, "straight_line", False
-        if time_sec < 17.0:
-            x, y = _mix((-12.0, -4.0), (-12.0, 5.0), time_sec - 16.0)
-            return x, y, "enter_occluder_1s", False
-        if time_sec < 18.0:
-            return -12.0, 5.0, "fixed_camera_occlusion_1s", True
-        if time_sec < 19.0:
-            x, y = _mix((-12.0, 5.0), (-12.0, -4.0), time_sec - 18.0)
-            return x, y, "leave_occluder_1s", False
-        if time_sec < 21.0:
-            x, y = _mix((-12.0, -4.0), (-4.0, -4.0), (time_sec - 19.0) / 2.0)
-            return x, y, "transit_to_occluder_3s", False
-        if time_sec < 22.0:
-            x, y = _mix((-4.0, -4.0), (-4.0, 5.0), time_sec - 21.0)
-            return x, y, "enter_occluder_3s", False
-        if time_sec < 25.0:
-            return -4.0, 5.0, "fixed_camera_occlusion_3s", True
-        if time_sec < 26.0:
-            x, y = _mix((-4.0, 5.0), (-4.0, -4.0), time_sec - 25.0)
-            return x, y, "leave_occluder_3s", False
-        if time_sec < 28.0:
-            x, y = _mix((-4.0, -4.0), (4.0, -4.0), (time_sec - 26.0) / 2.0)
-            return x, y, "transit_to_occluder_5s", False
-        if time_sec < 29.0:
-            x, y = _mix((4.0, -4.0), (4.0, 5.0), time_sec - 28.0)
-            return x, y, "enter_occluder_5s", False
-        if time_sec < 34.0:
-            return 4.0, 5.0, "fixed_camera_occlusion_5s", True
-        if time_sec < 35.0:
-            x, y = _mix((4.0, 5.0), (4.0, -4.0), time_sec - 34.0)
-            return x, y, "leave_occluder_5s", False
-        if time_sec < 37.0:
-            x, y = _mix((4.0, -4.0), (13.0, -4.0), (time_sec - 35.0) / 2.0)
-            return x, y, "transit_to_occluder_10s", False
-        if time_sec < 38.0:
-            x, y = _mix((13.0, -4.0), (13.0, 5.0), time_sec - 37.0)
-            return x, y, "enter_occluder_10s", False
-        if time_sec < 48.0:
-            return 13.0, 5.0, "fixed_camera_occlusion_10s", True
-        if time_sec < 49.0:
-            x, y = _mix((13.0, 5.0), (13.0, -4.0), time_sec - 48.0)
-            return x, y, "leave_occluder_10s", False
-        if time_sec < 54.0:
-            return 13.0, -4.0, "stop", False
-        if time_sec < 55.5:
-            x, y = _mix((13.0, -4.0), (13.0, -12.0), (time_sec - 54.0) / 1.5)
-            return x, y, "sharp_turn_leg_1", False
-        if time_sec < 57.0:
-            x, y = _mix((13.0, -12.0), (7.0, -12.0), (time_sec - 55.5) / 1.5)
-            return x, y, "sharp_turn_leg_2", False
-        x, y = _mix((7.0, -12.0), (-8.5, -11.0), (time_sec - 57.0) / 7.0)
-        return x, y, "return_to_circle", False
-
-    @staticmethod
-    def _bravo(time_sec):
-        angle = 2.0 * math.pi * (time_sec % 28.0) / 28.0
-        return (-3.0 + 9.5 * math.sin(angle),
-                -9.0 + 4.2 * math.sin(2.0 * angle),
-                "similar_tank_figure_eight", False)
-
-    @staticmethod
-    def _decoy(time_sec):
-        time_sec %= 36.0
-        if time_sec < 8.0:
-            x, y = _mix((20.0, -14.0), (7.0, -14.0), time_sec / 8.0)
-            return x, y, "decoy_approach", False
-        if time_sec < 12.0:
-            return 7.0, -14.0, "decoy_stop", False
-        if time_sec < 16.0:
-            x, y = _mix((7.0, -14.0), (7.0, -7.0), (time_sec - 12.0) / 4.0)
-            return x, y, "decoy_turn", False
-        if time_sec < 24.0:
-            x, y = _mix((7.0, -7.0), (20.0, -7.0), (time_sec - 16.0) / 8.0)
-            return x, y, "decoy_depart", False
-        if time_sec < 28.0:
-            return 20.0, -7.0, "decoy_stop", False
-        x, y = _mix((20.0, -7.0), (20.0, -14.0), (time_sec - 28.0) / 8.0)
-        return x, y, "decoy_return", False
-
-    @staticmethod
-    def _state(model_name, x, y, yaw, z=GROUND_Z):
+    def _state(model_name, x, y, yaw, z=GROUND_Z, vx=0.0, vy=0.0):
         state = ModelState()
         state.model_name = model_name
         state.reference_frame = WORLD_FRAME
@@ -206,57 +103,86 @@ class BenchmarkDriver:
         state.pose.orientation.z = qz
         state.pose.orientation.w = qw
         state.twist = Twist()
+        state.twist.linear.x = vx
+        state.twist.linear.y = vy
         return state
 
     @staticmethod
-    def _heading(trajectory, time_sec, fallback=0.0):
-        first = trajectory(time_sec)
-        second = trajectory(time_sec + 0.05)
-        dx, dy = second[0] - first[0], second[1] - first[1]
-        return math.atan2(dy, dx) if math.hypot(dx, dy) > 0.02 else fallback
+    def _make_transform(parent, child, stamp, translation, quaternion):
+        transform = TransformStamped()
+        transform.header.stamp = stamp
+        transform.header.frame_id = parent
+        transform.child_frame_id = child
+        transform.transform.translation.x = translation[0]
+        transform.transform.translation.y = translation[1]
+        transform.transform.translation.z = translation[2]
+        transform.transform.rotation.x = quaternion[0]
+        transform.transform.rotation.y = quaternion[1]
+        transform.transform.rotation.z = quaternion[2]
+        transform.transform.rotation.w = quaternion[3]
+        return transform
+
+    def _publish_static_frames(self):
+        fixed_link_q = transformations.quaternion_from_euler(
+            0.0, math.radians(50.0), math.pi / 2.0)
+        link_optical_q = transformations.quaternion_from_euler(
+            -math.pi / 2.0, 0.0, -math.pi / 2.0)
+        fixed_optical_q = transformations.quaternion_multiply(
+            fixed_link_q, link_optical_q)
+        stamp = rospy.Time(0)
+        self.tf_static_broadcaster.sendTransform([
+            self._make_transform(
+                "world", "tracking_benchmark/metric_origin", stamp,
+                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+            self._make_transform(
+                "world", "tracking_benchmark/fixed_camera_optical_frame", stamp,
+                (0.0, -27.0, 29.0), fixed_optical_q),
+        ])
+
+    def _rate_limited_yaw(self, target, elapsed, dt):
+        desired = trajectory_heading(target["trajectory"], elapsed,
+                                     self.last_yaw.get(target["id"], 0.0))
+        previous = self.last_yaw.get(target["id"])
+        if previous is None:
+            result = desired
+        else:
+            delta = math.atan2(math.sin(desired - previous),
+                               math.cos(desired - previous))
+            maximum_delta = 1.2 * max(0.0, min(0.2, dt))
+            result = previous + max(-maximum_delta,
+                                    min(maximum_delta, delta))
+        self.last_yaw[target["id"]] = result
+        return result
 
     @staticmethod
-    def _separate_from(anchor, candidate, clearance, fallback_yaw):
-        """Return candidate moved only when its visual envelopes overlap."""
-        dx, dy = candidate[0] - anchor[0], candidate[1] - anchor[1]
-        distance = math.hypot(dx, dy)
-        if distance >= clearance:
-            return candidate
-        if distance < 1e-6:
-            dx, dy = math.cos(fallback_yaw), math.sin(fallback_yaw)
-            distance = 1.0
-        scale = clearance / distance
-        return (anchor[0] + dx * scale, anchor[1] + dy * scale,
-                candidate[2], candidate[3])
+    def _velocity(trajectory, elapsed):
+        half_step = 0.01
+        before = trajectory(elapsed - half_step)
+        after = trajectory(elapsed + half_step)
+        return ((after[0] - before[0]) / (2.0 * half_step),
+                (after[1] - before[1]) / (2.0 * half_step))
 
-    def _apply_visual_clearance(self, evaluated, elapsed):
-        """Keep driven models apart because direct pose updates skip contacts."""
-        alpha, bravo, decoy = evaluated
-        alpha_heading = self._heading(self._alpha, elapsed)
-        bravo_heading = self._heading(self._bravo, elapsed)
-        # A correction away from bravo can otherwise put the decoy back inside
-        # alpha's clearance disk.  A tiny bounded projection loop resolves all
-        # three pairwise constraints deterministically without a physics step.
-        # Sixteen projections are still negligible at the 20 Hz scene rate
-        # and converge to millimetre-level separation for the worst crossing.
-        for _ in range(16):
-            bravo = self._separate_from(alpha, bravo,
-                                        self.minimum_tank_clearance_m,
-                                        alpha_heading + 0.5 * math.pi)
-            decoy = self._separate_from(alpha, decoy,
-                                        self.minimum_decoy_clearance_m,
-                                        alpha_heading - 0.5 * math.pi)
-            decoy = self._separate_from(bravo, decoy,
-                                        self.minimum_decoy_clearance_m,
-                                        bravo_heading - 0.5 * math.pi)
-        return [alpha, bravo, decoy]
+    def _publish_vehicle_state(self, stamp):
+        odometry = Odometry()
+        odometry.header.stamp = stamp
+        odometry.header.frame_id = "world"
+        odometry.child_frame_id = "tracking_benchmark/metric_origin"
+        odometry.pose.pose.orientation.w = 1.0
+        odometry.pose.covariance[0] = 1e-6
+        odometry.pose.covariance[7] = 1e-6
+        odometry.pose.covariance[14] = 1e-6
+        odometry.pose.covariance[21] = 1e-6
+        odometry.pose.covariance[28] = 1e-6
+        odometry.pose.covariance[35] = 1e-6
+        self.vehicle_state_pub.publish(odometry)
 
     def _publish_truth(self, stamp, elapsed, evaluated):
         markers = MarkerArray()
         rows = []
         for target, point in zip(self.targets, evaluated):
             x, y, phase, expected_occluded = point
-            yaw = self._heading(target["trajectory"], elapsed)
+            yaw = self.last_yaw.get(target["id"],
+                                    trajectory_heading(target["trajectory"], elapsed))
             odometry = Odometry()
             odometry.header.stamp = stamp
             odometry.header.frame_id = WORLD_FRAME
@@ -269,6 +195,9 @@ class BenchmarkDriver:
             odometry.pose.pose.orientation.y = qy
             odometry.pose.pose.orientation.z = qz
             odometry.pose.pose.orientation.w = qw
+            world_vx, world_vy = self._velocity(target["trajectory"], elapsed)
+            odometry.twist.twist.linear.x = math.cos(yaw) * world_vx + math.sin(yaw) * world_vy
+            odometry.twist.twist.linear.y = -math.sin(yaw) * world_vx + math.cos(yaw) * world_vy
             self.odom_pubs[target["id"]].publish(odometry)
 
             marker = Marker()
@@ -283,7 +212,7 @@ class BenchmarkDriver:
             marker.pose.position.z = 4.0
             marker.pose.orientation.w = 1.0
             marker.scale.z = 1.0
-            marker.color.r = 1.0 if target["id"] == self.gimbal_target_id else 0.85
+            marker.color.r = 0.95
             marker.color.g = 0.92
             marker.color.b = 0.20
             marker.color.a = 1.0
@@ -298,22 +227,6 @@ class BenchmarkDriver:
             "stamp": stamp.to_sec(), "elapsed_sec": elapsed, "targets": rows,
         }, sort_keys=True)))
         self.phase_pub.publish(String(data=evaluated[0][2]))
-
-    def _point_gimbal(self, alpha_point):
-        dx = alpha_point[0] - self.gimbal_anchor[0]
-        dy = alpha_point[1] - self.gimbal_anchor[1]
-        dz = alpha_point[2] - self.gimbal_anchor[2]
-        horizontal = math.hypot(dx, dy)
-        yaw = math.atan2(dy, dx)
-        pitch = math.atan2(-dz, max(horizontal, 1e-6))
-        state = self._state("benchmark_gimbal_camera", self.gimbal_anchor[0],
-                            self.gimbal_anchor[1], yaw, self.gimbal_anchor[2])
-        qx, qy, qz, qw = _quaternion_from_pitch_yaw(pitch, yaw)
-        state.pose.orientation.x = qx
-        state.pose.orientation.y = qy
-        state.pose.orientation.z = qz
-        state.pose.orientation.w = qw
-        self.state_client(state)
 
     def run(self):
         while not rospy.is_shutdown():
@@ -331,22 +244,28 @@ class BenchmarkDriver:
             now = stamp.to_sec()
             if self.start_time is None or (self.last_time is not None and now < self.last_time):
                 self.start_time = now
+                self.last_yaw.clear()
+                self.previous_loop_time = now
             self.last_time = now
             elapsed = now - self.start_time
-            evaluated = self._apply_visual_clearance(
-                [target["trajectory"](elapsed) for target in self.targets], elapsed)
+            dt = max(0.0, min(0.2, now - self.previous_loop_time))
+            self.previous_loop_time = now
+            evaluated = [target["trajectory"](elapsed) for target in self.targets]
             try:
                 for target, point in zip(self.targets, evaluated):
-                    yaw = self._heading(target["trajectory"], elapsed)
-                    self.state_client(self._state(target["model"], point[0], point[1], yaw))
-                self._point_gimbal((evaluated[0][0], evaluated[0][1], 1.6))
+                    yaw = self._rate_limited_yaw(target, elapsed, dt)
+                    vx, vy = self._velocity(target["trajectory"], elapsed)
+                    self.state_client(self._state(target["model"], point[0],
+                                                  point[1], yaw, vx=vx, vy=vy))
             except rospy.ServiceException as error:
                 rospy.logwarn_throttle(2.0, "Gazebo state update failed: %s", error)
             self._publish_truth(stamp, elapsed, evaluated)
+            self._publish_vehicle_state(stamp)
             try:
                 rate.sleep()
             except rospy.exceptions.ROSTimeMovedBackwardsException:
                 self.start_time = None
+                self.previous_loop_time = None
                 rate = rospy.Rate(self.rate_hz)
             except rospy.ROSInterruptException:
                 # roslaunch is deliberately responsible for the Gazebo/UI

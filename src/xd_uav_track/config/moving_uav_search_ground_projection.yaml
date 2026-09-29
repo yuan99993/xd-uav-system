@@ -1,0 +1,40 @@
+# Camera and TF calibration for the kinematic moving-quadrotor search scene.
+localization:
+  enabled: true
+  method: "ground_plane"
+
+metadata:
+  image_source: "search_fixed"
+  sensor_id: "search_quadrotor_fixed_camera"
+  detector_name: "sar_yolo_detector"
+
+interfaces:
+  input:
+    detections_2d: "detect/input/fixed/detections_2d"
+    image: "fixed_camera/image_raw"
+    camera_info: "fixed_camera/camera_info"
+  output:
+    detections_3d: "track/detections"
+    status: "detect/fixed_ground_projection/status"
+    debug_image: "detect/fixed_ground_projection/debug_image"
+
+frames:
+  world: "world"
+  camera: "moving_uav_search/fixed_camera_optical_frame"
+
+ground_projection:
+  ground_plane_z_m: 0.0
+  minimum_range_m: 1.0
+  maximum_range_m: 120.0
+  minimum_ray_plane_angle_deg: 8.0
+  box_anchor_y_ratio: 0.50
+  pixel_stddev_px: 2.0
+  ground_height_stddev_m: 0.10
+  position_stddev_m: 0.25
+  tf_timeout_sec: 0.15
+  tf_use_latest_on_failure: false
+  require_detection_timestamp: true
+  require_matching_camera_frame: true
+
+visualization:
+  enabled: false

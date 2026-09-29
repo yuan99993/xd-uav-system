@@ -1,0 +1,7 @@
+# Offline video scoring may tolerate inference latency without pretending it
+# is real-time control. Keep the queue latest-only; do not increase its depth.
+maximum_capture_age_sec: 0.0
+# The replay is an offline accuracy/identity assessment.  It deliberately
+# spends more pixels on small overhead vehicles while ROI recovery remains 640.
+SmartTracker:
+  SMART_TRACKER_INFERENCE_IMAGE_SIZE: 960

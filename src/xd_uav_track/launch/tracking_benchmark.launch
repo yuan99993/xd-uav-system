@@ -20,12 +20,6 @@
   <node pkg="xd_uav_track" type="tracking_benchmark_driver.py"
         name="tracking_benchmark_driver" output="screen" required="true">
     <param name="rate_hz" value="$(arg rate_hz)"/>
-    <param name="gimbal_target_id" value="101"/>
-    <!-- Keep direct pose-driven targets well outside their visual envelopes.
-         SetModelState bypasses Gazebo contacts, so this is the authoritative
-         scenario separation rather than a cosmetic collision setting. -->
-    <param name="minimum_tank_clearance_m" value="12.0"/>
-    <param name="minimum_decoy_clearance_m" value="14.0"/>
-    <rosparam param="gimbal_anchor">[25.0, 0.0, 20.0]</rosparam>
+    <param name="benchmark_namespace" value="tracking_benchmark"/>
   </node>
 </launch>

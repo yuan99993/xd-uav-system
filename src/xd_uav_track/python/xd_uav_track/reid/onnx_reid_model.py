@@ -1,8 +1,10 @@
-"""Verified OpenCV-DNN ReID encoder for CPU/GPU independent deployment."""
+"""Verified ONNX ReID encoder with selectable OpenCV or ONNX Runtime EPs."""
 
 from __future__ import annotations
 
 import hashlib
+import importlib
+import logging
 import os
 import stat
 from pathlib import Path
@@ -12,6 +14,8 @@ import cv2
 import numpy as np
 
 from .deep_reid_model import _resolve_model_path
+
+LOGGER = logging.getLogger(__name__)
 
 
 class OnnxReIDModel:
@@ -33,21 +37,118 @@ class OnnxReIDModel:
             "pixel_mean_bgr", [0.406, 0.456, 0.485]))
         self.scale = float(self.config.get("input_scale", 1.0 / 255.0))
         self.swap_rb = bool(self.config.get("swap_rb", True))
-        self.net = cv2.dnn.readNetFromONNX(str(self.model_path))
+        self.runtime = str(self.config.get("runtime", "opencv_dnn") or
+                           "opencv_dnn").strip().lower()
         target = str(self.config.get("device", "cpu") or "cpu").lower()
-        if target in {"cuda", "gpu"}:
+        self.device_requested = "cuda" if target in {"cuda", "gpu"} else "cpu"
+        self.effective_device = "cpu"
+        self.net = None
+        self._ort = None
+        self._session = None
+        self._input_name = ""
+        self._output_name = ""
+        if self.runtime in {"onnxruntime", "ort"}:
+            self._init_onnxruntime()
+        elif self.runtime in {"opencv", "opencv_dnn", "cv_dnn"}:
+            self.runtime = "opencv_dnn"
+            self._init_opencv_dnn()
+        else:
+            raise ValueError("unsupported ONNX ReID runtime: %s" % self.runtime)
+        self.dimension = int(self.config.get("embedding_dimension", 0))
+
+    def _init_opencv_dnn(self) -> None:
+        self.net = cv2.dnn.readNetFromONNX(str(self.model_path))
+        if self.device_requested == "cuda":
             try:
+                if cv2.cuda.getCudaEnabledDeviceCount() <= 0:
+                    raise RuntimeError("OpenCV has no CUDA device support")
                 self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
                 self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+                self.effective_device = "cuda"
             except Exception:
                 if not bool(self.config.get("fallback_to_cpu", True)):
                     raise
                 self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
                 self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+                LOGGER.warning("OpenCV-DNN CUDA unavailable; ReID explicitly fell back to CPU")
         else:
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
             self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-        self.dimension = int(self.config.get("embedding_dimension", 0))
+
+    def _init_onnxruntime(self) -> None:
+        try:
+            ort = importlib.import_module("onnxruntime")
+        except ImportError as error:
+            raise RuntimeError("ONNX Runtime is required by the selected ReID profile") from error
+        # OSNet's exported graph has many unused counters. Its CUDA kernels
+        # may also print one warning per convolution on some hosts; our
+        # measured runtime/device remains available through diagnostics.
+        ort.set_default_logger_severity(3)
+        # The SAR virtual environment ships CUDA/cuDNN libraries through the
+        # NVIDIA Python wheels. ORT's helper loads those before the CUDA EP is
+        # created, without changing LD_LIBRARY_PATH for unrelated ROS nodes.
+        preload = getattr(ort, "preload_dlls", None)
+        if self.device_requested == "cuda" and callable(preload):
+            try:
+                preload()
+            except Exception as error:
+                LOGGER.warning("ONNX Runtime CUDA library preload failed: %s", error)
+
+        available = list(ort.get_available_providers())
+        fallback = bool(self.config.get("fallback_to_cpu", True))
+        options = ort.SessionOptions()
+        # Exported OSNet contains many unused BatchNorm counters; suppress
+        # per-initializer warnings so first model load does not flood roslaunch.
+        options.log_severity_level = 3
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        options.intra_op_num_threads = max(1, int(self.config.get("intra_op_num_threads", 1)))
+        options.inter_op_num_threads = max(1, int(self.config.get("inter_op_num_threads", 1)))
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        if self.device_requested == "cuda":
+            if "CUDAExecutionProvider" not in available:
+                if not fallback:
+                    raise RuntimeError("ONNX Runtime CUDAExecutionProvider is unavailable")
+                providers = ["CPUExecutionProvider"]
+                LOGGER.warning("ONNX Runtime CUDA EP unavailable; ReID explicitly fell back to CPU")
+            else:
+                providers = [
+                    ("CUDAExecutionProvider", {
+                        "device_id": 0,
+                        "cudnn_conv_algo_search": "DEFAULT",
+                        "do_copy_in_default_stream": 1,
+                    }),
+                    "CPUExecutionProvider",
+                ]
+        else:
+            providers = ["CPUExecutionProvider"]
+
+        try:
+            session = ort.InferenceSession(
+                str(self.model_path), sess_options=options, providers=providers)
+        except Exception as error:
+            if self.device_requested != "cuda" or not fallback:
+                raise
+            LOGGER.warning("ONNX Runtime CUDA session failed; retrying CPU: %s", error)
+            session = ort.InferenceSession(
+                str(self.model_path), sess_options=options,
+                providers=["CPUExecutionProvider"])
+        session_providers = list(session.get_providers())
+        if self.device_requested == "cuda" and "CUDAExecutionProvider" not in session_providers:
+            if not fallback:
+                raise RuntimeError("ONNX Runtime session did not activate CUDAExecutionProvider")
+            LOGGER.warning("ONNX Runtime session is CPU-only; ReID is running on CPU")
+        self.effective_device = (
+            "cuda" if "CUDAExecutionProvider" in session_providers else "cpu")
+        inputs = session.get_inputs()
+        outputs = session.get_outputs()
+        if not inputs or not outputs:
+            raise RuntimeError("ONNX ReID model has no input or output")
+        self._ort = ort
+        self._session = session
+        self._input_name = inputs[0].name
+        self._output_name = outputs[0].name
+        LOGGER.info("ONNX ReID initialized: runtime=onnxruntime device=%s providers=%s",
+                    self.effective_device, session_providers)
 
     def _verify_model(self) -> None:
         maximum = int(self.config.get("maximum_model_bytes", 512 * 1024 * 1024))
@@ -97,8 +198,12 @@ class OnnxReIDModel:
             valid_rois, scalefactor=self.scale,
             size=(self.input_width, self.input_height), mean=self.mean,
             swapRB=self.swap_rb, crop=False)
-        self.net.setInput(blob)
-        raw = np.asarray(self.net.forward(), dtype=np.float32)
+        if self._session is not None:
+            raw = np.asarray(self._session.run(
+                [self._output_name], {self._input_name: blob})[0], dtype=np.float32)
+        else:
+            self.net.setInput(blob)
+            raw = np.asarray(self.net.forward(), dtype=np.float32)
         if raw.size == 0 or raw.size % len(valid_rois) != 0:
             return outputs
         features = raw.reshape(len(valid_rois), -1)
@@ -119,3 +224,8 @@ class OnnxReIDModel:
 
     def close(self) -> None:
         self.net = None
+        self._session = None
+        self._ort = None
+
+    def runtime_status(self) -> str:
+        return "%s/%s" % (self.runtime, self.effective_device)

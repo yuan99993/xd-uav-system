@@ -44,6 +44,9 @@ class ReidEncoderNode:
             "~maximum_rois_per_frame", runtime.get("maximum_rois_per_frame", 32))))
         self._preserve_existing = bool(rospy.get_param(
             "~preserve_existing_embedding", False))
+        self._minimum_embedding_quality = min(1.0, max(0.0, float(
+            rospy.get_param("~reid/minimum_embedding_quality",
+                            config.get("minimum_embedding_quality", 0.04)))))
         self._images = deque(maxlen=self._cache_size)
         self._pending = None
         self._received = 0
@@ -225,13 +228,16 @@ class ReidEncoderNode:
             features, qualities = self._encoder.encode_many_with_quality(
                 image, observations)
             for candidate, feature, quality in zip(selected, features, qualities):
-                candidate.appearance_embedding = [] if feature is None else \
+                # DetectionCandidate deliberately keeps the existing ROS
+                # contract: low-quality appearance is represented as no
+                # embedding, not an undeclared message field. The tracker
+                # then relies on motion/metric evidence for this observation.
+                usable_feature = feature is not None and \
+                    float(quality) >= self._minimum_embedding_quality
+                candidate.appearance_embedding = [] if not usable_feature else \
                     feature.astype(np.float32, copy=False).tolist()
-                candidate.appearance_quality = 0.0 if feature is None else \
-                    max(0.001, float(quality))
             for candidate in output.candidates[self._max_rois:]:
                 candidate.appearance_embedding = []
-                candidate.appearance_quality = 0.0
             self._publisher.publish(output)
             self._published += 1
             rospy.loginfo_throttle(

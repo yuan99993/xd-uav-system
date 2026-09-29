@@ -25,5 +25,9 @@ fi
 
 ros_distro="${ROS_DISTRO:-noetic}"
 ros_python_path="/opt/ros/$ros_distro/lib/python3/dist-packages"
+package_python_path="$package_dir/python"
+if [[ -d "$package_python_path" ]]; then
+  export PYTHONPATH="$package_python_path${PYTHONPATH:+:$PYTHONPATH}"
+fi
 export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$ros_python_path"
 exec "$python_executable" "$node_script" "$@"

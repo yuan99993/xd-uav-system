@@ -1,0 +1,138 @@
+<launch>
+  <!-- One lightweight Gazebo world + one shared train7 detector + tracker. -->
+  <arg name="gui" default="true"/>
+  <arg name="uav_altitude_m" default="28.0"/>
+  <arg name="minimum_altitude_m" default="28.0"/>
+  <arg name="maximum_altitude_m" default="60.0"/>
+  <arg name="altitude_rate_mps" default="1.5"/>
+  <arg name="expected_target_count" default="3"/>
+  <arg name="follow_loss_coast_sec" default="5.0"/>
+  <arg name="search_cruise_speed_mps" default="1.4"/>
+  <arg name="coverage_transit_speed_mps" default="1.6"/>
+  <arg name="follow_max_speed_mps" default="2.6"/>
+  <arg name="horizontal_acceleration_mps2" default="1.2"/>
+  <arg name="yaw_rate_limit_radps" default="0.4"/>
+  <arg name="follow_fov_margin" default="0.72"/>
+  <arg name="follow_preserve_other_targets" default="true"/>
+  <arg name="follow_overview_altitude_m" default="58.0"/>
+  <arg name="follow_overview_margin_m" default="2.0"/>
+  <arg name="follow_overview_fraction" default="0.35"/>
+  <arg name="local_reacquire_sec" default="12.0"/>
+  <arg name="local_reacquire_altitude_m" default="40.0"/>
+  <arg name="search_area_min_x_m" default="-34.0"/>
+  <arg name="search_area_max_x_m" default="34.0"/>
+  <arg name="search_area_min_y_m" default="-18.0"/>
+  <arg name="search_area_max_y_m" default="18.0"/>
+  <arg name="show_overlay" default="true"/>
+  <arg name="enable_reid" default="true"/>
+  <arg name="detector_fps" default="4.0"/>
+  <arg name="overlay_fps" default="8.0"/>
+  <arg name="detector_config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml"/>
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt"/>
+  <arg name="model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54"/>
+  <arg name="model_version" default="xd_vehicle_train7_best"/>
+  <arg name="inference_backend" default="tensorrt_fp16"/>
+  <arg name="engine_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.engine"/>
+  <arg name="engine_sha256" default="88ed19419dcefdf64f6c90f31aa7961ef906c31d3581633afba69fa586bc850f"/>
+  <arg name="engine_source_model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54"/>
+  <arg name="auto_export_engine" default="true"/>
+  <arg name="engine_cache_dir" default="~/.cache/sar_yolo_detector/tensorrt"/>
+
+  <env name="QT_QPA_PLATFORM" value="xcb"/>
+  <include file="$(find xd_uav_track)/launch/moving_uav_vehicle_search_world.launch">
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="altitude_m" value="$(arg uav_altitude_m)"/>
+    <arg name="minimum_altitude_m" value="$(arg minimum_altitude_m)"/>
+    <arg name="maximum_altitude_m" value="$(arg maximum_altitude_m)"/>
+    <arg name="altitude_rate_mps" value="$(arg altitude_rate_mps)"/>
+    <arg name="expected_target_count" value="$(arg expected_target_count)"/>
+    <arg name="follow_loss_coast_sec" value="$(arg follow_loss_coast_sec)"/>
+    <arg name="search_cruise_speed_mps" value="$(arg search_cruise_speed_mps)"/>
+    <arg name="coverage_transit_speed_mps" value="$(arg coverage_transit_speed_mps)"/>
+    <arg name="follow_max_speed_mps" value="$(arg follow_max_speed_mps)"/>
+    <arg name="horizontal_acceleration_mps2" value="$(arg horizontal_acceleration_mps2)"/>
+    <arg name="yaw_rate_limit_radps" value="$(arg yaw_rate_limit_radps)"/>
+    <arg name="follow_fov_margin" value="$(arg follow_fov_margin)"/>
+    <arg name="follow_preserve_other_targets" value="$(arg follow_preserve_other_targets)"/>
+    <arg name="follow_overview_altitude_m" value="$(arg follow_overview_altitude_m)"/>
+    <arg name="follow_overview_margin_m" value="$(arg follow_overview_margin_m)"/>
+    <arg name="follow_overview_fraction" value="$(arg follow_overview_fraction)"/>
+    <arg name="local_reacquire_sec" value="$(arg local_reacquire_sec)"/>
+    <arg name="local_reacquire_altitude_m" value="$(arg local_reacquire_altitude_m)"/>
+    <arg name="search_area_min_x_m" value="$(arg search_area_min_x_m)"/>
+    <arg name="search_area_max_x_m" value="$(arg search_area_max_x_m)"/>
+    <arg name="search_area_min_y_m" value="$(arg search_area_min_y_m)"/>
+    <arg name="search_area_max_y_m" value="$(arg search_area_max_y_m)"/>
+  </include>
+
+  <include file="$(find sar_yolo_detector)/launch/xd_yolo_multi_source_detection_integration.launch">
+    <arg name="UAV_NAME" value="moving_uav_search"/>
+    <arg name="config" value="$(arg detector_config)"/>
+    <arg name="model_path" value="$(arg model_path)"/>
+    <arg name="model_sha256" value="$(arg model_sha256)"/>
+    <arg name="model_version" value="$(arg model_version)"/>
+    <arg name="inference_backend" value="$(arg inference_backend)"/>
+    <arg name="engine_path" value="$(arg engine_path)"/>
+    <arg name="engine_sha256" value="$(arg engine_sha256)"/>
+    <arg name="engine_source_model_sha256" value="$(arg engine_source_model_sha256)"/>
+    <arg name="auto_export_engine" value="$(arg auto_export_engine)"/>
+    <arg name="engine_cache_dir" value="$(arg engine_cache_dir)"/>
+    <arg name="maximum_batch_size" value="1"/>
+    <arg name="startup_warmup_frames" value="1"/>
+    <arg name="fixed_image_topic" value="fixed_camera/image_raw"/>
+    <arg name="gimbal_image_topic" value="gimbal_camera/disabled_image"/>
+    <arg name="fixed_output_topic" value="detect/input/fixed/detections_2d"/>
+    <arg name="gimbal_output_topic" value="detect/input/gimbal/detections_2d"/>
+    <arg name="fixed_image_source" value="search_fixed"/>
+    <arg name="gimbal_image_source" value="search_gimbal"/>
+    <arg name="fixed_sensor_id" value="search_quadrotor_fixed_camera"/>
+    <arg name="gimbal_sensor_id" value="disabled_gimbal"/>
+    <arg name="fixed_detection_area" value="[0.0, 0.0, 1.0, 1.0]"/>
+    <arg name="reid_enabled" value="$(arg enable_reid)"/>
+    <arg name="fixed_reid_profile" value="xd_vehicle_train7"/>
+    <arg name="tracking_tracks_topic" value="track/tracks"/>
+    <arg name="discovery_max_fps" value="$(arg detector_fps)"/>
+    <arg name="priority_max_fps" value="$(arg detector_fps)"/>
+    <arg name="standby_max_fps" value="$(arg detector_fps)"/>
+    <arg name="pixel_assist_enabled" value="true"/>
+  </include>
+
+  <include file="$(find xd_uav_track)/launch/detect_instance.launch">
+    <arg name="UAV_NAME" value="moving_uav_search"/>
+    <arg name="config" value="$(find xd_uav_track)/config/moving_uav_search_ground_projection.yaml"/>
+    <arg name="node_name" value="fixed_camera_ground_projection"/>
+    <arg name="body_frame" value="moving_uav_search/base_link"/>
+    <arg name="world_frame" value="world"/>
+    <arg name="image_source" value="search_fixed"/>
+    <arg name="sensor_id" value="search_quadrotor_fixed_camera"/>
+    <arg name="detector_name" value="sar_yolo_detector"/>
+    <arg name="image_topic" value="fixed_camera/image_raw"/>
+    <arg name="camera_info_topic" value="fixed_camera/camera_info"/>
+    <arg name="detections_2d_topic" value="detect/input/fixed/detections_2d"/>
+    <arg name="detections_3d_topic" value="track/detections"/>
+    <arg name="status_topic" value="detect/fixed_ground_projection/status"/>
+  </include>
+
+  <group ns="moving_uav_search">
+    <node pkg="xd_uav_track" type="xd_uav_track_node" name="track" output="screen" clear_params="true">
+      <rosparam command="load" file="$(find xd_uav_track)/config/track.yaml"/>
+      <rosparam command="load" file="$(find xd_uav_track)/config/moving_uav_search_tracker.yaml"/>
+      <param name="frames/body" value="moving_uav_search/base_link"/>
+    </node>
+    <node pkg="xd_uav_track" type="tracking_overlay_node.py" name="fixed_tracking_overlay" output="screen">
+      <param name="image_source" value="search_fixed"/>
+      <param name="show_confirmed_only" value="true"/>
+      <param name="show_selected_lost" value="true"/>
+      <param name="selected_lost_max_frames" value="3"/>
+      <param name="input_image_topic" value="fixed_camera/image_raw"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="status_topic" value="track/status"/>
+      <param name="output_image_topic" value="fixed_camera/tracking_overlay"/>
+      <param name="display_rate_hz" value="$(arg overlay_fps)"/>
+      <param name="maximum_pair_delta_sec" value="0.40"/>
+    </node>
+    <node if="$(arg show_overlay)" pkg="rqt_image_view" type="rqt_image_view"
+          name="fixed_tracking_overlay_view"
+          args="/moving_uav_search/fixed_camera/tracking_overlay" output="screen"/>
+  </group>
+</launch>
