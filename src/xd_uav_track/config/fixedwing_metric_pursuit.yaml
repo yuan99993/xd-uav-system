@@ -1,0 +1,40 @@
+# Fixed-wing world-frame metric pursuit profile. Load after track.yaml.
+runtime:
+  publish_rate_hz: 30.0
+  publish_control_reference: true
+  state_timeout_sec: 1.0
+
+interfaces:
+  input:
+    metric_target: "track/metric_target"
+    vehicle_state: "state_estimator/main/frames/world/odom"
+  output:
+    control_reference: "control/reference/setpoint"
+    status: "track/status"
+
+tracker:
+  enabled_at_startup: false
+  input_timeout_sec: 0.30
+
+follower:
+  profile: "fw_metric_pursuit"
+  enable_vertical_control: false
+  fw_metric_pursuit:
+    airspeed: 15.0
+    maximum_course_offset: 0.70
+    maximum_climb_rate: 3.0
+  target_guidance:
+    # The profile itself enables metric guidance; these values tune it.
+    observation:
+      policy: "metric_required"
+      metric_timeout_sec: 0.30
+      max_position_sigma_m: 12.0
+    target_loss:
+      coast_time_sec: 2.0
+      orbit_time_sec: 10.0
+    fixed_wing:
+      kinematics_enabled: true
+      airspeed_mps: 15.0
+      maximum_bank_angle_deg: 35.0
+    predictive_fov:
+      enabled: false

@@ -4,6 +4,27 @@ tracks_topic: "track/tracks"
 bbox_topic: "gm_control/target_bbox"
 gm_gimbal_state_topic: "gm_control/gimbal_state"
 track_gimbal_state_topic: "track/gimbal_state"
+track_status_topic: "track/status"
+
+# Couple the existing xd_uav_track lifecycle to the existing gm_control gate.
+# No task executor dependency is needed: gm_velocity_* + active tracker enables
+# the gimbal, while tracker stop/profile change/emergency stop disables it.
+auto_gimbal_tracking: true
+gimbal_tracking_service: "gm_control/start_tracking"
+# Do not invoke the search service automatically. Search remains available as
+# an explicit operator call to gm_control/start_search.
+auto_gimbal_search: false
+gimbal_search_service: "gm_control/start_search"
+gimbal_service_retry_s: 0.5
+
+# Proximity is retained as state/configuration for compatibility, but it does
+# not start a search while auto_gimbal_search is disabled. Keep radius_m
+# aligned with task_allocate's allocation/worker_execution/target_radius_m.
+proximity_search:
+  enabled: true
+  radius_m: 20.0
+  rescue_tasks_topic: "/task_allocate/rescue_tasks"
+  worker_odometry_topic: "state_estimator/main/odom"
 
 # Invalidate the gimbal target when the track stream stops updating.
 track_timeout_s: 0.35

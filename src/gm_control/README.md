@@ -44,6 +44,53 @@ those topics and no MAVROS mount-control interface is added here.
 The bridge invalidates the bbox when the track stream times out. Direction signs
 for driver-specific gimbal conventions are in `config/xd_track_bridge.yaml`.
 
+When launched through `xd_track_gimbal_control.launch`, the bridge automatically
+opens the existing gimbal tracking gate while `xd_uav_track` is active with a
+`gm_velocity_*` requested profile. Tracker stop, a non-GM profile, or emergency
+stop closes the gate. This lifecycle stays in `gm_control`; task execution does
+not call the gimbal service and no ROS message or service type is changed.
+After tracking enablement is acknowledged, the bridge also calls the existing
+`start_search(true)` service only when `auto_gimbal_search` is explicitly enabled.
+The default is now disabled: a lost target or proximity event does not start a
+scan automatically. Search is operator-controlled through `start_search`.
+The bridge marks the forwarded gimbal state invalid until enablement is
+acknowledged, so a missing gimbal controller cannot be mistaken for a completed
+GM tracking task.
+
+The bridge also watches the existing rescue-task and worker-odometry topics.
+Proximity state is retained for compatibility, but it only enables search when
+`auto_gimbal_search` is explicitly enabled. Once the task is completed, failed,
+cancelled, or released and tracking has stopped, both gates close and gm_control
+commands the configured `target_lost/back_to_init_*` angles for
+`return_to_init_on_stop/duration_s`.
+
+The gate can still be controlled manually (or automatic coupling can be disabled
+with `auto_gimbal_tracking: false`):
+
+```bash
+rosservice call /uav1/gm_control/start_tracking "start: true"
+rosservice call /uav1/gm_control/start_tracking "start: false"
+```
+
+The service uses `StartGimbalTracking.srv`. With
+`return_to_init_on_stop/enabled: true`, disabling the final active gate first
+publishes the configured initial-angle command for a short interval, then
+returns to invalid/hold output. The latest bbox is retained for a later restart.
+
+Calling `start_tracking` by itself never starts search. The legacy
+`target_lost.action: search` value is deprecated and is treated as `stop`; a
+lost target publishes an invalid/hold command after the timeout.
+
+Search can be started and stopped explicitly:
+
+```bash
+rosservice call /uav1/gm_control/start_search "start: true"
+rosservice call /uav1/gm_control/start_search "start: false"
+```
+
+Manual search is allowed before the first detection. A valid target always has
+priority over the search command.
+
 ## Topics
 
 Input:
@@ -67,9 +114,10 @@ valid.
 
 ## Build
 
+Run from the catkin workspace root:
+
 ```bash
-cd /home/kzy/gm_control_ws
-catkin_make
+catkin_make -j2
 source devel/setup.bash
 ```
 
@@ -138,6 +186,12 @@ If the gimbal turns the wrong way, flip `yaw_sign` or `pitch_sign` in
 - `search`: output a constant search yaw/pitch rate.
 - `back_to_init`: output an angle command to return the gimbal to the configured
   initial yaw/pitch/roll.
+
+In `angle` mode, `gm_control` and its Gazebo bridge do not clamp the commanded
+logical yaw/pitch/roll angles. `max_yaw_angle_deg` and `max_pitch_angle_deg` are
+retained only for compatibility and are no longer used. The Typhoon H480 SDF
+gimbal joints are configured without an angle limit as well; other Gazebo
+models or physical gimbal backends may still impose their own limits.
 
 `smoothing` filters command jumps caused by bbox noise.
 

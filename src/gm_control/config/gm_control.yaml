@@ -47,24 +47,35 @@ pitch_sign: 1.0
 
 max_yaw_rate_deg_s: 60.0
 max_pitch_rate_deg_s: 60.0
+# Kept for compatibility with older parameter files. Angle mode no longer
+# clamps yaw_deg/pitch_deg in gm_control; rate limits above still apply in
+# rate mode.
 max_yaw_angle_deg: 90.0
 max_pitch_angle_deg: 90.0
 
 # Target-lost behavior:
 #   stop      - publish invalid command after timeout
 #   hold_last - briefly keep the previous command
-#   search    - publish a constant search rate after target loss
+#   search    - deprecated; automatic search is disabled. Use the
+#               start_search service for an explicit operator request.
 #   back_to_init - publish an angle command to return the gimbal to its initial pose
 target_lost:
   timeout_s: 0.3
-  # 丢框时发布无效命令，后端保持当前角度，避免短暂漏检导致云台反复归零。
+  # 丢框后发布无效命令；搜索必须由 start_search 服务手动触发。
   action: stop
   hold_time_s: 0.2
-  search_yaw_rate_deg_s: 15.0
-  search_pitch_rate_deg_s: 0.0
+  search_yaw_rate_deg_s: 10.0
+  search_pitch_rate_deg_s: 5.0
   back_to_init_yaw_deg: 0.0
   back_to_init_pitch_deg: 0.0
   back_to_init_roll_deg: 0.0
+
+# Closing both the tracking and search gates (task complete, failed, cancelled,
+# or released) repeatedly publishes the initial angle long enough for the
+# physical gimbal adapter to return, then resumes the normal invalid/hold state.
+return_to_init_on_stop:
+  enabled: true
+  duration_s: 2.0
 
 # Smooth the output command to reduce jitter from bbox noise.
 smoothing:
