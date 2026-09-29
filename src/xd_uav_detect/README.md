@@ -70,7 +70,7 @@ roslaunch xd_uav_detect detect.launch \
 ```
 
 ```bash
-cd /home/promise/catkin_ws
+cd /path/to/catkin_ws
 catkin_make -j2 --pkg xd_uav_detect
 catkin_make -j2 run_tests_xd_uav_detect
 catkin_test_results build/test_results/xd_uav_detect

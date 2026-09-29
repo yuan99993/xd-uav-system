@@ -21,7 +21,7 @@ TF，就能使用同一节点。`UAV_NAME` 只控制 ROS 命名空间和默认 f
 环境为 ROS Noetic、Python 3。由工作区根目录编译：
 
 ```bash
-cd /home/promise/catkin_ws
+cd /path/to/catkin_ws
 source /opt/ros/noetic/setup.bash
 catkin_make -j2 --pkg xd_uav_detect
 source devel/setup.bash
@@ -442,7 +442,7 @@ MAVLink/动力插件在没有飞控时终止 Gazebo，launch 从同一目录加�
 
 ```bash
 source /opt/ros/noetic/setup.bash
-source /home/promise/catkin_ws/devel/setup.bash
+source /path/to/catkin_ws/devel/setup.bash
 roslaunch xd_uav_detect demo.launch mode:=sensor gui:=true \
   geodetic_enabled:=true
 ```
@@ -588,7 +588,7 @@ rosrun tf tf_echo uav1/base_link uav1/gimbal_laser
 ## 10. 回归测试
 
 ```bash
-cd /home/promise/catkin_ws
+cd /path/to/catkin_ws
 source /opt/ros/noetic/setup.bash
 source devel/setup.bash
 catkin_make -j2 run_tests_xd_uav_detect
