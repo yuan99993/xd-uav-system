@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# These headless demos intentionally have no RC or joystick input. PX4's own
+# MAVROS offboard integration test applies the same Offboard exception bit so
+# an absent RC link cannot pre-empt a healthy offboard setpoint stream.
+param set COM_RCL_EXCEPT 4

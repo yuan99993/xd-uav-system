@@ -1,0 +1,9 @@
+# PX4 Gazebo Classic Iris fixture.  The installed model's 1.5 kg body,
+# 5.84e-6 motor constant, 1000 command scaling and 100 armed offset put its
+# normalized hover command near 0.70.  Keep model-specific fixtures separate:
+# the detect package's x500_gimbal uses a different motor model.
+multirotor:
+  model:
+    hover_throttle: 0.70
+  landing:
+    height_source: odom

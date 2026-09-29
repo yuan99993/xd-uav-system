@@ -27,6 +27,8 @@ add_service_files(
 generate_messages()
 
 catkin_install_python(PROGRAMS
+  scripts/auto_takeoff_when_ready.py
+  scripts/render_px4_sdf.py
   scripts/steady_sitl_clock.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

@@ -1,0 +1,8 @@
+# xd_uav_detect's x500_gimbal Gazebo fixture.  Its motor model uses a 16.48
+# motor constant, 0.85 command scaling and 0.15 armed offset, so its normalized
+# hover command is near 0.50.  This override must not be reused for PX4 Iris.
+multirotor:
+  model:
+    hover_throttle: 0.50
+  landing:
+    height_source: odom

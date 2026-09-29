@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Issue one manager takeoff request after the guarded stack is ready."""
+"""Request takeoff once MAVROS and the repository estimator are ready."""
 
 import time
 
@@ -32,7 +32,8 @@ class AutoTakeoff:
         self._valid_wall = time.monotonic()
 
     def run(self):
-        service_name = rospy.get_param("~takeoff_service", "control_manager/takeoff")
+        service_name = rospy.get_param(
+            "~takeoff_service", "control_manager/takeoff")
         started = time.monotonic()
         rate = rospy.Rate(20)
         while not rospy.is_shutdown():
@@ -48,7 +49,8 @@ class AutoTakeoff:
             else:
                 self._stable_since = None
             if now - started >= self._timeout:
-                rospy.logerr("auto takeoff timed out waiting for MAVROS and estimator")
+                rospy.logerr(
+                    "auto takeoff timed out waiting for MAVROS and estimator")
                 return 2
             rate.sleep()
 

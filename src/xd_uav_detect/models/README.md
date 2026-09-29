@@ -1,7 +1,7 @@
 # xd_uav_detect Gazebo 模型资产
 
-本目录统一保存 detect 演示和载荷集成参考所需的四个模型，不替换现有 MRS/PX4 启动链的
-模型路径：
+本目录统一保存 detect 演示和载荷集成参考所需的四个模型。部分 x500 资产来自 MRS 项目；
+对应许可证和提交信息必须保留，但公开启动链不需要任何 MRS 运行包：
 
 | 目录 | 来源/用途 |
 |---|---|
@@ -86,25 +86,16 @@ sensor 或 plugin。`camera_enabled`、`range_enabled` 可分别关闭载荷设�
 
 执行插件 `libxd_uav_detect_gimbal_joint_controller.so` 使用 Gazebo `JointController` 的 PID
 目标，不暂停世界、不直接写整机位姿。曾短暂试用的
-`libgazebo_ros_joint_pose_trajectory.so` 在完整飞行模型中会切换全局物理状态并导致 PX4/MRS
+`libgazebo_ros_joint_pose_trajectory.so` 在完整飞行模型中会切换全局物理状态并导致 PX4
 状态估计跳变，已撤销；传感器固定夹具通过不能替代飞行稳定性验收。
 
 真实飞行仿真接入时还需由载体/云台驱动发布拍摄时刻的 `body <- gimbal_laser` TF，并处理模型
 命名空间、MAVLink 端口和多机隔离。
 
-特别注意：当前 MRS spawner 将模板名同时作为 `PX4_SIM_MODEL`，并从模板所属 ROS 包寻找
-`ROMFS`；MRS core 的配置文件也由 `UAV_TYPE` 拼接。因此把本目录加入 `extra_resource_paths`
-后直接执行 `--x500_gimbal` 仍会失败。
-
-旋翼单机通过 `launch/demo.launch mode:=px4` 绕过 spawner：它直接加载本目录规范 SDF，使用
-PX4 instance 1，但把 PX4 airframe 保持为已有 `x500`，并启动对应 MAVROS。该入口已经验证
-PX4 simulator TCP、MAVROS heartbeat、Gazebo 有限物理状态、Range 和云台关节状态；它不是
-MRS core/控制器/自动起飞集成。固定翼吊舱模型仍只交付模型和标准传感器接口，不扩展到固定翼
-云台或航向控制。
-
-`launch/demo.launch mode:=flight` 在上述底座上额外复用现有 MRS core 和 autostart，提供
-自动起飞以及 `/uav1/control_manager/reference` 位置参考入口，并同时运行吊舱定位演示。该入口
-同样直接加载本目录 SDF，不调用或修改 spawner。
+旋翼单机通过 `launch/demo.launch mode:=px4` 直接加载本目录规范 SDF，使用 PX4 instance 0、
+`iris` 固件启动配置和独立 MAVROS。`mode:=flight` 在此基础上启动仓库自带 estimator、controller
+与 control manager，并通过其公共 takeoff/position 接口运行吊舱定位演示。固定翼吊舱模型仍只
+交付模型和标准传感器接口，不扩展到固定翼云台或航向控制。
 
 两个云台轴使用 `0.01 N·m·s/rad` 被动阻尼。此前的 `0.2` 相对 `1e-4/2e-4 kg·m²` 转动惯量
 过大，PX4 actuator 微小扰动会令 Gazebo 数值发散；当前数值已通过基础 x500、无 PX4 吊舱版

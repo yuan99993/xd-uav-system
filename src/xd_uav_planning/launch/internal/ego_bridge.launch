@@ -7,6 +7,7 @@
   <arg name="odometry_topic" default="ego/odometry" />
   <arg name="position_command_topic" default="ego/position_command" />
   <arg name="allow_nonfinite_yaw_rate" default="false" />
+  <arg name="require_takeoff_complete" default="false" />
 
   <group ns="$(arg uav_name)">
     <node pkg="xd_uav_planning"
@@ -24,6 +25,8 @@
              value="$(arg position_command_topic)" />
       <param name="allow_nonfinite_yaw_rate"
              value="$(arg allow_nonfinite_yaw_rate)" />
+      <param name="require_takeoff_complete"
+             value="$(arg require_takeoff_complete)" />
     </node>
   </group>
 </launch>

@@ -28,14 +28,17 @@
   <depend>xd_uav_track</depend>
 
   <exec_depend>tf</exec_depend>
-  <exec_depend>mrs_msgs</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-jinja2</exec_depend>
   <exec_depend>gazebo_plugins</exec_depend>
   <exec_depend>gazebo_msgs</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>mavros</exec_depend>
+  <exec_depend>px4</exec_depend>
+  <exec_depend>xd_uav_control_manager</exec_depend>
+  <exec_depend>xd_uav_controller</exec_depend>
+  <exec_depend>xd_uav_state_estimators</exec_depend>
   <test_depend>gtest</test_depend>
   <test_depend>gazebo_plugins</test_depend>
   <test_depend>gazebo_msgs</test_depend>

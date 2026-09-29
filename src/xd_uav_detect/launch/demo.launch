@@ -14,10 +14,10 @@
   <arg name="z" default="0.3"/>
   <arg name="yaw" default="0.0"/>
   <arg name="fcu_url"
-       default="udp://127.0.0.1:14006@127.0.0.1:14005"/>
+       default="udp://:14540@localhost:14557"/>
 
   <env name="GAZEBO_MODEL_PATH"
-       value="$(find xd_uav_detect)/models:$(optenv GAZEBO_MODEL_PATH)"/>
+       value="$(find xd_uav_detect)/models:$(find px4)/Tools/sitl_gazebo/models:$(optenv GAZEBO_MODEL_PATH)"/>
 
   <group if="$(eval arg('mode') == 'sensor')">
     <include file="$(find gazebo_ros)/launch/empty_world.launch">
@@ -39,48 +39,35 @@
       <arg name="paused" value="false"/>
       <arg name="use_sim_time" value="true"/>
     </include>
-    <node pkg="gazebo_ros" type="spawn_model" name="spawn_x500_gimbal"
-          output="screen"
-          args="-sdf -file $(find xd_uav_detect)/models/x500_gimbal/model.sdf -model uav1 -x $(arg x) -y $(arg y) -z $(arg z) -Y $(arg yaw)"/>
-    <include file="$(find mrs_uav_gazebo_simulation)/launch/run_simulation_firmware.launch">
-      <arg name="ID" value="1"/>
-      <arg name="PX4_SIM_MODEL" value="x500"/>
-    </include>
-    <include file="$(find mrs_uav_px4_api)/launch/mavros_gazebo_simulation.launch">
-      <arg name="ID" value="1"/>
-      <arg name="vehicle" value="x500"/>
-      <arg name="fcu_url" value="$(arg fcu_url)"/>
+    <include file="$(find xd_uav_control_manager)/launch/sitl/px4_sitl_vehicle.launch">
+      <arg name="UAV_NAME" value="uav1"/>
+      <!-- The payload SDF is a quad-X airframe; PX4 uses its standard Iris
+           startup profile while Gazebo loads the repository payload model. -->
+      <arg name="vehicle" value="iris"/>
+      <arg name="sdf_source"
+           value="$(find xd_uav_detect)/models/x500_gimbal/model.sdf"/>
+      <arg name="sdf_environment_root" value="$(find xd_uav_detect)/models"/>
+      <arg name="x" value="$(arg x)"/>
+      <arg name="y" value="$(arg y)"/>
+      <arg name="z" value="$(arg z)"/>
+      <arg name="yaw" value="$(arg yaw)"/>
+      <arg name="mavros_fcu_url" value="$(arg fcu_url)"/>
     </include>
   </group>
 
   <group if="$(eval arg('mode') == 'flight')">
-    <include file="$(find mrs_uav_px4_api)/launch/api.launch">
+    <include file="$(find xd_uav_control_manager)/launch/sitl/px4_sitl_multirotor_system.launch">
       <arg name="UAV_NAME" value="uav1"/>
-      <arg name="RUN_TYPE" value="simulation"/>
+      <arg name="controller_override_config"
+           value="$(find xd_uav_detect)/config/demo/px4_x500_gimbal_sitl.yaml"/>
     </include>
-    <include file="$(find mrs_uav_core)/launch/core.launch">
-      <arg name="UAV_NAME" value="uav1"/>
-      <arg name="RUN_TYPE" value="simulation"/>
-      <arg name="DEBUG" value="false"/>
-      <arg name="platform_config"
-           value="$(find mrs_uav_gazebo_simulation)/config/mrs_uav_system/x500.yaml"/>
-      <arg name="custom_config"
-           value="$(find mrs_uav_gazebo_simulation)/tmux/one_drone/config/custom_config.yaml"/>
-      <arg name="world_config"
-           value="$(find mrs_uav_gazebo_simulation)/tmux/one_drone/config/world_config.yaml"/>
-      <arg name="network_config"
-           value="$(find mrs_uav_gazebo_simulation)/tmux/one_drone/config/network_config.yaml"/>
-    </include>
-    <include if="$(arg auto_takeoff)"
-             file="$(find mrs_uav_autostart)/launch/automatic_start.launch">
-      <arg name="UAV_NAME" value="uav1"/>
-      <arg name="RUN_TYPE" value="simulation"/>
-      <arg name="custom_config"
-           value="$(find xd_uav_detect)/config/demo/gimbal_flight_autostart.yaml"/>
-    </include>
-    <node if="$(arg auto_takeoff)" pkg="xd_uav_detect"
-          type="gimbal_flight_start.py" name="gimbal_flight_start"
-          output="screen"/>
+    <group ns="uav1">
+      <node if="$(arg auto_takeoff)" pkg="xd_uav_control_manager"
+            type="auto_takeoff_when_ready.py" name="auto_takeoff_when_ready"
+            output="screen">
+        <param name="altitude" value="1.5"/>
+      </node>
+    </group>
   </group>
 
   <group if="$(eval arg('mode') in ['sensor', 'flight'])">

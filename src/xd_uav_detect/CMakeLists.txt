@@ -151,7 +151,6 @@ install(FILES README.md
 )
 
 catkin_install_python(PROGRAMS
-  scripts/demo/gimbal_flight_start.py
   scripts/demo/gimbal_range_demo.py
   scripts/demo/red_box_detector.py
   scripts/demo/spawn_random_vehicles.py

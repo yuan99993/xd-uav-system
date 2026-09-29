@@ -5,9 +5,11 @@
   <arg name="goal_y"/>
   <arg name="takeoff_altitude" default="1.5"/>
   <arg name="common_frame" default="world"/>
+  <arg name="cloud_input_topic" default="/map_generator/global_cloud"/>
+  <arg name="cloud_input_frame" default="$(arg common_frame)"/>
 
   <node pkg="tf2_ros" type="static_transform_publisher"
-        name="x500_fcu_to_base_link_$(arg ego_id)"
+        name="px4_fcu_to_base_link_$(arg ego_id)"
         args="0 0 0 0 0 0 1 $(arg UAV_NAME)/base_link $(arg UAV_NAME)/fcu"/>
   <group ns="$(arg UAV_NAME)">
     <node pkg="xd_uav_planning" type="navsat_origin_provider.py"
@@ -34,18 +36,26 @@
     <arg name="goal_topic" value="/drone_$(arg ego_id)_planning/goal"/>
     <!-- Keep the already validated sequential preset startup for this demo. -->
     <arg name="flight_type" value="2"/>
+    <arg name="require_takeoff_complete" value="true"/>
     <arg name="goal_x" value="12.0"/>
     <arg name="goal_y" value="$(arg goal_y)"/>
     <arg name="goal_z" value="$(arg takeoff_altitude)"/>
-    <arg name="cloud_input_topic" value="/$(arg UAV_NAME)/os_cloud_nodelet/points"/>
-    <arg name="cloud_input_frame" value="$(arg UAV_NAME)/os_sensor"/>
+    <arg name="cloud_input_topic" value="$(arg cloud_input_topic)"/>
+    <arg name="cloud_input_frame" value="$(arg cloud_input_frame)"/>
     <arg name="cloud_timeout" value="0.50"/>
-    <arg name="calibrated_body_transform" value="true"/>
-    <arg name="body_frame" value="$(arg UAV_NAME)/base_link"/>
-    <arg name="body_to_sensor_translation_m" value="[0.0, 0.0, 0.107]"/>
   </include>
   <group ns="$(arg UAV_NAME)">
-    <node pkg="xd_uav_planning" type="auto_takeoff_when_ready.py"
+    <!-- Preset flight_type=2 starts inside EGO and therefore has no external
+         planning goal callback to acquire the first reference owner.  Select
+         it only after both planning health and a fresh candidate prove ready. -->
+    <node pkg="xd_uav_planning" type="select_owner_when_ready.py"
+          name="select_ego_owner_when_ready" output="screen">
+      <param name="health_topic" value="planning/healthy"/>
+      <param name="candidate_topic" value="ego/reference_candidate"/>
+      <param name="service" value="reference_mux/select_ego"/>
+      <param name="timeout" value="0.0"/>
+    </node>
+    <node pkg="xd_uav_control_manager" type="auto_takeoff_when_ready.py"
           name="auto_takeoff_when_ready" output="screen">
       <param name="altitude" value="$(arg takeoff_altitude)"/>
     </node>

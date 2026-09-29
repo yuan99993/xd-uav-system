@@ -4,20 +4,32 @@
   <arg name="rviz" default="true"/>
   <arg name="takeoff_altitude" default="1.5"/>
   <arg name="world_file" default="$(find xd_uav_planning)/worlds/ego_multi_obstacles.world"/>
-  <arg name="spawn_file" default="$(find xd_uav_planning)/config/demo/ego_multi_spawn.yaml"/>
 
-  <include file="$(find mrs_uav_gazebo_simulation)/launch/simulation.launch">
-    <arg name="world_file" value="$(arg world_file)"/>
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find px4)/Tools/sitl_gazebo/models:$(optenv GAZEBO_MODEL_PATH)"/>
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world_file)"/>
     <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
   </include>
-  <node pkg="xd_uav_planning" type="spawn_px4_vehicle_node.py"
-        name="spawn_px4_ego_multi" output="screen">
-    <param name="service" value="/mrs_drone_spawner/spawn"/>
-    <param name="request" value="1 2 3 --x500 --enable-rangefinder --enable-ouster model:=OS0-128 use_gpu:=True horizontal_samples:=64 update_rate:=5 --pos-file $(arg spawn_file)"/>
-    <param name="timeout" value="45.0"/>
-  </node>
-  <!-- Spawn poses are the measured Gazebo/world registration for each PX4
-       local odom origin; keep these values synchronized with the YAML above. -->
+  <include file="$(find xd_uav_control_manager)/launch/sitl/px4_sitl_vehicle.launch">
+    <arg name="UAV_NAME" value="uav1"/><arg name="instance" value="0"/><arg name="system_id" value="1"/>
+    <arg name="y" value="-3.0"/><arg name="mavlink_udp_port" value="14560"/><arg name="mavlink_tcp_port" value="4560"/>
+    <arg name="mavros_fcu_url" value="udp://:14540@localhost:14580"/>
+  </include>
+  <include file="$(find xd_uav_control_manager)/launch/sitl/px4_sitl_vehicle.launch">
+    <arg name="UAV_NAME" value="uav2"/><arg name="instance" value="1"/><arg name="system_id" value="2"/>
+    <arg name="y" value="0.0"/><arg name="mavlink_udp_port" value="14561"/><arg name="mavlink_tcp_port" value="4561"/>
+    <arg name="mavros_fcu_url" value="udp://:14541@localhost:14581"/>
+  </include>
+  <include file="$(find xd_uav_control_manager)/launch/sitl/px4_sitl_vehicle.launch">
+    <arg name="UAV_NAME" value="uav3"/><arg name="instance" value="2"/><arg name="system_id" value="3"/>
+    <arg name="y" value="3.0"/><arg name="mavlink_udp_port" value="14562"/><arg name="mavlink_tcp_port" value="4562"/>
+    <arg name="mavros_fcu_url" value="udp://:14542@localhost:14582"/>
+  </include>
+  <!-- Spawn poses are the Gazebo/world registration for each PX4 local odom
+       origin; keep these values synchronized with the vehicle includes. -->
   <node pkg="xd_uav_planning" type="multi_odom_registration.py"
         name="multi_odom_registration" output="screen" required="true">
     <param name="parent_frame" value="world"/>
@@ -25,6 +37,23 @@
       - {child_frame: uav1/local_origin, translation_m: [0.0, -3.0, 0.0]}
       - {child_frame: uav2/local_origin, translation_m: [0.0, 0.0, 0.0]}
       - {child_frame: uav3/local_origin, translation_m: [0.0, 3.0, 0.0]}
+    </rosparam>
+  </node>
+  <node pkg="xd_uav_planning" type="deterministic_obstacle_cloud.py"
+        name="deterministic_obstacle_cloud" output="screen" required="true">
+    <param name="frame_id" value="world"/>
+    <param name="output_topic" value="/map_generator/global_cloud"/>
+    <param name="resolution" value="0.15"/>
+    <!-- Keep these obstacle surfaces identical to the Gazebo collision
+         geometry in worlds/ego_multi_obstacles.world. -->
+    <rosparam param="boxes">
+      - {center: [6.0, 3.0, 2.0], size: [1.0, 1.5, 4.0]}
+      - {center: [6.0, -3.0, 2.0], size: [1.0, 1.5, 4.0]}
+    </rosparam>
+    <rosparam param="cylinders">
+      - {center: [6.0, 0.0, 2.0], radius: 1.2, height: 4.0}
+      - {center: [9.0, 1.5, 2.0], radius: 1.0, height: 4.0}
+      - {center: [9.0, -1.5, 2.0], radius: 1.0, height: 4.0}
     </rosparam>
   </node>
   <include file="$(find xd_uav_planning)/launch/demo/ego_multi_vehicle.launch">

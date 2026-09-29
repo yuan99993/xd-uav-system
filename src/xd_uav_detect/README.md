@@ -52,7 +52,7 @@ yaw 负责水平搜索/指向，pitch 负责俯仰指向；相机和单束激光
 
 ## 启动与验证
 
-基于 MRS/PX4 `x500_gimbal` 旋翼模型的可视化光电吊舱演示：
+基于仓库内 `x500_gimbal` 旋翼模型的可视化光电吊舱演示：
 
 ```bash
 roslaunch xd_uav_detect demo.launch mode:=sensor gui:=true
@@ -79,18 +79,18 @@ yaw/pitch revolute joints 和实体碰撞目标，并读取 x500 base/gimbal lin
 CameraInfo 和动态 TF；本包不内嵌厂商 SDK，也不负责 YOLO 推理、自动扫描、目标跟随、
 跟踪、任务分配或飞行控制。
 
-规范 `models/x500_gimbal/model.sdf` 完整保留当前 MRS/PX4 x500 的飞行插件；无 PX4 的传感器
-演示显式使用同目录 `sensor_demo.sdf` 夹具。当前 MRS spawner 尚不能把新 Gazebo 模板名与
-既有 PX4 airframe 名 `x500` 分开，完整飞行接入边界见 `models/README.md`。
+规范 `models/x500_gimbal/model.sdf` 保留其上游 PX4/Gazebo 飞行插件；无 PX4 的传感器演示
+显式使用同目录 `sensor_demo.sdf` 夹具。模型的第三方来源和许可证见 `models/README.md`，
+来源归属不构成运行时依赖。
 
-不使用 MRS spawner 的单机 PX4/MAVROS 模型入口：
+单机 PX4/MAVROS 模型入口：
 
 ```bash
 roslaunch xd_uav_detect demo.launch mode:=px4 gui:=true
 ```
 
-该可选入口复用工作区现有的 MRS PX4/MAVROS launch 和 Gazebo 世界资源，但不使用
-`mrs_drone_spawner`；它只启动飞行底座，不自动起飞，也不代替上面的吊舱定位演示。
+该入口只使用系统 PX4、MAVROS、`gazebo_ros` 与仓库的 control manager 仿真启动器；它只
+启动飞行底座，不自动起飞，也不代替上面的吊舱定位演示。
 
 飞行中的完整吊舱定位演示：
 
@@ -99,6 +99,6 @@ roslaunch xd_uav_detect demo.launch mode:=flight gui:=true \
   geodetic_enabled:=true
 ```
 
-该入口在同一 Gazebo 中组合规范 `x500_gimbal`、PX4/MAVROS、MRS core、自动起飞和
-`gimbal_range_demo.py`。起飞稳定后可向 `/uav1/control_manager/reference` 发布
-`mrs_msgs/ReferenceStamped` 移动飞机；命令示例和安全停止方法见 `docs/USAGE.md`。
+该入口在同一 Gazebo 中组合规范 `x500_gimbal`、PX4/MAVROS、仓库自带 estimator、controller、
+control manager、自动起飞和 `gimbal_range_demo.py`。位置命令和安全停止方法见
+`docs/USAGE.md`。

@@ -17,9 +17,15 @@ class ImuFrameAdapter:
                          Imu, self._callback, queue_size=20)
 
     def _callback(self, message):
+        if rospy.is_shutdown():
+            return
         adapted = copy.deepcopy(message)
         adapted.header.frame_id = self._frame_id
-        self._publisher.publish(adapted)
+        try:
+            self._publisher.publish(adapted)
+        except rospy.ROSException:
+            if not rospy.is_shutdown():
+                raise
 
 
 if __name__ == "__main__":

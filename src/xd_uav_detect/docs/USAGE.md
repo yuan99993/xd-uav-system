@@ -31,11 +31,11 @@ source devel/setup.bash
 
 ### 2.1 统一 Gazebo 模型目录
 
-`models/` 保存四个模型，既有 MRS/PX4 功能仍从原路径启动，不会被本包自动替换：
+`models/` 保存四个演示模型。MRS 来源文件仅用于保留许可证和资产溯源，不是运行依赖：
 
 | 模型 URI | 内容 |
 |---|---|
-| `model://x500` | 当前 MRS/PX4 x500 的渲染快照 |
+| `model://x500` | 上游 x500 的渲染快照 |
 | `model://plane` | 当前 PX4 plane 的原样快照 |
 | `model://x500_gimbal` | x500 加 yaw/pitch 光电相机和单束 Range |
 | `model://plane_gimbal` | plane 加相同光电载荷 |
@@ -56,30 +56,27 @@ export GAZEBO_MODEL_PATH="$(rospack find xd_uav_detect)/models:${GAZEBO_MODEL_PA
 </include>
 ```
 
-四个模型都保留其上游飞行能力。`x500_gimbal/model.sdf` 是当前 MRS `x500` 的完整渲染快照，
+四个模型都保留其上游飞行能力。`x500_gimbal/model.sdf` 是 x500 的完整渲染快照，
 保留旋翼动力、IMU、GPS、MAVLink 和流体阻力插件，只额外增加吊舱；`plane_gimbal/plane.sdf`
 同样保留 PX4 plane 的气动面、推进器、IMU 和 MAVLink 插件。两个吊舱版本都没有世界固定关节。
 
 直接通过 `model://` 加载的渲染 SDF 按单机 `uav1` 和默认 MAVLink 端口配置，适合本包演示。
-需要改变 UAV 名称或用于多机时，应从 `x500_gimbal/x500_gimbal.sdf.jinja` 重新渲染，并为
-每架飞机分配独立 namespace 和 MAVLink 端口；不能复制一份静态 SDF 后只改模型名。吊舱关节名
+`xd_uav_control_manager/render_px4_sdf.py` 会在启动时给静态模型写入本次 MAVLink 端口；多机
+仍必须为每架飞机分配独立 namespace、PX4 instance 和端口。吊舱关节名
 为 `gimbal_yaw_joint`、`gimbal_pitch_joint`，真实飞行仿真还必须发布拍摄时刻的
 `body <- gimbal_laser` TF。
 
-当前 MRS spawner 不能直接用 `UAV_TYPE=x500_gimbal`：它把 SDF 模板名、`PX4_SIM_MODEL`、
-ROMFS 所属包和 MRS 机型配置名绑定为同一个值，而现有 PX4 ROMFS/MRS 配置只认识 `x500`。
-本包不修改 spawner，而是提供独立单机入口：
+本包提供不依赖外部仿真框架的单机入口：
 
 ```bash
 roslaunch xd_uav_detect demo.launch mode:=px4 gui:=true
 ```
 
-该可选飞行演示要求当前工作区已经提供 `gazebo_ros`、`mrs_gazebo_common_resources`、
-`mrs_uav_gazebo_simulation` 和 `mrs_uav_px4_api`；它们不是 detect 核心定位节点的运行依赖。
-该 launch 直接用 `gazebo_ros/spawn_model` 加载规范 `x500_gimbal/model.sdf`，同时复用现有 MRS
-PX4 固件 launch 和 MAVROS launch。Gazebo 模型名是 `uav1`，PX4/MRS airframe 名仍是 `x500`；
-PX4 instance 1、TCP 4561、UDP 14561 和 MAVROS `14006@14005` 已对齐。它不会启动
-`mrs_drone_spawner`、MRS core、控制器、自动解锁或自动起飞。
+该入口要求系统提供 `gazebo_ros`、`px4` 和 `mavros`，并使用
+`xd_uav_control_manager/px4_sitl_vehicle.launch` 加载规范 `x500_gimbal/model.sdf`。Gazebo
+模型名是 `uav1`，PX4 使用与其四旋翼布局兼容的 `iris` 启动配置；instance 0、TCP 4560、
+UDP 14560 和 MAVROS `udp://:14540@localhost:14557` 对齐。它不会启动仓库 controller、
+自动解锁或自动起飞。
 
 检查底座连通：
 
@@ -94,30 +91,29 @@ Gazebo 真值冒充生产 TF。完整来源和边界见 `models/README.md`。
 
 ### 2.2 飞行状态下的吊舱定位演示
 
-以下入口把上一节的 PX4 飞行底座和传感器定位演示组合起来，仍然不使用
-`mrs_drone_spawner`：
+以下入口把上一节的 PX4 飞行底座、仓库控制链和传感器定位演示组合起来：
 
 ```bash
 roslaunch xd_uav_detect demo.launch mode:=flight gui:=true
 ```
 
-它额外启动现有 MRS hw API、GPS/baro 状态估计、MPC 控制栈和预飞检查，随后自动解锁、进入
-OFFBOARD 并起飞到约 1.5 m。`gimbal_range_demo.py` 等到 Gazebo 真值高度超过 0.8 m 后才开始
+它额外启动 `xd_uav_state_estimators`、`xd_uav_controller` 和
+`xd_uav_control_manager`，随后请求 OFFBOARD、解锁并起飞到约 1.5 m。
+`gimbal_range_demo.py` 等到 Gazebo 真值高度超过 0.8 m 后才开始
 正前方命中、yaw/pitch 命中和无返回三个阶段。这里的 Gazebo 真值 TF 仅供演示，不是生产接法。
 
-看到 `/uav1/mavros/state` 为 `armed: True`、`mode: "OFFBOARD"` 后，可以发布一个绝对位置参考。
-例如令飞机在 GPS/baro 原点坐标系中移动到 `(3, 0, 1.5)`：
+看到 `/uav1/mavros/state` 为 `armed: True`、`mode: "OFFBOARD"` 后，可以通过 controller 的
+公共 simple-goal 入口发布位置目标。例如令飞机在 `uav1/odom` 中移动到 `(3, 0, 1.5)`：
 
 ```bash
-rostopic pub -1 /uav1/control_manager/reference mrs_msgs/ReferenceStamped \
-  "{header: {stamp: now, frame_id: 'uav1/gps_baro_origin'}, \
-    reference: {position: {x: 3.0, y: 0.0, z: 1.5}, heading: 0.0}}"
+rostopic pub -1 /move_base_simple/goal geometry_msgs/PoseStamped \
+  "{header: {stamp: now, frame_id: 'uav1/odom'}, pose: {position: {x: 3.0, y: 0.0, z: 1.5}, orientation: {w: 1.0}}}"
 ```
 
-每次发布一个新绝对位置即可移动，MRS tracker 会在到达后继续悬停。可观察：
+每次发布一个新绝对位置即可移动，controller 会在到达后继续悬停。可观察：
 
 ```bash
-rostopic echo /uav1/estimation_manager/uav_state
+rostopic echo /uav1/state_estimator/main/odom
 rostopic echo /uav1/gimbal/range
 rostopic echo /uav1/detect/detections
 rostopic echo /uav1/detect/detections_world
@@ -126,12 +122,11 @@ rostopic echo /uav1/detect/detections_world
 正常结束时先请求降落，确认落地后再在 roslaunch 终端按 `Ctrl-C`：
 
 ```bash
-rosservice call /uav1/uav_manager/land
+rosservice call /uav1/control_manager/land
 ```
 
 该组合入口是单机仿真演示，不代表完整系统集成；它使用已有两轴云台位置闭环，但没有实现自动
-扫描、目标跟随、航迹规划或真实吊舱驱动。Gazebo classic 与完整 MRS core 对 CPU 时序较敏感；
-若 MRS 因状态超时进入 failsafe land，
+扫描、目标跟随、航迹规划或真实吊舱驱动。若 estimator 或 control manager 报告状态超时，
 不要继续发送位置参考。
 
 ### 2.3 当前入口分类
@@ -145,15 +140,14 @@ rosservice call /uav1/uav_manager/land
 | `detect_track.launch` | 兼容 | 定位输出镜像到当前 track 输入 |
 | `demo.launch mode:=sensor` | demo | 固定旋翼传感器场景 |
 | `demo.launch mode:=px4` | demo 底座 | PX4/MAVROS，不自动起飞 |
-| `demo.launch mode:=flight` | demo | PX4/MRS 自动起飞、移动与吊舱定位 |
+| `demo.launch mode:=flight` | demo | PX4 与仓库控制栈自动起飞、移动与吊舱定位 |
 
 原来的三个演示入口已经删除并由 `demo.launch mode:=sensor|px4|flight` 取代；demo 专用参数位于
 `config/demo/`。三个正式定位配置不合并，因为它们的输入与标定契约不同。
 
 当前 YAML 也不是定位算法数量：`lidar_camera.yaml`、`camera_ground_plane.yaml`、
 `gimbal_laser_range.yaml` 是三种正式定位契约；`gimbal_control.yaml` 是独立控制参数；
-`multirotor_detect.yaml`、`fixedwing_detect.yaml` 是旧命名兼容；
-`config/demo/gimbal_flight_autostart.yaml` 只供飞行演示。
+`multirotor_detect.yaml`、`fixedwing_detect.yaml` 是旧命名兼容。
 
 ## 3. 稳定输入输出
 
@@ -388,7 +382,7 @@ SDK，并发布关节反馈和动态 TF；不应让定位节点直接调用厂�
 模型使用本包的 `libxd_uav_detect_gimbal_joint_controller.so` 在物理更新线程设置关节 PID 目标，
 不会暂停 Gazebo 世界或直接改模型位姿。不要替换成 Gazebo Classic 的
 `libgazebo_ros_joint_pose_trajectory.so`：该插件设置关节时会切换全局 physics enabled 状态，已在
-完整 PX4/MRS 飞行复验中造成状态估计跳变和 failsafe；无飞控的固定夹具无法暴露这一风险。
+完整 PX4 飞行复验中造成状态估计跳变和失效保护；无飞控的固定夹具无法暴露这一风险。
 
 ## 5. 二维识别器接入要求
 
@@ -419,7 +413,7 @@ roslaunch xd_uav_detect detect_track.launch \
 
 ## 7. Gazebo 光电吊舱可视化演示
 
-演示使用完整 `x500_gimbal` 旋翼模型：MRS/PX4 x500 机体下方安装蓝色 yaw 轴和橙色 pitch
+演示使用完整 `x500_gimbal` 旋翼模型：x500 机体下方安装蓝色 yaw 轴和橙色 pitch
 载荷，并带 Gazebo camera、单束 ray/range；原 x500 飞行插件仍在模型内，场景中另有红色实体
 目标。此 launch 只验收吊舱传感器和 detect，因此把世界重力设为零且不启动 PX4；为避免
 MAVLink/动力插件在没有飞控时终止 Gazebo，launch 从同一目录加载 `sensor_demo.sdf`。这个夹具

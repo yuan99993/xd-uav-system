@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="instance" default="0"/>
+  <arg name="system_id" default="1"/>
+  <arg name="vehicle" default="iris"/>
+  <arg name="model_name" default="$(arg UAV_NAME)"/>
+  <arg name="sdf_source"
+       default="$(find px4)/Tools/sitl_gazebo/models/iris/iris.sdf.jinja"/>
+  <arg name="sdf_environment_root"
+       default="$(find px4)/Tools/sitl_gazebo"/>
+  <arg name="x" default="0.0"/>
+  <arg name="y" default="0.0"/>
+  <arg name="z" default="0.0"/>
+  <arg name="roll" default="0.0"/>
+  <arg name="pitch" default="0.0"/>
+  <arg name="yaw" default="0.0"/>
+  <arg name="mavlink_udp_port" default="14560"/>
+  <arg name="mavlink_tcp_port" default="4560"/>
+  <arg name="mavros_fcu_url" default="udp://:14540@localhost:14557"/>
+  <arg name="gst_udp_port" default="5600"/>
+  <arg name="video_uri" default="udp://127.0.0.1:5600"/>
+  <arg name="mavlink_cam_udp_port" default="14530"/>
+  <arg name="interactive" default="false"/>
+  <arg name="imu_frame_id" default="$(arg UAV_NAME)/base_link"/>
+
+  <group ns="$(arg UAV_NAME)">
+    <env name="PX4_SIM_MODEL" value="$(arg vehicle)"/>
+    <env name="PX4_ESTIMATOR" value="ekf2"/>
+    <!-- PX4's rcS sources the first px4-rc.params found on PATH. -->
+    <env name="PATH"
+         value="$(find xd_uav_control_manager)/config/sitl:$(optenv PATH)"/>
+    <param name="sitl/model_description"
+           command="/usr/bin/python3 $(find xd_uav_control_manager)/scripts/render_px4_sdf.py --source $(arg sdf_source) --environment-root $(arg sdf_environment_root) --mavlink-tcp-port $(arg mavlink_tcp_port) --mavlink-udp-port $(arg mavlink_udp_port) --mavlink-id $(arg system_id) --gst-udp-port $(arg gst_udp_port) --video-uri $(arg video_uri) --mavlink-cam-udp-port $(arg mavlink_cam_udp_port)"/>
+
+    <arg unless="$(arg interactive)" name="px4_daemon_arg" value="-d"/>
+    <arg if="$(arg interactive)" name="px4_daemon_arg" value=""/>
+    <node pkg="px4" type="px4" name="sitl" output="screen" required="true"
+          args="$(find px4)/build/px4_sitl_default/etc -s etc/init.d-posix/rcS -i $(arg instance) -w /tmp/xd_uav_px4_sitl_$(arg instance) $(arg px4_daemon_arg)"/>
+
+    <node pkg="gazebo_ros" type="spawn_model" name="vehicle_spawn"
+          output="screen"
+          args="-sdf -param sitl/model_description -model $(arg model_name) -x $(arg x) -y $(arg y) -z $(arg z) -R $(arg roll) -P $(arg pitch) -Y $(arg yaw)"/>
+
+    <node pkg="mavros" type="mavros_node" name="mavros"
+          output="screen" required="true" clear_params="true">
+      <param name="fcu_url" value="$(arg mavros_fcu_url)"/>
+      <param name="gcs_url" value=""/>
+      <param name="target_system_id" value="$(arg system_id)"/>
+      <param name="target_component_id" value="1"/>
+      <param name="fcu_protocol" value="v2.0"/>
+      <rosparam command="load" file="$(find mavros)/launch/px4_pluginlists.yaml"/>
+      <rosparam command="load" file="$(find mavros)/launch/px4_config.yaml"/>
+      <!-- Gazebo already owns /clock for this SITL fixture.  A second
+           MAVLink clock synchronizer can turn host realtime corrections into
+           stale/future ROS message stamps, so keep all consumers on /clock. -->
+      <param name="time/timesync_mode" value="NONE"/>
+      <!-- The control stack consumes IMU and fused odometry with one common
+           software body-frame contract.  The Iris fcu link is coincident with
+           base_link in this fixture, so label MAVROS IMU samples accordingly. -->
+      <param name="imu/frame_id" value="$(arg imu_frame_id)"/>
+      <param name="local_position/frame_id" value="$(arg UAV_NAME)/odom"/>
+      <param name="local_position/tf/frame_id" value="$(arg UAV_NAME)/odom"/>
+      <param name="local_position/tf/child_frame_id" value="$(arg UAV_NAME)/fcu"/>
+      <param name="global_position/frame_id" value="$(arg UAV_NAME)/local_origin"/>
+      <param name="global_position/child_frame_id" value="$(arg UAV_NAME)/fcu"/>
+    </node>
+  </group>
+</launch>

@@ -96,13 +96,13 @@ geodesy adapter 使用 GeographicLib `LocalCartesian::Reverse()`，并在检测�
 - 测试夹具由真实 CameraInfo 和已知实体尺寸生成严格对应的确定性框，不伪造 Range。
 - `demo.launch mode:=sensor` 可在 Gazebo GUI 中循环展示正前方命中、yaw/pitch 命中和无返回
   fail-closed；完整使用、接口、诊断和实机接入步骤见 `docs/USAGE.md`。
-- `models/` 统一保存 MRS/PX4 x500、PX4 plane 及各自的光电吊舱版本；演示已从独立载荷试验台
-  升级为 `x500_gimbal` 旋翼机。规范吊舱模型保留全部上游飞行插件，无 PX4 演示另用同目录
-  明确标识的 `sensor_demo.sdf` 夹具；既有 MRS/PX4 运行路径保持不变。
+- `models/` 统一保存带第三方来源声明的 x500、PX4 plane 及各自的光电吊舱版本；演示已从独立
+  载荷试验台升级为 `x500_gimbal` 旋翼机。规范吊舱模型保留全部上游飞行插件，无 PX4 演示另用
+  同目录明确标识的 `sensor_demo.sdf` 夹具；所有公开入口均不依赖 MRS 运行包。
 - 两轴控制核心覆盖限位、限速、速度 watchdog、非法命令、无反馈和启动期命令保留；演示与
   Gazebo 自动验收均通过公共 `GimbalCommand` 控制实际关节。
 - 包内 Gazebo JointController PID 插件替代会暂停全局物理的通用 pose trajectory 插件；完整
-  PX4/MRS 飞行复验在云台三阶段后保持 connected/armed/OFFBOARD 和约 1.52 m 稳定悬停，随后
+  PX4 飞行复验在云台三阶段后保持 connected/armed/OFFBOARD 和约 1.52 m 稳定悬停，随后
   land 成功解锁。
 - 四个目标测试工具已加入安装与 smoke test；特定飞机和旧控制包的系统适配器不属于
   detect 核心，未引入新的机型耦合。

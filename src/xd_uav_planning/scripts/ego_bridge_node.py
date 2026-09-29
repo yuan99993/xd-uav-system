@@ -38,6 +38,8 @@ class EgoBridge:
             rospy.get_param("~transform_timeout", 0.05))
         self._allow_nonfinite_yaw_rate = bool(
             rospy.get_param("~allow_nonfinite_yaw_rate", False))
+        self._require_takeoff_complete = bool(
+            rospy.get_param("~require_takeoff_complete", False))
         self._state_reason = "state_not_received"
         self._command_reason = "command_not_received"
         self._last_state_stamp = None
@@ -163,6 +165,12 @@ class EgoBridge:
         self._last_state_stamp = sample.stamp
         if not result.valid:
             return
+        if (self._require_takeoff_complete and
+                (not message.armed or message.vehicle_action not in
+                 (ControlState.ACTION_HOLD, ControlState.ACTION_NAVIGATE))):
+            self._state_valid = False
+            self._state_reason = "waiting_for_takeoff_complete"
+            return
 
         odometry = Odometry()
         odometry.header = message.header
@@ -180,7 +188,7 @@ class EgoBridge:
                                        if transformed_velocity is not None
                                        else message.velocity_odom)
         odometry.twist.twist.angular = message.body_rate
-        self._odometry_pub.publish(odometry)
+        self._publish(self._odometry_pub, odometry)
 
     def _command_callback(self, message):
         sample = self._command_sample(message)
@@ -209,7 +217,7 @@ class EgoBridge:
         candidate.acceleration_or_force = message.acceleration
         candidate.yaw = message.yaw
         candidate.yaw_rate = message.yaw_dot if yaw_rate_finite else 0.0
-        self._candidate_pub.publish(candidate)
+        self._publish(self._candidate_pub, candidate)
 
     def _state_is_current(self):
         if not self._state_valid or self._last_state_stamp is None:
@@ -231,7 +239,8 @@ class EgoBridge:
         if self._command_valid and not command_current:
             self._command_reason = "command_stream_stale"
         healthy = state_current and command_current
-        self._healthy_pub.publish(Bool(data=healthy))
+        if not self._publish(self._healthy_pub, Bool(data=healthy)):
+            return
 
         diagnostics = DiagnosticArray()
         diagnostics.header.stamp = rospy.Time.now()
@@ -247,7 +256,19 @@ class EgoBridge:
             KeyValue(key="common_frame", value=self._common_frame),
         ]
         diagnostics.status = [status]
-        self._diagnostics_pub.publish(diagnostics)
+        self._publish(self._diagnostics_pub, diagnostics)
+
+    @staticmethod
+    def _publish(publisher, message):
+        if rospy.is_shutdown():
+            return False
+        try:
+            publisher.publish(message)
+        except rospy.ROSException:
+            if not rospy.is_shutdown():
+                raise
+            return False
+        return True
 
 
 def main():

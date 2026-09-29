@@ -240,7 +240,11 @@ ps -eo pid,ppid,stat,cmd | \
 
 ## PX4 默认路径
 
-原有 PX4 启动入口不变：
+无遥控器/摇杆的 headless SITL 通过 PX4 官方的 `px4-rc.params` 扩展钩子设置
+`COM_RCL_EXCEPT=4`，仅豁免 OFFBOARD 状态下的 RC-loss 动作；OFFBOARD 设定值超时等
+飞控保护仍保持启用。
+
+只启动 controller 与 manager 的入口不变：
 
 ```bash
 roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav1
@@ -249,3 +253,23 @@ roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav1
 它默认加载 `config/autopilot/px4.yaml`，controller 输出保持 body-rate，manager 使用
 `OFFBOARD`/`POSCTL`。ArduCopter 参数只由选中的 ArduCopter backend 读取；即使参数服务器
 残留无效的 `autopilot/arducopter/*` 值，也不能影响 PX4 后端启动。
+
+Gazebo Classic 演示统一使用两个不依赖 MRS 的组合入口：
+
+```bash
+# 在已经启动的 Gazebo 中渲染/生成官方 PX4 Iris、启动 PX4 instance 0 和 MAVROS
+roslaunch xd_uav_control_manager px4_sitl_vehicle.launch UAV_NAME:=uav1
+
+# 启动 MAVROS odometry adapter、仓库 estimator、controller 和 manager
+roslaunch xd_uav_control_manager px4_sitl_multirotor_system.launch UAV_NAME:=uav1
+```
+
+`px4_sitl_vehicle.launch` 既能渲染系统 PX4 的 `.sdf.jinja`，也能给静态 SDF 重写 MAVLink
+端口；它不负责启动 Gazebo world，world 由 planning/detect 的演示 launch 明确选择。
+多机时必须为每架飞机设置独立的 `instance`、`system_id`、TCP/UDP 和 MAVROS 端口。
+
+该入口以 Gazebo `/clock` 作为唯一 SITL 时间源，并在加载 MAVROS 的 PX4 配置后覆盖
+`time/timesync_mode=NONE`，避免主机实时时钟校正污染 ROS 消息时间戳。`imu_frame_id` 默认是
+`<UAV_NAME>/base_link`，适用于仓库 Iris/x500 多旋翼演示；固定翼演示会显式传入
+`<UAV_NAME>/fcu`，使 MAVROS IMU 与 estimator odometry 的 body-frame 契约一致。不要仅改
+frame 名称来掩盖真实存在的传感器外参。

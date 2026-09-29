@@ -2,15 +2,15 @@
 
 本文档对应 `xd_uav_planning/scripts/demo/ego_demo.sh`。脚本统一管理 Gazebo、RViz、
 PX4/MAVROS、自研 estimator/manager/controller、EGO bridge 和 EGO-Planner。三机模式使用
-真实 Gazebo world 与各机 Ouster 点云，并启用 EGO-Swarm 轨迹交换和互避。
+真实 Gazebo world 与仓库内确定性障碍点云，并启用 EGO-Swarm 轨迹交换和互避。
 
 第三方 `ego-planner-swarm` 保持官方 `92fe9f7` 原样。规划包通过外部轨迹交接中继处理后机
 晚订阅、消息早于 odometry 以及前驱重规划刷新，不依赖第三方源码补丁。
 
 ## 1. 启动前检查
 
-演示固定使用 `ROS_MASTER_URI=http://localhost:11311`，不能与 SEAD、MRS 或另一套 ROS
-仿真同时运行。若 SEAD 仍在运行，先在 SEAD validation 目录执行 `./kill.sh`。
+演示固定使用 `ROS_MASTER_URI=http://localhost:11311`，不能与另一套 ROS 仿真同时运行。
+启动前先通过下述状态命令确认该演示没有遗留进程。
 
 ```bash
 rosrun xd_uav_planning ego_demo.sh status
@@ -60,7 +60,7 @@ rosrun xd_uav_planning ego_demo.sh stop
 
 ## 3. 三机 EGO-Swarm 演示
 
-启动验证过的三架 x500：
+启动三架 PX4 Iris：
 
 ```bash
 rosrun xd_uav_planning ego_demo.sh start swarm 3
@@ -68,7 +68,8 @@ rosrun xd_uav_planning ego_demo.sh start swarm 3
 
 `start multi 3` 是兼容别名。其他数量当前不属于正式验证配置。三机使用
 `worlds/ego_multi_obstacles.world`，出生点、传感器和命名空间相互隔离；规划器 ID 为
-0/1/2，并传递完整 `MultiBsplines` 前驱链。
+  0/1/2，并传递完整 `MultiBsplines` 前驱链。三机共用 world frame 下的确定性障碍点云，
+  不要求外部传感器仿真包。
 
 三机当前显式使用经过实飞验证的 EGO preset 模式。启动完成前会自动执行以下 world 目标，
 不需要另发目标命令：
@@ -83,11 +84,11 @@ rosrun xd_uav_planning ego_demo.sh start swarm 3
 
 ## 4. 应该观察什么
 
-Gazebo 中应看到三架 x500 自动起飞，并在墙体和柱体组成的真实地图中运动。RViz 固定
+Gazebo 中应看到三架 Iris 自动起飞，并在墙体和柱体组成的地图中运动。RViz 固定
 frame 为 `world`，默认显示：
 
 - 各机 odometry；
-- Ouster 原始障碍点云和膨胀地图；
+- 确定性障碍点云和膨胀地图；
 - EGO 目标、局部轨迹和执行轨迹；
 - 三机交换后的 EGO-Swarm 轨迹。
 
@@ -144,7 +145,7 @@ ps -eo pid,ppid,stat,cmd | rg '[r]oslaunch|[r]osmaster|[g]zserver|[g]zclient|[p]
 
 ### 启动提示已有 ROS graph
 
-说明 `localhost:11311` 已被 SEAD、MRS 或另一套演示占用。先用对应脚本正常停止原仿真，
+说明 `localhost:11311` 已被另一套 ROS 进程占用。先用对应脚本正常停止原仿真，
 不要在同一 ROS master 上叠加启动。
 
 ### 一直显示 `state_stale`、`mavros_disconnected`
@@ -153,7 +154,7 @@ ps -eo pid,ppid,stat,cmd | rg '[r]oslaunch|[r]osmaster|[g]zserver|[g]zclient|[p]
 `Address already in use` 或 `Gazebo model state topic not found`，说明已有程序占用了
 Gazebo master（默认 `http://localhost:11345`），导致本次 Gazebo 和 PX4 均未启动。新版脚本
 会在启动前检查该端口，并在启动日志出现上述致命错误时立即报错、自动清理本次后台进程，
-不再等待完整的 readiness 超时。先正常关闭此前的 Gazebo/MRS/SEAD 仿真，再重新执行启动命令。
+不再等待完整的 readiness 超时。先正常关闭此前的 Gazebo/PX4 仿真，再重新执行启动命令。
 
 ### 提示找不到 `devel/setup.bash`
 
@@ -168,8 +169,8 @@ XD_UAV_WS=/实际/catkin工作区 rosrun xd_uav_planning ego_demo.sh start swarm
 
 ### Gazebo 正常但 RViz 没有点云
 
-先确认 RViz fixed frame 是 `world`，再检查三机 `planning/healthy`。三机模式依赖 Gazebo
-Ouster 的真实传感器点云，不会启动人工点云发布器。
+先确认 RViz fixed frame 是 `world`，再检查 `/map_generator/global_cloud` 与三机
+`planning/healthy`。三机演示由 `deterministic_obstacle_cloud.py` 发布可重复的共享障碍点云。
 
 ### 下发目标后不移动
 
@@ -184,6 +185,6 @@ Ouster 的真实传感器点云，不会启动人工点云发布器。
 
 ## 7. 功能边界
 
-当前正式验收覆盖一架或三架四旋翼、Gazebo Ouster 障碍感知、自研控制闭环，以及三机
+当前正式验收覆盖一架或三架四旋翼、确定性障碍点云、自研控制闭环，以及三机
 EGO-Swarm 轨迹交换和互避。它不等同于 planning 固定翼动态禁飞区功能，也不验证 FAST-LIO、真机
 传感器、真实通信链路或任意数量无人机。
