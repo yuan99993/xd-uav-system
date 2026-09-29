@@ -1,0 +1,69 @@
+# do not modify these
+root: ./
+name: one_multirotor_px4
+socket_name: xd_uav
+attach: false
+
+# One namespaced PX4 multirotor SITL and the refactored multirotor control stack.
+pre_window: source /opt/ros/noetic/setup.bash; source "${CATKIN_WORKSPACE}/devel/setup.bash"; export ROS_PACKAGE_PATH="${PX4_AUTOPILOT_ROOT}:${PX4_AUTOPILOT_ROOT}/Tools/sitl_gazebo:${ROS_PACKAGE_PATH:-}"; export GAZEBO_PLUGIN_PATH="${PX4_AUTOPILOT_ROOT}/build/px4_sitl_default/build_gazebo:${GAZEBO_PLUGIN_PATH:-}"; export GAZEBO_MODEL_PATH="${PX4_AUTOPILOT_ROOT}/Tools/sitl_gazebo/models:${GAZEBO_MODEL_PATH:-}"; export LD_LIBRARY_PATH="${PX4_AUTOPILOT_ROOT}/build/px4_sitl_default/build_gazebo:/usr/lib/x86_64-linux-gnu/gazebo-11/plugins:${LD_LIBRARY_PATH:-}"; export ROS_MASTER_URI=http://localhost:11311; export ROS_HOSTNAME=localhost; export DISPLAY=${DISPLAY:-:0}; unset LIBGL_ALWAYS_SOFTWARE; wait_for_ros() { until rosnode list >/dev/null 2>&1; do sleep 0.2; done; }; wait_for_sim_time() { until rostopic echo -n1 /clock >/dev/null 2>&1; do sleep 0.2; done; };
+startup_window: observe
+
+windows:
+  - roscore:
+      layout: tiled
+      panes:
+        - roscore
+
+  - px4_sitl:
+      layout: tiled
+      panes:
+        - >-
+          wait_for_ros;
+          roslaunch px4 mavros_posix_sitl_ns.launch
+          uav_name:=uav1 ID:=0
+          world:=/opt/ros/noetic/share/mavlink_sitl_gazebo/worlds/forest.world
+          paused:=true start_gazebo:=true unpause_after_spawn:=true
+
+  - vehicle_stack:
+      layout: tiled
+      panes:
+        - wait_for_sim_time; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=${XD_UAV_REPO_ROOT}/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+        - wait_for_sim_time; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_control_manager multirotor_system.launch UAV_NAME:=uav1
+
+  - world_tf:
+      layout: tiled
+      panes:
+        - wait_for_sim_time; rostopic echo -n1 /clock >/dev/null 2>&1; roslaunch xd_uav_world_tf_manager world_tf.launch config:=${XD_UAV_REPO_ROOT}/src/xd_uav_world_tf_manager/config/world_single_uav1.yaml
+
+  - planning:
+      layout: tiled
+      panes:
+        - wait_for_sim_time; roslaunch xd_uav_planning planning.launch UAV_NAME:=uav1 vehicle_type:=multirotor common_frame:=world output_frame:=uav1/odom ego_id:=0 flight_type:=1
+
+  - rviz:
+      layout: tiled
+      panes:
+        - wait_for_sim_time; rostopic echo -n1 /clock >/dev/null 2>&1; rosrun rviz rviz -d rviz_cfg/xd_uav.rviz
+
+  - takeoff:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'wait_for_sim_time; rosservice call /uav1/control_manager/takeoff "altitude: 4.0"'
+
+  - stop_and_land:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/control_manager/land_home'
+
+  - observe:
+      layout: tiled
+      panes:
+        - wait_for_sim_time; rostopic echo /uav1/state_estimator/main/frames/world/odom
+
+  - goto:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rostopic pub -1 /uav1/planning/goal geometry_msgs/PoseStamped "{header: {stamp: now, frame_id: 'world'}, pose: {position: {x: 10.0, y: 10.0, z: 3.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}"'
