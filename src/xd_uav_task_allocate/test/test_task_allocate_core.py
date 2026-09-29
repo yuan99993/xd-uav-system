@@ -36,9 +36,7 @@ from xd_uav_task_allocate.core.execution import (
     ArrivalDwellTracker,
     fixedwing_trajectory_samples,
     fixedwing_waypoint_reached,
-    goal_distance,
     goal_heading,
-    worker_approach_goal,
 )
 from xd_uav_task_allocate.core.geometry import (
     PoseHistory,
@@ -67,10 +65,24 @@ from xd_uav_task_allocate.ros.coordinator import (
 
 
 class CoordinatorConfigurationTest(unittest.TestCase):
-    def test_auto_mode_uses_single_stage_for_multirotor_only(self):
+    def test_mobility_profile_is_independent_of_airframe(self):
+        self.assertEqual(
+            TaskAllocateCoordinator._configured_mobility_profile(
+                {}
+            ),
+            "hover",
+        )
+        self.assertEqual(
+            TaskAllocateCoordinator._configured_mobility_profile(
+                {"mobility_profile": "fixedwing"}
+            ),
+            "fixedwing",
+        )
+
+    def test_auto_mode_uses_single_stage_for_hover_only(self):
         self.assertFalse(
             TaskAllocateCoordinator._resolve_hierarchical_search_mode(
-                "auto", {"multirotor"}
+                "auto", {"hover"}
             )
         )
 
@@ -93,12 +105,17 @@ class CoordinatorConfigurationTest(unittest.TestCase):
         coordinator.registry.targets = {1: target}
         coordinator.allocator = RescueTaskAllocator()
         coordinator.allocator.update_worker(
-            "uav3", (0.0, 0.0, 4.0), 1.0, True, vehicle_type="multirotor"
+            "uav3", (0.0, 0.0, 4.0), 1.0, True
         )
         task = coordinator.allocator.ensure_task(target)
         coordinator.allocator.assign_pending()
-        coordinator.vehicle_types = {"uav3": "multirotor"}
+        coordinator.mobility_profiles = {"uav3": "hover"}
         coordinator.vehicle_backends = {"uav3": "ego_swarm"}
+        coordinator.planning_cancel_clients = {
+            "uav3": lambda **_kwargs: SimpleNamespace(
+                success=True, message="planning released"
+            )
+        }
         coordinator.task_execute_defaults = {
             "task_type": "track",
             "local_track_id": -1,
@@ -106,17 +123,25 @@ class CoordinatorConfigurationTest(unittest.TestCase):
             "required_execution_sec": 5.0,
             "maximum_duration_sec": 20.0,
         }
-        coordinator.task_execute_vehicle_type_overrides = {
-            "multirotor": {"follower_profile": "gm_velocity_chase"}
+        coordinator.task_execute_mobility_profile_overrides = {
+            "hover": {"follower_profile": "gm_velocity_chase"}
         }
         coordinator.task_execute_class_overrides = {
-            "0": {"required_execution_sec": 8.0}
+            "0": {
+                "task_type": "track",
+                "required_execution_sec": 8.0,
+                "follower_profile": "gm_velocity_chase",
+            }
         }
         coordinator.task_execute_worker_overrides = {
-            "uav3": {"follower_profile": "gm_velocity_vector"}
+            "uav3": {
+                "task_type": "arrive",
+                "follower_profile": "gm_velocity_vector",
+            }
         }
         coordinator.task_execute_failure_policy = "fail"
         coordinator.task_execute_retry_delay = 5.0
+        coordinator.task_execute_control_handoff_settle = 0.5
         coordinator.worker_retry_after = {}
         coordinator.task_execute_server_wait_timeout = 0.1
         coordinator.task_execute_action_name_template = (
@@ -129,7 +154,7 @@ class CoordinatorConfigurationTest(unittest.TestCase):
         coordinator._publish_state = lambda: None
         return coordinator, target, task
 
-    def test_goal_options_override_by_vehicle_class_then_worker(self):
+    def test_target_class_override_has_priority_over_worker_id(self):
         coordinator, _target, task = self._coordinator()
 
         with patch(
@@ -139,12 +164,207 @@ class CoordinatorConfigurationTest(unittest.TestCase):
             goal = coordinator._build_task_execute_goal(task, "uav3")
 
         self.assertEqual(goal.task_type, ExecuteTaskGoal.TRACK)
-        self.assertEqual(goal.follower_profile, "gm_velocity_vector")
+        self.assertEqual(goal.follower_profile, "gm_velocity_chase")
         self.assertEqual(goal.required_execution_sec, 8.0)
         self.assertEqual(goal.maximum_duration_sec, 20.0)
         self.assertEqual(goal.local_track_id, -1)
         self.assertEqual(goal.target_pose.header.frame_id, "world")
         self.assertEqual(goal.target_pose.pose.position.x, 10.0)
+
+    def test_visual_handoff_track_id_overrides_default_goal_selection(self):
+        coordinator, _target, task = self._coordinator()
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(1),
+        ):
+            goal = coordinator._build_task_execute_goal(
+                task, "uav3", local_track_id=900000123
+            )
+
+        self.assertEqual(goal.local_track_id, 900000123)
+
+    def test_worker_detection_hands_off_only_inside_target_radius(self):
+        coordinator, _target, task = self._coordinator()
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.post_arrival_mode = "task_execute"
+        coordinator.worker_execution_target_radius = 10.0
+        coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
+        coordinator.vehicle_world_positions = {"uav3": (10.0, (-1.0, 2.0, 4.0))}
+        coordinator._clear_active_goal = lambda vehicle: coordinator.active_goals.pop(
+            vehicle, None
+        )
+        starts = []
+        coordinator._start_task_execution = lambda assigned, worker, **kwargs: (
+            starts.append((assigned.task_id, worker, kwargs)) or True
+        )
+        message = SimpleNamespace(
+            header=SimpleNamespace(stamp=rospy.Time(10)),
+            image_width=640,
+            image_height=360,
+            sensor_id="front_camera",
+            candidates=[
+                SimpleNamespace(
+                    confidence=0.9,
+                    class_id=0,
+                    track_id=900000123,
+                    track_id_is_stable=True,
+                )
+            ],
+        )
+
+        coordinator._worker_detection_callback("uav3", message)
+        self.assertEqual(starts, [])
+
+        coordinator.vehicle_world_positions["uav3"] = (
+            10.1,
+            (8.0, 2.0, 4.0),
+        )
+        message.image_width = 0
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.logwarn_throttle"
+        ):
+            coordinator._worker_detection_callback("uav3", message)
+        self.assertEqual(starts, [])
+
+        message.image_width = 640
+        coordinator._worker_detection_callback("uav3", message)
+
+        self.assertNotIn("uav3", coordinator.active_goals)
+        self.assertEqual(starts[0][0:2], (task.task_id, "uav3"))
+        self.assertEqual(starts[0][2]["local_track_id"], 900000123)
+        self.assertIn("front_camera", starts[0][2]["handoff_detail"])
+
+    def test_navigation_arrival_waits_for_detection_instead_of_executing(self):
+        coordinator, _target, task = self._coordinator()
+        coordinator.post_arrival_mode = "task_execute"
+        coordinator.worker_visual_handoff_waiting = {}
+        coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
+        coordinator._clear_active_goal = lambda vehicle: coordinator.active_goals.pop(
+            vehicle, None
+        )
+        starts = []
+        coordinator._start_task_execution = lambda *args, **kwargs: starts.append(
+            (args, kwargs)
+        )
+
+        coordinator._handle_goal_status(
+            "uav3", 7, PlannerStatus.REACHED, "at target navigation point"
+        )
+
+        self.assertEqual(starts, [])
+        self.assertEqual(
+            coordinator.worker_visual_handoff_waiting["uav3"], task.task_id
+        )
+        self.assertIn("waiting for", task.detail)
+
+    def test_metric_navigation_arrival_starts_without_worker_detection(self):
+        coordinator, _target, task = self._coordinator()
+        coordinator.post_arrival_mode = "task_execute"
+        coordinator.task_execute_handoff_mode = "auto"
+        coordinator.task_execute_defaults = {
+            "task_type": "observe",
+            "local_track_id": -1,
+            "follower_profile": "fw_metric_orbit",
+        }
+        coordinator.task_execute_mobility_profile_overrides = {}
+        coordinator.task_execute_worker_overrides = {}
+        coordinator.task_execute_class_overrides = {}
+        coordinator.worker_visual_handoff_waiting = {}
+        coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
+        coordinator._clear_active_goal = lambda vehicle: coordinator.active_goals.pop(
+            vehicle, None
+        )
+        starts = []
+        coordinator._start_task_execution = lambda *args, **kwargs: (
+            starts.append((args, kwargs)) or True
+        )
+
+        coordinator._handle_goal_status(
+            "uav3", 7, PlannerStatus.REACHED, "at target navigation point"
+        )
+
+        self.assertNotIn("uav3", coordinator.worker_visual_handoff_waiting)
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0][0][0:2], (task, "uav3"))
+        self.assertEqual(starts[0][1]["local_track_id"], -1)
+        self.assertIn("position-only", starts[0][1]["handoff_detail"])
+
+    def test_position_handoff_ignores_optional_worker_detection(self):
+        coordinator, _target, task = self._coordinator()
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.post_arrival_mode = "task_execute"
+        coordinator.task_execute_handoff_mode = "position"
+        coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
+        coordinator.vehicle_world_positions = {"uav3": (1.0, (9.0, 2.0, 4.0))}
+        starts = []
+        coordinator._start_task_execution = lambda *args, **kwargs: starts.append(
+            (args, kwargs)
+        )
+        message = SimpleNamespace(
+            image_width=640,
+            image_height=360,
+            sensor_id="optional_camera",
+            candidates=[SimpleNamespace(confidence=0.9, class_id=0)],
+        )
+
+        coordinator._worker_detection_callback("uav3", message)
+
+        self.assertEqual(starts, [])
+        self.assertEqual(coordinator.active_goals["uav3"][2], task.task_id)
+
+    def test_position_handoff_does_not_require_worker_detection_subscription(self):
+        coordinator, _target, _task = self._coordinator()
+        coordinator.post_arrival_mode = "task_execute"
+        coordinator.task_execute_handoff_mode = "position"
+        coordinator.task_execute_defaults = {
+            "task_type": "observe",
+            "follower_profile": "fw_metric_orbit",
+        }
+        coordinator.task_execute_mobility_profile_overrides = {}
+        coordinator.task_execute_worker_overrides = {}
+        coordinator.task_execute_class_overrides = {}
+
+        self.assertFalse(
+            coordinator._worker_visual_handoff_subscription_enabled()
+        )
+
+    def test_visual_handoff_is_refused_when_planning_cannot_release(self):
+        coordinator, _target, task = self._coordinator()
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.post_arrival_mode = "task_execute"
+        coordinator.worker_execution_target_radius = 10.0
+        coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
+        coordinator.vehicle_world_positions = {
+            "uav3": (10.0, (9.0, 2.0, 4.0))
+        }
+        coordinator.planning_cancel_clients["uav3"] = lambda **_kwargs: (
+            SimpleNamespace(success=False, message="mux gate unavailable")
+        )
+        starts = []
+        coordinator._start_task_execution = lambda *args, **kwargs: starts.append(
+            (args, kwargs)
+        )
+        message = SimpleNamespace(
+            header=SimpleNamespace(stamp=rospy.Time(10)),
+            image_width=640,
+            image_height=360,
+            sensor_id="front_camera",
+            candidates=[
+                SimpleNamespace(
+                    confidence=0.9,
+                    class_id=0,
+                    track_id=123,
+                    track_id_is_stable=True,
+                )
+            ],
+        )
+
+        coordinator._worker_detection_callback("uav3", message)
+
+        self.assertEqual(starts, [])
+        self.assertIn("uav3", coordinator.active_goals)
+        self.assertIn("mux gate unavailable", task.detail)
 
     def test_task_stays_executing_until_action_succeeds(self):
         coordinator, target, task = self._coordinator()
@@ -183,6 +403,25 @@ class CoordinatorConfigurationTest(unittest.TestCase):
         self.assertEqual(task.status, TASK_COMPLETED)
         self.assertEqual(target.status, TARGET_COMPLETED)
         self.assertEqual(coordinator.active_task_executions, {})
+        # This fixture uses the planning backend. Completion must not make the
+        # worker immediately eligible while the last Track command may still
+        # be queued.
+        self.assertFalse(coordinator.allocator.workers["uav3"].online)
+        self.assertEqual(coordinator.worker_retry_after["uav3"], 1.5)
+
+        coordinator.vehicle_world_positions = {
+            "uav3": (1.5, (0.0, 0.0, 4.0))
+        }
+        coordinator._vehicle_ready = lambda *_args: True
+        resumed = []
+        coordinator._dispatch_assignments = lambda: resumed.append(True)
+        coordinator._refresh_worker("uav3", 1.49)
+        self.assertFalse(coordinator.allocator.workers["uav3"].online)
+        self.assertEqual(resumed, [])
+
+        coordinator._refresh_worker("uav3", 1.5)
+        self.assertTrue(coordinator.allocator.workers["uav3"].online)
+        self.assertEqual(resumed, [True])
 
     def test_action_failure_does_not_complete_task(self):
         coordinator, target, task = self._coordinator()
@@ -207,7 +446,7 @@ class CoordinatorConfigurationTest(unittest.TestCase):
     def test_auto_mode_uses_hierarchy_for_mixed_scouts(self):
         self.assertTrue(
             TaskAllocateCoordinator._resolve_hierarchical_search_mode(
-                "auto", {"fixedwing", "multirotor"}
+                "auto", {"fixedwing", "hover"}
             )
         )
 
@@ -217,10 +456,10 @@ class CoordinatorConfigurationTest(unittest.TestCase):
         coordinator.mission_state = MISSION_ACTIVE
         coordinator.verification_dispatch_policy = "after_coarse_complete"
         coordinator.scout_configs = {"fw1": {}, "fw2": {}, "uav3": {}}
-        coordinator.vehicle_types = {
+        coordinator.mobility_profiles = {
             "fw1": "fixedwing",
             "fw2": "fixedwing",
-            "uav3": "multirotor",
+            "uav3": "hover",
         }
         coordinator.routes = {
             "fw1": [(0.0, 0.0, 50.0)],
@@ -299,7 +538,7 @@ class CoordinatorConfigurationTest(unittest.TestCase):
             )
         }
         coordinator.scout_configs = {"uav2": {}}
-        coordinator.vehicle_types = {"uav2": "multirotor"}
+        coordinator.mobility_profiles = {"uav2": "hover"}
         coordinator.vehicle_world_positions = {"uav2": (1.0, (0.0, 0.0, 20.0))}
         coordinator.routes = {"uav2": []}
         coordinator.route_indices = {"uav2": 0}
@@ -413,7 +652,7 @@ class CoordinatorConfigurationTest(unittest.TestCase):
         coordinator.routes = {
             "uav1": [(0.0, 0.0, 20.0), (30.0, 40.0, 20.0)]
         }
-        coordinator.vehicle_types = {"uav1": "fixedwing"}
+        coordinator.mobility_profiles = {"uav1": "fixedwing"}
         coordinator.vehicle_world_positions = {}
         coordinator.direct_face_goal = True
         coordinator._coverage_speed = lambda _vehicle: 15.0
@@ -433,6 +672,63 @@ class CoordinatorConfigurationTest(unittest.TestCase):
         self.assertTrue(setpoint.type_mask & PositionTarget.IGNORE_VZ)
         self.assertAlmostEqual(setpoint.velocity.x, 9.0)
         self.assertAlmostEqual(setpoint.velocity.y, 12.0)
+
+    def test_active_direct_multirotor_goal_is_refreshed(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.shared_frame = "world"
+        coordinator.active_goals = {
+            "uav3": (7, "rescue", 3),
+            "uav4": (8, "rescue", 4),
+            "uav5": (9, "rescue", 5),
+        }
+        coordinator.active_goal_points = {
+            "uav3": (11.0, 12.0, 13.0),
+            "uav4": (21.0, 22.0, 23.0),
+            "uav5": (31.0, 32.0, 33.0),
+        }
+        coordinator._mobility_profile = lambda vehicle: {
+            "uav3": "hover",
+            "uav4": "fixedwing",
+            "uav5": "hover",
+        }[vehicle]
+        coordinator._uses_direct_controller = lambda vehicle: vehicle != "uav5"
+        published = []
+        coordinator._publish_direct_controller_goal = (
+            lambda vehicle, goal: published.append((vehicle, goal))
+        )
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(20),
+        ):
+            coordinator._refresh_multirotor_direct_goals()
+
+        self.assertEqual(len(published), 1)
+        vehicle, goal = published[0]
+        self.assertEqual(vehicle, "uav3")
+        self.assertEqual(goal.header.seq, 7)
+        self.assertEqual(goal.header.stamp, rospy.Time(20))
+        self.assertEqual(goal.header.frame_id, "world")
+        self.assertEqual(
+            (goal.pose.position.x, goal.pose.position.y, goal.pose.position.z),
+            (11.0, 12.0, 13.0),
+        )
+
+    def test_cleared_direct_multirotor_goal_is_not_refreshed(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.shared_frame = "world"
+        coordinator.active_goals = {}
+        coordinator.active_goal_points = {"uav3": (11.0, 12.0, 13.0)}
+        coordinator._mobility_profile = lambda _vehicle: "hover"
+        coordinator._uses_direct_controller = lambda _vehicle: True
+        published = []
+        coordinator._publish_direct_controller_goal = (
+            lambda vehicle, goal: published.append((vehicle, goal))
+        )
+
+        coordinator._refresh_multirotor_direct_goals()
+
+        self.assertEqual(published, [])
 
     def test_pause_and_resume_preserve_active_goal(self):
         coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
@@ -705,10 +1001,160 @@ class CoverageTest(unittest.TestCase):
 
 
 class DirectExecutionTest(unittest.TestCase):
+    def test_direct_hover_scout_follows_route_with_sequential_setpoints(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator._next_goal_id = 20
+        coordinator.shared_frame = "world"
+        coordinator.search_completed_at = 0.0
+        coordinator.vehicle_backends = {"uav1": "direct_controller_test"}
+        coordinator.mobility_profiles = {"uav1": "hover"}
+        coordinator.routes = {
+            "uav1": [
+                (5.0, 0.0, 4.0),
+                (5.0, 10.0, 4.0),
+                (15.0, 10.0, 4.0),
+            ]
+        }
+        coordinator.route_indices = {"uav1": 0}
+        coordinator.verification_target_by_scout = {}
+        coordinator.vehicle_world_positions = {
+            "uav1": (1.0, (0.0, 0.0, 4.0))
+        }
+        coordinator.active_goals = {}
+        coordinator.active_goal_points = {}
+        coordinator.active_goal_origins = {}
+        coordinator.active_trajectory_end_times = {}
+        coordinator.active_trajectory_route_progress = {}
+        coordinator.active_controller_paths = set()
+        coordinator.active_route_paths = set()
+        coordinator.worker_visual_handoff_waiting = {}
+        coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.5)
+        published = []
+        coordinator._publish_direct_controller_goal = (
+            lambda vehicle, goal: published.append((vehicle, goal))
+        )
+        coordinator._publish_direct_status = lambda *_args: None
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(10),
+        ):
+            coordinator._publish_next_scout_goal("uav1")
+
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0][0], "uav1")
+        self.assertEqual(published[0][1].pose.position.x, 5.0)
+        self.assertEqual(published[0][1].pose.position.y, 0.0)
+        self.assertEqual(published[0][1].pose.position.z, 4.0)
+        self.assertEqual(coordinator.active_goals["uav1"], (20, "search", 0))
+        self.assertNotIn("uav1", coordinator.active_route_paths)
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(11),
+        ):
+            coordinator._handle_goal_status(
+                "uav1", 20, PlannerStatus.REACHED, "waypoint reached"
+            )
+
+        self.assertEqual(coordinator.route_indices["uav1"], 1)
+        self.assertEqual(len(published), 2)
+        self.assertEqual(published[1][1].pose.position.x, 5.0)
+        self.assertEqual(published[1][1].pose.position.y, 10.0)
+        self.assertEqual(coordinator.active_goals["uav1"], (21, "search", 1))
+
+    def test_planning_hover_receives_complete_remaining_path(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator._next_goal_id = 12
+        coordinator.shared_frame = "world"
+        coordinator.vehicle_backends = {"uav1": "planning"}
+        coordinator.mobility_profiles = {"uav1": "hover"}
+        coordinator.vehicle_world_positions = {
+            "uav1": (1.0, (0.0, 0.0, 2.0))
+        }
+        coordinator.active_goals = {}
+        coordinator.active_goal_points = {}
+        coordinator.active_goal_origins = {}
+        coordinator.active_controller_paths = set()
+        coordinator.active_route_paths = set()
+        coordinator.worker_visual_handoff_waiting = {}
+        coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.5)
+        coordinator.planning_path_publishers = {
+            "uav1": type("Publisher", (), {"publish": lambda self, value: published.append(value)})()
+        }
+        coordinator._coverage_speed = lambda _vehicle: 4.0
+        published = []
+
+        with patch(
+            "xd_uav_task_allocate.ros.coordinator.rospy.Time.now",
+            return_value=rospy.Time(10),
+        ):
+            goal_id = coordinator._publish_planning_route_goal(
+                "uav1",
+                [(1.0, 0.0, 2.0), (2.0, 0.0, 2.0), (2.0, 5.0, 2.0)],
+                0,
+                "search",
+                2,
+            )
+
+        self.assertEqual(12, goal_id)
+        self.assertEqual((12, "search", 2), coordinator.active_goals["uav1"])
+        self.assertEqual(1, len(published))
+        self.assertEqual(4, len(published[0].poses))
+        self.assertEqual(2.0, published[0].poses[-1].pose.position.x)
+        self.assertEqual(5.0, published[0].poses[-1].pose.position.y)
+
+    def test_planning_multirotor_advances_inside_configured_radius(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.active_goals = {"uav1": (12, "search", 3)}
+        coordinator.active_goal_points = {"uav1": (10.0, 0.0, 4.0)}
+        coordinator.vehicle_world_positions = {
+            "uav1": (5.0, (8.6, 0.0, 4.0))
+        }
+        coordinator.vehicle_backends = {"uav1": "planning"}
+        coordinator.mobility_profiles = {"uav1": "hover"}
+        coordinator.scout_configs = {
+            "uav1": {"multirotor": {"waypoint_acceptance_radius_m": 1.5}}
+        }
+        coordinator.worker_configs = {}
+        coordinator._vehicle_ready = lambda _vehicle, _now: True
+        handled = []
+        coordinator._handle_goal_status = lambda *args: handled.append(args)
+
+        coordinator._check_planning_multirotor_waypoint_arrivals(5.0)
+
+        self.assertEqual(len(handled), 1)
+        self.assertEqual(handled[0][0:3], ("uav1", 12, PlannerStatus.REACHED))
+
+    def test_planning_multirotor_does_not_advance_outside_radius(self):
+        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
+        coordinator.mission_state = MISSION_ACTIVE
+        coordinator.active_goals = {"uav1": (12, "search", 3)}
+        coordinator.active_goal_points = {"uav1": (10.0, 0.0, 4.0)}
+        coordinator.vehicle_world_positions = {
+            "uav1": (5.0, (8.4, 0.0, 4.0))
+        }
+        coordinator.vehicle_backends = {"uav1": "planning"}
+        coordinator.mobility_profiles = {"uav1": "hover"}
+        coordinator.scout_configs = {
+            "uav1": {"multirotor": {"waypoint_acceptance_radius_m": 1.5}}
+        }
+        coordinator.worker_configs = {}
+        coordinator._vehicle_ready = lambda _vehicle, _now: True
+        handled = []
+        coordinator._handle_goal_status = lambda *args: handled.append(args)
+
+        coordinator._check_planning_multirotor_waypoint_arrivals(5.0)
+
+        self.assertEqual(handled, [])
+
     def test_fixedwing_route_is_published_as_geometry_only_path(self):
         coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
         coordinator._next_goal_id = 12
         coordinator.shared_frame = "world"
+        coordinator.vehicle_backends = {"uav1": "direct_controller_test"}
         coordinator.vehicle_world_positions = {
             "uav1": (1.0, (0.0, 0.0, 40.0))
         }
@@ -748,11 +1194,11 @@ class DirectExecutionTest(unittest.TestCase):
         self.assertIsNot(published[0].poses[0].header, published[0].header)
         self.assertIn("uav1", coordinator.active_controller_paths)
 
-    def test_fixedwing_worker_uses_geometric_path_to_approach_goal(self):
+    def test_fixedwing_worker_uses_geometric_path_to_target(self):
         coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
         coordinator._next_goal_id = 9
         coordinator.shared_frame = "world"
-        coordinator.vehicle_types = {"uav3": "fixedwing"}
+        coordinator.mobility_profiles = {"uav3": "fixedwing"}
         coordinator.vehicle_backends = {"uav3": "direct_controller_test"}
         coordinator.vehicle_world_positions = {
             "uav3": (1.0, (0.0, 0.0, 40.0))
@@ -764,7 +1210,6 @@ class DirectExecutionTest(unittest.TestCase):
         coordinator.active_trajectory_route_progress = {}
         coordinator.active_controller_paths = set()
         coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.0)
-        coordinator.worker_arrival_tracker = ArrivalDwellTracker(0.5, 0.0)
         paths = []
         points = []
         coordinator.direct_path_publishers = {
@@ -803,7 +1248,7 @@ class DirectExecutionTest(unittest.TestCase):
         coordinator.direct_controller_test = True
         coordinator.mission_state = MISSION_ACTIVE
         coordinator.vehicle_backends = {"uav3": "direct_controller_test"}
-        coordinator.vehicle_types = {"uav3": "fixedwing"}
+        coordinator.mobility_profiles = {"uav3": "fixedwing"}
         coordinator.active_goals = {"uav3": (9, "rescue", 4)}
         coordinator.active_goal_points = {"uav3": (100.0, 0.0, 40.0)}
         coordinator.active_goal_origins = {"uav3": (0.0, 0.0, 40.0)}
@@ -814,7 +1259,6 @@ class DirectExecutionTest(unittest.TestCase):
             "uav3": (10.0, (101.0, 2.0, 40.0))
         }
         coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.0)
-        coordinator.worker_arrival_tracker = ArrivalDwellTracker(0.5, 0.0)
         coordinator._vehicle_ready = lambda *_args: True
         coordinator._fixedwing_setting = lambda _vehicle, _key, default: default
         reached = []
@@ -864,7 +1308,7 @@ class DirectExecutionTest(unittest.TestCase):
         coordinator.direct_controller_test = True
         coordinator.mission_state = MISSION_ACTIVE
         coordinator.vehicle_backends = {"uav1": "direct_controller_test"}
-        coordinator.vehicle_types = {"uav1": "fixedwing"}
+        coordinator.mobility_profiles = {"uav1": "fixedwing"}
         coordinator.scout_configs = {
             "uav1": {
                 "fixedwing": {
@@ -888,7 +1332,6 @@ class DirectExecutionTest(unittest.TestCase):
             "uav1": (10.0, (50.0, 50.0, 40.0))
         }
         coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.0)
-        coordinator.worker_arrival_tracker = ArrivalDwellTracker(0.5, 0.0)
         coordinator._vehicle_ready = lambda *_args: True
         coordinator._fixedwing_setting = (
             lambda _vehicle, key, default: {
@@ -916,48 +1359,6 @@ class DirectExecutionTest(unittest.TestCase):
         self.assertAlmostEqual(goal_heading((0.0, 0.0), (0.0, 5.0)), math.pi / 2.0)
         self.assertIsNone(goal_heading((1.0, 1.0), (1.05, 1.0), 0.1))
 
-    def test_worker_arrival_checks_the_captured_approach_altitude(self):
-        self.assertAlmostEqual(
-            goal_distance((8.0, 0.0, 4.0), (8.0, 0.0, 5.0), use_z=True),
-            1.0,
-        )
-
-    def test_worker_stops_before_target_and_holds_current_altitude(self):
-        goal = worker_approach_goal(
-            current=(0.0, 0.0, 5.0),
-            target=(10.0, 0.0, 0.5),
-            horizontal_standoff_m=2.0,
-        )
-        self.assertEqual(goal, (8.0, 0.0, 5.0))
-
-    def test_worker_cannot_complete_approach_while_still_moving_fast(self):
-        coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
-        coordinator.direct_controller_test = True
-        coordinator.mission_state = MISSION_ACTIVE
-        coordinator.vehicle_backends = {"uav3": "direct_controller_test"}
-        coordinator.vehicle_types = {"uav3": "multirotor"}
-        coordinator.active_goals = {"uav3": (7, "rescue", 1)}
-        coordinator.active_goal_points = {"uav3": (5.0, 0.0, 4.0)}
-        coordinator.active_trajectory_route_progress = {}
-        coordinator.active_trajectory_end_times = {}
-        coordinator.vehicle_world_positions = {"uav3": (10.0, (5.0, 0.0, 4.0))}
-        coordinator.vehicle_world_speeds = {"uav3": (10.0, 2.0)}
-        coordinator.odometry_timeout = 0.5
-        coordinator.worker_maximum_arrival_speed = 0.35
-        coordinator.arrival_tracker = ArrivalDwellTracker(1.0, 0.0)
-        coordinator.worker_arrival_tracker = ArrivalDwellTracker(0.5, 0.0)
-        coordinator._vehicle_ready = lambda *_args: True
-        reached = []
-        coordinator._publish_direct_status = lambda *args: reached.append(args)
-        coordinator._handle_goal_status = lambda *args: reached.append(args)
-
-        coordinator._check_direct_goal_arrivals(10.0)
-        self.assertEqual(reached, [])
-
-        coordinator.vehicle_world_speeds["uav3"] = (10.1, 0.1)
-        coordinator._check_direct_goal_arrivals(10.1)
-        self.assertEqual(len(reached), 2)
-
     def test_completed_direct_worker_is_commanded_to_hold_current_pose(self):
         coordinator = TaskAllocateCoordinator.__new__(TaskAllocateCoordinator)
         coordinator.registry = GlobalTargetRegistry()
@@ -972,7 +1373,7 @@ class DirectExecutionTest(unittest.TestCase):
         coordinator.allocator.assign_pending()
         coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
         coordinator.vehicle_backends = {"uav3": "direct_controller_test"}
-        coordinator.vehicle_types = {"uav3": "multirotor"}
+        coordinator.mobility_profiles = {"uav3": "hover"}
         holds = []
         coordinator._publish_direct_hold = lambda vehicle: holds.append(vehicle) or True
         coordinator._clear_active_goal = lambda _vehicle: None
@@ -1006,7 +1407,7 @@ class DirectExecutionTest(unittest.TestCase):
         coordinator.allocator.assign_pending()
         coordinator.active_goals = {"uav3": (7, "rescue", task.task_id)}
         coordinator.vehicle_backends = {"uav3": "direct_controller_test"}
-        coordinator.vehicle_types = {"uav3": "fixedwing"}
+        coordinator.mobility_profiles = {"uav3": "fixedwing"}
         holds = []
         coordinator._publish_direct_hold = lambda vehicle: holds.append(vehicle) or True
         coordinator._clear_active_goal = lambda _vehicle: None
@@ -1031,14 +1432,6 @@ class DirectExecutionTest(unittest.TestCase):
         self.assertIn("任务完成", loginfo.call_args.args[0])
         self.assertEqual(loginfo.call_args.args[3], "uav3")
         self.assertEqual(loginfo.call_args.args[4], "fixedwing")
-
-    def test_worker_already_inside_standoff_holds_its_position(self):
-        goal = worker_approach_goal(
-            current=(9.0, 0.0, 5.0),
-            target=(10.0, 0.0, 0.5),
-            horizontal_standoff_m=2.0,
-        )
-        self.assertEqual(goal, (9.0, 0.0, 5.0))
 
     def test_arrival_requires_continuous_dwell(self):
         tracker = ArrivalDwellTracker(tolerance_m=1.0, dwell_sec=0.5)
@@ -1211,6 +1604,74 @@ class RegistryAndAllocationTest(unittest.TestCase):
         second_task = allocator.ensure_task(second, duplicate_radius_m=3.0)
         self.assertNotEqual(first_task.task_id, second_task.task_id)
 
+    def test_overlapping_same_frame_track_ids_merge_as_detector_duplicate(self):
+        registry = GlobalTargetRegistry(
+            association_radius_m=4.0,
+            stable_track_maximum_jump_m=20.0,
+            duplicate_bbox_iou_threshold=0.5,
+        )
+        first = registry.observe(
+            TargetObservation(
+                "uav1",
+                10.0,
+                2,
+                (0.0, 0.0, 0.0),
+                0.9,
+                track_id=1,
+                track_id_is_stable=True,
+                normalized_bbox=(0.50, 0.50, 0.20, 0.20),
+            )
+        ).target
+        duplicate = registry.observe(
+            TargetObservation(
+                "uav1",
+                10.0,
+                2,
+                (7.0, 0.0, 0.0),
+                0.9,
+                track_id=2,
+                track_id_is_stable=True,
+                normalized_bbox=(0.51, 0.50, 0.20, 0.20),
+            )
+        ).target
+
+        self.assertEqual(first.target_id, duplicate.target_id)
+        self.assertEqual(len(registry.targets), 1)
+        self.assertEqual(
+            duplicate.source_tracks,
+            {("uav1", "", 1), ("uav1", "", 2)},
+        )
+
+    def test_nonoverlapping_same_frame_boxes_remain_distinct(self):
+        registry = GlobalTargetRegistry(duplicate_bbox_iou_threshold=0.5)
+        first = registry.observe(
+            TargetObservation(
+                "uav1",
+                10.0,
+                2,
+                (0.0, 0.0, 0.0),
+                0.9,
+                track_id=1,
+                track_id_is_stable=True,
+                normalized_bbox=(0.25, 0.50, 0.15, 0.15),
+            )
+        ).target
+        second = registry.observe(
+            TargetObservation(
+                "uav1",
+                10.0,
+                2,
+                (0.5, 0.0, 0.0),
+                0.9,
+                track_id=2,
+                track_id_is_stable=True,
+                normalized_bbox=(0.75, 0.50, 0.15, 0.15),
+            )
+        ).target
+
+        self.assertNotEqual(first.target_id, second.target_id)
+        self.assertIn(second.target_id, first.known_distinct_target_ids)
+
     def test_unstable_world_positions_do_not_confirm(self):
         registry = GlobalTargetRegistry(
             association_radius_m=5.0,
@@ -1254,7 +1715,7 @@ class RegistryAndAllocationTest(unittest.TestCase):
             confirmation_hits=2,
             confirmation_minimum_span_sec=0.1,
             confirmation_distinct_uavs=2,
-            confirmation_vehicle_types=("multirotor",),
+            confirmation_mobility_profiles=("hover",),
         )
         first = TargetObservation(
             "fw1", 10.0, 0, (100.0, 50.0, 0.0), 1.0,
@@ -1272,12 +1733,12 @@ class RegistryAndAllocationTest(unittest.TestCase):
         self.assertFalse(update.newly_confirmed)
         self.assertEqual(update.target.status, TARGET_CANDIDATE)
 
-    def test_multirotor_confirms_a_verifying_fixedwing_candidate(self):
+    def test_hover_profile_confirms_a_verifying_fixedwing_candidate(self):
         registry = GlobalTargetRegistry(
             confirmation_hits=2,
             confirmation_minimum_span_sec=0.1,
             confirmation_distinct_uavs=2,
-            confirmation_vehicle_types=("multirotor",),
+            confirmation_mobility_profiles=("hover",),
             association_radius_m=4.0,
             association_covariance_sigma=3.0,
             maximum_association_radius_m=50.0,
@@ -1293,21 +1754,21 @@ class RegistryAndAllocationTest(unittest.TestCase):
             TargetObservation(
                 "uav2", 20.0, 0, (112.0, 50.0, 0.0), 1.0,
                 (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-                "multirotor",
+                "hover",
             )
         )
         registry.observe(
             TargetObservation(
                 "uav2", 20.2, 0, (112.2, 50.1, 0.0), 1.0,
                 (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-                "multirotor",
+                "hover",
             )
         )
         update = registry.observe(
             TargetObservation(
                 "uav2", 20.4, 0, (112.1, 49.9, 0.0), 1.0,
                 (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-                "multirotor",
+                "hover",
             )
         )
         self.assertEqual(len(registry.targets), 1)
@@ -1425,30 +1886,22 @@ class RegistryAndAllocationTest(unittest.TestCase):
         self.assertEqual(task.status, TASK_PENDING)
         self.assertEqual(task.assigned_worker, "")
 
-    def test_rescue_task_can_require_a_multirotor_worker(self):
+    def test_rescue_task_assignment_is_independent_of_airframe_type(self):
         allocator = RescueTaskAllocator()
-        allocator.update_worker(
-            "fw1", (1.0, 0.0, 50.0), 1.0, True, vehicle_type="fixedwing"
-        )
-        allocator.update_worker(
-            "uav3", (20.0, 0.0, 10.0), 1.0, True, vehicle_type="multirotor"
-        )
+        allocator.update_worker("vtol1", (1.0, 0.0, 50.0), 1.0, True)
+        allocator.update_worker("uav3", (20.0, 0.0, 10.0), 1.0, True)
         target = GlobalTargetRecord(
             1, 0, [0.0, 0.0, 0.0], [0.0] * 9, 1.0, 1.0, 1.0,
             status=TARGET_CONFIRMED,
         )
-        task = allocator.ensure_task(
-            target, allowed_vehicle_types=("multirotor",)
-        )
+        task = allocator.ensure_task(target)
         assignment = allocator.assign_pending()
-        self.assertEqual(assignment[0][1].name, "uav3")
-        self.assertEqual(task.allowed_vehicle_types, ("multirotor",))
+        self.assertEqual(assignment[0][1].name, "vtol1")
+        self.assertEqual(task.assigned_worker, "vtol1")
 
-    def test_incompatible_high_priority_task_does_not_block_later_task(self):
+    def test_high_priority_task_is_assigned_without_type_filtering(self):
         allocator = RescueTaskAllocator()
-        allocator.update_worker(
-            "fw1", (0.0, 0.0, 50.0), 1.0, True, vehicle_type="fixedwing"
-        )
+        allocator.update_worker("vtol1", (0.0, 0.0, 50.0), 1.0, True)
         first_target = GlobalTargetRecord(
             1, 0, [10.0, 0.0, 0.0], [0.0] * 9, 1.0, 1.0, 1.0,
             status=TARGET_CONFIRMED,
@@ -1457,20 +1910,12 @@ class RegistryAndAllocationTest(unittest.TestCase):
             2, 1, [20.0, 0.0, 0.0], [0.0] * 9, 1.0, 1.0, 1.0,
             status=TARGET_CONFIRMED,
         )
-        blocked = allocator.ensure_task(
-            first_target,
-            priority=10,
-            allowed_vehicle_types=("multirotor",),
-        )
-        eligible = allocator.ensure_task(
-            second_target,
-            priority=1,
-            allowed_vehicle_types=("fixedwing",),
-        )
+        high_priority = allocator.ensure_task(first_target, priority=10)
+        later = allocator.ensure_task(second_target, priority=1)
         assignments = allocator.assign_pending()
-        self.assertEqual(blocked.status, TASK_PENDING)
-        self.assertEqual(assignments[0][0].task_id, eligible.task_id)
-        self.assertEqual(assignments[0][1].name, "fw1")
+        self.assertEqual(assignments[0][0].task_id, high_priority.task_id)
+        self.assertEqual(assignments[0][1].name, "vtol1")
+        self.assertEqual(later.status, TASK_PENDING)
 
     def test_cancel_and_retry_task_release_worker(self):
         allocator = RescueTaskAllocator()

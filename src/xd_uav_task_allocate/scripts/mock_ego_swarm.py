@@ -3,6 +3,7 @@
 
 import rospy
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
 
 from xd_uav_task_allocate.msg import PlannerStatus
 
@@ -13,11 +14,13 @@ class MockEgoSwarm:
         self.reach_delay = max(0.0, float(rospy.get_param("~reach_delay_sec", 0.5)))
         self.auto_reach = bool(rospy.get_param("~auto_reach", True))
         goal_topic = str(rospy.get_param("~goal_topic", f"/{self.uav_name}/planning/goal"))
+        path_topic = str(rospy.get_param("~path_topic", f"/{self.uav_name}/planning/task_path"))
         status_topic = str(
             rospy.get_param("~status_topic", f"/{self.uav_name}/planning/status")
         )
         self.publisher = rospy.Publisher(status_topic, PlannerStatus, queue_size=5)
         self.subscriber = rospy.Subscriber(goal_topic, PoseStamped, self.goal_callback, queue_size=5)
+        self.path_subscriber = rospy.Subscriber(path_topic, Path, self.path_callback, queue_size=5)
         self.timer = None
         self.latest_goal_id = 0
         rospy.logwarn(
@@ -34,7 +37,16 @@ class MockEgoSwarm:
         self.publisher.publish(message)
 
     def goal_callback(self, message):
-        self.latest_goal_id = int(message.header.seq)
+        self._accept_goal(int(message.header.seq))
+
+    def path_callback(self, message):
+        if not message.poses:
+            return
+        goal_id = int(message.poses[-1].header.seq or message.header.seq)
+        self._accept_goal(goal_id)
+
+    def _accept_goal(self, goal_id):
+        self.latest_goal_id = int(goal_id)
         if self.timer is not None:
             self.timer.shutdown()
         self.publish_status(self.latest_goal_id, PlannerStatus.PLANNING, "mock planning")

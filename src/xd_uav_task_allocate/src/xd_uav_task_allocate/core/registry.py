@@ -23,10 +23,11 @@ class TargetObservation:
     position: Tuple[float, float, float]
     confidence: float
     covariance: Tuple[float, ...] = (0.0,) * 9
-    source_vehicle_type: str = "multirotor"
+    source_mobility_profile: str = "hover"
     track_id: int = -1
     track_id_is_stable: bool = False
     sensor_id: str = ""
+    normalized_bbox: Optional[Tuple[float, float, float, float]] = None
 
 
 @dataclass
@@ -43,7 +44,7 @@ class GlobalTargetRecord:
     status: int = TARGET_CANDIDATE
     recent_observations: List[Tuple[float, str]] = field(default_factory=list)
     accumulated_weight: float = 1.0
-    observer_vehicle_types: Dict[str, str] = field(default_factory=dict)
+    observer_mobility_profiles: Dict[str, str] = field(default_factory=dict)
     coarse_evidence_ready: bool = False
     # A detector track is local to one aircraft and sensor.  Several local
     # tracks may therefore be aliases of one physical world target.
@@ -76,7 +77,7 @@ class GlobalTargetRegistry:
         confirmation_minimum_span_sec: float = 0.25,
         confirmation_distinct_uavs: int = 2,
         stale_timeout_sec: float = 15.0,
-        confirmation_vehicle_types: Optional[Iterable[str]] = None,
+        confirmation_mobility_profiles: Optional[Iterable[str]] = None,
         association_covariance_sigma: float = 3.0,
         maximum_association_radius_m: float = 50.0,
         cross_class_association_radius_m: float = 3.0,
@@ -85,6 +86,7 @@ class GlobalTargetRegistry:
         class_confirmation_minimum_ratio: float = 0.65,
         maximum_confirmation_position_spread_m: float = 3.0,
         position_history_size: int = 30,
+        duplicate_bbox_iou_threshold: float = 0.50,
     ):
         self.association_radius_m = max(0.1, float(association_radius_m))
         self.confirmation_hits = max(1, int(confirmation_hits))
@@ -95,15 +97,18 @@ class GlobalTargetRegistry:
         self.confirmation_distinct_uavs = max(1, int(confirmation_distinct_uavs))
         self.stale_timeout_sec = max(0.1, float(stale_timeout_sec))
         requested_types = (
-            ("multirotor", "fixedwing")
-            if confirmation_vehicle_types is None
-            else tuple(str(item).strip().lower() for item in confirmation_vehicle_types)
+            ("hover", "fixedwing")
+            if confirmation_mobility_profiles is None
+            else tuple(
+                str(item).strip().lower()
+                for item in confirmation_mobility_profiles
+            )
         )
-        self.confirmation_vehicle_types = {
-            item for item in requested_types if item in ("multirotor", "fixedwing")
+        self.confirmation_mobility_profiles = {
+            item for item in requested_types if item in ("hover", "fixedwing")
         }
-        if not self.confirmation_vehicle_types:
-            raise ValueError("confirmation_vehicle_types must not be empty")
+        if not self.confirmation_mobility_profiles:
+            raise ValueError("confirmation_mobility_profiles must not be empty")
         self.association_covariance_sigma = max(
             0.0, float(association_covariance_sigma)
         )
@@ -126,6 +131,9 @@ class GlobalTargetRegistry:
             0.0, float(maximum_confirmation_position_spread_m)
         )
         self.position_history_size = max(3, int(position_history_size))
+        self.duplicate_bbox_iou_threshold = min(
+            1.0, max(0.0, float(duplicate_bbox_iou_threshold))
+        )
         self.targets: Dict[int, GlobalTargetRecord] = {}
         self._source_track_to_target: Dict[Tuple[str, str, int], int] = {}
         self._next_target_id = 1
@@ -175,7 +183,7 @@ class GlobalTargetRegistry:
         variance = cls._horizontal_variance(observation.covariance)
         # Legacy publishers often use an all-zero covariance to mean unknown;
         # retain the former confidence-only weighting for that case. For real
-        # covariances, a precise multirotor measurement should dominate a
+        # covariances, a precise hover-profile measurement should dominate a
         # high-altitude fixed-wing ground-plane estimate.
         if variance <= 1e-9:
             return confidence
@@ -204,9 +212,66 @@ class GlobalTargetRegistry:
             ):
                 continue
             item_key = self._source_track_key(item)
-            if item_key is not None and item_key != observation_key:
+            if (
+                item_key is not None
+                and item_key != observation_key
+                and not self._bbox_duplicate(item, observation)
+            ):
                 return True
         return False
+
+    @staticmethod
+    def _bbox_iou(first, second) -> float:
+        if first is None or second is None:
+            return 0.0
+        first_cx, first_cy, first_w, first_h = (
+            float(value) for value in first
+        )
+        second_cx, second_cy, second_w, second_h = (
+            float(value) for value in second
+        )
+        if min(first_w, first_h, second_w, second_h) <= 0.0:
+            return 0.0
+        first_left = first_cx - 0.5 * first_w
+        first_top = first_cy - 0.5 * first_h
+        first_right = first_cx + 0.5 * first_w
+        first_bottom = first_cy + 0.5 * first_h
+        second_left = second_cx - 0.5 * second_w
+        second_top = second_cy - 0.5 * second_h
+        second_right = second_cx + 0.5 * second_w
+        second_bottom = second_cy + 0.5 * second_h
+        intersection = max(
+            0.0, min(first_right, second_right) - max(first_left, second_left)
+        ) * max(
+            0.0,
+            min(first_bottom, second_bottom) - max(first_top, second_top),
+        )
+        union = first_w * first_h + second_w * second_h - intersection
+        return intersection / union if union > 1e-12 else 0.0
+
+    def _bbox_duplicate(
+        self, first: TargetObservation, second: TargetObservation
+    ) -> bool:
+        return (
+            self.duplicate_bbox_iou_threshold > 0.0
+            and first.class_id == second.class_id
+            and self._bbox_iou(first.normalized_bbox, second.normalized_bbox)
+            >= self.duplicate_bbox_iou_threshold
+        )
+
+    def _same_frame_duplicate_track(
+        self, target: GlobalTargetRecord, observation: TargetObservation
+    ) -> bool:
+        observation_key = self._source_track_key(observation)
+        if observation_key is None:
+            return False
+        return any(
+            item.source_uav == observation.source_uav
+            and abs(float(item.stamp) - float(observation.stamp)) <= 1e-6
+            and self._source_track_key(item) not in (None, observation_key)
+            and self._bbox_duplicate(item, observation)
+            for item in target.recent_measurements
+        )
 
     def _compatible(self, target: GlobalTargetRecord, observation: TargetObservation) -> bool:
         if target.status == TARGET_STALE:
@@ -217,6 +282,11 @@ class GlobalTargetRegistry:
         )
         if self._same_frame_distinct_track(target, observation):
             return False
+        if self._same_frame_duplicate_track(target, observation):
+            # Two highly-overlapping same-class boxes are detector duplicates,
+            # even when their independent range projections differ more than
+            # the normal world-space association gate.
+            return distance <= self.stable_track_maximum_jump_m
         class_conflict = (
             target.class_id >= 0
             and observation.class_id >= 0
@@ -308,9 +378,9 @@ class GlobalTargetRegistry:
             target.class_id = int(winner)
 
     def observe(self, observation: TargetObservation) -> RegistryUpdate:
-        vehicle_type = str(observation.source_vehicle_type).strip().lower()
-        if vehicle_type not in ("multirotor", "fixedwing"):
-            vehicle_type = "multirotor"
+        mobility_profile = str(observation.source_mobility_profile).strip().lower()
+        if mobility_profile not in ("hover", "fixedwing"):
+            mobility_profile = "hover"
         target = self._find_target(observation)
         created = target is None
         if target is None:
@@ -327,7 +397,9 @@ class GlobalTargetRegistry:
                 observer_uavs={str(observation.source_uav)},
                 recent_observations=[(float(observation.stamp), str(observation.source_uav))],
                 accumulated_weight=weight,
-                observer_vehicle_types={str(observation.source_uav): vehicle_type},
+                observer_mobility_profiles={
+                    str(observation.source_uav): mobility_profile
+                },
                 recent_measurements=[observation],
             )
             track_key = self._source_track_key(observation)
@@ -374,7 +446,9 @@ class GlobalTargetRegistry:
                 target.last_seen = max(target.last_seen, float(observation.stamp))
                 target.observation_count += 1
                 target.observer_uavs.add(str(observation.source_uav))
-                target.observer_vehicle_types[str(observation.source_uav)] = vehicle_type
+                target.observer_mobility_profiles[
+                    str(observation.source_uav)
+                ] = mobility_profile
                 # Multiple overlapping boxes from the same detector frame are
                 # one piece of confirmation evidence, not multiple hits.
                 target.recent_observations.append(observation_key)
@@ -418,15 +492,15 @@ class GlobalTargetRegistry:
         confirmable_observations = [
             item
             for item in target.recent_observations
-            if target.observer_vehicle_types.get(item[1], "multirotor")
-            in self.confirmation_vehicle_types
+            if target.observer_mobility_profiles.get(item[1], "hover")
+            in self.confirmation_mobility_profiles
         ]
         confirmable_sources = {item[1] for item in confirmable_observations}
         confirmable_measurements = [
             item
             for item in target.recent_measurements
-            if str(item.source_vehicle_type).strip().lower()
-            in self.confirmation_vehicle_types
+            if str(item.source_mobility_profile).strip().lower()
+            in self.confirmation_mobility_profiles
         ]
         class_winner, class_ratio, class_count, _ = self._class_winner(
             confirmable_measurements
