@@ -1,0 +1,58 @@
+root: ./
+name: one_multirotor_nvidia_functions
+socket_name: mrs
+attach: false
+tmux_options: -f /home/nvidia/xd-uavsystem-test/src/tmux_start/tmux_cfg/tmux.conf
+
+# Functional nodes run on this board and connect to the ROS master on the
+# other board. The launcher supplies ROS_MASTER_URI and ROS_IP from the shell.
+pre_window: source /opt/ros/noetic/setup.bash; source "$HOME/xd-uavsystem-test/devel/setup.bash"; export ROS_MASTER_URI="${ROS_MASTER_URI:?ROS_MASTER_URI is required}"; export ROS_IP="${ROS_IP:?ROS_IP is required}"; unset ROS_HOSTNAME; export DISPLAY=${DISPLAY:-:0}
+startup_window: observe
+
+windows:
+  - vehicle_stack:
+      layout: tiled
+      panes:
+        - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav1
+        - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav2
+
+
+  - world_tf:
+      layout: tiled
+      panes:
+        - roslaunch xd_uav_world_tf_manager world_tf.launch config:=$(rospack find xd_uav_world_tf_manager)/config/world.yaml
+
+  - task:
+      layout: tiled
+      panes:
+        - roslaunch xd_uav_task_allocate task_allocate.launch mission_config:=$(rospack find xd_uav_task_allocate)/config/mission.yaml scout_config:=$(rospack find xd_uav_task_allocate)/config/scouts_two_fixed.yaml worker_config:=$(rospack find xd_uav_task_allocate)/config/workers_two_fixed.yaml post_arrival_config:=$(rospack find xd_uav_task_allocate)/config/task_execution_four_fixed.yaml &
+
+  - transition_to_fw:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/control_manager/set_flight_regime "target_regime: 1"; rosservice call /uav2/control_manager/set_flight_regime "target_regime: 1";'
+
+  - stop_and_land:
+      layout: tiled
+      panes:
+        - history -s 'rosservice call /uav1/control_manager/land_home'
+
+  - observe:
+      layout: tiled
+      panes:
+        - rostopic echo /uav1/state_estimator/main/frames/world/odom
+
+  - takeoff:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/control_manager/takeoff "altitude: 4.0"'
+
+  - goto:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rostopic pub -1 /uav1/planning/goal geometry_msgs/PoseStamped "{header: {stamp: now, frame_id: world}, pose: {position: {x: 10.0, y: 10.0, z: 3.0}, orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}}}"'

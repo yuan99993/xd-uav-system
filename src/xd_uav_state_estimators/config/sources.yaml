@@ -86,7 +86,7 @@ sources:
 
     # 发布该来源在指定坐标系下的估计结果，不产生TF。
     # republish_in_frames: [local_origin, world]
-    republish_in_frames: [local_origin]
+    republish_in_frames: [local_origin, world]
 
   fastlio:
     priority: 1

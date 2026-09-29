@@ -2,33 +2,33 @@
 # hierarchical_search/mode=single_stage, both aircraft search the original
 # areas and a stable coarse detection may create a worker task directly.
 scouts:
-  uav1:
-    mobility_profile: fixedwing
-    localization:
-      world_odometry_topic: /uav1/state_estimator/main/frames/world/odom
-    health:
-      control_state_topic: /uav1/control_manager/state
-    coverage:
-      nominal_speed_mps: 15.0
-    fixedwing:
-      # Zero preserves SearchArea.altitude from the incoming search-area topic.
-      coverage_altitude_m: 0.0
-      coverage_lane_spacing_m: 0.0
-      minimum_turn_radius_m: 30.0
-      turn_waypoint_spacing_m: 5.0
-      straight_lead_distance_m: 30.0
-      waypoint_acceptance_radius_m: 20.0
-      waypoint_altitude_tolerance_m: 10.0
-      pass_cross_track_limit_m: 40.0
-    topics:
-      detections: /uav1/detect/detections
-      planner_task_path: /uav1/planning/task_path
-      planner_cancel: /uav1/planning/cancel
-      route_preview: /uav1/planning/route_preview
-      planner_status: /uav1/planning/status
-      controller_path: /uav1/control/reference/path
-      controller_path_status: /uav1/controller/path_status
-      controller_setpoint: /uav1/control/reference/setpoint
+  # uav1:
+  #   mobility_profile: fixedwing
+  #   localization:
+  #     world_odometry_topic: /uav1/state_estimator/main/frames/world/odom
+  #   health:
+  #     control_state_topic: /uav1/control_manager/state
+  #   coverage:
+  #     nominal_speed_mps: 15.0
+  #   fixedwing:
+  #     # Zero preserves SearchArea.altitude from the incoming search-area topic.
+  #     coverage_altitude_m: 0.0
+  #     coverage_lane_spacing_m: 0.0
+  #     minimum_turn_radius_m: 30.0
+  #     turn_waypoint_spacing_m: 5.0
+  #     straight_lead_distance_m: 30.0
+  #     waypoint_acceptance_radius_m: 20.0
+  #     waypoint_altitude_tolerance_m: 10.0
+  #     pass_cross_track_limit_m: 40.0
+  #   topics:
+  #     detections: /uav1/detect/detections
+  #     planner_task_path: /uav1/planning/task_path
+  #     planner_cancel: /uav1/planning/cancel
+  #     route_preview: /uav1/planning/route_preview
+  #     planner_status: /uav1/planning/status
+  #     controller_path: /uav1/control/reference/path
+  #     controller_path_status: /uav1/controller/path_status
+  #     controller_setpoint: /uav1/control/reference/setpoint
 
   uav2:
     mobility_profile: fixedwing

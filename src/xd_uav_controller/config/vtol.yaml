@@ -63,7 +63,7 @@ fixedwing:
     bank_load_factor_pitch_gain: 0.25
 
   energy_control:
-    cruise_airspeed: 15.0
+    cruise_airspeed: 20.0
     minimum_airspeed: 11.0
     maximum_airspeed: 24.0
     trim_throttle: 0.25
@@ -140,7 +140,7 @@ multirotor:
   # 机体模型与悬停工作点。
   model:
     gravity: 9.80665
-    hover_throttle: 0.57
+    hover_throttle: 0.15
 
   path_following:
     nominal_speed: 3.0

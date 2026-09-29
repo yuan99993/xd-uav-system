@@ -172,11 +172,11 @@ planner:
     # and complete fixed-wing geometric paths directly to the controller;
     # it performs no point-cloud planning or obstacle avoidance.
     acknowledge_no_obstacle_avoidance: true
-    goal_tolerance_m: 1.0
+    goal_tolerance_m: 3.0
     arrival_dwell_sec: 0.5
     # Face the current waypoint in world ENU while flying each route segment.
     face_goal: true
-    yaw_minimum_distance_m: 0.1
+    yaw_minimum_distance_m: 0.3
 
   multirotor:
     # Planning-backed multirotors receive the complete remaining route as one
