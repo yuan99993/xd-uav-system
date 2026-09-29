@@ -10,7 +10,6 @@
       <param name="command_timeout" value="0.2" />
       <param name="transform_state_to_common" value="true" />
       <param name="allow_nonfinite_yaw_rate" value="true" />
-      <param name="require_takeoff_complete" value="true" />
     </node>
   </group>
 

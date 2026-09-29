@@ -28,24 +28,29 @@ roslaunch xd_uav_planning planning.launch \
 正式公共接口：
 
 ```text
-/<uav>/planning/goal          geometry_msgs/PoseStamped（多旋翼输入）
-/<uav>/planning/task_path     nav_msgs/Path（固定翼执行输入）
-/<uav>/planning/no_fly_zone   xd_uav_planning/NoFlyZone（固定翼禁飞区输入）
+/<uav>/planning/goal          geometry_msgs/PoseStamped（多旋翼兼容单点输入）
+/<uav>/planning/task_path     nav_msgs/Path（多旋翼/固定翼完整路径输入）
+/<uav>/planning/route_preview nav_msgs/Path（任务层原始路线预览）
+/<uav>/planning/adjusted_path nav_msgs/Path（固定翼禁飞区调整后路径）
+/planning/no_fly_zones         xd_uav_planning/NoFlyZoneArray（全机共享禁飞区输入）
+/planning/no_fly_zone_markers  visualization_msgs/MarkerArray（RViz 禁飞区显示）
+/<uav>/planning/cancel        xd_uav_task_allocate/CancelPlanning（两类飞机）
 /<uav>/planning/status        xd_uav_task_allocate/PlannerStatus
 /<uav>/planning/healthy       std_msgs/Bool
 /<uav>/planning/diagnostics   diagnostic_msgs/DiagnosticArray
 ```
 
-现有任务包的 `planning/mission_path` 是路线预览，不是固定翼执行输入。远端
-`xd_uav_task_allocate dev@e763836` 仍把固定翼路径直接发布给 controller，因此两个包原样共启
-尚未正式打通。任务层维护者需要修改的 publisher、状态入口、YAML 和验收步骤见
+任务包现已使用 `planning/route_preview` 作为纯预览；多旋翼路线和固定翼路线的执行输入都使用
+`planning/task_path`。多旋翼默认 `flight_type:=3`，EGO 会把完整 Path 生成一条连续全局轨迹，再
+结合局部点云进行滚动局部避障；需要旧单点接口时显式设置 `flight_type:=1`。
+任务层 publisher、状态入口、取消交接和 YAML 说明见
 [任务层接入手册](docs/TASK_PLANNING_INTEGRATION.md)。
 
 ## 后端边界
 
 ### multirotor / EGO-Swarm
 
-规划包负责 EGO 的目标校验、状态/轨迹 bridge、点云适配、健康门、引用仲裁和
+规划包负责 EGO 的目标/路径校验、状态/轨迹 bridge、点云适配、健康门、引用仲裁和
 `PlannerStatus`。EGO 私有 `PositionCommand` 只有在 frame、时间戳、载机状态和健康条件有效后
 才进入 controller。
 
@@ -55,13 +60,22 @@ EGO 的内部 frame 固定为 `world`；规划层拒绝错误 frame 和非有限
 超时会明确上报失败。首次从 `none` 获取 EGO owner 可由 `allow_initial_ego_owner` 放行，后续
 SEAD/EGO owner 切换仍执行位置和速度跳变检查。
 
-EGO 地图大小、高度边界和动态约束可从正式入口配置。默认仍为 `30×20×5 m`、
-`max_vel=0.30 m/s`、`max_acc=0.30 m/s²`，点云默认仍使用 Ouster 话题；与 construction
-入口一致，滚动地图默认开启，需要固定地图时可传入 `rolling_map_enabled:=false`。占据地图
-在飞机接近水平边界前重置有限体素缓存并将窗口中心移动到当前位置；任务目标、TF 和轨迹
-继续使用 `world` 坐标。`rolling_map_margin_m` 默认
-6 m，应大于 EGO 5.5 m 的局部更新半径。重定位会清空旧占据缓存，必须依靠后续传感器数据
-重建，因此实机启用前需要验证重定位期间的障碍重建和轨迹安全性。
+EGO 地图大小、高度边界和动态约束可从正式入口配置。当前多旋翼工程配置默认使用
+`36×36×9 m`、`0.20 m` 栅格、`10 m` 规划前视距离、`max_vel=2.0 m/s` 和
+`max_acc=2.5 m/s²`。点云默认使用每架飞机命名空间下的原生
+`/<uav>/fastlio/points`，并由适配器转换到 `world`；如果现场话题确实是全局
+`/fastlio/points`，启动时传入 `cloud_input_topic:=/fastlio/points`，同时把
+`cloud_input_frame` 设为该消息真实的 `header.frame_id`。滚动地图默认开启，需要固定地图时
+可传入 `rolling_map_enabled:=false`。占据地图在飞机接近水平边界前重置有限体素缓存并将窗口中心
+移动到当前位置；任务目标、TF 和轨迹继续使用 `world` 坐标。`rolling_map_margin_m` 默认 12 m，
+点云更新半径为 `14×14×7.5 m`，障碍膨胀为 0.25 m、轨迹净距为 0.90 m。直接点云命中默认
+保持 0.5 s，防止静态障碍因单帧稀疏或遮挡瞬间从地图消失。重定位仍会清空旧占据缓存，必须依靠
+后续传感器数据重建，因此实机启用前需要验证重定位期间的障碍重建和轨迹安全性。
+
+局部 A* 默认使用 `0.20 m` 栅格、`20×20×12 m` 搜索体和 0.15 s 超时；地图外空间按占据处理。
+周期重规划从当前执行轨迹前方 0.12 s 的预测状态接续，用于补偿搜索、优化和 ROS 消息传递延迟。
+这些取值针对当前 10 Hz、60 m 仿真雷达和 1 m 障碍柱；实机应按测得的点云频率、制动距离和 CPU
+耗时重新做闭环验收。
 
 官方 sequential swarm 的瞬时 `MultiBsplines` 交接仍由本包 `swarm_handoff_relay.py` 外部增强：
 锁存并周期重发启动链，同时根据 `/broadcast_bspline` 更新完整前驱轨迹，避免后机因晚订阅或
@@ -73,9 +87,10 @@ EGO 地图大小、高度边界和动态约束可从正式入口配置。默认�
 下发前以及飞行中的每次合法禁飞区更新后进行固定翼转弯约束路径调整：
 
 ```text
-planning/no_fly_zone --┐
-planning/task_path -----+-> initial/online no-fly planning -> control/reference/path
-ControlState -----------┘                     (atomic Path replacement)
+planning/no_fly_zones --┐
+planning/task_path ------+-> initial/online no-fly planning -> planning/adjusted_path
+ControlState -----------┘                                  -> control/reference/path
+                                                           (atomic Path replacement)
 controller/path_status -> planning/status
 ```
 
@@ -84,40 +99,27 @@ controller 私有 path ID 映射回任务 goal ID。禁飞区与 Path 必须使�
 受阻路径按配置的最小转弯半径和净距生成 Dubins 绕飞路径，最终连续路径校验失败时返回
 `BLOCKED`，不向 controller 下发原始冲突路径。飞行中 UPSERT、REMOVE 或 CLEAR 会从当前
 实测位置截取原任务的剩余段，重新计算并以一条新 Path 原子替换 controller 当前路径；沿原
-任务的进度只前进不后退。在线重规划无安全解时调用 control manager 的 `cancel_offboard`
-失效保护，禁止继续执行已知冲突旧路径。
+任务的进度只前进不后退。任务层可调用 `planning/cancel` 释放当前 planning 控制权；在线
+重规划无安全解时仍调用 control manager 的 `cancel_offboard` 失效保护，禁止继续执行已知
+冲突旧路径。
 
-禁飞区可以在任务 Path 前或飞行中发布。下面示例在 `uav1/odom` 中新增/替换永久矩形禁飞区：
-
-```bash
-rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "
-header:
-  stamp: now
-  frame_id: 'uav1/odom'
-schema_version: 1
-operation: 0
-zone_id: 7101
-enabled: true
-zone_type: 0
-min_altitude: 0.0
-max_altitude: 100.0
-valid_until: {secs: 0, nsecs: 0}
-polygon:
-  points:
-    - {x: 80.0,  y: -20.0, z: 0.0}
-    - {x: 110.0, y: -20.0, z: 0.0}
-    - {x: 110.0, y: 20.0,  z: 0.0}
-    - {x: 80.0,  y: 20.0,  z: 0.0}"
-```
-
-删除 `zone_id=7101`：
+禁飞区可以在任务 Path 前或飞行中发布。所有固定翼后端共享同一个全局话题，一条消息可以携带多个
+区域。数组头部的 `frame_id` 会作为未填写区域头部的默认坐标系。下面示例一次新增两个永久矩形禁飞区：
 
 ```bash
-rostopic pub -1 /uav1/planning/no_fly_zone xd_uav_planning/NoFlyZone "{header: {stamp: now, frame_id: 'uav1/odom'}, schema_version: 1, operation: 1, zone_id: 7101, enabled: false, zone_type: 0, min_altitude: 0.0, max_altitude: 0.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: []}}"
+rostopic pub -1 /planning/no_fly_zones xd_uav_planning/NoFlyZoneArray "{header: {stamp: now, frame_id: 'world'}, zones: [{schema_version: 1, operation: 0, zone_id: 7101, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: 80.0, y: -20.0, z: 0.0}, {x: 110.0, y: -20.0, z: 0.0}, {x: 110.0, y: 20.0, z: 0.0}, {x: 80.0, y: 20.0, z: 0.0}]}}, {schema_version: 1, operation: 0, zone_id: 7102, enabled: true, zone_type: 0, min_altitude: 0.0, max_altitude: 100.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: [{x: 160.0, y: -20.0, z: 0.0}, {x: 190.0, y: -20.0, z: 0.0}, {x: 190.0, y: 20.0, z: 0.0}, {x: 160.0, y: 20.0, z: 0.0}]}}]}"
 ```
 
-`operation=2, zone_id=0` 清空全部区域。
-`valid_until=0` 表示在 REMOVE/CLEAR 前永久有效。消息使用 `dubins` Python 模块；当前工作区
+删除 `zone_id=7101`，数组中只放一个 REMOVE 更新：
+
+```bash
+rostopic pub -1 /planning/no_fly_zones xd_uav_planning/NoFlyZoneArray "{header: {stamp: now, frame_id: 'world'}, zones: [{schema_version: 1, operation: 1, zone_id: 7101, enabled: false, zone_type: 0, min_altitude: 0.0, max_altitude: 0.0, valid_until: {secs: 0, nsecs: 0}, polygon: {points: []}}]}"
+```
+
+`operation=2, zone_id=0` 清空全部区域；也可以把多个 UPSERT、REMOVE 或 CLEAR 更新放在同一个数组中，
+后端按数组顺序处理，并只触发一次在线换路。
+`valid_until=0` 表示在 REMOVE/CLEAR 前永久有效。禁飞区 `header.stamp` 仅作消息元数据，
+不会因为为 0 或消息延迟而拒绝；消息使用 `dubins` Python 模块；当前工作区
 系统 Python 已具备该模块，但 Ubuntu/ROS 的 rosdep 数据库没有 `python3-dubins` 安装键，部署
 新机器时需由系统镜像或项目依赖清单显式提供。
 
@@ -173,9 +175,7 @@ roslaunch xd_uav_planning fixedwing_sitl_demo.launch \
 `/uav1/planning/fixedwing_acceptance/result`。可视化同时显示任务路线、历次替换路线、当前
 controller 路线、实际航迹和活动禁飞区；关闭或停止节点时会在
 `/tmp/xd_uav_planning_visualizations/<时间>/` 保存 `summary.png`、`events.json` 和
-`trajectory.csv`。无显示器时自动使用 Agg 后端，仍会保存验收图。该演示使用共享 PX4 SITL
-入口，但会显式选择 `uav1/fcu` 作为固定翼 IMU/body frame；多旋翼演示继续使用各自的
-`uav1/base_link` 契约。
+`trajectory.csv`。无显示器时自动使用 Agg 后端，仍会保存验收图。
 
 ## 目录
 
@@ -195,8 +195,8 @@ docs/                    操作及上下层接入手册
 
 起降、OFFBOARD、状态估计和底层控制仍分别属于 control manager、estimator 和 controller。
 `xd_uav_task_allocate` 是只读上游。`ego-planner-swarm` 仅带有 construction 分支移植来的最小
-滚动地图补丁；其余项目适配位于本包。旧顶层 `xd_uav_system_integration` 与 `xd_uav_sead`
-已从当前源码树移除，不属于正式 `task_allocate -> planning -> controller` 链路。
+滚动地图补丁；其余项目适配位于本包。旧 `xd_uav_system_integration` 与 `xd_uav_sead` 仅作为
+legacy 源码保留，不属于正式 `task_allocate -> planning -> controller` 链路。
 
 ## 旧 EGO bridge 恢复
 

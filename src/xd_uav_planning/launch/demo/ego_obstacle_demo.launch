@@ -10,13 +10,12 @@
   <arg name="takeoff_altitude" default="1.0"/>
 
   <include file="$(find xd_uav_planning)/launch/internal/runtime/px4_gazebo_single.launch">
-    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="gui" value="$(arg gui)"/>
   </include>
-  <!-- PX4 Iris exposes its rigid-body reference as fcu.  The software body
-       frame used by this demo is coincident with it for this fixture. -->
+  <!-- MRS x500 MAVROS labels its rigid-body reference as fcu.  The software
+       body frame used by this demo is coincident with it for this model. -->
   <node pkg="tf2_ros" type="static_transform_publisher"
-        name="px4_fcu_to_base_link"
+        name="x500_fcu_to_base_link"
         args="0 0 0 0 0 0 1 $(arg UAV_NAME)/base_link $(arg UAV_NAME)/fcu"/>
   <group ns="$(arg UAV_NAME)">
     <node pkg="xd_uav_planning" type="navsat_origin_provider.py"
@@ -57,7 +56,7 @@
   </include>
 
   <group ns="$(arg UAV_NAME)">
-    <node pkg="xd_uav_control_manager" type="auto_takeoff_when_ready.py"
+    <node pkg="xd_uav_planning" type="auto_takeoff_when_ready.py"
           name="auto_takeoff_when_ready" output="screen">
       <param name="altitude" value="$(arg takeoff_altitude)"/>
     </node>

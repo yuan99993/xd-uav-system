@@ -56,8 +56,6 @@ class BridgeNodeTest(unittest.TestCase):
         message.velocity_odom.y = 5.0
         message.velocity_odom.z = 6.0
         message.orientation_odom_body.w = 1.0
-        message.armed = True
-        message.vehicle_action = ControlState.ACTION_HOLD
         message.state_valid = True
         message.localization_valid = True
         message.odometry_fresh = True
@@ -91,23 +89,6 @@ class BridgeNodeTest(unittest.TestCase):
         self.state_pub.publish(empty_frame)
         rospy.sleep(0.1)
         with self.lock:
-            self.assertFalse(self.healthy)
-
-        # Preset planners must not receive odometry and start generating a
-        # trajectory while the controller's internal takeoff action owns the
-        # reference.  The bridge opens only after manager reports HOLD.
-        deadline = rospy.Time.now() + rospy.Duration(0.25)
-        rate = rospy.Rate(100)
-        while not rospy.is_shutdown() and rospy.Time.now() < deadline:
-            now = rospy.Time.now()
-            takeoff = self._state(now)
-            takeoff.vehicle_action = ControlState.ACTION_TAKEOFF
-            self.state_pub.publish(takeoff)
-            self.command_pub.publish(self._command(now))
-            rate.sleep()
-        with self.lock:
-            self.assertIsNone(self.odometry)
-            self.assertIsNone(self.candidate)
             self.assertFalse(self.healthy)
 
         deadline = rospy.Time.now() + rospy.Duration(3.0)

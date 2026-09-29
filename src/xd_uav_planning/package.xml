@@ -20,6 +20,7 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>visualization_msgs</depend>
   <depend>tf</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
@@ -33,6 +34,7 @@
   <exec_depend>px4</exec_depend>
   <exec_depend>xd_uav_control_manager</exec_depend>
   <exec_depend>xd_uav_state_estimators</exec_depend>
+  <exec_depend>mrs_uav_gazebo_simulation</exec_depend>
   <exec_depend>xd_uav_single_tf_manager</exec_depend>
   <exec_depend>xd_uav_world_tf_manager</exec_depend>
 

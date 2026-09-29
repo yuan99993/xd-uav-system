@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
   std_srvs
+  visualization_msgs
   tf
   tf2_ros
   tf2_geometry_msgs
@@ -25,6 +26,7 @@ catkin_python_setup()
 add_message_files(
   FILES
   NoFlyZone.msg
+  NoFlyZoneArray.msg
 )
 
 generate_messages(
@@ -43,6 +45,7 @@ catkin_package(CATKIN_DEPENDS
   sensor_msgs
   std_msgs
   std_srvs
+  visualization_msgs
   tf
   tf2_ros
   tf2_geometry_msgs
@@ -58,11 +61,13 @@ catkin_install_python(PROGRAMS
   scripts/fixedwing_path_backend_node.py
   scripts/demo/fixedwing_path_acceptance.py
   scripts/demo/fixedwing_nofly_visualizer.py
+  scripts/runtime/auto_takeoff_when_ready.py
   scripts/runtime/deterministic_obstacle_cloud.py
   scripts/runtime/imu_frame_adapter.py
   scripts/runtime/mavros_odom_recovery_gate.py
   scripts/runtime/multi_odom_registration.py
   scripts/runtime/navsat_origin_provider.py
+  scripts/runtime/spawn_px4_vehicle_node.py
   scripts/health_gate_node.py
   scripts/reference_mux_node.py
   scripts/select_owner_when_ready.py
@@ -97,6 +102,7 @@ if(CATKIN_ENABLE_TESTING)
   add_rostest(test/ego_pointcloud_adapter.test)
   add_rostest(test/ego_status_node.test)
   add_rostest(test/single_chain.test)
+  add_rostest(test/ego_route_obstacle.test)
   add_rostest(test/reference_integration.test)
   add_rostest(test/fixedwing_path_backend.test)
   add_rostest(test/swarm_handoff_relay.test)

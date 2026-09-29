@@ -23,12 +23,13 @@ class _Time:
         return self.value
 
 
-def _message(operation=0, zone_id=7, frame="world", vertices=None):
+def _message(operation=0, zone_id=7, frame="world", vertices=None,
+             stamp=100.0):
     if vertices is None:
         vertices = ((80.0, -20.0), (110.0, -20.0),
                     (110.0, 20.0), (80.0, 20.0))
     return SimpleNamespace(
-        header=SimpleNamespace(frame_id=frame, stamp=_Time(100.0)),
+        header=SimpleNamespace(frame_id=frame, stamp=_Time(stamp)),
         schema_version=1,
         operation=operation,
         zone_id=zone_id,
@@ -57,6 +58,13 @@ class NoFlyZoneStoreTest(unittest.TestCase):
         self.assertFalse(self.store.snapshot())
         self.assertFalse(self.store.accept(_message(frame="map"), 100.0))
         self.assertEqual(self.store.last_reason, "zone_frame_mismatch")
+
+    def test_zero_and_stale_header_stamps_are_stored(self):
+        self.assertTrue(self.store.accept(_message(stamp=0.0), 100.0))
+        self.assertTrue(self.store.accept(
+            _message(zone_id=8, stamp=1.0), 100.0))
+        self.assertEqual({zone.zone_id for zone in self.store.snapshot()},
+                         {7, 8})
 
 
 class StaticNoFlyPlannerTest(unittest.TestCase):
@@ -92,6 +100,18 @@ class StaticNoFlyPlannerTest(unittest.TestCase):
                 [(0.0, 0.0, 30.0), (90.0, 0.0, 30.0)],
                 (0.0, 0.0, 30.0), 0.0, (self.zone,),
                 turning_radius=35.0, clearance=10.0, sample_step=2.0)
+
+    def test_dense_route_only_expands_the_blocked_edge(self):
+        # Fixed-wing coverage routes contain many samples along their smooth
+        # turns.  A no-fly replan must not create a new Dubins path for every
+        # one of those already-safe samples.
+        dense_path = [(float(x), 0.0, 30.0) for x in range(0, 301, 2)]
+        result, adjusted = adjust_fixedwing_path(
+            dense_path, (0.0, 0.0, 30.0), 0.0, (self.zone,),
+            turning_radius=35.0, clearance=10.0, sample_step=2.0)
+        self.assertTrue(adjusted)
+        self.assertLess(len(result), 1000)
+        self.assertTrue(path_is_clear(result, (self.zone,), 10.0, 1.0))
 
 
 class RemainingPathTest(unittest.TestCase):

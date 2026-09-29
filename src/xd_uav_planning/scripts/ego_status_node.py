@@ -13,7 +13,8 @@ from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
 from xd_uav_controller.msg import ControlCommand
 from xd_uav_task_allocate.msg import PlannerStatus
-from xd_uav_task_allocate.srv import GetMissionState
+from xd_uav_task_allocate.srv import (
+    CancelPlanning, CancelPlanningResponse, GetMissionState)
 
 from xd_uav_planning.core import (
     PathSample, arrival_reached, path_length, project_path_progress,
@@ -125,6 +126,9 @@ class EgoStatus:
             rospy.get_param("~candidate_topic", "ego/reference_candidate"),
             PositionTarget, self._candidate_callback, queue_size=20)
         self._timer = rospy.Timer(rospy.Duration(0.10), self._timer_callback)
+        self._cancel_service = rospy.Service(
+            rospy.get_param("~cancel_service", "planning/cancel"),
+            CancelPlanning, self._cancel_callback)
 
     @staticmethod
     def _finite(values):

@@ -5,10 +5,16 @@ future_tolerance: 0.02
 minimum_segment_length: 0.05
 maximum_points: 10000
 
+# Fallback airspeed for the normal planning/cancel handoff when measured
+# horizontal velocity is not available.
+cancel_cruise_airspeed: 15.0
+
 # Initial and online remaining-path adjustment for dynamic no-fly updates.
 turning_radius: 35.0
 zone_clearance: 15.0
 planning_sample_step: 2.0
+# Deprecated compatibility parameter.  No-fly-zone header.stamp is not used
+# as a freshness gate; valid_until controls optional zone expiration.
 zone_max_message_age: 1.0
 zone_max_ttl: 3600.0
 zone_min_altitude_limit: -1000.0

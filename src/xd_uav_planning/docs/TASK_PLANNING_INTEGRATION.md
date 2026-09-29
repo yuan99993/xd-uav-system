@@ -1,7 +1,7 @@
 # 任务层接入 `xd_uav_planning` 手册
 
-更新：2026-09-07
-适用基准：`xd_uav_planning@feature/LTJ`、`xd_uav_task_allocate origin/dev@e763836`
+更新：2026-09-10
+适用基准：当前工作区 `xd_uav_planning` 与 `xd_uav_task_allocate`
 
 ## 1. 当前结论
 
@@ -12,17 +12,18 @@ xd_uav_task_allocate -> xd_uav_planning -> xd_uav_controller
 ```
 
 任务层只决定任务、载机和目标/路线；规划层是唯一允许向 controller 发布执行参考的上游。
-当前规划包两种后端均已具备，固定翼 `task_path -> controller -> PlannerStatus` 已完成真实 SITL
-验收。但远端任务包的固定翼 `direct_controller_test` 仍绕过规划层，因此两个包原样共启还不算
-正式打通。本文第 7 节给出任务层维护者需要完成的最小改造。
+当前规划包和任务包已经正式打通：固定翼和多旋翼都走完整 Path，多旋翼由 EGO 负责局部避障；两者在暂停、停止、
+到达后执行和视觉跟踪交接前都先调用统一 cancel 服务释放 planning 控制权。
 
 当前能力边界：
 
-- 多旋翼：实时点目标、EGO 轨迹、健康门、控制权仲裁和状态回报；受当前 EGO manual-target
-  行为限制，只接受 `world z=1.0 m`。
+- 多旋翼：完整三维参考 Path、EGO 连续轨迹、健康门、控制权仲裁、取消和状态回报；高度不再
+  固定为 `1.0 m`，但仍必须位于 EGO 地图和安全边界内。旧三维点目标接口继续兼容。
 - 固定翼：接收完整几何 Path、严格校验、转发 controller，并把 controller 私有 path ID
-  映射回任务 goal ID；不提供 EGO 点云避障或 SEAD 动态禁飞区重规划。
-- pause/cancel/replan 生命周期接口尚未实现，不能对外宣称完整任务控制已经打通。
+  映射回任务 goal ID，并支持任务前/飞行中的动态禁飞区绕飞和剩余路径重规划；无安全解时
+  返回 `BLOCKED` 并触发 `cancel_offboard` 失效保护。
+- pause/stop/skip/disable/replan 与视觉任务交接均经过 `planning/cancel`，取消失败时任务层保持
+  原状态并拒绝交接。
 
 ## 2. 启动责任
 
@@ -62,14 +63,14 @@ roslaunch xd_uav_planning planning.launch \
 
 | 方向 | 话题 | 类型 | 多旋翼 | 固定翼 |
 |---|---|---|---:|---:|
-| task -> planning | `/<uav>/planning/goal` | `geometry_msgs/PoseStamped` | 是 | 否 |
-| task -> planning | `/<uav>/planning/task_path` | `nav_msgs/Path` | 否 | 是 |
+| task -> planning | `/<uav>/planning/goal` | `geometry_msgs/PoseStamped` | 兼容 | 否 |
+| task -> planning | `/<uav>/planning/task_path` | `nav_msgs/Path` | 默认 | 是 |
 | planning -> task | `/<uav>/planning/status` | `xd_uav_task_allocate/PlannerStatus` | 是 | 是 |
 | planning -> system | `/<uav>/planning/healthy` | `std_msgs/Bool` | 是 | 是 |
 | planning -> operator | `/<uav>/planning/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 是 | 是 |
+| task -> planning | `/<uav>/planning/cancel` | `xd_uav_task_allocate/CancelPlanning` | 是 | 是 |
 
-`/<uav>/planning/mission_path` 是现有任务包的路线预览，不是执行输入。正式系统中建议最终更名
-为 `/<uav>/planning/route_preview`；无论是否更名，都不得重映射到 `task_path`。
+`/<uav>/planning/route_preview` 是路线预览，不是执行输入，禁止重映射到 `task_path`。
 
 controller 侧接口是规划层私有下游：
 
@@ -83,15 +84,26 @@ controller 侧接口是规划层私有下游：
 
 ## 4. 输入消息约束
 
-### 4.1 多旋翼 `PoseStamped`
+### 4.1 多旋翼 `nav_msgs/Path`
+
+- `Path.header.frame_id` 必须等于该实例的 `common_frame`，默认 `world`。
+- `Path.header.stamp` 必须为正且新鲜；默认超时 2.0 s，最多允许未来 0.25 s。
+- 至少 2 个、最多 10000 个点；所有坐标必须有限；相邻点距离不得小于 0.05 m。
+- 每个嵌套 `PoseStamped.header.frame_id` 可为空；非空时必须等于 `common_frame`。
+- EGO 将整条剩余路径生成一个连续 global trajectory。路径中间点是几何约束，不是独立
+  `REACHED` 事件；只有路径末端在位置和速度容差内稳定指定时间后才报告完成。
+- 路径可包含回头、弯道和自交段；状态层使用带前向窗口的单调弧长投影，避免进度回跳。
+
+### 4.2 多旋翼兼容 `PoseStamped`
 
 - `header.frame_id` 必须等于该实例的 `common_frame`，默认 `world`。
 - `position.x/y/z` 必须是有限数值。
-- 当前 `flight_type` 必须为 `1`，即 EGO manual-target 模式。
-- 当前 `z` 必须为 `1.0 ± 0.05 m`；其他高度会立即返回 `FAILED`，不会静默改高度。
+- 仅使用兼容单点接口时，`flight_type` 必须为 `1`，即 EGO manual-target 模式；完整
+  `nav_msgs/Path` 应使用 `flight_type=3`。
+- `z` 会原样传给 EGO，不再被改写为 `1.0 m`；目标仍须处于配置的三维地图范围和安全空间内。
 - `orientation` 当前不参与 EGO 目标规划，不应依赖它表达任务语义。
 
-### 4.2 固定翼 `Path`
+### 4.3 固定翼 `Path`
 
 - `Path.header.frame_id` 必须等于该实例的 `common_frame`。
 - `Path.header.stamp` 必须为正，默认必须在接收前 1.0 s 内，最多允许未来 0.02 s。
@@ -159,8 +171,30 @@ string detail
 | `common_frame` | `world` | 输入目标/路径的公共坐标系 |
 | `output_frame` | `common_frame` | 多旋翼控制参考输出坐标系 |
 | `ego_id` | `0` | EGO 实例编号，多机必须唯一 |
-| `goal_topic` | `/<uav>/planning/goal` | 多旋翼点目标输入 |
-| `task_path_topic` | `/<uav>/planning/task_path` | 固定翼执行路径输入 |
+| `map_resolution` | `0.20 m` | EGO 占据栅格分辨率 |
+| `map_size_x/y/z` | `36/36/9 m` | EGO 滚动栅格地图尺寸 |
+| `local_update_range_x/y/z` | `14/14/7.5 m` | 每帧原生点云进入局部地图的范围 |
+| `ground_height` | `-0.01` | EGO 地图下边界 |
+| `virtual_ceil_height` | `8.0` | EGO 可飞上边界；高空任务需连同 map size 调大 |
+| `flight_type` | `3` | EGO 路径模式；`1` 为兼容单点模式 |
+| `goal_topic` | `/<uav>/planning/goal` | 多旋翼兼容单点输入 |
+| `task_path_topic` | `/<uav>/planning/task_path` | 多旋翼/固定翼完整路径输入 |
+| `path_timeout` | `2.0 s` | 多旋翼 Path 输入新鲜度 |
+| `route_stall_timeout` | `12.0 s` | 完整 Path 沿程进度无变化后，从实测位置重新接入剩余路线的阈值；不限制整条路线总时长 |
+| `route_stall_recovery_enabled` | `true` | 停滞时暂停旧轨迹输出，并重新发布裁掉已完成部分的剩余 Path |
+| `route_stall_max_recoveries` | `0` | 连续恢复次数上限；`0` 表示由任务取消或到达状态结束，不因一次规划停滞永久判失败 |
+| `route_tracking_weight` | `8.0` | EGO 局部重规划贴合完整 Path 的权重；真实障碍仍可触发局部绕行 |
+| `replan_interval` | `0.25 s` | 正常执行时的局部轨迹更新周期 |
+| `replan_lookahead_time` | `0.12 s` | 从旧轨迹未来状态接续，用于补偿规划/传输耗时 |
+| `astar_resolution` | `0.20 m` | 障碍绕行前端搜索分辨率 |
+| `astar_search_time` | `0.15 s` | 单次局部 A* 的硬超时 |
+| `route_progress_epsilon_m` | `0.25 m` | 认为完整 Path 取得有效进度的最小弧长增量 |
+| `path_progress_backtrack_m` | `1.0 m` | 路径进度允许的有限回退窗口 |
+| `path_progress_search_window_m` | `25.0 m` | 路径进度前向搜索窗口 |
+| `cloud_input_topic` | `/<uav>/fastlio/points` | EGO 使用的原生雷达点云；全局 `/fastlio/points` 需显式覆盖 |
+| `cloud_input_frame` | `/<uav>/lidar_link` | 原生点云真实 `header.frame_id`，用于 TF 转换到 `common_frame` |
+| `minimum_sensor_range` | `0.35 m` | 过滤雷达近距离盲区和机体附近自回波 |
+| `cloud_obstacle_persistence` | `0.5 s` | 直接点云占据的短时保持，抑制遮挡/稀疏帧闪烁 |
 | `status_topic` | `/<uav>/planning/status` | 统一任务状态输出 |
 | `healthy_topic` | `/<uav>/planning/healthy` | 统一健康输出 |
 | `diagnostics_topic` | `/<uav>/planning/diagnostics` | 统一诊断输出 |
@@ -175,20 +209,20 @@ body-to-sensor 变换，不能把 frame 名称直接改写成另一个坐标系�
 1. 在 coordinator 接受的 backend 枚举中新增正式 `planning`（也可以将 `ego_swarm` 重新定义为
    统一 planning backend，但固定翼和多旋翼必须采用相同的“不直连 controller”边界）。
 2. `_configure_vehicle()`：
-   - 多旋翼创建 `planner_goal` publisher；
-   - 固定翼创建 `planner_task_path` publisher；
+   - 多旋翼和固定翼都创建 `planner_task_path` publisher；多旋翼可保留 `planner_goal` 兼容接口；
    - 两种机型都订阅 `planner_status`；
    - 订阅 `planner_healthy`：固定翼可作为 Path 派发前条件，多旋翼只用于目标下发后的执行链
      监控，不能阻止首目标发布；
    - planning backend 不创建 controller setpoint/path publisher，也不订阅 `PathStatus`。
 3. 保留 `_publish_direct_fixedwing_path()` 中现有路线生成和嵌套 goal-ID 编码逻辑，将最终发布者
    改成 `planner_task_path`。建议同时把函数重命名为 `_publish_fixedwing_task_path()`。
-4. 搜索航线和固定翼 worker 的短路径都必须走同一个 `planner_task_path` publisher。
+4. 搜索航线、验证路线和 planning worker 的路径都必须走同一个 `planner_task_path` publisher；
+   多旋翼不再把路径采样点拆成独立 PoseStamped 目标。
 5. `_planner_status_callback()` 继续作为唯一状态入口；删除 planning backend 内部的
    `_publish_direct_status()` 和 `_path_status_callback()` 路径。
 6. 预览 Path 单独发布到 `route_preview`，不得把无活动 goal ID 的预览发送给 `task_path`。
-7. 在 cancel 服务正式实现前，任务层对活动 planning backend 的 pause/stop/replan 必须明确拒绝，
-   不能通过直接 controller hold 绕过规划层。
+7. pause、stop、skip waypoint、禁用飞机、取消任务及视觉任务交接，均先请求
+   `planning/cancel`；服务失败时不清除 active goal，也不启动下一级控制器。
 
 建议配置目标态：
 
@@ -205,6 +239,7 @@ scouts:
       planner_task_path: /uav1/planning/task_path
       planner_status: /uav1/planning/status
       planner_healthy: /uav1/planning/healthy
+      planner_cancel: /uav1/planning/cancel
       route_preview: /uav1/planning/route_preview
 
   uav2:
@@ -213,8 +248,10 @@ scouts:
       backend: planning
     topics:
       planner_goal: /uav2/planning/goal
+      planner_task_path: /uav2/planning/task_path
       planner_status: /uav2/planning/status
       planner_healthy: /uav2/planning/healthy
+      planner_cancel: /uav2/planning/cancel
       route_preview: /uav2/planning/route_preview
 ```
 
@@ -265,13 +302,9 @@ rostopic info /uav1/control/reference/path
 rostopic info /uav1/controller/path_status
 ```
 
-## 10. 尚未完成
+## 10. 后续增强项
 
-- 任务层上述代码交接及真实 `task_allocate -> planning -> controller` 双机型复验；
-- 带稳定显式 goal ID 的请求消息；
-- cancel/pause/resume/replan 服务和安全状态机；
-- 多旋翼任意三维实时目标；
+- 用专用请求消息替代 `PoseStamped.header.seq`/任务状态查询的过渡 goal ID；
+- 完善 pause/resume/replan 服务和安全状态机；
 - 多机产品级组合入口；
 - EGO 第三方源码恢复官方原样及外部 swarm 适配。
-
-这些缺口没有被演示脚本掩盖；完成前不得宣称任务层和规划层已经完整即插即用。

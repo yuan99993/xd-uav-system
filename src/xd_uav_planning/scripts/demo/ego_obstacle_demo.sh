@@ -150,7 +150,7 @@ case "${1:-}" in
       demo_pid="$(<"${pid_file}")"
       setup_ros
       # This script owns the dedicated localhost:11311 graph.  Let roslaunch,
-      # PX4, MAVROS and Gazebo run their shutdown handlers before using
+      # the MRS spawner and Gazebo run their shutdown handlers before using
       # process-group signals as a fallback.
       timeout -k 1 8 rosnode kill -a >/dev/null 2>&1 || true
       kill -INT -- "-${demo_pid}" 2>/dev/null || true

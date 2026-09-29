@@ -14,7 +14,7 @@
   <arg name="sources_config"
        default="$(find xd_uav_planning)/config/runtime/px4_mavros_sources.yaml"/>
   <arg name="controller_config"
-       default="$(find xd_uav_controller)/config/px4_iris_sitl.yaml"/>
+       default="$(find xd_uav_planning)/config/runtime/px4_x500_multirotor.yaml"/>
 
   <include file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
