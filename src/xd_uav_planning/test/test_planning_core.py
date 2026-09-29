@@ -15,6 +15,7 @@ from xd_uav_planning.core import (  # noqa: E402
     VehicleStateSample,
     arrival_reached,
     health_conjunction,
+    project_path_progress,
     switch_delta,
     validate_path,
     validate_reference,
@@ -103,6 +104,27 @@ class PlanningCoreTest(unittest.TestCase):
         self.assertFalse(arrival_reached(
             (1.0, 2.0, 3.0), (1.0, 0.0, 0.0), (1.1, 2.0, 3.0),
             0.5, 0.35))
+
+    def test_path_progress_is_arc_length_and_monotonic(self):
+        route = ((0.0, 0.0, 2.0), (10.0, 0.0, 2.0),
+                 (10.0, 10.0, 2.0))
+        progress = project_path_progress(route, (8.0, 0.2, 2.0))
+        self.assertAlmostEqual(8.0, progress, places=3)
+        progress = project_path_progress(route, (9.9, 0.1, 2.0), progress)
+        self.assertGreaterEqual(progress, 8.0)
+        # A position close to the previous segment must not jump backward.
+        self.assertEqual(progress, project_path_progress(
+            route, (7.0, 0.1, 2.0), progress))
+
+    def test_path_progress_does_not_jump_at_self_crossing(self):
+        route = ((0.0, 0.0, 2.0), (10.0, 0.0, 2.0),
+                 (10.0, 10.0, 2.0), (0.0, 10.0, 2.0),
+                 (0.0, 0.0, 2.0))
+        previous = 25.0
+        progress = project_path_progress(
+            route, (0.1, 0.1, 2.0), previous,
+            max_backtrack=0.5, max_forward_search=2.0)
+        self.assertLessEqual(progress, previous + 2.0)
 
 
 if __name__ == "__main__":
