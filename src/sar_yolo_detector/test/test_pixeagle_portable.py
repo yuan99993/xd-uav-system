@@ -12,6 +12,8 @@ import numpy as np
 
 import sar_yolo_detector.pixeagle.smart_tracker as smart_tracker_module
 from sar_yolo_detector.pixeagle.backends.ultralytics_backend import UltralyticsBackend
+from sar_yolo_detector.pixeagle.deep_reid_model import DeepReIDModel
+from sar_yolo_detector.pixeagle.appearance_model import AppearanceModel
 from sar_yolo_detector.pixeagle.detection_adapter import NormalizedDetection
 from sar_yolo_detector.pixeagle.geometry_utils import (
     obb_xywhr_to_aabb,
@@ -24,6 +26,16 @@ from sar_yolo_detector.pixeagle.tracking_roi import (
     tracking_point_to_pixels,
     tracking_roi_to_pixels,
 )
+
+try:
+    import torch  # noqa: F401
+    import torchreid  # noqa: F401
+    DEEP_REID_TEST_AVAILABLE = True
+except Exception:
+    # ROS system-Python test jobs may intentionally install detector-only
+    # dependencies.  The executable deep test runs in the SmartTracker GPU
+    # environment, while those jobs should retain their existing coverage.
+    DEEP_REID_TEST_AVAILABLE = False
 
 
 class _FakeBackend:
@@ -75,6 +87,54 @@ class _Controller:
 
 
 class PixEaglePortableTest(unittest.TestCase):
+    @unittest.skipUnless(DEEP_REID_TEST_AVAILABLE, "torchreid is not installed")
+    def test_deep_reid_checkpoint_and_embedding_contract(self):
+        """Exercise the bundled, verified OSNet checkpoint once (no download)."""
+        checkpoint = (
+            Path(__file__).resolve().parents[1]
+            / "models"
+            / "person_reid"
+            / "osnet_x0_25_market1501.pt"
+        )
+        digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+        model = DeepReIDModel(
+            {
+                "DEEP_REID_MODEL_PATH": str(checkpoint),
+                "DEEP_REID_MODEL_SHA256": digest,
+                "DEEP_REID_DEVICE": "cpu",
+            }
+        )
+        frame = np.zeros((320, 240, 3), dtype=np.uint8)
+        embedding = model.extract_features(frame, (20, 20, 180, 300))
+        self.assertIsNotNone(embedding)
+        self.assertEqual(embedding.shape, (model.embedding_dimension,))
+        self.assertTrue(np.isfinite(embedding).all())
+        self.assertAlmostEqual(float(np.linalg.norm(embedding)), 1.0, places=4)
+
+    @unittest.skipUnless(DEEP_REID_TEST_AVAILABLE, "torchreid is not installed")
+    def test_appearance_model_deep_feature_type_does_not_require_hog(self):
+        checkpoint = (
+            Path(__file__).resolve().parents[1]
+            / "models"
+            / "person_reid"
+            / "osnet_x0_25_market1501.pt"
+        )
+        appearance = AppearanceModel(
+            {
+                "APPEARANCE_FEATURE_TYPE": "deep",
+                "DEEP_REID_MODEL_PATH": str(checkpoint),
+                "DEEP_REID_MODEL_SHA256": hashlib.sha256(
+                    checkpoint.read_bytes()
+                ).hexdigest(),
+                "DEEP_REID_DEVICE": "cpu",
+            }
+        )
+        feature = appearance.extract_features(
+            np.zeros((160, 120, 3), dtype=np.uint8), (10, 10, 100, 150)
+        )
+        self.assertIsNotNone(feature)
+        self.assertEqual(feature.shape, (appearance.deep_model.embedding_dimension,))
+
     def test_roi_and_geometry_contracts(self):
         self.assertEqual(
             tracking_roi_to_pixels(

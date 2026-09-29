@@ -94,6 +94,7 @@ add_service_files(
   SubmitAreaTaskAssignment.srv
   SubmitTaskAssignment.srv
   SwitchSmartTrackerModel.srv
+  SwitchTrackingMode.srv
 )
 
 generate_messages(
@@ -334,6 +335,7 @@ if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   catkin_add_nosetests(test/test_pixeagle_portable.py)
   catkin_add_nosetests(test/test_smart_tracker_image_codec.py)
+  catkin_add_nosetests(test/test_manual_box_tracker.py)
   catkin_add_nosetests(test/test_interface_v1_md5.py)
   catkin_add_gtest(test_yolo_postprocessor
     test/test_yolo_postprocessor.cpp

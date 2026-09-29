@@ -1,6 +1,7 @@
 """Portable PixEagle perception, tracking, geometry, and command primitives."""
 
 from .command_intent import CommandIntent
+from .deep_reid_model import DeepReIDModel
 from .detection_adapter import NormalizedDetection, to_tracking_state_rows
 from .geometry_utils import (
     clip_aabb_to_frame,
@@ -24,6 +25,7 @@ from .yaw_rate_smoother import YawRateSmoother
 
 __all__ = [
     "CommandIntent",
+    "DeepReIDModel",
     "KalmanBoxTracker",
     "MotionPredictor",
     "NormalizedDetection",
