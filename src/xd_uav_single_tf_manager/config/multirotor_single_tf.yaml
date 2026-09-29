@@ -1,6 +1,6 @@
 # 本文件加载到/uavX/single_tf_manager节点的私有参数空间。
 publish_rate: 30.0
-input_timeout: 1.0
+input_timeout: 10.0
 
 # 单机局部层只负责local_origin -> odom。
 # 默认使用GPS适配器发布的local_origin -> base_link反算局部修正。

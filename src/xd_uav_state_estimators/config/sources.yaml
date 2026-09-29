@@ -9,8 +9,8 @@ odometry_adapters:
   mavros:
     input_topic: mavros/local_position/odom
     reference_frame: base_link
-    tf_timeout: 0.1
-    max_input_delay: 0.50
+    tf_timeout: 20.0
+    max_input_delay: 20.0
     fallback_covariance:
       position: 0.05
       velocity: 0.10
@@ -54,7 +54,7 @@ sources:
     # 字符串写法继承本组默认值；映射写法可覆盖单项参数。
     # 相对话题自动补成state_estimator_inputs/<配置值>。
     correction_defaults:
-      timeout: 1.0
+      timeout: 20.0
       required: true
     corrections:
       - position_xy: mavros/position_xy
@@ -64,7 +64,7 @@ sources:
       - heading: mavros/heading
       - yaw_rate:
           topic: mavros/yaw_rate
-          timeout: 1.0
+          timeout: 20.0
           required: false
 
     # 新来源成为主源时，把它的原点对齐到当前连续主状态。
@@ -82,11 +82,11 @@ sources:
       recovery_stable_time: 0.5
       # correction timeout只使来源暂时无效；连续断流达到这里的时间，才认为
       # 定位节点可能重启并重新定义了自身原点。
-      session_reset_timeout: 2.0
+      session_reset_timeout: 5.0
 
     # 发布该来源在指定坐标系下的估计结果，不产生TF。
     # republish_in_frames: [local_origin, world]
-    republish_in_frames: [local_origin, world]
+    republish_in_frames: [local_origin]
 
   fastlio:
     priority: 1
