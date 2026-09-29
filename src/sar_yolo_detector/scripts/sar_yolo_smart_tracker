@@ -28,32 +28,4 @@ else
   export PYTHONPATH="$ros_python_path"
 fi
 
-echo "========== SAR YOLO DEBUG ==========" >&2
-echo "python_executable=$python_executable" >&2
-echo "SAR_YOLO_SMART_PYTHON=${SAR_YOLO_SMART_PYTHON:-EMPTY}" >&2
-echo "LD_PRELOAD=${LD_PRELOAD:-EMPTY}" >&2
-echo "PYTHONPATH=${PYTHONPATH:-EMPTY}" >&2
-
-"$python_executable" - <<'PY'
-import sys
-print("[DEBUG] sys.executable =", sys.executable)
-
-try:
-    from ultralytics import YOLO
-    print("[DEBUG] from ultralytics import YOLO = OK")
-except Exception as e:
-    print("[DEBUG] YOLO IMPORT ERROR =", repr(e))
-
-try:
-    from sar_yolo_detector.pixeagle.backends.ultralytics_backend import \
-        ULTRALYTICS_AVAILABLE, ULTRALYTICS_IMPORT_ERROR
-    print("[DEBUG] ULTRALYTICS_AVAILABLE =", ULTRALYTICS_AVAILABLE)
-    print("[DEBUG] ULTRALYTICS_IMPORT_ERROR =", repr(ULTRALYTICS_IMPORT_ERROR))
-except Exception as e:
-    print("[DEBUG] BACKEND IMPORT ERROR =", repr(e))
-PY
-
-echo "====================================" >&2
-
-
 exec "$python_executable" "$node_script" "$@"

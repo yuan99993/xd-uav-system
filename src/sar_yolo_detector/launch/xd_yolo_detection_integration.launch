@@ -1,0 +1,50 @@
+<launch>
+  <!-- Production XD path: YOLO observations only; identity is owned downstream. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
+  <arg name="instance_name" default="fixed" />
+  <arg name="config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml" />
+  <!-- Optional legacy overlay; production defaults to the detector-only file. -->
+  <arg name="overlay_config" default="" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt" />
+  <arg name="model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54" />
+  <arg name="use_gpu" default="true" />
+  <arg name="input_image_topic" default="down_camera/image_raw" />
+  <arg name="camera_info_topic" default="down_camera/camera_info" />
+  <arg name="raw_detections_topic" default="sar_yolo_detector/fixed/detections" />
+  <arg name="publish_vision_detections" default="false" />
+  <arg name="output_detections_topic" default="detect/input/fixed/detections_raw" />
+  <arg name="image_source" default="fixed_rgb" />
+  <arg name="sensor_id" default="fixed_camera" />
+  <arg name="model_version" default="xd_vehicle_train7_best" />
+  <arg name="reid_enabled" default="true" />
+  <arg name="reid_config" default="$(find xd_uav_track)/config/reid.yaml" />
+  <arg name="reid_model_profile" default="xd_vehicle_train7" />
+  <arg name="pause_without_subscribers" default="true" />
+
+  <group ns="$(arg UAV_NAME)">
+    <include file="$(find sar_yolo_detector)/launch/detection_only.launch">
+      <arg name="node_name" value="sar_yolo_detection_$(arg instance_name)" />
+      <arg name="config" value="$(arg config)" />
+      <arg name="overlay_config" value="$(arg overlay_config)" />
+      <arg name="input_image_topic" value="$(arg input_image_topic)" />
+      <arg name="detections_topic" value="$(arg raw_detections_topic)" />
+      <arg name="publish_vision_detections" value="$(arg publish_vision_detections)" />
+      <arg name="xd_detections_topic" value="$(arg output_detections_topic)" />
+      <arg name="image_source" value="$(arg image_source)" />
+      <arg name="sensor_id" value="$(arg sensor_id)" />
+      <arg name="detector_name" value="sar_yolo_detector" />
+      <arg name="model_version" value="$(arg model_version)" />
+      <arg name="reid_enabled" value="$(arg reid_enabled)" />
+      <arg name="reid_config" value="$(arg reid_config)" />
+      <arg name="reid_model_profile" value="$(arg reid_model_profile)" />
+      <arg name="pause_without_subscribers" value="$(arg pause_without_subscribers)" />
+      <arg name="model_path" value="$(arg model_path)" />
+      <arg name="model_sha256" value="$(arg model_sha256)" />
+      <arg name="use_gpu" value="$(arg use_gpu)" />
+    </include>
+  </group>
+
+  <!-- DetectionArray is published directly above. This removes one ROS
+       serialization/deserialization hop per camera while retaining the
+       standard vision_msgs adapter as an independent compatibility launch. -->
+</launch>

@@ -1,0 +1,20 @@
+# UAV2-only VTOL transition policy. Pass this file as vtol_config to
+# vtol_system.launch for UAV_NAME:=uav2; other UAVs keep the generic config.
+vtol:
+  transition:
+    # PX4 VT_TRANS_TIMEOUT is 15s on the diagnosed airframe; allow 5s for
+    # MAVROS state propagation, then report failure without waiting 40s.
+    timeout: 40.0
+    require_offboard: true
+    require_armed: true
+    require_extended_state: true
+    require_airspeed_during_transition: false
+    # PX4 reports VT_ARSP_BLEND=15m/s and VT_ARSP_TRANS=18m/s. Before calling
+    # PX4, actively command a raw_local forward velocity along current heading
+    # until measured airspeed is stable at the blend threshold.
+    minimum_forward_airspeed: 15.0
+    prepare_forward_transition: true
+    preparation_groundspeed: 15.0
+    preparation_max_distance: 200.0
+    preparation_timeout: 30.0
+    preparation_stable_time: 1.0

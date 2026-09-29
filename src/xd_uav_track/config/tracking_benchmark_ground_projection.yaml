@@ -1,0 +1,46 @@
+# Simulation calibration for the two camera sensors mounted on one benchmark
+# rig. Intrinsics come from each camera's CameraInfo; extrinsics are broadcast
+# by tracking_benchmark_driver at the image capture time.
+localization:
+  enabled: true
+  method: "ground_plane"
+
+metadata:
+  image_source: "benchmark_fixed"
+  sensor_id: "benchmark_fixed_camera"
+  detector_name: "sar_yolo_detector"
+
+interfaces:
+  input:
+    detections_2d: "detect/input/detections_2d"
+    image: "fixed_camera/image_raw"
+    camera_info: "fixed_camera/camera_info"
+  output:
+    detections_3d: "track/detections"
+    status: "detect/ground_projection/status"
+    debug_image: "detect/ground_projection/debug_image"
+
+frames:
+  world: "world"
+  camera: ""
+
+ground_projection:
+  ground_plane_z_m: 0.0
+  minimum_range_m: 1.0
+  maximum_range_m: 120.0
+  minimum_ray_plane_angle_deg: 5.0
+  # The tank's box bottom is the *near edge* of a long hull, not its center.
+  # Using it as the target location shifts the ground point with yaw. The
+  # middle of the box is a steadier approximation of the vehicle center.
+  box_anchor_y_ratio: 0.5
+  pixel_stddev_px: 1.5
+  ground_height_stddev_m: 0.05
+  position_stddev_m: 0.10
+  tf_timeout_sec: 0.12
+  tf_use_latest_on_failure: false
+  require_detection_timestamp: true
+  require_matching_camera_frame: true
+
+# Keep the metric node light; the existing camera overlay remains the UI.
+visualization:
+  enabled: false

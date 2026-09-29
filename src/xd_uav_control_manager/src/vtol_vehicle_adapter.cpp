@@ -61,12 +61,37 @@ control::FlightRegime VtolVehicleAdapter::observe(
   const bool reached_hover =
       transition_status_.target == control::RequestedRegime::kHover &&
       observed_regime_ == control::FlightRegime::kHover;
+  const bool saw_requested_transition_phase =
+      (transition_status_.target ==
+           control::RequestedRegime::kForwardFlight &&
+       observed_regime_ == control::FlightRegime::kTransitionToForward) ||
+      (transition_status_.target == control::RequestedRegime::kHover &&
+       observed_regime_ == control::FlightRegime::kTransitionToHover);
+  if (transition_status_.pending && saw_requested_transition_phase) {
+    transition_status_.transition_phase_seen = true;
+  }
   if (transition_status_.pending && (reached_forward || reached_hover)) {
     transition_status_.pending = false;
     transition_status_.last_target = transition_status_.target;
     transition_status_.target = control::RequestedRegime::kNone;
     transition_status_.last_result = TransitionResult::kCompleted;
     transition_status_.detail = "PX4 confirmed requested regime";
+  } else if (transition_status_.pending &&
+             transition_status_.transition_phase_seen &&
+             ((transition_status_.target ==
+                   control::RequestedRegime::kForwardFlight &&
+               observed_regime_ == control::FlightRegime::kHover) ||
+              (transition_status_.target == control::RequestedRegime::kHover &&
+               observed_regime_ == control::FlightRegime::kForwardFlight))) {
+    const auto failed_target = transition_status_.target;
+    transition_status_.pending = false;
+    transition_status_.last_target = failed_target;
+    transition_status_.target = control::RequestedRegime::kNone;
+    transition_status_.last_result = TransitionResult::kAborted;
+    transition_status_.detail =
+        failed_target == control::RequestedRegime::kForwardFlight
+            ? "PX4 aborted forward transition and returned to MC"
+            : "PX4 aborted back transition and returned to FW";
   }
   return observed_regime_;
 }
@@ -111,6 +136,7 @@ bool VtolVehicleAdapter::beginTransition(const control::RequestedRegime target,
   transition_status_.pending = true;
   transition_status_.target = target;
   transition_status_.started_at = now;
+  transition_status_.transition_phase_seen = false;
   transition_status_.detail = "transition request pending";
   *reason = transition_status_.detail;
   return true;

@@ -7,8 +7,16 @@ vtol:
     require_offboard: true
     require_armed: true
     require_extended_state: true
+    # 此机型起飞阶段交由PX4按自身VTOL逻辑加速；设为false时manager不以
+    # 空速遥测作为转换期间的输入有效性门槛。正数最小空速仍会强制要求空速。
+    require_airspeed_during_transition: false
     # Standard VTOL从悬停开始转换时空速为0；设为0交给PX4完成加速与保护。
-    minimum_forward_airspeed: 0.0
+    minimum_forward_airspeed: 4.0
+    prepare_forward_transition: true
+    preparation_groundspeed: 15.0
+    preparation_max_distance: 200.0
+    preparation_timeout: 30.0
+    preparation_stable_time: 0.5
 
 mavros:
   vtol_transition_service: mavros/cmd/vtol_transition

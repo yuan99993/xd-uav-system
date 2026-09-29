@@ -1,0 +1,8 @@
+# Optional overlay for wide-area / high-altitude vehicle search.
+# Pass it as `overlay_config` while keeping `config` set to
+# xd_vehicle_detection.yaml. It changes no model, labels, NMS or tracking
+# ownership. Use only when the measured detector budget can sustain it;
+# prediction-ROI recovery remains independently capped at 640 by the
+# multi-source launch argument.
+SmartTracker:
+  SMART_TRACKER_INFERENCE_IMAGE_SIZE: 960

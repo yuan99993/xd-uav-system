@@ -1,0 +1,40 @@
+{
+  "description": "Pinned two-tank fixed-camera recognition/tracking regression gate; keep detector model, camera geometry and target path unchanged when comparing revisions.",
+  "asset_sha256": {
+    "xd_uav_track/worlds/tracking_benchmark.world": "08f2c94c4a508d1b4de869faf4cf2a898d8a774d2a9e28f4a7977cbd5a4cb1da",
+    "xd_uav_track/launch/tracking_benchmark.launch": "f49d28e00bd48ed1ea0a64638d89f5eb1d3200ea25106adbdadca9449b2618df",
+    "xd_uav_track/launch/tracking_benchmark_perception.launch": "719018d842bb152ff7f11715b2b946fc3a03bbac28fb60c01d9cd84c33d6c1eb",
+    "xd_uav_track/config/tracking_benchmark.yaml": "d6a798d31bb228f06acd7afe35ba18beddbf0d7cd4ebc09666af283a4540bf37",
+    "xd_uav_track/scripts/tracking_benchmark_driver.py": "2d192c00917b0dc2db43b4223bcacfeef15a22ebbc81d5c963224258c5a239d0",
+    "xd_uav_track/models/tracking_mountain/model.sdf": "099f7b8423b2aa2409b0ef9cc09724e02fb32aa7764e193fbc098e48672107d2",
+    "xd_uav_track/models/tracking_mountain/meshes/pointed_rock.stl": "b619495bb7309db0bfcf74054aa40a92478e2c1bfb1a1449e9b8d62ad208e415",
+    "sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7.engine": "88ed19419dcefdf64f6c90f31aa7961ef906c31d3581633afba69fa586bc850f"
+  },
+  "reference_observations": {
+    "before_mountain_scene": "30 s: 86/86 simultaneous confirmed frames, zero observed ID switches, zero right-scenery tracks, longest pair update gap 0.529 s; motion-lead follow-up: 56/56 frames in 20 s",
+    "mountain_scene_full_route": "2026-09-29: two 45 s runs; worst 123/125 simultaneous confirmed, 125/125 confirmed-or-occluded, zero ID switches, zero extra confirmed tracks, maximum confirmation gap 0.992 s, maximum world projection error 4.015 m; final strict run 129/129 simultaneously confirmed, 0.507 s gap, 4.015 m error"
+  },
+  "required_models": [
+    "benchmark_tank_alpha",
+    "benchmark_tank_bravo",
+    "benchmark_mountain_west",
+    "benchmark_mountain_east"
+  ],
+  "forbidden_models": [
+    "warehouse_west",
+    "warehouse_east",
+    "benchmark_tree_west",
+    "benchmark_tree_east"
+  ],
+  "required_phases": ["circle", "southbound_turn"],
+  "maximum_truth_match_distance_m": 7.0,
+  "minimum_duration_sec": 44.5,
+  "minimum_tracker_hz": 2.5,
+  "minimum_pair_confirmed_ratio": 0.98,
+  "minimum_pair_alive_ratio": 1.0,
+  "maximum_pair_gap_sec": 1.0,
+  "maximum_alive_pair_gap_sec": 0.6,
+  "maximum_id_switches": 0,
+  "maximum_unmatched_confirmed_tracks": 0,
+  "maximum_world_projection_error_m": 8.0
+}

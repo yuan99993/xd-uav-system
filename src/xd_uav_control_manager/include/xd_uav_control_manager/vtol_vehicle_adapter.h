@@ -17,12 +17,14 @@ enum class TransitionResult : uint8_t {
   kAccepted,
   kCompleted,
   kTimedOut,
+  kAborted,
 };
 
 struct TransitionStatus {
   bool pending{false};
   bool service_accepted{false};
   bool timed_out{false};
+  bool transition_phase_seen{false};
   xd_uav_controller::RequestedRegime target{
       xd_uav_controller::RequestedRegime::kNone};
   xd_uav_controller::RequestedRegime last_target{

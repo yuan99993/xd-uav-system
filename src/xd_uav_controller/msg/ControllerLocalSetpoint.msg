@@ -1,0 +1,7 @@
+std_msgs/Header header
+uint8 reference_type
+uint32 regime_generation
+uint32 action_generation
+bool valid
+string rejection_reason
+mavros_msgs/PositionTarget target

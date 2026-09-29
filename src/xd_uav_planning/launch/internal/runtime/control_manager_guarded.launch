@@ -1,11 +1,13 @@
 <?xml version="1.0"?>
 <launch>
   <arg name="UAV_NAME" default="uav1"/>
+  <arg name="offboard_config"
+       default="$(find xd_uav_control_manager)/config/offboard.yaml"/>
   <group ns="$(arg UAV_NAME)">
     <node pkg="xd_uav_control_manager" type="control_manager_node"
           name="control_manager" output="screen" clear_params="true">
       <rosparam command="load"
-                file="$(find xd_uav_control_manager)/config/offboard.yaml"/>
+                file="$(arg offboard_config)"/>
       <rosparam command="load"
                 file="$(find xd_uav_control_manager)/config/safety.yaml"/>
       <param name="vehicle_type" value="multirotor"/>
@@ -17,7 +19,9 @@
       <remap from="mavros_state" to="mavros/state"/>
       <remap from="mavros_extended_state" to="mavros/extended_state"/>
       <remap from="controller_command" to="controller/command"/>
+      <remap from="controller_local_setpoint" to="controller/local_setpoint"/>
       <remap from="attitude_target" to="mavros/setpoint_raw/attitude"/>
+      <remap from="local_target" to="mavros/setpoint_raw/local"/>
       <remap from="set_mode" to="mavros/set_mode"/>
       <remap from="arming" to="mavros/cmd/arming"/>
       <remap from="command_long" to="mavros/cmd/command"/>

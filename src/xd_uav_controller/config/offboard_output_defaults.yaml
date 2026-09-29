@@ -1,0 +1,9 @@
+# Standalone controller.launch fallback. Integrated system launches pass the
+# same offboard config file to both controller and control_manager.
+offboard:
+  output:
+    reference_types:
+      position_target: raw_attitude
+      path: raw_attitude
+      trajectory: raw_attitude
+      internal: raw_attitude

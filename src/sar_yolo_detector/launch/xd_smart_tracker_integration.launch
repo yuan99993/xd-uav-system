@@ -17,8 +17,8 @@
   <arg name="use_gpu" default="true" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
   <arg name="camera_info_topic" default="down_camera/camera_info" />
-  <arg name="image_width" default="0" />
-  <arg name="image_height" default="0" />
+  <arg name="image_width" default="1920" />
+  <arg name="image_height" default="1080" />
   <arg name="tracked_detections_topic"
        default="sar_yolo_detector/coco/tracked_detections" />
   <arg name="output_detections_topic"

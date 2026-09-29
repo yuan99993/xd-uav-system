@@ -2,7 +2,7 @@
 <package format="2">
   <name>xd_uav_controller</name>
   <version>0.1.0</version>
-  <description>四旋翼MPC与固定翼控制器，统一输出机体角速度和推力/油门。</description>
+  <description>四旋翼MPC与固定翼控制器，支持机体角速度/推力与局部目标输出。</description>
 
   <maintainer email="kzy@example.com">kzy</maintainer>
   <license>BSD-3-Clause</license>

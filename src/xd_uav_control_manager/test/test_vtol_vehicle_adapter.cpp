@@ -57,6 +57,42 @@ TEST(VtolVehicleAdapter, TimesOutUnconfirmedTransition) {
   EXPECT_TRUE(adapter.transitionStatus().timed_out);
 }
 
+TEST(VtolVehicleAdapter, DetectsPx4AbortAfterTransitionPhaseReturnsToSource) {
+  manager::VtolVehicleAdapter adapter(control::AirframeType::kVtol);
+  adapter.observe(mavros_msgs::ExtendedState::VTOL_STATE_MC, true);
+  std::string reason;
+  ASSERT_TRUE(adapter.beginTransition(control::RequestedRegime::kForwardFlight,
+                                      ros::Time(10.0), &reason));
+  adapter.recordServiceAccepted(0U);
+
+  EXPECT_EQ(adapter.observe(
+                mavros_msgs::ExtendedState::VTOL_STATE_TRANSITION_TO_FW, true),
+            control::FlightRegime::kTransitionToForward);
+  EXPECT_TRUE(adapter.transitionStatus().pending);
+  EXPECT_TRUE(adapter.transitionStatus().transition_phase_seen);
+
+  EXPECT_EQ(adapter.observe(mavros_msgs::ExtendedState::VTOL_STATE_MC, true),
+            control::FlightRegime::kHover);
+  EXPECT_FALSE(adapter.transitionStatus().pending);
+  EXPECT_EQ(adapter.transitionStatus().last_result,
+            manager::TransitionResult::kAborted);
+  EXPECT_EQ(adapter.transitionStatus().last_target,
+            control::RequestedRegime::kForwardFlight);
+}
+
+TEST(VtolVehicleAdapter, DoesNotTreatUnstartedTransitionAsAbort) {
+  manager::VtolVehicleAdapter adapter(control::AirframeType::kVtol);
+  adapter.observe(mavros_msgs::ExtendedState::VTOL_STATE_MC, true);
+  std::string reason;
+  ASSERT_TRUE(adapter.beginTransition(control::RequestedRegime::kForwardFlight,
+                                      ros::Time(10.0), &reason));
+  adapter.recordServiceAccepted(0U);
+
+  EXPECT_EQ(adapter.observe(mavros_msgs::ExtendedState::VTOL_STATE_MC, true),
+            control::FlightRegime::kHover);
+  EXPECT_TRUE(adapter.transitionStatus().pending);
+}
+
 TEST(VtolVehicleAdapter, PendingRequestsAreIdempotentButCannotReverse) {
   manager::VtolVehicleAdapter adapter(control::AirframeType::kVtol);
   adapter.observe(mavros_msgs::ExtendedState::VTOL_STATE_MC, true);

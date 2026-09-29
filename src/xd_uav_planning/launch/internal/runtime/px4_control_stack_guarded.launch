@@ -4,6 +4,8 @@
   <arg name="common_frame" default="world"/>
   <arg name="gps_origin_topic" default="mavros/global_position/gp_origin"/>
   <arg name="launch_world_registration" default="true"/>
+  <arg name="offboard_config"
+       default="$(find xd_uav_control_manager)/config/offboard.yaml"/>
   <include file="$(find xd_uav_planning)/launch/internal/runtime/mavros_odom_recovery_gate.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
   </include>
@@ -20,6 +22,7 @@
     <arg name="common_frame" value="$(arg common_frame)"/>
     <arg name="gps_origin_topic" value="$(arg gps_origin_topic)"/>
     <arg name="launch_world_registration" value="$(arg launch_world_registration)"/>
+    <arg name="offboard_config" value="$(arg offboard_config)"/>
     <arg name="simple_goal_topic" value="/$(arg UAV_NAME)/demo/simple_goal"/>
     <arg name="adapt_manager_imu" value="true"/>
     <arg name="sources_config"

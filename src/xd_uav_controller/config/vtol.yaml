@@ -203,11 +203,11 @@ multirotor:
     maximum_jerk_z: 1
 
   takeoff:
-    default_altitude: 3.0
-    max_velocity: 0.8
-    max_acceleration: 0.6
-    position_tolerance: 0.15
-    velocity_tolerance: 0.15
+    default_altitude: 100.0
+    max_velocity: 3.0
+    max_acceleration: 2.0
+    position_tolerance: 4.0
+    velocity_tolerance: 2.5
 
   landing:
     # VTOL 悬停降落使用相对起飞/Home地面的 Z，避免依赖固定翼配置。
@@ -219,8 +219,8 @@ multirotor:
     # 5m/s返航需要更早交给固定Home位置控制制动；进入后保持锁存，避免
     # 越过原点时速度方向反复翻转。
     capture_radius: 5.0
-    position_tolerance: 0.20
-    velocity_tolerance: 0.15
+    position_tolerance: 4.0
+    velocity_tolerance: 2.5
 
     distance_sensor_cfg:
       timeout: 0.5
@@ -236,8 +236,8 @@ multirotor:
 
     # 没有下视测距时保留原有的相对Home/起飞点高度降落逻辑。
     odom_cfg:
-      descent_velocity: 0.35
-      final_descent_velocity: 0.15
+      descent_velocity: 3.0
+      final_descent_velocity: 0.5
       slow_height: 0.7
       touchdown_offset: 0.10
       touchdown_height_tolerance: 0.05

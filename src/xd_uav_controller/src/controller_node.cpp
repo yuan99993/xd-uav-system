@@ -26,10 +26,12 @@
 #include <xd_uav_controller/control_types.h>
 #include <xd_uav_controller/backend_resolver.h>
 #include <xd_uav_controller/functional_controller_backends.h>
+#include <xd_uav_controller/setpoint_output.h>
 #include <xd_uav_controller/unified_reference.h>
 
 #include <xd_uav_controller/ControlCommand.h>
 #include <xd_uav_controller/ControlState.h>
+#include <xd_uav_controller/ControllerLocalSetpoint.h>
 #include <xd_uav_controller/InternalCommand.h>
 #include <xd_uav_controller/PathStatus.h>
 #include <xd_uav_controller/Takeoff.h>
@@ -327,6 +329,9 @@ class ControllerNode {
     path_status_publisher_ =
         nh_.advertise<xd_uav_controller::PathStatus>(
             "path_status", 10, true);
+    local_target_publisher_ =
+        nh_.advertise<xd_uav_controller::ControllerLocalSetpoint>(
+            "local_setpoint", 20);
     command_publisher_ =
         nh_.advertise<xd_uav_controller::ControlCommand>("command", 20);
     internal_command_server_ = private_nh_.advertiseService(
@@ -373,6 +378,28 @@ class ControllerNode {
     }
     private_nh_.param("control_rate", control_rate_,
                       load_multirotor_ ? 100.0 : 50.0);
+    private_nh_.param(
+        "offboard/output/reference_types/position_target",
+        position_target_output_type_, std::string("raw_attitude"));
+    private_nh_.param(
+        "offboard/output/reference_types/path",
+        path_output_type_, std::string("raw_attitude"));
+    private_nh_.param(
+        "offboard/output/reference_types/trajectory",
+        trajectory_output_type_, std::string("raw_attitude"));
+    private_nh_.param(
+        "offboard/output/reference_types/internal",
+        internal_output_type_, std::string("raw_attitude"));
+    const auto valid_output_type = [](const std::string& value) {
+      return value == "raw_attitude" || value == "raw_local";
+    };
+    if (!valid_output_type(position_target_output_type_) ||
+        !valid_output_type(path_output_type_) ||
+        !valid_output_type(trajectory_output_type_) ||
+        !valid_output_type(internal_output_type_)) {
+      throw std::runtime_error(
+          "offboard/output/reference_types仅支持raw_attitude或raw_local");
+    }
     loadParameterWithLegacy(
         private_nh_, "state_input/timeout", "state_timeout",
         &state_timeout_, 0.20);
@@ -423,7 +450,6 @@ class ControllerNode {
         path_minimum_segment_length_, 0.20);
     private_nh_.param(
         "reference_input/path/status_rate", path_status_rate_, 10.0);
-
     if (load_multirotor_) {
       loadParameterWithLegacy(
           private_nh_, "multirotor/model/gravity",
@@ -2929,7 +2955,12 @@ class ControllerNode {
         state_.position_odom.z);
     idle_course_ = state_.course;
     Eigen::Matrix3d rotation;
-    if (!std::isfinite(idle_course_) &&
+    const bool raw_local_hover_output =
+        isMultirotorBackendActive() &&
+        outputTypeForReference(
+            xd_uav_controller::ReferenceType::kInternal) ==
+            xd_uav_controller::SetpointOutputType::kRawLocal;
+    if ((raw_local_hover_output || !std::isfinite(idle_course_)) &&
         quaternionToMatrix(state_.orientation_odom_body, &rotation)) {
       idle_course_ =
           std::atan2(rotation(1, 0), rotation(0, 0));
@@ -3179,7 +3210,12 @@ class ControllerNode {
                                        ? fixedwing_takeoff_default_altitude_
                                        : multirotor_takeoff_default_altitude_);
     takeoff_course_ = state_.course;
-    if (!std::isfinite(takeoff_course_)) {
+    const bool raw_local_hover_output =
+        isMultirotorBackendActive() &&
+        outputTypeForReference(
+            xd_uav_controller::ReferenceType::kInternal) ==
+            xd_uav_controller::SetpointOutputType::kRawLocal;
+    if (raw_local_hover_output || !std::isfinite(takeoff_course_)) {
       Eigen::Matrix3d rotation;
       if (!quaternionToMatrix(state_.orientation_odom_body,
                               &rotation)) {
@@ -5461,6 +5497,65 @@ class ControllerNode {
         now, reference, reason);
   }
 
+  bool publishLocalSetpointForReference(
+      const Reference& reference, const ros::Time& now,
+      const uint32_t regime_generation,
+      const uint32_t action_generation,
+      const bool fixedwing_position_only,
+      std::string* output_reason) {
+    if (output_reason == nullptr) {
+      return false;
+    }
+    switch (reference.type) {
+      case xd_uav_controller::ReferenceType::kPositionTarget:
+      case xd_uav_controller::ReferenceType::kSimpleGoal:
+      case xd_uav_controller::ReferenceType::kPath:
+      case xd_uav_controller::ReferenceType::kTrajectory:
+      case xd_uav_controller::ReferenceType::kInternal:
+      case xd_uav_controller::ReferenceType::kIdle:
+        break;
+      case xd_uav_controller::ReferenceType::kUnknown:
+        *output_reason =
+            "未知参考类型不能生成raw_local目标";
+        return false;
+    }
+
+    xd_uav_controller::ControllerLocalSetpoint local_setpoint;
+    local_setpoint.header = reference.header;
+    local_setpoint.header.stamp = now;
+    local_setpoint.reference_type =
+        xd_uav_controller::referenceTypeValue(reference.type);
+    local_setpoint.regime_generation = regime_generation;
+    local_setpoint.action_generation = action_generation;
+    std::string target_reason;
+    if (!xd_uav_controller::makeRawLocalTarget(
+            reference, now, &local_setpoint.target, &target_reason,
+            fixedwing_position_only)) {
+      local_setpoint.valid = false;
+      local_setpoint.rejection_reason = target_reason;
+      local_setpoint.target.header = reference.header;
+      local_setpoint.target.header.stamp = now;
+      local_setpoint.target.coordinate_frame = 0U;
+      *output_reason = target_reason;
+      ROS_ERROR_THROTTLE(
+          1.0,
+          "[xd_uav_controller] 无法生成raw_local目标: %s",
+          target_reason.c_str());
+    } else {
+      local_setpoint.valid = true;
+      output_reason->clear();
+    }
+    local_target_publisher_.publish(local_setpoint);
+    return local_setpoint.valid;
+  }
+
+  xd_uav_controller::SetpointOutputType outputTypeForReference(
+      const xd_uav_controller::ReferenceType type) const {
+    return xd_uav_controller::setpointOutputTypeForReference(
+        type, position_target_output_type_, path_output_type_,
+        trajectory_output_type_, internal_output_type_);
+  }
+
   void timerCallback(const ros::TimerEvent&) {
     const ros::Time now = ros::Time::now();
     xd_uav_controller::ControlCommand command;
@@ -5648,15 +5743,30 @@ class ControllerNode {
       command_publisher_.publish(command);
       return;
     }
-    const ControllerResult result = selected_backend->update(
-        state_, reference, now, 1.0 / std::max(1.0, control_rate_));
-    command.body_rate.x = result.body_rate.x();
-    command.body_rate.y = result.body_rate.y();
-    command.body_rate.z = result.body_rate.z();
-    command.thrust = result.thrust;
-    command.valid = result.valid;
-    command.rejection_reason = result.reason;
-    if (backend == xd_uav_controller::BackendId::kFixedWing) {
+    const bool raw_local_selected =
+        outputTypeForReference(reference.type) ==
+        xd_uav_controller::SetpointOutputType::kRawLocal;
+    if (raw_local_selected) {
+      std::string local_reason;
+      command.valid = publishLocalSetpointForReference(
+          reference, now, state_.regime_generation,
+          command.action_generation,
+          backend == xd_uav_controller::BackendId::kFixedWing,
+          &local_reason);
+      command.controller = "raw_local_reference_passthrough";
+      command.rejection_reason = local_reason;
+    } else {
+      const ControllerResult result = selected_backend->update(
+          state_, reference, now, 1.0 / std::max(1.0, control_rate_));
+      command.body_rate.x = result.body_rate.x();
+      command.body_rate.y = result.body_rate.y();
+      command.body_rate.z = result.body_rate.z();
+      command.thrust = result.thrust;
+      command.valid = result.valid;
+      command.rejection_reason = result.reason;
+    }
+    if (!raw_local_selected &&
+        backend == xd_uav_controller::BackendId::kFixedWing) {
       if (landing_active_) {
         command.controller =
             "fixedwing_course_energy_landing";
@@ -5711,6 +5821,7 @@ class ControllerNode {
   ros::Publisher reference_position_target_publisher_;
   ros::Publisher reference_trajectory_path_publisher_;
   ros::Publisher path_status_publisher_;
+  ros::Publisher local_target_publisher_;
   ros::Publisher command_publisher_;
   ros::ServiceServer internal_command_server_;
   ros::Timer timer_;
@@ -5818,6 +5929,10 @@ class ControllerNode {
   xd_uav_controller::BackendId active_backend_{
       xd_uav_controller::BackendId::kNone};
   std::string vtol_transition_policy_{"source_backend"};
+  std::string position_target_output_type_{"raw_attitude"};
+  std::string path_output_type_{"raw_attitude"};
+  std::string trajectory_output_type_{"raw_attitude"};
+  std::string internal_output_type_{"raw_attitude"};
   uint8_t vehicle_type_id_{
       xd_uav_controller::ControlState::VEHICLE_MULTIROTOR};
   double control_rate_{100.0};

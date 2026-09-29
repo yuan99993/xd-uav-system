@@ -10,6 +10,8 @@
        default="$(find xd_uav_controller)/config/$(arg airframe_type).yaml"/>
   <arg name="use_controller_override_config" default="false"/>
   <arg name="controller_override_config" default="$(arg config)"/>
+  <arg name="offboard_config"
+       default="$(find xd_uav_controller)/config/offboard_output_defaults.yaml"/>
   <arg name="simple_goal_topic"
        default="/move_base_simple/goal"/>
 
@@ -21,6 +23,9 @@
           clear_params="true">
       <rosparam command="load" file="$(arg common_config)"/>
       <rosparam command="load" file="$(arg config)"/>
+      <!-- Mirror the manager's output selection so raw_local can bypass the
+           body-rate/thrust backend before it performs attitude calculations. -->
+      <rosparam command="load" file="$(arg offboard_config)"/>
       <rosparam command="load"
                 file="$(arg controller_override_config)"
                 if="$(arg use_controller_override_config)"/>
@@ -43,6 +48,7 @@
       <remap from="local_alignment_valid"
              to="single_tf_manager/local_alignment_valid"/>
       <remap from="command" to="controller/command"/>
+      <remap from="local_setpoint" to="controller/local_setpoint"/>
     </node>
   </group>
 </launch>

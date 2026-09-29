@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+package_dir="$(rospack find xd_uav_track)"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+node_script="$script_dir/reid_encoder_node.py"
+if [[ ! -f "$node_script" ]]; then
+  node_script="$package_dir/scripts/reid_encoder_node.py"
+fi
+
+# Keep standalone ReID on the same OpenCV/ONNX runtime as the inline detector
+# path. Explicit deployment overrides remain authoritative.
+python_executable="${XD_UAV_REID_PYTHON:-${SAR_YOLO_PYTHON:-${SAR_YOLO_SMART_PYTHON:-}}}"
+if [[ -z "$python_executable" ]]; then
+  workspace_dir="$(cd "$package_dir/../.." 2>/dev/null && pwd || true)"
+  if [[ -x "$workspace_dir/.venv-sar-gpu/bin/python" ]]; then
+    python_executable="$workspace_dir/.venv-sar-gpu/bin/python"
+  else
+    python_executable="python3"
+  fi
+fi
+
+ros_distro="${ROS_DISTRO:-noetic}"
+ros_python_path="/opt/ros/$ros_distro/lib/python3/dist-packages"
+export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$ros_python_path"
+exec "$python_executable" "$node_script" "$@"

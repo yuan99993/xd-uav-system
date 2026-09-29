@@ -1,5 +1,14 @@
 offboard:
-  # 向PX4连续发送AttitudeTarget；预发送完成后才请求OFFBOARD。
+  # 按参考类型选择输出；simple_goal使用position_target配置。
+  # internal控制起飞、悬停、降落、等待/保持等内部参考。
+  output:
+    reference_types:
+      position_target: raw_local
+      path: raw_attitude
+      trajectory: raw_attitude
+      internal: raw_local
+
+  # 预发送完成后才请求OFFBOARD。
   stream:
     setpoint_rate: 100.0
     prestream_duration: 1.5

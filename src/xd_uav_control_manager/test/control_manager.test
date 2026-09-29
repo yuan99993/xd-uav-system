@@ -8,6 +8,8 @@
       <param name="vehicle_type" value="multirotor"/>
       <param name="offboard/stream/setpoint_rate" value="50.0"/>
       <param name="offboard/stream/prestream_duration" value="0.1"/>
+      <param name="offboard/output/reference_types/path"
+             value="raw_local"/>
       <param name="offboard/mode_request/retry_interval" value="0.05"/>
       <param name="offboard/mode_request/timeout" value="3.0"/>
       <param name="safety/activation/stable_duration" value="0.1"/>

@@ -5,7 +5,7 @@ tracked_detections_topic: sar_yolo_detector/smart/tracked_detections
 state_topic: sar_yolo_detector/smart/state
 annotated_image_topic: sar_yolo_detector/smart/annotated
 publish_annotated_image: true
-maximum_capture_age_sec: 0.50
+maximum_capture_age_sec: 2.0
 future_timestamp_tolerance_sec: 0.02
 reject_out_of_order: true
 

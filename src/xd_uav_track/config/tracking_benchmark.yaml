@@ -1,0 +1,93 @@
+# Overlay for the generic tracker configuration used only by tracking_benchmark.
+# No aircraft/controller state is required and no control reference is published.
+runtime:
+  publish_control_reference: false
+
+interfaces:
+  input:
+    detections: "track/detections"
+    vehicle_state: "state_estimator/benchmark/odom"
+
+frames:
+  body: "tracking_benchmark/metric_origin"
+
+tracker:
+  enabled_at_startup: true
+  sources:
+    allowed: [benchmark_fixed]
+    maximum_sources: 1
+    ttl_sec: 30.0
+  global_identity:
+    # Different cameras use independent local trackers. Synchronize their
+    # global IDs only when near-simultaneous calibrated world measurements
+    # agree within bounded uncertainty and ambiguity gates.
+    enabled: false
+    cross_source_metric_enabled: true
+    cross_source_max_time_delta_sec: 0.35
+    cross_source_max_distance_m: 4.0
+    cross_source_max_position_variance_m2: 9.0
+  tracklet_stitching:
+    enabled: true
+    archive_ttl_sec: 40.0
+    locked_identity_archive_ttl_sec: 600.0
+    locked_identity_min_appearance_cosine: 0.90
+    maximum_identities: 128
+    confirmation_frames: 2
+    maximum_confirmation_gap_sec: 0.50
+    maximum_distance_m: 25.0
+    maximum_speed_mps: 8.0
+    maximum_velocity_delta_mps: 5.0
+    mahalanobis_gate_sq: 11.34
+    process_noise_m2_per_s2: 1.0
+    minimum_position_variance_m2: 0.25
+    motion_only_max_gap_sec: 15.0
+    motion_only_max_residual_m: 10.0
+    motion_only_max_velocity_delta_mps: 5.0
+    minimum_score: 0.45
+    minimum_score_margin: 0.20
+  selection:
+    auto_select: true
+  lifecycle:
+    # Preserve a confirmed identity briefly through an actual detector gap.
+    # The overlay marks this state PRED; it is never relabelled as a live
+    # detection.  Long-lost tracks remain only in ReID memory.
+    # Show a bounded Kalman coast as PRED through short view-angle detector
+    # gaps. The estimate is never advertised as a fresh measurement or used
+    # for control while the detector is missing.
+    occlusion_timeout_sec: 2.00
+    removal_timeout_sec: 8.0
+    # ReID is enabled for the fixed camera. Keep the generic trigger time, but
+    # this one-target visual benchmark can accept the unique Kalman match on
+    # its first returning detection instead of waiting through confirmation.
+    # Do not copy this single-target policy to multi-target flight configs.
+    reacquisition_after_sec: 0.35
+    reacquisition_confirm_hits: 2
+    reacquisition_mode: "aggressive"
+  association:
+    # The benchmark camera and metric origin are static. Use a smoothed
+    # body-relative ground position to prevent two overlapping image boxes
+    # from exchanging IDs. Do not enable this for moving UAV cameras without
+    # first compensating their motion into one common frame.
+    metric_relative:
+      enabled: true
+      maximum_distance_m: 10.0
+      score_weight: 1.2
+      smoothing_alpha: 0.25
+      maximum_speed_mps: 8.0
+      jump_tolerance_m: 2.0
+    # Permit any train7 vehicle subclass to update the same visual identity;
+    # motion and ambiguity gates still prevent proximity-only merging.
+    compatible_class_ids: [0, 1, 2, 3]
+    # Synthetic vehicles are intentionally similar. During close crossings,
+    # prefer coast over assigning one detector-merged box to the wrong tank.
+    merged_observation_guard:
+      enabled: true
+      minimum_tracks: 2
+      minimum_area_ratio: 1.15
+      minimum_track_iou: 0.02
+    short_minimum_margin: 0.15
+    selected_minimum_margin: 0.25
+    # A single detector box spanning two well-separated predicted tanks must
+    # not grow enough to absorb either identity after an occlusion.
+    maximum_scale_ratio: 3.5
+    maximum_aspect_log_change: 0.60

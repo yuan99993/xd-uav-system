@@ -20,9 +20,9 @@
    `test_multi_track_manager`；先确认坐标、协方差、乱序、转弯半径、轨道切换和来源隔离。
 2. 用 `roslaunch --nodes xd_uav_track <入口>.launch UAV_NAME:=uav_cfgtest` 只解析四个
    组合，确认每路 node 名称和 namespace 独立。
-3. 用录制数据逐项启用 `optional_tracking_extensions.yaml` 中的单个功能，对比同一 rosbag
-   的 identity switch、FOV loss、控制有效率和计算耗时；没有 A/B 证据时保持关闭。
-   无 ROS/Gazebo 的快速回归可直接运行 `replay_tracking_faults.py`，固定随机种子后比较
+3. 对每一项可选的 metric/FOV 扩展，都只在同一段录制数据上单独启用，并和基线 rosbag
+   对比 identity switch、FOV loss、控制有效率和计算耗时；没有 A/B 证据时保持关闭。
+   tracker 的高/低置信度两阶段关联始终开启，并不是可选开关。无 ROS/Gazebo 的快速回归可直接运行 `replay_tracking_faults.py`，固定随机种子后比较
    5/15/30 FPS、掉帧、延迟和乱序输出；CI 门禁使用 `--strict` 及可见率、半径、绕飞角、
    ID/source switch 和 `center_hold` 漂移阈值，避免没有失锁样本却误判通过。
 4. 最后进行单实例 PX4/Gazebo 或实机闭环。固定翼记录 `target_visible` 覆盖率、

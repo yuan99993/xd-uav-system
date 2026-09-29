@@ -7,7 +7,7 @@
 
 参考MRS的职责划分：
 
-- 控制器维护悬停、轨迹和起降参考，输出body rates与推力/油门。
+- 控制器维护悬停、轨迹和起降参考；按参考类型输出body rates与推力/油门，或透传raw-local目标。
 - 管理器显式启用控制输出，编排OFFBOARD、解锁、起飞和降落，并监督输入新鲜度。
 - PX4负责姿态角速度内环以及最终飞控failsafe。
 
@@ -28,8 +28,10 @@ ACTIVE -- cancel_offboard/人工切模式 --> STANDBY
 ACTIVE -- 持续输入失效 --> FAILSAFE
 ```
 
-`STANDBY`不会向`mavros/setpoint_raw/attitude`发布消息。进入`ACTIVE`后持续发布
-setpoint，从而维持OFFBOARD。起飞结束后控制器保留同一个位置和yaw参考，不会自行
+`STANDBY`不会向MAVROS raw setpoint话题发布消息。进入`ACTIVE`后，管理器按
+`offboard/output/reference_types`配置和当前参考类型在
+`mavros/setpoint_raw/attitude`与`mavros/setpoint_raw/local`之间选择输出，从而维持OFFBOARD。
+起飞结束后控制器保留同一个位置和yaw参考，不会自行
 下降；只有调用`land`或`land_home`服务才建立下降参考。
 
 管理器不会在检测到地面站主动切出OFFBOARD后再次抢回模式，而是立即停止外部控制并
@@ -134,6 +136,7 @@ rosservice call /uav1/control_manager/reset_failsafe
 /uavX/control_manager/status
 /uavX/control_manager/diagnostics
 /uavX/mavros/setpoint_raw/attitude
+/uavX/mavros/setpoint_raw/local
 ```
 
 统一状态适配器会把`main/odom.twist.linear`从机体系旋转到odom世界系。三轴body
@@ -141,9 +144,15 @@ rates来自IMU；固定翼空速来自`mavros/vfr_hud`。
 
 ## 配置
 
-- `config/offboard.yaml`按职责分为三组：`offboard/stream/*`负责setpoint发送和预发送，
-  `offboard/mode_request/*`负责PX4请求重试与超时，`offboard/exit/*`负责主动退出后的
-  接管模式。
+- `config/offboard.yaml`按职责分为四组：`offboard/output/reference_types/*`分别选择
+  PositionTarget、Path、Trajectory及起飞/悬停/降落等`internal`参考使用`raw_attitude`还是`raw_local`；`offboard/stream/*`
+  负责setpoint发送和预发送，`offboard/mode_request/*`负责PX4请求重试与超时，
+  `offboard/exit/*`负责主动退出后的接管模式。
+- 当上述四类都设为`raw_local`时，起飞、悬停、降落和外部参考均通过
+  `/mavros/setpoint_raw/local`输出，不发布raw-attitude setpoint；控制器内部仍会生成
+  起降/悬停位置参考，但不会计算角速度和推力/油门控制输出。
+- `raw_local`正式接机前需确认`ControlState.header.frame_id`和PX4/MAVROS本地原点/轴向一致，
+  并先在SITL或安全地面环境验证所选机架与PX4版本支持对应的local setpoint掩码。
 - `config/safety.yaml`按职责分为四组：`safety/inputs/*`检查传感器、估计器和PX4状态，
   `safety/controller_command/*`监督控制器输出，`safety/activation/*`控制进入OFFBOARD前
   的稳定等待，`safety/touchdown/*`负责触地确认、零推力等待和上锁回退。
