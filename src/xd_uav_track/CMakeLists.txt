@@ -13,6 +13,10 @@ find_package(catkin REQUIRED COMPONENTS
 )
 find_package(Eigen3 REQUIRED)
 
+# Install the lightweight pixel tracker and optional ReID helpers alongside
+# generated ROS messages; the devel-space source path alone is not deployable.
+catkin_python_setup()
+
 add_message_files(
   FILES
   DetectionArray.msg
@@ -29,6 +33,7 @@ add_message_files(
 add_service_files(
   FILES
   SelectTrack.srv
+  SetTargetMode.srv
   SetProfile.srv
   StartTracker.srv
 )
@@ -61,6 +66,7 @@ include_directories(
 
 add_library(xd_uav_track_core
   src/multi_track_manager.cpp
+  src/tracklet_stitcher.cpp
   src/target_guidance.cpp
   src/track_controller.cpp
 )
@@ -94,7 +100,11 @@ install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
-install(DIRECTORY config launch models docs
+install(DIRECTORY config launch models docs worlds
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+
+install(FILES requirements-reid-onnx-cuda12.txt
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
@@ -108,6 +118,17 @@ catkin_install_python(PROGRAMS
   scripts/sitl_metric_input.py
   scripts/validate_tracking_config.py
   scripts/verify_fixedwing_sitl.py
+  scripts/tracking_benchmark_driver.py
+  scripts/check_tracking_benchmark_baseline.py
+  scripts/tracking_overlay_node.py
+  scripts/video_replay_node.py
+  scripts/video_tracking_record_node.py
+  scripts/evaluate_video_tracking.py
+  scripts/moving_uav_search_driver.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(FILES scripts/benchmark_trajectories.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -116,6 +137,11 @@ install(FILES README.md
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_pixel_lock_overlay.py)
+  catkin_add_nosetests(test/test_video_tracking_eval.py)
+  catkin_add_nosetests(test/test_benchmark_trajectories.py)
+  catkin_add_nosetests(test/test_moving_uav_search_dynamics.py)
+  catkin_add_nosetests(test/test_benchmark_baseline.py)
   catkin_add_gtest(test_track_controller
     test/test_track_controller.cpp
   )
@@ -136,6 +162,16 @@ if(CATKIN_ENABLE_TESTING)
       ${catkin_EXPORTED_TARGETS}
     )
     target_link_libraries(test_multi_track_manager
+      xd_uav_track_core
+      ${catkin_LIBRARIES}
+    )
+  endif()
+  catkin_add_gtest(test_tracklet_stitcher
+    test/test_tracklet_stitcher.cpp
+  )
+  if(TARGET test_tracklet_stitcher)
+    target_compile_features(test_tracklet_stitcher PRIVATE cxx_std_14)
+    target_link_libraries(test_tracklet_stitcher
       xd_uav_track_core
       ${catkin_LIBRARIES}
     )

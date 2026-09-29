@@ -1,0 +1,32 @@
+# Production YOLO-only profile for xd_uav_track.
+# Identity allocation, ReID galleries, occlusion state and reacquisition live
+# exclusively in xd_uav_track; this file intentionally contains no tracker or
+# manual-box-tracker settings.
+SmartTracker:
+  # xd_vehicle_train7.pt label space: car=0, ar-car=1, tank=2, m142=3.
+  # Keep this contract synchronized with the model metadata; excluding m142
+  # created deterministic detector dropouts before observations reached the
+  # tracker.
+  SMART_TRACKER_ALLOWED_CLASS_IDS: [0, 1, 2, 3]
+  # All four labels are vehicle subclasses. Suppress overlapping cross-class
+  # boxes before they can look like multiple physical targets downstream.
+  SMART_TRACKER_AGNOSTIC_NMS: true
+  # Any allowed train7 vehicle label may be emitted for the same physical
+  # target. Prediction-ROI recovery still requires spatial agreement; the
+  # tracker owns identity and keeps the confirmed public class stable.
+  SMART_TRACKER_COMPATIBLE_CLASS_IDS: [0, 1, 2, 3]
+  SMART_TRACKER_GPU_MODEL_PATH: models/xd_vehicle_train7/xd_vehicle_train7.pt
+  SMART_TRACKER_CPU_MODEL_PATH: models/xd_vehicle_train7/xd_vehicle_train7.pt
+  SMART_TRACKER_MODEL_SHA256: 8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54
+  SMART_TRACKER_REQUIRE_MODEL_SHA256: true
+  SMART_TRACKER_MODEL_MAX_BYTES: 536870912
+  # Full-frame search resolution.  640 remains the real-time default; use the
+  # high-resolution overlay for overhead small-target deployments.  Prediction
+  # ROI passes stay independently capped by roi_inference_image_size.
+  SMART_TRACKER_INFERENCE_IMAGE_SIZE: 640
+  # Low-confidence boxes are kept for xd_uav_track's second association pass.
+  # Only its high-confidence pass may create a new trajectory.
+  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.10
+  SMART_TRACKER_IOU_THRESHOLD: 0.45
+  SMART_TRACKER_MAX_DETECTIONS: 30
+  TRACKER_TYPE: detection_only

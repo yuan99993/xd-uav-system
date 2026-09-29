@@ -218,6 +218,38 @@ roslaunch sar_yolo_detector scout_perception.launch \
 包装脚本只补充 `/opt/ros/$ROS_DISTRO/lib/python3/dist-packages`，不会把另一 Python
 小版本的系统 NumPy/OpenCV 注入虚拟环境；`rospkg` 由上述可选 requirements 安装。
 
+### YOLO 双相机 TensorRT FP16
+
+`xd_yolo_multi_source_detection_integration.launch` 默认使用 TensorRT FP16。给定
+`.pt` 权重而没有匹配 engine 时，节点会验证配置的权重 SHA-256，并在首次启动时自动
+导出固定尺寸静态 engine（builder optimization level 默认 1）；后续按权重摘要、TensorRT/Ultralytics 版本、GPU 型号和输入
+尺寸复用 `~/.cache/sar_yolo_detector/tensorrt/` 中的产物。原始 `.pt` 不会被改写。
+若提供了 engine 路径，只有 engine 摘要正确且 `engine_source_model_sha256` 与选定
+权重一致时才直接使用；否则在 `auto_export_engine:=true` 时构建对应缓存版本。
+
+本机的 Python 环境应使用与系统 TensorRT/CUDA 运行库匹配的 bindings。当前主机为
+TensorRT 10.1 / CUDA 12.4：
+
+```bash
+.venv-sar-gpu/bin/pip install -r src/sar_yolo_detector/requirements-tensorrt-cu12.txt
+```
+
+该依赖只安装 Python bindings，不重复下载主机已有的 TensorRT 运行库。也可显式离线
+生成 train7 engine（固定 `640×640`、FP16、静态 batch=1，workspace 默认 0.5 GiB）：
+
+```bash
+.venv-sar-gpu/bin/python3 src/sar_yolo_detector/scripts/export_xd_vehicle_tensorrt.py \
+  --model src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7.pt \
+  --output src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7.engine \
+  --imgsz 640 --workspace 0.5
+```
+
+`tracking_benchmark_perception.launch` 会默认选择该 train7 engine；把
+`inference_backend:=ultralytics` 可显式退回 `.pt` 路径，或用
+`auto_export_engine:=false` 禁止缺少 engine 时自动构建。engine 与 GPU、CUDA、TensorRT
+版本相关，换部署主机时应重新生成或使用自动缓存；FP16 转换不会改变 YOLO 权重，但
+仍需用目标视频做精度回归后再用于实机。
+
 主要入口默认使用包内 `models/aircraft_coco/yolo11n.pt`，并在加载前校验 SHA-256、
 文件类型、大小和写权限。通用兼容入口 `smart_tracker.launch` 仍默认使用 thermal
 模型。配置还登记了 thermal、maritime 和 wildfire 权重的可信摘要。切换外部 `.pt` 时必须通过

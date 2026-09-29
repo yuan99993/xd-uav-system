@@ -22,6 +22,7 @@
   <include file="$(find xd_uav_controller)/launch/controller.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="vehicle_type" value="multirotor"/>
+    <arg name="offboard_config" value="$(arg offboard_config)"/>
     <arg name="common_config"
          value="$(arg controller_common_config)"/>
     <arg name="config" value="$(arg controller_config)"/>

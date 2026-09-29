@@ -46,22 +46,91 @@ tracker:
 
   # 空=接收全部；也可锁定 eo/ir/逻辑相机名。
   image_source: ""
+  global_identity:
+    enabled: true
+    # This deployment uses vehicle-only classes (car/ar-car/tank/m142), so a
+    # view-dependent subtype change is a soft penalty, not a hard ID split.
+    # Cross-camera IDs still require synchronized, calibrated metric matches.
+    cross_source_metric_enabled: true
+    cross_source_max_time_delta_sec: 0.35
+    cross_source_max_distance_m: 4.0
+    cross_source_max_position_variance_m2: 9.0
+    # Only truly simultaneous calibrated observations are covariance-fused.
+    # Wider hand-off matching remains 0.35 s; fusing delayed views would lag a
+    # moving target rather than improve its inertial center estimate.
+    cross_source_fusion_max_time_delta_sec: 0.05
+  tracklet_stitching:
+    enabled: true
+    # Keep lost identities long enough for typical short/medium visual gaps,
+    # while bounding both age and total identity memory.
+    archive_ttl_sec: 40.0
+    # A still-selected identity is retained longer, but after the ordinary
+    # motion archive expires it can only be restored by a strong unique ReID
+    # match; old constant-velocity extrapolation is intentionally ignored.
+    locked_identity_archive_ttl_sec: 600.0
+    locked_identity_min_appearance_cosine: 0.90
+    maximum_identities: 512
+    # A new local ID must pass metric trajectory gates and remain the same
+    # best candidate on consecutive confirmed observations before it inherits
+    # an archived global/public identity.
+    confirmation_frames: 3
+    maximum_confirmation_gap_sec: 0.50
+    maximum_distance_m: 25.0
+    maximum_speed_mps: 25.0
+    maximum_velocity_delta_mps: 8.0
+    mahalanobis_gate_sq: 11.34
+    process_noise_m2_per_s2: 2.0
+    minimum_position_variance_m2: 0.25
+    minimum_appearance_cosine: 0.82
+    # A viewpoint flip may weaken ReID; short gaps can still be stitched when
+    # measured world motion is uniquely consistent within these tighter gates.
+    motion_only_max_gap_sec: 15.0
+    motion_only_max_residual_m: 10.0
+    motion_only_max_velocity_delta_mps: 6.0
+    minimum_score: 0.45
+    minimum_score_margin: 0.20
   selection:
     auto_select: true              # 未手选时选择质量最高的 confirmed 轨迹
+    locked_target_release_timeout_sec: 60.0
   confidence:
-    new_track: 0.20
-    update: 0.05
+    new_track: 0.50             # 低置信框只能更新已有轨迹
+    update: 0.10
   lifecycle:
     confirmation_hits: 2
     occlusion_frames: 5            # 该阶段允许 Kalman 预测继续短时控制
     removal_frames: 30
+    reference_fps: 30.0
+    # PixEagle-compatible time lifecycle; keep frame fields for older launch
+    # configs while all runtime decisions use source timestamps when available.
+    occlusion_timeout_sec: 0.35
+    removal_timeout_sec: 5.0
+    reacquisition_after_sec: 0.35
+    reacquisition_confirm_hits: 3
+    reacquisition_mode: "balanced" # changed detector ID needs appearance evidence after long loss
+    maximum_size_change_ratio: 2.5
+    exit_edge_margin: 0.15
   limits:
     maximum_tracks: 128
     maximum_embedding_dimension: 2048
   association:
     iou_threshold: 0.20
     center_distance: 1.50
+    ambiguity_margin: 0.08
+    flexible_class_matching: true
+    # All train7 labels are vehicle subclasses. A YOLO class flip must not
+    # break a confirmed identity; geometry, motion and ambiguity gates remain.
+    compatible_class_ids: [0, 1, 2, 3]
+    class_history_size: 10
+    search_expansion_rate_per_sec: 6.0
+    search_expansion_cap: 2.0
+    lenient_iou_scale: 0.4
+    lenient_iou_floor: 0.10
+    appearance_distance_gate_factor: 3.0
     appearance_cosine: 0.78        # 候选含 embedding 时启用外观重识别
+    high_confidence_threshold: 0.50
+    appearance_gallery_size: 5
+    confidence_smoothing_alpha: 0.80
+    confidence_decay_rate: 0.05
   kalman:
     process_noise: 1.0
     measurement_noise: 1.0

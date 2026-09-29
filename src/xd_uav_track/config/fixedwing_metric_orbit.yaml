@@ -60,6 +60,14 @@ tracker:
   lifecycle:
     confirmation_hits: 2
     occlusion_frames: 5
+    reference_fps: 30.0
+    occlusion_timeout_sec: 0.35
+    removal_timeout_sec: 40.0
+    reacquisition_after_sec: 0.35
+    reacquisition_confirm_hits: 3
+    reacquisition_mode: "balanced"
+    maximum_size_change_ratio: 2.5
+    exit_edge_margin: 0.15
     # Must cover target_loss/orbit_time_sec. A lost image remains explicitly
     # non-metric, but its public ID is retained for metric re-identification.
     # 40 s at the 30 Hz tracker input rate, covering the 35 s orbit hold and

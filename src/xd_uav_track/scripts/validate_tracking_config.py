@@ -112,6 +112,30 @@ def validate_tracker(config, report, label):
         report.require_topic(outputs.get(key), label + ".interfaces.output." + key)
 
     tracker = _mapping(config.get("tracker", {}), label + ".tracker", report)
+    stitching = _mapping(tracker.get("tracklet_stitching", {}),
+                         label + ".tracker.tracklet_stitching", report)
+    if stitching.get("enabled", False):
+        for key in ("archive_ttl_sec", "maximum_distance_m", "maximum_speed_mps",
+                    "maximum_velocity_delta_mps", "mahalanobis_gate_sq",
+                    "minimum_position_variance_m2",
+                    "maximum_confirmation_gap_sec"):
+            report.finite(stitching.get(key),
+                          label + ".tracker.tracklet_stitching." + key,
+                          positive=True)
+        report.finite(stitching.get("process_noise_m2_per_s2"),
+                      label + ".tracker.tracklet_stitching.process_noise_m2_per_s2")
+        for key in ("minimum_appearance_cosine", "minimum_score",
+                    "minimum_score_margin"):
+            value = stitching.get(key)
+            if report.finite(value, label + ".tracker.tracklet_stitching." + key) and \
+                    not 0.0 <= value <= 1.0:
+                report.error(label + ".tracker.tracklet_stitching." + key +
+                             " must be in [0, 1]")
+        for key in ("confirmation_frames", "maximum_identities"):
+            value = stitching.get(key)
+            if not isinstance(value, int) or value <= 0:
+                report.error(label + ".tracker.tracklet_stitching." + key +
+                             " must be a positive integer")
     source_quality = _mapping(tracker.get("source_quality_handover", {}),
                               label + ".tracker.source_quality_handover", report)
     if source_quality.get("enabled", False):

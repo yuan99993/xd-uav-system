@@ -303,7 +303,8 @@ install(DIRECTORY include/${PROJECT_NAME}/
 install(DIRECTORY config launch training models
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
-install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md requirements-smart-tracker.txt
+install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md
+  requirements-smart-tracker.txt requirements-tensorrt-cu12.txt
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt
@@ -311,7 +312,15 @@ install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt
 )
 install(PROGRAMS
   scripts/sar_yolo_smart_tracker
+  scripts/sar_yolo_multi_source_detection
   scripts/smart_tracker_node.py
+  # The shared two-source wrapper executes this sibling in both devel and
+  # install spaces.  Installing only the wrapper made a source workspace work
+  # while an installed deployment failed at launch.
+  scripts/multi_source_detection_node.py
+  # Offline-only export helper; it preserves the existing .pt model and is
+  # useful when provisioning a separately audited FP16 engine.
+  scripts/export_xd_vehicle_tensorrt.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 catkin_install_python(PROGRAMS

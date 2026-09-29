@@ -9,6 +9,7 @@ from geometry_msgs.msg import AccelWithCovarianceStamped
 from mavros_msgs.msg import (
     AttitudeTarget,
     ExtendedState,
+    PositionTarget,
     State,
     VFR_HUD,
 )
@@ -25,7 +26,11 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
-from xd_uav_controller.msg import ControlCommand, ControlState
+from xd_uav_controller.msg import (
+    ControlCommand,
+    ControlState,
+    ControllerLocalSetpoint,
+)
 from xd_uav_controller.srv import (
     InternalCommand,
     InternalCommandRequest,
@@ -58,6 +63,7 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         self._arming_requests = []
         self._force_disarm_requests = []
         self._controller_reset = False
+        self._reference_type = ControlCommand.REFERENCE_UNKNOWN
 
         self._arming_service = rospy.Service(
             "arming", CommandBool, self._handle_arming
@@ -100,6 +106,11 @@ class ControlManagerInterfaceTest(unittest.TestCase):
             ),
             "controller_command": rospy.Publisher(
                 "controller_command", ControlCommand, queue_size=20
+            ),
+            "controller_local_setpoint": rospy.Publisher(
+                "controller_local_setpoint",
+                ControllerLocalSetpoint,
+                queue_size=20,
             ),
         }
 
@@ -237,6 +248,33 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         )
         command.thrust = 0.5
         command.valid = True
+        command.reference_type = self._reference_type
+        if self._reference_type == ControlCommand.REFERENCE_PATH:
+            local_setpoint = ControllerLocalSetpoint()
+            local_setpoint.header.stamp = now
+            local_setpoint.header.frame_id = "uav1/odom"
+            local_setpoint.reference_type = self._reference_type
+            local_setpoint.regime_generation = command.regime_generation
+            local_setpoint.action_generation = command.action_generation
+            local_setpoint.valid = True
+            local_setpoint.target.header.stamp = now
+            local_setpoint.target.header.frame_id = "uav1/odom"
+            local_setpoint.target.coordinate_frame = (
+                PositionTarget.FRAME_LOCAL_NED
+            )
+            local_setpoint.target.type_mask = (
+                PositionTarget.IGNORE_VX
+                | PositionTarget.IGNORE_VY
+                | PositionTarget.IGNORE_VZ
+                | PositionTarget.IGNORE_AFX
+                | PositionTarget.IGNORE_AFY
+                | PositionTarget.IGNORE_AFZ
+                | PositionTarget.IGNORE_YAW_RATE
+            )
+            local_setpoint.target.position.z = 1.0
+            self._publishers["controller_local_setpoint"].publish(
+                local_setpoint
+            )
         command.takeoff_active = self._takeoff_active
         command.landing_active = self._landing_active
         command.landing_touchdown = self._touchdown
@@ -444,6 +482,25 @@ class ControlManagerInterfaceTest(unittest.TestCase):
         )
         self.assertFalse(self._armed)
         self.assertNotIn(True, self._arming_requests)
+
+        # The manager keeps the legacy attitude topic available, but routes
+        # configured Path references to MAVROS's local-position topic.
+        self._reference_type = ControlCommand.REFERENCE_PATH
+        local_target = self._wait_for(
+            lambda: rospy.wait_for_message(
+                "local_target", PositionTarget, timeout=0.2
+            )
+        )
+        self.assertEqual(
+            local_target.coordinate_frame, PositionTarget.FRAME_LOCAL_NED
+        )
+        self.assertAlmostEqual(local_target.position.z, 1.0, delta=1e-3)
+        self._reference_type = ControlCommand.REFERENCE_UNKNOWN
+        self._wait_for(
+            lambda: rospy.wait_for_message(
+                "attitude_target", AttitudeTarget, timeout=0.2
+            )
+        )
 
         self._mode = "POSCTL"
         status = self._wait_for(

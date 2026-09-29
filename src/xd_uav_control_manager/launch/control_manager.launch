@@ -26,7 +26,10 @@
       <remap from="mavros_extended_state"
              to="mavros/extended_state"/>
       <remap from="controller_command" to="controller/command"/>
+      <remap from="controller_local_setpoint"
+             to="controller/local_setpoint"/>
       <remap from="attitude_target" to="mavros/setpoint_raw/attitude"/>
+      <remap from="local_target" to="mavros/setpoint_raw/local"/>
       <remap from="set_mode" to="mavros/set_mode"/>
       <remap from="arming" to="mavros/cmd/arming"/>
       <remap from="command_long" to="mavros/cmd/command"/>

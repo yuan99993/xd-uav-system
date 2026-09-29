@@ -14,6 +14,9 @@
   <arg name="detections_2d_topic" default=""/>
   <arg name="gimbal_state_topic" default=""/>
   <arg name="gimbal_range_topic" default=""/>
+  <arg name="detections_3d_topic" default=""/>
+  <arg name="status_topic" default=""/>
+  <arg name="debug_image_topic" default=""/>
 
   <group ns="$(arg UAV_NAME)">
     <node pkg="xd_uav_detect" type="xd_uav_detect_node"
@@ -37,6 +40,12 @@
              name="interfaces/input/gimbal_state" value="$(arg gimbal_state_topic)"/>
       <param if="$(eval arg('gimbal_range_topic') != '')"
              name="interfaces/input/gimbal_range" value="$(arg gimbal_range_topic)"/>
+      <param if="$(eval arg('detections_3d_topic') != '')"
+             name="interfaces/output/detections_3d" value="$(arg detections_3d_topic)"/>
+      <param if="$(eval arg('status_topic') != '')"
+             name="interfaces/output/status" value="$(arg status_topic)"/>
+      <param if="$(eval arg('debug_image_topic') != '')"
+             name="interfaces/output/debug_image" value="$(arg debug_image_topic)"/>
     </node>
   </group>
 </launch>

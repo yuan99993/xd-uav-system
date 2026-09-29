@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <clocale>
 #include <cmath>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include <mavros_msgs/CommandLong.h>
 #include <mavros_msgs/CommandVtolTransition.h>
 #include <mavros_msgs/ExtendedState.h>
+#include <mavros_msgs/PositionTarget.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
 #include <mavros_msgs/VFR_HUD.h>
@@ -32,11 +34,13 @@
 
 #include <xd_uav_controller/ControlCommand.h>
 #include <xd_uav_controller/ControlState.h>
+#include <xd_uav_controller/ControllerLocalSetpoint.h>
 #include <xd_uav_controller/InternalCommand.h>
 #include <xd_uav_controller/Takeoff.h>
 #include <xd_uav_controller/backend_resolver.h>
 #include <xd_uav_controller/command_contract.h>
 #include <xd_uav_controller/control_types.h>
+#include <xd_uav_controller/setpoint_output.h>
 #include <xd_uav_control_manager/SetFlightRegime.h>
 #include <xd_uav_control_manager/fixedwing_vehicle_adapter.h>
 #include <xd_uav_control_manager/multirotor_vehicle_adapter.h>
@@ -79,6 +83,86 @@ double messageAge(const ros::Time& now, const ros::Time& stamp,
 bool finiteVector(const geometry_msgs::Vector3& value) {
   return std::isfinite(value.x) && std::isfinite(value.y) &&
          std::isfinite(value.z);
+}
+
+bool validRawLocalTarget(
+    const mavros_msgs::PositionTarget& target,
+    std::string* reason) {
+  if (target.coordinate_frame !=
+      mavros_msgs::PositionTarget::FRAME_LOCAL_NED) {
+    *reason = "raw_local坐标系必须是FRAME_LOCAL_NED";
+    return false;
+  }
+  constexpr std::array<uint16_t, 3> position_bits{{
+      mavros_msgs::PositionTarget::IGNORE_PX,
+      mavros_msgs::PositionTarget::IGNORE_PY,
+      mavros_msgs::PositionTarget::IGNORE_PZ}};
+  constexpr std::array<uint16_t, 3> velocity_bits{{
+      mavros_msgs::PositionTarget::IGNORE_VX,
+      mavros_msgs::PositionTarget::IGNORE_VY,
+      mavros_msgs::PositionTarget::IGNORE_VZ}};
+  constexpr std::array<uint16_t, 3> acceleration_bits{{
+      mavros_msgs::PositionTarget::IGNORE_AFX,
+      mavros_msgs::PositionTarget::IGNORE_AFY,
+      mavros_msgs::PositionTarget::IGNORE_AFZ}};
+  constexpr uint16_t known_mask =
+      position_bits[0] | position_bits[1] | position_bits[2] |
+      velocity_bits[0] | velocity_bits[1] | velocity_bits[2] |
+      acceleration_bits[0] | acceleration_bits[1] |
+      acceleration_bits[2] |
+      mavros_msgs::PositionTarget::FORCE |
+      mavros_msgs::PositionTarget::IGNORE_YAW |
+      mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+  if ((target.type_mask & static_cast<uint16_t>(~known_mask)) != 0U ||
+      (target.type_mask & mavros_msgs::PositionTarget::FORCE) != 0U) {
+    *reason = "raw_local掩码包含不支持的标志";
+    return false;
+  }
+
+  bool has_spatial_target = false;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    const bool use_position =
+        (target.type_mask & position_bits[axis]) == 0U;
+    const bool use_velocity =
+        (target.type_mask & velocity_bits[axis]) == 0U;
+    const bool use_acceleration =
+        (target.type_mask & acceleration_bits[axis]) == 0U;
+    has_spatial_target = has_spatial_target || use_position ||
+                         use_velocity || use_acceleration;
+    const double position = axis == 0 ? target.position.x
+                            : axis == 1 ? target.position.y
+                                        : target.position.z;
+    const double velocity = axis == 0 ? target.velocity.x
+                            : axis == 1 ? target.velocity.y
+                                        : target.velocity.z;
+    const double acceleration =
+        axis == 0 ? target.acceleration_or_force.x
+        : axis == 1 ? target.acceleration_or_force.y
+                    : target.acceleration_or_force.z;
+    if ((use_position && !std::isfinite(position)) ||
+        (use_velocity && !std::isfinite(velocity)) ||
+        (use_acceleration && !std::isfinite(acceleration))) {
+      *reason = "raw_local启用的目标字段包含非法数值";
+      return false;
+    }
+  }
+  if (!has_spatial_target) {
+    *reason = "raw_local至少需要位置、速度或加速度目标";
+    return false;
+  }
+  if ((target.type_mask & mavros_msgs::PositionTarget::IGNORE_YAW) == 0U &&
+      !std::isfinite(target.yaw)) {
+    *reason = "raw_local启用的yaw目标非法";
+    return false;
+  }
+  if ((target.type_mask &
+       mavros_msgs::PositionTarget::IGNORE_YAW_RATE) == 0U &&
+      !std::isfinite(target.yaw_rate)) {
+    *reason = "raw_local启用的yaw_rate目标非法";
+    return false;
+  }
+  reason->clear();
+  return true;
 }
 
 bool normalizeQuaternion(
@@ -165,6 +249,9 @@ class ControlManagerNode {
     command_subscriber_ = nh_.subscribe(
         "controller_command", 20,
         &ControlManagerNode::commandCallback, this);
+    local_setpoint_subscriber_ = nh_.subscribe(
+        "controller_local_setpoint", 20,
+        &ControlManagerNode::localSetpointCallback, this);
 
     state_publisher_ =
         private_nh_.advertise<xd_uav_controller::ControlState>(
@@ -177,6 +264,9 @@ class ControlManagerNode {
     attitude_target_publisher_ =
         nh_.advertise<mavros_msgs::AttitudeTarget>(
             "attitude_target", 20);
+    local_target_publisher_ =
+        nh_.advertise<mavros_msgs::PositionTarget>(
+            "local_target", 20);
     offboard_server_ = private_nh_.advertiseService(
         "offboard", &ControlManagerNode::offboardCallback, this);
     cancel_offboard_server_ = private_nh_.advertiseService(
@@ -256,14 +346,37 @@ class ControlManagerNode {
                       vtol_require_armed_, true);
     private_nh_.param("vtol/transition/require_extended_state",
                       vtol_require_extended_state_, true);
+    private_nh_.param(
+        "vtol/transition/require_airspeed_during_transition",
+        vtol_require_airspeed_during_transition_, true);
     private_nh_.param("vtol/transition/minimum_forward_airspeed",
                       vtol_minimum_forward_airspeed_, 0.0);
+    private_nh_.param("vtol/transition/prepare_forward_transition",
+                      vtol_prepare_forward_transition_, false);
+    private_nh_.param("vtol/transition/preparation_groundspeed",
+                      vtol_preparation_groundspeed_, 15.0);
+    private_nh_.param("vtol/transition/preparation_max_distance",
+                      vtol_preparation_max_distance_, 100.0);
+    private_nh_.param("vtol/transition/preparation_timeout",
+                      vtol_preparation_timeout_, 10.0);
+    private_nh_.param("vtol/transition/preparation_stable_time",
+                      vtol_preparation_stable_time_, 1.0);
     private_nh_.param("mavros/vtol_transition_service",
                       vtol_transition_service_,
                       std::string("mavros/cmd/vtol_transition"));
     if (!std::isfinite(transition_timeout_) || transition_timeout_ <= 0.0 ||
         !std::isfinite(vtol_minimum_forward_airspeed_) ||
-        vtol_minimum_forward_airspeed_ < 0.0) {
+        vtol_minimum_forward_airspeed_ < 0.0 ||
+        !std::isfinite(vtol_preparation_groundspeed_) ||
+        vtol_preparation_groundspeed_ <= 0.0 ||
+        !std::isfinite(vtol_preparation_max_distance_) ||
+        vtol_preparation_max_distance_ <= 0.0 ||
+        !std::isfinite(vtol_preparation_timeout_) ||
+        vtol_preparation_timeout_ <= 0.0 ||
+        !std::isfinite(vtol_preparation_stable_time_) ||
+        vtol_preparation_stable_time_ < 0.0 ||
+        (vtol_prepare_forward_transition_ &&
+         vtol_minimum_forward_airspeed_ <= 0.0)) {
       throw std::runtime_error("VTOL转换参数不在有效范围内");
     }
 
@@ -284,6 +397,28 @@ class ControlManagerNode {
         private_nh_, "offboard/exit/cancel_mode",
         "offboard/cancel_mode", &cancel_mode_,
         std::string("POSCTL"));
+    private_nh_.param(
+        "offboard/output/reference_types/position_target",
+        position_target_output_type_, std::string("raw_attitude"));
+    private_nh_.param(
+        "offboard/output/reference_types/path",
+        path_output_type_, std::string("raw_attitude"));
+    private_nh_.param(
+        "offboard/output/reference_types/trajectory",
+        trajectory_output_type_, std::string("raw_attitude"));
+    private_nh_.param(
+        "offboard/output/reference_types/internal",
+        internal_output_type_, std::string("raw_attitude"));
+    const auto valid_output_type = [](const std::string& value) {
+      return value == "raw_attitude" || value == "raw_local";
+    };
+    if (!valid_output_type(position_target_output_type_) ||
+        !valid_output_type(path_output_type_) ||
+        !valid_output_type(trajectory_output_type_) ||
+        !valid_output_type(internal_output_type_)) {
+      throw std::runtime_error(
+          "offboard/output/reference_types仅支持raw_attitude或raw_local");
+    }
 
     loadParameterWithLegacy(
         private_nh_, "safety/inputs/odometry_timeout",
@@ -441,6 +576,13 @@ class ControlManagerNode {
 
   bool regimeRequiresAirspeed(
       const xd_uav_controller::FlightRegime regime) const {
+    if (xd_uav_controller::isVtolAirframe(airframe_type_) &&
+        (regime ==
+             xd_uav_controller::FlightRegime::kTransitionToForward ||
+         regime ==
+             xd_uav_controller::FlightRegime::kTransitionToHover)) {
+      return vtol_require_airspeed_during_transition_;
+    }
     return vehicle_adapter_ && vehicle_adapter_->requiresAirspeed(regime);
   }
 
@@ -538,6 +680,13 @@ class ControlManagerNode {
     command_ = *message;
     command_receive_ = ros::Time::now();
     have_command_ = true;
+  }
+
+  void localSetpointCallback(
+      const xd_uav_controller::ControllerLocalSetpoint::ConstPtr& message) {
+    local_setpoint_ = *message;
+    local_setpoint_receive_ = ros::Time::now();
+    have_local_setpoint_ = true;
   }
 
   xd_uav_controller::ControlState buildControlState(
@@ -768,11 +917,6 @@ class ControlManagerNode {
       *reason = "控制器输出超时";
       return false;
     }
-    if (!command_.valid) {
-      *reason = "控制器拒绝输出: " +
-                command_.rejection_reason;
-      return false;
-    }
     if (command_.vehicle_type != current_control_state_.vehicle_type) {
       *reason = "控制器输出机型不匹配";
       return false;
@@ -805,52 +949,227 @@ class ControlManagerNode {
       *reason = "控制器动作失败: " + command_.action_detail;
       return false;
     }
+    if (outputTypeForReference(command_.reference_type) ==
+        xd_uav_controller::SetpointOutputType::kRawLocal) {
+      if (!have_local_setpoint_) {
+        *reason = "尚未收到控制器raw_local目标";
+        return false;
+      }
+      const double local_age = messageAge(
+          now, local_setpoint_.header.stamp, local_setpoint_receive_,
+          future_stamp_tolerance_);
+      if (local_age > command_timeout_) {
+        *reason = "控制器raw_local目标超时";
+        return false;
+      }
+      const double target_age = messageAge(
+          now, local_setpoint_.target.header.stamp,
+          local_setpoint_receive_, future_stamp_tolerance_);
+      if (target_age > command_timeout_) {
+        *reason = "PositionTarget字段时间戳超时";
+        return false;
+      }
+      if (!local_setpoint_.valid) {
+        *reason = "控制器拒绝raw_local目标: " +
+                  local_setpoint_.rejection_reason;
+        return false;
+      }
+      if (local_setpoint_.reference_type != command_.reference_type ||
+          local_setpoint_.regime_generation !=
+              command_.regime_generation ||
+          local_setpoint_.action_generation !=
+              command_.action_generation) {
+        *reason = "raw_local目标与控制器命令代次不匹配";
+        return false;
+      }
+      const double target_command_skew = std::abs(
+          (local_setpoint_.header.stamp - command_.header.stamp).toSec());
+      if (!std::isfinite(target_command_skew) ||
+          target_command_skew > command_timeout_) {
+        *reason = "raw_local目标与控制器命令时间不同步";
+        return false;
+      }
+      if (local_setpoint_.target.header.frame_id !=
+          local_setpoint_.header.frame_id) {
+        *reason = "raw_local目标的frame_id与封装消息不一致";
+        return false;
+      }
+      if (!validRawLocalTarget(local_setpoint_.target, reason)) {
+        return false;
+      }
+      return true;
+    }
+
+    if (command_.controller == "raw_local_reference_passthrough") {
+      *reason =
+          "controller与manager的raw_local输出配置不一致";
+      return false;
+    }
+
+    if (!command_.valid) {
+      *reason = "控制器拒绝输出: " + command_.rejection_reason;
+      return false;
+    }
     if (!finiteVector(command_.body_rate) ||
         !std::isfinite(command_.thrust) ||
         command_.thrust < 0.0 || command_.thrust > 1.0) {
-      *reason = "控制器输出包含非法值";
+      *reason = "控制器raw_attitude输出包含非法值";
       return false;
     }
     return true;
   }
 
-  void publishAttitudeTarget(const ros::Time& now,
-                             const bool refresh = true) {
+  xd_uav_controller::SetpointOutputType outputTypeForReference(
+      const uint8_t reference_type) const {
+    return xd_uav_controller::setpointOutputTypeForReference(
+        static_cast<xd_uav_controller::ReferenceType>(reference_type),
+        position_target_output_type_, path_output_type_,
+        trajectory_output_type_, internal_output_type_);
+  }
+
+  bool makeForwardPreparationTarget(
+      const ros::Time& now,
+      mavros_msgs::PositionTarget* target) const {
+    if (target == nullptr || current_control_state_.header.frame_id.empty() ||
+        !std::isfinite(forward_preparation_heading_) ||
+        !std::isfinite(forward_preparation_altitude_)) {
+      return false;
+    }
+    *target = mavros_msgs::PositionTarget();
+    target->header.stamp = now;
+    target->header.frame_id = current_control_state_.header.frame_id;
+    target->coordinate_frame =
+        mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+    // Command horizontal velocity along the yaw captured when preparation
+    // started, while holding the starting altitude and heading. MAVROS
+    // converts the ROS ENU vector to the FCU's NED convention.
+    target->type_mask =
+        mavros_msgs::PositionTarget::IGNORE_PX |
+        mavros_msgs::PositionTarget::IGNORE_PY |
+        mavros_msgs::PositionTarget::IGNORE_VZ |
+        mavros_msgs::PositionTarget::IGNORE_AFX |
+        mavros_msgs::PositionTarget::IGNORE_AFY |
+        mavros_msgs::PositionTarget::IGNORE_AFZ |
+        mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+    target->position.z = forward_preparation_altitude_;
+    target->velocity.x =
+        vtol_preparation_groundspeed_ *
+        std::cos(forward_preparation_heading_);
+    target->velocity.y =
+        vtol_preparation_groundspeed_ *
+        std::sin(forward_preparation_heading_);
+    target->yaw = forward_preparation_heading_;
+    return std::isfinite(target->velocity.x) &&
+           std::isfinite(target->velocity.y);
+  }
+
+  void stopForwardPreparation(const std::string& detail,
+                              const bool set_error) {
+    forward_preparation_active_ = false;
+    forward_speed_assist_active_ = false;
+    forward_transition_requested_ = false;
+    forward_preparation_airspeed_since_ = ros::Time();
+    forward_preparation_detail_ = detail;
+    if (set_error) {
+      transition_error_active_ = true;
+      ROS_ERROR("[xd_uav_control_manager] %s", detail.c_str());
+    }
+  }
+
+  void publishSetpoint(const ros::Time& now,
+                       const bool refresh = true) {
     if (refresh) {
-      last_safe_target_.header.frame_id =
-          current_control_state_.body_frame_id;
-      last_safe_target_.type_mask =
-          mavros_msgs::AttitudeTarget::IGNORE_ATTITUDE;
-      last_safe_target_.orientation.w = 1.0;
-      last_safe_target_.body_rate = command_.body_rate;
-      last_safe_target_.thrust =
-          static_cast<float>(std::max(
-              0.0, std::min(1.0, command_.thrust)));
+      last_safe_output_type_ =
+          outputTypeForReference(command_.reference_type);
+      if (last_safe_output_type_ ==
+          xd_uav_controller::SetpointOutputType::kRawLocal) {
+        last_safe_local_target_ = local_setpoint_.target;
+      } else {
+        last_safe_attitude_target_.header.frame_id =
+            current_control_state_.body_frame_id;
+        last_safe_attitude_target_.type_mask =
+            mavros_msgs::AttitudeTarget::IGNORE_ATTITUDE;
+        last_safe_attitude_target_.orientation.w = 1.0;
+        last_safe_attitude_target_.body_rate = command_.body_rate;
+        last_safe_attitude_target_.thrust =
+            static_cast<float>(std::max(
+                0.0, std::min(1.0, command_.thrust)));
+      }
       have_last_safe_target_ = true;
     }
     if (!have_last_safe_target_) {
       return;
     }
-    last_safe_target_.header.stamp = now;
-    attitude_target_publisher_.publish(last_safe_target_);
+    if (forward_speed_assist_active_) {
+      mavros_msgs::PositionTarget preparation_target;
+      if (makeForwardPreparationTarget(now, &preparation_target)) {
+        local_target_publisher_.publish(preparation_target);
+        return;
+      }
+      stopForwardPreparation(
+          "无法生成有效的raw_local前向加速目标，已取消转换准备", true);
+    }
+    if (last_safe_output_type_ ==
+        xd_uav_controller::SetpointOutputType::kRawLocal) {
+      last_safe_local_target_.header.stamp = now;
+      local_target_publisher_.publish(last_safe_local_target_);
+    } else {
+      last_safe_attitude_target_.header.stamp = now;
+      attitude_target_publisher_.publish(last_safe_attitude_target_);
+    }
   }
 
   void publishTouchdownTarget(const ros::Time& now) {
-    last_safe_target_.header.stamp = now;
-    last_safe_target_.header.frame_id =
-        current_control_state_.body_frame_id;
-    last_safe_target_.type_mask =
-        mavros_msgs::AttitudeTarget::IGNORE_ATTITUDE;
-    last_safe_target_.orientation.x = 0.0;
-    last_safe_target_.orientation.y = 0.0;
-    last_safe_target_.orientation.z = 0.0;
-    last_safe_target_.orientation.w = 1.0;
-    last_safe_target_.body_rate.x = 0.0;
-    last_safe_target_.body_rate.y = 0.0;
-    last_safe_target_.body_rate.z = 0.0;
-    last_safe_target_.thrust = 0.0F;
     have_last_safe_target_ = true;
-    attitude_target_publisher_.publish(last_safe_target_);
+    if (last_safe_output_type_ ==
+        xd_uav_controller::SetpointOutputType::kRawLocal) {
+      last_safe_local_target_ = mavros_msgs::PositionTarget();
+      last_safe_local_target_.header.stamp = now;
+      last_safe_local_target_.header.frame_id =
+          current_control_state_.header.frame_id;
+      last_safe_local_target_.coordinate_frame =
+          mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+      last_safe_local_target_.type_mask =
+          mavros_msgs::PositionTarget::IGNORE_VX |
+          mavros_msgs::PositionTarget::IGNORE_VY |
+          mavros_msgs::PositionTarget::IGNORE_VZ |
+          mavros_msgs::PositionTarget::IGNORE_AFX |
+          mavros_msgs::PositionTarget::IGNORE_AFY |
+          mavros_msgs::PositionTarget::IGNORE_AFZ |
+          mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+      last_safe_local_target_.position =
+          current_control_state_.position_odom;
+      tf2::Quaternion orientation;
+      double roll = 0.0;
+      double pitch = 0.0;
+      double yaw = 0.0;
+      if (normalizeQuaternion(
+              current_control_state_.orientation_odom_body,
+              &orientation)) {
+        tf2::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
+        last_safe_local_target_.yaw = yaw;
+      } else {
+        last_safe_local_target_.type_mask |=
+            mavros_msgs::PositionTarget::IGNORE_YAW;
+      }
+      local_target_publisher_.publish(last_safe_local_target_);
+      return;
+    }
+
+    last_safe_attitude_target_.header.stamp = now;
+    last_safe_attitude_target_.header.frame_id =
+        current_control_state_.body_frame_id;
+    last_safe_attitude_target_.type_mask =
+        mavros_msgs::AttitudeTarget::IGNORE_ATTITUDE;
+    last_safe_attitude_target_.orientation.x = 0.0;
+    last_safe_attitude_target_.orientation.y = 0.0;
+    last_safe_attitude_target_.orientation.z = 0.0;
+    last_safe_attitude_target_.orientation.w = 1.0;
+    last_safe_attitude_target_.body_rate.x = 0.0;
+    last_safe_attitude_target_.body_rate.y = 0.0;
+    last_safe_attitude_target_.body_rate.z = 0.0;
+    last_safe_attitude_target_.thrust = 0.0F;
+    attitude_target_publisher_.publish(last_safe_attitude_target_);
   }
 
   void requestOffboard(const ros::Time& now) {
@@ -1001,12 +1320,20 @@ class ControlManagerNode {
     pending_takeoff_altitude_ = 0.0;
     vtol_landing_.reset();
     vtol_vertical_descent_commanded_ = false;
+    forward_preparation_active_ = false;
+    forward_speed_assist_active_ = false;
+    forward_transition_requested_ = false;
+    forward_preparation_airspeed_since_ = ros::Time();
+    forward_preparation_detail_ = "standby";
     transition_error_active_ = false;
     ++action_generation_;
     invalid_since_ = ros::Time();
     landed_since_ = ros::Time();
     touchdown_confirmed_at_ = ros::Time();
     have_last_safe_target_ = false;
+    have_local_setpoint_ = false;
+    last_safe_output_type_ =
+        xd_uav_controller::SetpointOutputType::kRawAttitude;
     transition(State::kStandby, reason);
   }
 
@@ -1227,6 +1554,154 @@ class ControlManagerNode {
     return true;
   }
 
+  bool beginForwardPreparation(const ros::Time& now,
+                               std::string* reason) {
+    if (!vtol_prepare_forward_transition_) {
+      *reason = "前向空速准备功能未启用";
+      return false;
+    }
+    if (!current_control_state_.state_valid ||
+        !current_control_state_.stable) {
+      *reason = "前向加速准备要求当前状态有效且已稳定";
+      return false;
+    }
+    std::string command_reason;
+    if (!validCommand(now, &command_reason)) {
+      *reason = "前向加速准备缺少有效的控制器raw_local基准目标: " +
+                command_reason;
+      return false;
+    }
+    if (!have_last_safe_target_ ||
+        last_safe_output_type_ !=
+            xd_uav_controller::SetpointOutputType::kRawLocal) {
+      *reason = "尚未缓存有效的控制器raw_local基准目标";
+      return false;
+    }
+    if (outputTypeForReference(command_.reference_type) !=
+        xd_uav_controller::SetpointOutputType::kRawLocal) {
+      *reason = "前向加速准备要求当前参考类型配置为raw_local输出";
+      return false;
+    }
+    if (current_control_state_.header.frame_id.empty() ||
+        !std::isfinite(current_control_state_.position_odom.x) ||
+        !std::isfinite(current_control_state_.position_odom.y) ||
+        !std::isfinite(current_control_state_.position_odom.z)) {
+      *reason = "前向加速准备缺少有效的本地位置坐标";
+      return false;
+    }
+    if (!have_local_setpoint_ ||
+        local_setpoint_.target.header.frame_id !=
+            current_control_state_.header.frame_id) {
+      *reason = "前向加速准备要求raw_local目标与当前状态使用同一坐标系";
+      return false;
+    }
+    tf2::Quaternion orientation;
+    if (!normalizeQuaternion(
+            current_control_state_.orientation_odom_body,
+            &orientation)) {
+      *reason = "前向加速准备缺少有效的当前航向";
+      return false;
+    }
+    double roll = 0.0;
+    double pitch = 0.0;
+    double yaw = 0.0;
+    tf2::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
+    if (!std::isfinite(yaw)) {
+      *reason = "当前航向非法，拒绝前向加速准备";
+      return false;
+    }
+
+    forward_preparation_start_position_ =
+        current_control_state_.position_odom;
+    forward_preparation_altitude_ =
+        current_control_state_.position_odom.z;
+    forward_preparation_heading_ = yaw;
+    forward_preparation_started_ = now;
+    forward_preparation_airspeed_since_ = ros::Time();
+    forward_preparation_active_ = true;
+    forward_speed_assist_active_ = true;
+    forward_transition_requested_ = false;
+    transition_error_active_ = false;
+    forward_preparation_detail_ =
+        "沿当前机头方向raw_local加速，等待空速稳定达到 " +
+        std::to_string(vtol_minimum_forward_airspeed_) + " m/s（最多 " +
+        std::to_string(vtol_preparation_max_distance_) + " m / " +
+        std::to_string(vtol_preparation_timeout_) + " s）";
+    *reason = forward_preparation_detail_;
+    return true;
+  }
+
+  void processForwardPreparation(const ros::Time& now,
+                                 const bool inputs_healthy) {
+    if (!forward_preparation_active_) {
+      return;
+    }
+    if (state_machine_state_ != State::kActive || !inputs_healthy ||
+        !current_control_state_.stable ||
+        !mavrosStateFresh(now) || !mavros_state_.armed ||
+        mavros_state_.mode != offboard_mode_) {
+      stopForwardPreparation(
+          "前向加速准备期间飞行状态或输入失效，已恢复控制器setpoint",
+          true);
+      return;
+    }
+    if (!current_control_state_.airspeed_valid) {
+      stopForwardPreparation(
+          "前向加速准备期间空速数据失效，已取消准备", true);
+      return;
+    }
+
+    const double dx = current_control_state_.position_odom.x -
+                      forward_preparation_start_position_.x;
+    const double dy = current_control_state_.position_odom.y -
+                      forward_preparation_start_position_.y;
+    const double distance = std::hypot(dx, dy);
+    const double elapsed =
+        (now - forward_preparation_started_).toSec();
+    if (!std::isfinite(distance) || !std::isfinite(elapsed) ||
+        distance >= vtol_preparation_max_distance_ ||
+        elapsed >= vtol_preparation_timeout_) {
+      stopForwardPreparation(
+          "前向加速准备达到距离或时间上限，未请求PX4转换；"
+          "已恢复控制器setpoint",
+          true);
+      return;
+    }
+
+    if (current_control_state_.airspeed >=
+        vtol_minimum_forward_airspeed_) {
+      if (forward_preparation_airspeed_since_.isZero()) {
+        forward_preparation_airspeed_since_ = now;
+      }
+      if ((now - forward_preparation_airspeed_since_).toSec() >=
+          vtol_preparation_stable_time_) {
+        forward_preparation_active_ = false;
+        forward_preparation_airspeed_since_ = ros::Time();
+        forward_preparation_detail_ =
+            "空速已稳定达标，正在请求PX4进入固定翼模式";
+        std::string reason;
+        if (!requestVtolTransition(
+                xd_uav_controller::RequestedRegime::kForwardFlight,
+                now, &reason)) {
+          stopForwardPreparation(
+              "空速准备完成但PX4转换请求失败: " + reason, true);
+        } else {
+          forward_transition_requested_ =
+              vtol_adapter_->transitionStatus().pending;
+          if (forward_transition_requested_) {
+            forward_preparation_detail_ = reason;
+          } else {
+            forward_speed_assist_active_ = false;
+            forward_preparation_detail_ =
+                "PX4已处于固定翼模式，无需继续前向加速setpoint";
+          }
+        }
+      }
+    } else {
+      forward_preparation_airspeed_since_ = ros::Time();
+    }
+  }
+
   bool commandControllerTakeoff(const uint32_t generation,
                                 const double altitude,
                                 const uint8_t phase,
@@ -1296,6 +1771,10 @@ class ControlManagerNode {
       response.message =
           "mavros/extended_state未实时确认飞机在空中";
       return true;
+    }
+    if (forward_preparation_active_) {
+      stopForwardPreparation(
+          "收到降落请求，取消尚未提交PX4的前向加速准备", false);
     }
 
     const uint32_t generation = action_generation_ + 1U;
@@ -1537,17 +2016,59 @@ class ControlManagerNode {
       response.message = "未知的目标飞行形态";
       return true;
     }
+    if (forward_preparation_active_) {
+      if (target == xd_uav_controller::RequestedRegime::kForwardFlight) {
+        response.accepted = true;
+        response.message = forward_preparation_detail_;
+        return true;
+      }
+      stopForwardPreparation(
+          "保持当前旋翼模式；收到悬停请求，取消前向加速准备并恢复原控制器setpoint",
+          false);
+      response.accepted = true;
+      response.message = forward_preparation_detail_;
+      return true;
+    }
+    // The direct MAVROS takeoff script requests FW only after its climb target
+    // is reached and held. Do not send a transition while our controller still
+    // reports the vertical takeoff action as active: PX4 may acknowledge the
+    // command but remain in MC, leaving this manager to wait until timeout.
     if (target == xd_uav_controller::RequestedRegime::kForwardFlight &&
+        have_command_ &&
+        command_.action_generation == action_generation_ &&
+        command_.takeoff_active) {
+      response.accepted = false;
+      response.message =
+          "起飞动作尚未完成；请等控制器到达起飞目标并稳定后再请求固定翼转换";
+      return true;
+    }
+    const bool require_transition_airspeed =
+        vtol_require_airspeed_during_transition_ ||
+        vtol_minimum_forward_airspeed_ > 0.0;
+    if (target == xd_uav_controller::RequestedRegime::kForwardFlight &&
+        require_transition_airspeed &&
         !current_control_state_.airspeed_valid) {
       response.accepted = false;
       response.message = "VTOL前转换要求新鲜有效的空速输入";
       return true;
     }
     if (target == xd_uav_controller::RequestedRegime::kForwardFlight &&
+        vtol_prepare_forward_transition_) {
+      std::string reason;
+      response.accepted = beginForwardPreparation(now, &reason);
+      response.message = reason;
+      return true;
+    }
+    if (target == xd_uav_controller::RequestedRegime::kForwardFlight &&
         vtol_minimum_forward_airspeed_ > 0.0 &&
         current_control_state_.airspeed < vtol_minimum_forward_airspeed_) {
       response.accepted = false;
-      response.message = "当前空速低于vtol/transition/minimum_forward_airspeed";
+      response.message =
+          "当前空速 " +
+          std::to_string(current_control_state_.airspeed) +
+          " m/s，低于固定翼转换门槛 " +
+          std::to_string(vtol_minimum_forward_airspeed_) +
+          " m/s；请先建立前向速度再重新请求转换";
       return true;
     }
 
@@ -1638,7 +2159,8 @@ class ControlManagerNode {
       addDiagnostic(&status, "transition_pending",
                     transition_status.pending ? "true" : "false");
       addDiagnostic(&status, "transition_elapsed",
-                    transition_status.started_at.isZero()
+                    !transition_status.pending ||
+                            transition_status.started_at.isZero()
                         ? "0"
                         : std::to_string((now - transition_status.started_at).toSec()));
       addDiagnostic(&status, "last_transition_result",
@@ -1648,6 +2170,12 @@ class ControlManagerNode {
                     std::to_string(transition_status.raw_ack_result));
       addDiagnostic(&status, "transition_detail",
                     transition_status.detail);
+      addDiagnostic(&status, "airspeed_valid",
+                    current_control_state_.airspeed_valid ? "true" : "false");
+      addDiagnostic(&status, "airspeed_m_s",
+                    std::to_string(current_control_state_.airspeed));
+      addDiagnostic(&status, "airspeed_age_s",
+                    std::to_string(current_control_state_.airspeed_age));
       addDiagnostic(&status, "vtol_landing_phase",
                     std::to_string(static_cast<uint8_t>(
                         vtol_landing_.phase())));
@@ -1656,6 +2184,25 @@ class ControlManagerNode {
                         vtol_takeoff_.phase())));
       addDiagnostic(&status, "transition_error",
                     transition_error_active_ ? "true" : "false");
+      addDiagnostic(&status, "forward_preparation_active",
+                    forward_preparation_active_ ? "true" : "false");
+      addDiagnostic(&status, "forward_speed_assist_active",
+                    forward_speed_assist_active_ ? "true" : "false");
+      addDiagnostic(&status, "forward_preparation_detail",
+                    forward_preparation_detail_);
+      if (forward_preparation_active_) {
+        const double dx = current_control_state_.position_odom.x -
+                          forward_preparation_start_position_.x;
+        const double dy = current_control_state_.position_odom.y -
+                          forward_preparation_start_position_.y;
+        addDiagnostic(&status, "forward_preparation_elapsed_s",
+                      std::to_string(
+                          (now - forward_preparation_started_).toSec()));
+        addDiagnostic(&status, "forward_preparation_distance_m",
+                      std::to_string(std::hypot(dx, dy)));
+        addDiagnostic(&status, "forward_preparation_target_groundspeed_m_s",
+                      std::to_string(vtol_preparation_groundspeed_));
+      }
     }
     array.status.push_back(status);
     diagnostics_publisher_.publish(array);
@@ -1703,7 +2250,7 @@ class ControlManagerNode {
       const ros::Time& now, const bool inputs_healthy) {
     if (inputs_healthy) {
       invalid_since_ = ros::Time();
-      publishAttitudeTarget(now, true);
+      publishSetpoint(now, true);
       return true;
     }
     if (invalid_since_.isZero()) {
@@ -1713,7 +2260,7 @@ class ControlManagerNode {
         (now - invalid_since_).toSec();
     if (invalid_duration <= invalid_grace_duration_ &&
         have_last_safe_target_) {
-      publishAttitudeTarget(now, false);
+      publishSetpoint(now, false);
       ROS_WARN_THROTTLE(
           1.0,
           "[xd_uav_control_manager] 输入短暂失效(%.2fs/%0.2fs): %s",
@@ -1734,6 +2281,14 @@ class ControlManagerNode {
       if (vtol_adapter_->transitionStatus().last_result ==
           xd_uav_control_manager::TransitionResult::kCompleted) {
         transition_error_active_ = false;
+      }
+      if (vtol_adapter_->transitionStatus().last_result ==
+          xd_uav_control_manager::TransitionResult::kAborted) {
+        transition_error_active_ = true;
+        ROS_ERROR_THROTTLE(
+            1.0,
+            "[xd_uav_control_manager] PX4已中止VTOL转换并返回源形态: %s",
+            vtol_adapter_->transitionStatus().detail.c_str());
       }
       if (state_machine_state_ == State::kLanding &&
           vtol_landing_.observe(observed_regime)) {
@@ -1774,6 +2329,15 @@ class ControlManagerNode {
               vtol_adapter_->transitionStatus().detail.c_str());
         }
       }
+      const auto& transition_status = vtol_adapter_->transitionStatus();
+      if (forward_transition_requested_ &&
+          !transition_status.pending &&
+          transition_status.last_result !=
+              xd_uav_control_manager::TransitionResult::kAccepted) {
+        forward_transition_requested_ = false;
+        forward_speed_assist_active_ = false;
+        forward_preparation_detail_ = transition_status.detail;
+      }
     }
     current_control_state_ = buildControlState(now);
     state_publisher_.publish(current_control_state_);
@@ -1793,6 +2357,7 @@ class ControlManagerNode {
         command_valid && mavros_connected;
     active_input_reason_ = inputFailureReason(
         now, command_valid, command_reason, mavros_connected);
+    processForwardPreparation(now, active_inputs_healthy);
 
     switch (state_machine_state_) {
       case State::kStandby:
@@ -1847,7 +2412,7 @@ class ControlManagerNode {
                      "预发送期间状态或控制量失效");
           break;
         }
-        publishAttitudeTarget(now);
+        publishSetpoint(now);
         if ((now - state_entered_).toSec() >=
             prestream_duration_) {
           transition(State::kRequestOffboard,
@@ -1864,7 +2429,7 @@ class ControlManagerNode {
                          active_input_reason_);
           break;
         }
-        publishAttitudeTarget(now);
+        publishSetpoint(now);
         if (mavros_state_.mode == offboard_mode_) {
           if (arm_requested_ && !mavros_state_.armed) {
             transition(State::kRequestArm,
@@ -1896,7 +2461,7 @@ class ControlManagerNode {
                          active_input_reason_);
           break;
         }
-        publishAttitudeTarget(now);
+        publishSetpoint(now);
         if (mavros_state_.armed) {
           transition(State::kActive,
                      "OFFBOARD已解锁，持续控制");
@@ -2088,10 +2653,12 @@ class ControlManagerNode {
   ros::Subscriber mavros_state_subscriber_;
   ros::Subscriber mavros_extended_state_subscriber_;
   ros::Subscriber command_subscriber_;
+  ros::Subscriber local_setpoint_subscriber_;
   ros::Publisher state_publisher_;
   ros::Publisher status_publisher_;
   ros::Publisher diagnostics_publisher_;
   ros::Publisher attitude_target_publisher_;
+  ros::Publisher local_target_publisher_;
   ros::ServiceServer offboard_server_;
   ros::ServiceServer cancel_offboard_server_;
   ros::ServiceServer takeoff_server_;
@@ -2114,7 +2681,9 @@ class ControlManagerNode {
   mavros_msgs::VFR_HUD airspeed_;
   mavros_msgs::State mavros_state_;
   mavros_msgs::ExtendedState mavros_extended_state_;
-  mavros_msgs::AttitudeTarget last_safe_target_;
+  mavros_msgs::AttitudeTarget last_safe_attitude_target_;
+  mavros_msgs::PositionTarget last_safe_local_target_;
+  xd_uav_controller::ControllerLocalSetpoint local_setpoint_;
   xd_uav_controller::ControlCommand command_;
   xd_uav_controller::ControlState current_control_state_;
   ros::Time odometry_receive_;
@@ -2124,6 +2693,7 @@ class ControlManagerNode {
   ros::Time airspeed_receive_;
   ros::Time mavros_state_receive_;
   ros::Time mavros_extended_state_receive_;
+  ros::Time local_setpoint_receive_;
   ros::Time command_receive_;
   ros::Time valid_since_;
   ros::Time state_entered_;
@@ -2139,8 +2709,11 @@ class ControlManagerNode {
   bool have_airspeed_{false};
   bool have_mavros_state_{false};
   bool have_mavros_extended_state_{false};
+  bool have_local_setpoint_{false};
   bool have_command_{false};
   bool have_last_safe_target_{false};
+  xd_uav_controller::SetpointOutputType last_safe_output_type_{
+      xd_uav_controller::SetpointOutputType::kRawAttitude};
   bool offboard_requested_{false};
   bool arm_requested_{false};
   bool landing_requested_{false};
@@ -2178,12 +2751,31 @@ class ControlManagerNode {
   double request_timeout_{10.0};
   std::string offboard_mode_{"OFFBOARD"};
   std::string cancel_mode_{"POSCTL"};
+  std::string position_target_output_type_{"raw_attitude"};
+  std::string path_output_type_{"raw_attitude"};
+  std::string trajectory_output_type_{"raw_attitude"};
+  std::string internal_output_type_{"raw_attitude"};
   std::string vtol_transition_service_{"mavros/cmd/vtol_transition"};
   double transition_timeout_{10.0};
   bool vtol_require_offboard_{true};
   bool vtol_require_armed_{true};
   bool vtol_require_extended_state_{true};
+  bool vtol_require_airspeed_during_transition_{true};
   double vtol_minimum_forward_airspeed_{0.0};
+  bool vtol_prepare_forward_transition_{false};
+  double vtol_preparation_groundspeed_{15.0};
+  double vtol_preparation_max_distance_{100.0};
+  double vtol_preparation_timeout_{10.0};
+  double vtol_preparation_stable_time_{1.0};
+  bool forward_preparation_active_{false};
+  bool forward_speed_assist_active_{false};
+  bool forward_transition_requested_{false};
+  ros::Time forward_preparation_started_;
+  ros::Time forward_preparation_airspeed_since_;
+  geometry_msgs::Point forward_preparation_start_position_;
+  double forward_preparation_heading_{0.0};
+  double forward_preparation_altitude_{0.0};
+  std::string forward_preparation_detail_{"idle"};
 
   double odometry_timeout_{0.20};
   double imu_timeout_{0.50};

@@ -1,0 +1,33 @@
+# Moving-platform overlay: image-only association stays independent of the
+# static-body metric-relative gate; metric positions are still emitted for
+# the visual pursuit driver and diagnostics.
+runtime:
+  publish_control_reference: false
+
+interfaces:
+  input:
+    detections: "track/detections"
+    vehicle_state: "state_estimator/main/odom"
+  output:
+    tracks_by_source: "track/tracks_by_source"
+    target_mode: "track/target_mode"
+
+frames:
+  body: "moving_uav_search/base_link"
+
+tracker:
+  enabled_at_startup: true
+  image_source: "search_fixed"
+  selection:
+    # Keep all confirmed identities visible; flight-follow is opt-in by ID.
+    default_mode: "all"
+    # A lost selected ID remains eligible for trajectory stitching until the
+    # operator returns to all/global mode or selects another target.
+    locked_target_release_timeout_sec: 0.0
+  sources:
+    allowed: [search_fixed]
+    maximum_sources: 1
+    ttl_sec: 8.0
+  association:
+    metric_relative:
+      enabled: false

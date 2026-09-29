@@ -1,7 +1,8 @@
 # xd_uav_controller
 
-控制算法包。节点只消费统一控制状态和控制参考，输出机体角速度与归一化推力/油门；
-它不调用MAVROS服务，也不直接维持OFFBOARD。
+控制算法包。节点只消费统一控制状态和控制参考，可按参考类型输出机体角速度/归一化
+推力（raw attitude），或直接透传PositionTarget形式的raw local；它不调用MAVROS服务，
+也不直接维持OFFBOARD。
 
 ## 接口
 
@@ -19,9 +20,28 @@
 
 ```text
 /uavX/controller/command                    xd_uav_controller/ControlCommand
+/uavX/controller/local_setpoint             xd_uav_controller/ControllerLocalSetpoint
 /uavX/controller/path_status                xd_uav_controller/PathStatus
 /uavX/control/reference/trajectory_path      nav_msgs/Path
 ```
+
+`xd_uav_control_manager/config/offboard.yaml`中的
+`offboard/output/reference_types`可分别设置
+`position_target`、`path`、`trajectory`和`internal`为`raw_attitude`或`raw_local`。
+简单目标按`position_target`配置；`internal`统一控制起飞、悬停、降落和等待保持参考。
+`raw_local`会把经坐标变换及路径/轨迹采样后的局部位置、速度、加速度与偏航目标交给PX4，
+由PX4执行位置/速度闭环。该分支不调用机架backend的`update()`，因此不会运行姿态、角速度
+或油门控制律，也不会把这些输出换算成local字段；路径/轨迹仍需采样成当前PositionTarget。
+原有`ControlCommand`保持不变；控制器通过
+附加的`ControllerLocalSetpoint`话题传递local目标。系统launch会把同一个
+`offboard_config`加载给控制器和管理器；单独启动控制器时默认raw attitude。
+
+参考先通过TF变换到`ControlState.header.frame_id`，再作为MAVROS local target发布；这一步
+假设该frame与PX4/MAVROS本地原点和轴向一致，代码不会自动估算两套local origin之间的偏移。
+若二者不一致，需要先建立对应TF/坐标对齐，再启用raw local。
+固定翼raw_local输出会限制为PX4支持的完整XYZ位置目标并忽略速度、加速度和yaw字段；
+固定翼只提供速度目标或部分位置轴时会拒绝输出。多旋翼/VTOL悬停阶段可使用PX4支持的
+位置、速度和加速度目标组合。
 
 服务：
 

@@ -1,0 +1,63 @@
+<launch>
+  <arg name="world" default="$(find xd_uav_track)/worlds/moving_uav_vehicle_search.world"/>
+  <arg name="gui" default="true"/>
+  <arg name="altitude_m" default="28.0"/>
+  <arg name="minimum_altitude_m" default="28.0"/>
+  <arg name="maximum_altitude_m" default="60.0"/>
+  <arg name="altitude_rate_mps" default="1.5"/>
+  <arg name="expected_target_count" default="3"/>
+  <arg name="follow_loss_coast_sec" default="5.0"/>
+  <arg name="search_cruise_speed_mps" default="1.4"/>
+  <arg name="coverage_transit_speed_mps" default="1.6"/>
+  <arg name="follow_max_speed_mps" default="2.6"/>
+  <arg name="horizontal_acceleration_mps2" default="1.2"/>
+  <arg name="yaw_rate_limit_radps" default="0.4"/>
+  <arg name="follow_fov_margin" default="0.72"/>
+  <arg name="follow_preserve_other_targets" default="true"/>
+  <arg name="follow_overview_altitude_m" default="58.0"/>
+  <arg name="follow_overview_margin_m" default="2.0"/>
+  <arg name="follow_overview_fraction" default="0.35"/>
+  <arg name="local_reacquire_sec" default="12.0"/>
+  <arg name="local_reacquire_altitude_m" default="40.0"/>
+  <arg name="search_area_min_x_m" default="-34.0"/>
+  <arg name="search_area_max_x_m" default="34.0"/>
+  <arg name="search_area_min_y_m" default="-18.0"/>
+  <arg name="search_area_max_y_m" default="18.0"/>
+  <env name="GAZEBO_MODEL_PATH" value="$(find xd_uav_track)/models:$(optenv GAZEBO_MODEL_PATH /usr/share/gazebo-11/models)"/>
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="verbose" value="false"/>
+  </include>
+  <node pkg="xd_uav_track" type="moving_uav_search_driver.py"
+        name="moving_uav_search_driver" output="screen" required="true">
+    <param name="altitude_m" value="$(arg altitude_m)"/>
+    <param name="minimum_altitude_m" value="$(arg minimum_altitude_m)"/>
+    <param name="maximum_altitude_m" value="$(arg maximum_altitude_m)"/>
+    <param name="altitude_rate_mps" value="$(arg altitude_rate_mps)"/>
+    <param name="expected_target_count" value="$(arg expected_target_count)"/>
+    <param name="follow_loss_coast_sec" value="$(arg follow_loss_coast_sec)"/>
+    <param name="search_cruise_speed_mps" value="$(arg search_cruise_speed_mps)"/>
+    <param name="coverage_transit_speed_mps" value="$(arg coverage_transit_speed_mps)"/>
+    <param name="follow_max_speed_mps" value="$(arg follow_max_speed_mps)"/>
+    <param name="horizontal_acceleration_mps2" value="$(arg horizontal_acceleration_mps2)"/>
+    <param name="yaw_rate_limit_radps" value="$(arg yaw_rate_limit_radps)"/>
+    <param name="follow_fov_margin" value="$(arg follow_fov_margin)"/>
+    <param name="follow_preserve_other_targets" value="$(arg follow_preserve_other_targets)"/>
+    <param name="follow_overview_altitude_m" value="$(arg follow_overview_altitude_m)"/>
+    <param name="follow_overview_margin_m" value="$(arg follow_overview_margin_m)"/>
+    <param name="follow_overview_fraction" value="$(arg follow_overview_fraction)"/>
+    <param name="local_reacquire_sec" value="$(arg local_reacquire_sec)"/>
+    <param name="local_reacquire_altitude_m" value="$(arg local_reacquire_altitude_m)"/>
+    <param name="coverage_margin_m" value="2.0"/>
+    <param name="camera_horizontal_fov_rad" value="1.22"/>
+    <param name="camera_image_width" value="640"/>
+    <param name="camera_image_height" value="480"/>
+    <param name="search_area/min_x_m" value="$(arg search_area_min_x_m)"/>
+    <param name="search_area/max_x_m" value="$(arg search_area_max_x_m)"/>
+    <param name="search_area/min_y_m" value="$(arg search_area_min_y_m)"/>
+    <param name="search_area/max_y_m" value="$(arg search_area_max_y_m)"/>
+  </node>
+</launch>
