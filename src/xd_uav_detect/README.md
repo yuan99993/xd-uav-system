@@ -30,7 +30,10 @@ YOLO车辆目标生成。脚本位于`scripts/demo/`，安装后可直接通过
 | `camera_ground_plane` | `config/camera_ground_plane.yaml` | 2D 框、CameraInfo、地面高程、拍摄时刻 TF |
 | `gimbal_laser_range` | `config/gimbal_laser_range.yaml` | 2D 框、CameraInfo、`sensor_msgs/Range`、拍摄时刻 TF |
 
-旧 `multirotor_detect.yaml` 和 `fixedwing_detect.yaml` 保留为兼容入口；`UAV_NAME` 只用于命名空间和 frame 前缀，不参与方法选择。
+`config/fixedwing_front_detect.yaml` 是新增的固定翼前视相机地面投影预设；旧
+`multirotor_detect.yaml` 和 `fixedwing_detect.yaml` 保留为兼容入口。`UAV_NAME` 只用于命名空间
+和 frame 前缀，不参与方法选择。实际传感器话题不同于 YAML 时，可通过 `detect.launch` 的
+`image_topic`、`camera_info_topic`、`point_cloud_topic`、`laser_range_topic` 单独覆盖。
 
 ## 光电定位契约
 

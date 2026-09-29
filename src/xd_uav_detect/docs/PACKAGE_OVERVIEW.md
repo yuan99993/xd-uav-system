@@ -54,7 +54,11 @@ YAML 继续保留，避免把互不适用的标定和门限塞入巨型配置。
 | camera_ground_plane | 2D 框、CameraInfo、拍摄时刻 TF、地面高程 | 像素射线与水平地面相交 |
 | gimbal_laser_range | 2D 框、CameraInfo、sensor_msgs/Range、拍摄时刻 TF | 单束激光端点定位 |
 
-正式配置分别为 config/lidar_camera.yaml、config/camera_ground_plane.yaml 和 config/gimbal_laser_range.yaml。旧 multirotor_detect.yaml 与 fixedwing_detect.yaml 只作为兼容入口保留。
+正式配置分别为 config/lidar_camera.yaml、config/camera_ground_plane.yaml 和
+config/gimbal_laser_range.yaml；config/fixedwing_front_detect.yaml 是固定翼前视相机使用同一
+camera_ground_plane 后端的前视预设。旧 multirotor_detect.yaml 与 fixedwing_detect.yaml 只作为
+兼容入口保留。detect.launch 可按 UAV 覆盖 image、CameraInfo、PointCloud2 和 Range 话题，空值
+继续使用 YAML。
 
 gimbal_laser_range 不绑定厂商 SDK。外部适配器必须提供：检测图像时间戳、相机内参、带有效时间戳与 frame 的标准 Range，以及检测时刻的 camera <- laser、body <- laser TF。激光采用 Range 规定的 +X 轴。只有一个候选框覆盖激光端点投影时才赋予距离；多框歧义或视轴框外均失效关闭。
 

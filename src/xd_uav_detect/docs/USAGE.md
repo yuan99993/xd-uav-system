@@ -147,7 +147,8 @@ rosservice call /uav1/control_manager/land
 
 当前 YAML 也不是定位算法数量：`lidar_camera.yaml`、`camera_ground_plane.yaml`、
 `gimbal_laser_range.yaml` 是三种正式定位契约；`gimbal_control.yaml` 是独立控制参数；
-`multirotor_detect.yaml`、`fixedwing_detect.yaml` 是旧命名兼容。
+`fixedwing_front_detect.yaml` 是固定翼前视相机地面投影预设；`multirotor_detect.yaml`、
+`fixedwing_detect.yaml` 是旧命名兼容。
 
 ## 3. 稳定输入输出
 
@@ -236,6 +237,19 @@ roslaunch xd_uav_detect detect.launch \
 
 同一架飞机切换方法时只换配置文件和相应传感器/TF，不需要修改节点源码或设置
 `platform_type`。
+
+若设备话题与 YAML 不同，可在 launch 层覆盖而不复制配置：
+
+```bash
+roslaunch xd_uav_detect detect.launch \
+  UAV_NAME:=uav2 \
+  config:=$(rospack find xd_uav_detect)/config/fixedwing_front_detect.yaml \
+  image_topic:=front_camera/image_raw \
+  camera_info_topic:=front_camera/camera_info
+```
+
+同理可用 `point_cloud_topic` 和 `laser_range_topic` 覆盖点云或测距输入。覆盖值在所选 UAV
+namespace 下解析；参数留空时继续使用 YAML，输出契约和 geodetic adapter 不受影响。
 
 ### 4.1 LiDAR + camera
 
