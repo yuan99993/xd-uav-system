@@ -1,19 +1,27 @@
 <?xml version="1.0"?>
 <launch>
-  <arg name="world_name" default="grass_plane"/>
+  <arg name="UAV_NAME" default="uav1"/>
+  <arg name="world_file"
+       default="$(find px4)/Tools/sitl_gazebo/worlds/empty.world"/>
   <arg name="gui" default="false"/>
-  <arg name="vehicle" default="x500"/>
-  <arg name="spawn_options" default=""/>
+  <arg name="x" default="0.0"/>
+  <arg name="y" default="0.0"/>
+  <arg name="z" default="0.0"/>
+  <arg name="yaw" default="0.0"/>
 
-  <include file="$(find mrs_uav_gazebo_simulation)/launch/simulation.launch">
-    <arg name="world_name" value="$(arg world_name)"/>
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find px4)/Tools/sitl_gazebo/models:$(optenv GAZEBO_MODEL_PATH)"/>
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world_file)"/>
     <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
   </include>
-
-  <node pkg="xd_uav_planning" type="spawn_px4_vehicle_node.py"
-        name="spawn_px4_vehicle" output="screen">
-    <param name="service" value="/mrs_drone_spawner/spawn"/>
-    <param name="request" value="1 --$(arg vehicle) $(arg spawn_options)"/>
-    <param name="timeout" value="30.0"/>
-  </node>
+  <include file="$(find xd_uav_control_manager)/launch/sitl/px4_sitl_vehicle.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="x" value="$(arg x)"/>
+    <arg name="y" value="$(arg y)"/>
+    <arg name="z" value="$(arg z)"/>
+    <arg name="yaw" value="$(arg yaw)"/>
+  </include>
 </launch>

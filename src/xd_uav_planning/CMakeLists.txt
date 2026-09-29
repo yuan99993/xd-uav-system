@@ -61,13 +61,11 @@ catkin_install_python(PROGRAMS
   scripts/fixedwing_path_backend_node.py
   scripts/demo/fixedwing_path_acceptance.py
   scripts/demo/fixedwing_nofly_visualizer.py
-  scripts/runtime/auto_takeoff_when_ready.py
   scripts/runtime/deterministic_obstacle_cloud.py
   scripts/runtime/imu_frame_adapter.py
   scripts/runtime/mavros_odom_recovery_gate.py
   scripts/runtime/multi_odom_registration.py
   scripts/runtime/navsat_origin_provider.py
-  scripts/runtime/spawn_px4_vehicle_node.py
   scripts/health_gate_node.py
   scripts/reference_mux_node.py
   scripts/select_owner_when_ready.py

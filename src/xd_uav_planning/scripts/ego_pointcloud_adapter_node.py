@@ -179,7 +179,9 @@ class EgoPointCloudAdapter:
             return
         header = Header(stamp=message.header.stamp,
                         frame_id=self._common_frame)
-        self._cloud_pub.publish(self._create_xyz_cloud(header, finite_points))
+        if not self._publish(
+                self._cloud_pub, self._create_xyz_cloud(header, finite_points)):
+            return
         self._last_valid_stamp = message.header.stamp
         self._reason = "ok"
         self._publish_status(True)
@@ -313,7 +315,8 @@ class EgoPointCloudAdapter:
         self._publish_status(healthy)
 
     def _publish_status(self, healthy):
-        self._healthy_pub.publish(Bool(data=healthy))
+        if not self._publish(self._healthy_pub, Bool(data=healthy)):
+            return
         array = DiagnosticArray(header=Header(stamp=rospy.Time.now()))
         status = DiagnosticStatus()
         status.name = rospy.get_name() + "/pointcloud"
@@ -339,7 +342,19 @@ class EgoPointCloudAdapter:
                 else "tf2")),
         ]
         array.status = [status]
-        self._diagnostics_pub.publish(array)
+        self._publish(self._diagnostics_pub, array)
+
+    @staticmethod
+    def _publish(publisher, message):
+        if rospy.is_shutdown():
+            return False
+        try:
+            publisher.publish(message)
+        except rospy.ROSException:
+            if not rospy.is_shutdown():
+                raise
+            return False
+        return True
 
 
 def main():

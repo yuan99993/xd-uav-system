@@ -175,7 +175,9 @@ roslaunch xd_uav_planning fixedwing_sitl_demo.launch \
 `/uav1/planning/fixedwing_acceptance/result`。可视化同时显示任务路线、历次替换路线、当前
 controller 路线、实际航迹和活动禁飞区；关闭或停止节点时会在
 `/tmp/xd_uav_planning_visualizations/<时间>/` 保存 `summary.png`、`events.json` 和
-`trajectory.csv`。无显示器时自动使用 Agg 后端，仍会保存验收图。
+`trajectory.csv`。无显示器时自动使用 Agg 后端，仍会保存验收图。该演示使用共享 PX4 SITL
+入口，但会显式选择 `uav1/fcu` 作为固定翼 IMU/body frame；多旋翼演示继续使用各自的
+`uav1/base_link` 契约。
 
 ## 目录
 
@@ -195,8 +197,8 @@ docs/                    操作及上下层接入手册
 
 起降、OFFBOARD、状态估计和底层控制仍分别属于 control manager、estimator 和 controller。
 `xd_uav_task_allocate` 是只读上游。`ego-planner-swarm` 仅带有 construction 分支移植来的最小
-滚动地图补丁；其余项目适配位于本包。旧 `xd_uav_system_integration` 与 `xd_uav_sead` 仅作为
-legacy 源码保留，不属于正式 `task_allocate -> planning -> controller` 链路。
+滚动地图补丁；其余项目适配位于本包。旧顶层 `xd_uav_system_integration` 与 `xd_uav_sead`
+已从当前源码树移除，不属于正式 `task_allocate -> planning -> controller` 链路。
 
 ## 旧 EGO bridge 恢复
 

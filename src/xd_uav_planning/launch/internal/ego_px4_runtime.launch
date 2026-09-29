@@ -66,6 +66,7 @@
   <arg name="flight_type" default="3"/>
   <arg name="traj_command_topic" default="/$(arg uav_name)/ego/position_command"/>
   <arg name="bridge_command_topic" default="$(arg traj_command_topic)"/>
+  <arg name="require_takeoff_complete" default="false"/>
   <arg name="swarm_raw_topic" default="/drone_$(arg ego_id)_planning/swarm_trajs_raw"/>
   <arg name="swarm_topic" default="/drone_$(arg ego_id)_planning/swarm_trajs"/>
 
@@ -155,6 +156,7 @@
     <arg name="odometry_topic" value="/drone_$(arg ego_id)_ego/odometry"/>
     <arg name="position_command_topic" value="$(arg bridge_command_topic)"/>
     <arg name="allow_nonfinite_yaw_rate" value="true"/>
+    <arg name="require_takeoff_complete" value="$(arg require_takeoff_complete)"/>
   </include>
 
   <group ns="$(arg uav_name)">
