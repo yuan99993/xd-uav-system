@@ -1,5 +1,7 @@
 # 飞控后端与 ArduCopter SITL 使用说明
 
+更新：2026-09-29
+
 本文说明如何演示 `xd_uav_controller` 与 `xd_uav_control_manager` 新增的
 autopilot-neutral 输出合同、PX4/ArduCopter 后端选择，以及已经验证的
 ArduCopter 4.7.1 起飞、位置、速度和降落流程。
@@ -14,6 +16,16 @@ ArduCopter 4.7.1 起飞、位置、速度和降落流程。
   强制上锁参数。
 - 三维仿真使用本机已有 Gazebo Classic 11，以及工作区级固定插件
   `third_party/ardupilot_gazebo-classic`；不会安装新版 Gazebo 或修改 PX4 仿真环境。
+
+### 垂直控制参数隔离
+
+通用多旋翼配置让 Z 轴在未提供 `multirotor/position_control/mpc_z` 时回退到已经验证的
+`mpc` 参数。不要未经机型动态验收就直接启用独立 Z 轴代价：当前 x500 PX4 和固定
+Copter-4.7.1 的动态验收都证明，未经机型验证的低带宽 Z 轴参数会造成目标高度静差或明显过冲。
+
+固定 Copter-4.7.1 fixture 在 `config/arducopter_copter_4_7_sitl.yaml` 中显式锁定自己的
+`mpc_z`、`hover_throttle`、起飞轨迹和 odom 降落高度源。改动这些值后，必须重新执行本页的
+2 m 起飞、位置、速度和降落完整架次；只通过 mock 或构建不能视为验证完成。
 
 本机插件固定在提交 `51907b9e72513db199a5ac57c99fa449bb5ae670`。若插件目录或构建
 产物缺失，可在工作区级依赖目录恢复，不要复制进控制包：
@@ -273,3 +285,17 @@ roslaunch xd_uav_control_manager px4_sitl_multirotor_system.launch UAV_NAME:=uav
 `<UAV_NAME>/base_link`，适用于仓库 Iris/x500 多旋翼演示；固定翼演示会显式传入
 `<UAV_NAME>/fcu`，使 MAVROS IMU 与 estimator odometry 的 body-frame 契约一致。不要仅改
 frame 名称来掩盖真实存在的传感器外参。
+
+## 2026-09-29 验证记录
+
+当前版本在 ROS Noetic 下以 `catkin_make -j2` 构建通过；
+`xd_uav_controller` 为 34 tests、`xd_uav_control_manager` 为 42 tests，均为
+0 errors、0 failures、0 skipped。完整自动回归覆盖 PX4、固定翼、VTOL 状态适配、
+ArduCopter GUIDED backend、起降状态机、姿态输出和 anti-windup。
+
+固定 Copter-4.7.1 headless SITL 动态架次也已通过：`GUID_OPTIONS=8`、
+`MOT_THST_HOVER=0.39`，2 m 起飞峰值约 3.13 m、最大上升速度约 1.95 m/s，随后收敛到
+约 2 m；公共 simple-goal 到达 x=1 m 附近，-0.3 m/s 速度参考产生正确反向位移并在超时后
+重新捕获悬停；manager 原地降落最终得到 `landed_state=ON_GROUND`、`armed=false`。验收使用
+4 m 高度和 3 m/s 上升速度外部 LAND 看门狗，全程未触发。该结果仅证明本文固定 SITL
+fixture，不替代真机辨识和安全试飞。

@@ -1,6 +1,6 @@
 # xd_uav_detect 解耦版使用说明
 
-更新：2026-09-20
+更新：2026-09-29
 
 ## 1. 包的职责
 
@@ -128,6 +128,14 @@ rosservice call /uav1/control_manager/land
 该组合入口是单机仿真演示，不代表完整系统集成；它使用已有两轴云台位置闭环，但没有实现自动
 扫描、目标跟随、航迹规划或真实吊舱驱动。若 estimator 或 control manager 报告状态超时，
 不要继续发送位置参考。
+
+2026-09-29 当前版本用 `gui:=false loop:=false stage_duration:=2 geodetic_enabled:=true`
+完成动态验收：PX4 进入 `OFFBOARD` 并解锁，odom 高度收敛到约 1.50 m；`forward_hit` 和
+`yaw_pitch_hit` 均产生有效 FRD 与 `map` 世界坐标，云台角变化后坐标随检测时刻 TF 变化；
+`no_return_fail_closed` 把 FRD、world 和 WGS84 候选的有效标志清除。最后 manager 降落得到
+`AUTO.LAND`、`landed_state=ON_GROUND` 和 `armed=false`。WGS84 有效数值转换与异常输入关闭
+由第 10 节 geodesy ROS 回归覆盖；单轮演示结束时停在 no-return 阶段，因此此时手工 echo 到的
+地理候选无效是预期结果。
 
 ### 2.3 当前入口分类
 
@@ -595,6 +603,6 @@ catkin_make -j2 run_tests_xd_uav_detect
 catkin_test_results build/test_results/xd_uav_detect
 ```
 
-当前最终回归为 45 tests、0 errors、0 failures、0 skipped，包含控制核心、backend factory、
-模型生成一致性、定位几何、节点失效保护、真实 Gazebo camera/ray/关节验收，以及 dev 目标工具
-的安装入口、无 Gazebo dry-run 和红色区域提取。
+2026-09-29 当前回归为 58 tests、0 errors、0 failures、0 skipped，包含三种定位几何、
+WGS84 投影与异常输入关闭、云台命令限位/速率/超时、模型生成一致性、ROS 节点失效保护、
+真实 Gazebo camera/ray/关节验收，以及目标工具的安装入口、无 Gazebo dry-run 和红色区域提取。

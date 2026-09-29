@@ -9,6 +9,16 @@ multirotor:
   model:
     hover_throttle: 0.39
 
+  position_control:
+    # Preserve the vertical response used by the validated Copter-4.7.1
+    # flights.  Keep this fixture explicit so later repository-wide vertical
+    # retuning cannot silently change its raw-thrust takeoff response.
+    mpc_z:
+      horizon: 26
+      q: [500.0, 180.0]
+      terminal_q: [1000.0, 400.0]
+      r: 45.0
+
   # ArduCopter's GUID_OPTIONS raw-thrust path has more vertical response
   # delay than the PX4 body-rate baseline.  Keep the dedicated SITL takeoff
   # profile conservative so braking begins before the requested altitude.
