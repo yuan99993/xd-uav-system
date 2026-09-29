@@ -2,7 +2,7 @@
 # Loaded after mission/scout/worker configuration by task_allocate.launch.
 
 post_arrival:
-  mode: task_execute
+  mode: arrive
   handoff_mode: visual
   action_name_template: /{worker}/task_execute/execute
   server_wait_timeout_sec: 2.0

@@ -21,7 +21,7 @@ reference_input:
     max_inertial_frame_tilt: 0.10
 
   global_alignment:
-    required: true
+    required: false
     frames: [local_origin, /world, odom]
     timeout: 1.0
 
