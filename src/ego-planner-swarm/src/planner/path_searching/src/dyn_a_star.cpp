@@ -165,6 +165,12 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
         current = openSet_.top();
         openSet_.pop();
 
+        // A cheaper route to a node is inserted again below because
+        // std::priority_queue has no decrease-key operation. Ignore the stale
+        // duplicate after the best copy has already been expanded.
+        if (current->rounds == rounds_ && current->state == GridNode::CLOSEDSET)
+            continue;
+
         // if ( num_iter < 10000 )
         //     cout << "current=" << current->index.transpose() << endl;
 
@@ -230,12 +236,16 @@ bool AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_
                         neighborPtr->cameFrom = current;
                         neighborPtr->gScore = tentative_gScore;
                         neighborPtr->fScore = tentative_gScore + getHeu(neighborPtr, endPtr);
+						// Reinsert to restore heap ordering after lowering fScore.
+						// The stale pointer is filtered when it is popped.
+						openSet_.push(neighborPtr);
                     }
                 }
         ros::Time time_2 = ros::Time::now();
-        if ((time_2 - time_1).toSec() > 0.2)
+        if ((time_2 - time_1).toSec() > max_search_time_)
         {
-            ROS_WARN("Failed in A star path searching !!! 0.2 seconds time limit exceeded.");
+            ROS_WARN("Failed in A star path searching: %.3f second time limit exceeded (iter=%d).",
+                     max_search_time_, num_iter);
             return false;
         }
     }
