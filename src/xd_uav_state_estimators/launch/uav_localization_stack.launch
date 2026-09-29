@@ -5,6 +5,7 @@
   <arg name="sources_config" default="$(find xd_uav_state_estimators)/config/sources.yaml"/>
   <arg name="tf_config" default="$(find xd_uav_single_tf_manager)/config/multirotor_single_tf.yaml"/>
   <arg name="start_odometry_adapters" default="true"/>
+  <arg name="republish_world" default="true"/>
 
   <!-- 适配器种类和输入话题完全由sources.yaml定义，launch不再硬编码定位算法。 -->
   <include if="$(arg start_odometry_adapters)"
@@ -18,6 +19,7 @@
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="algorithm_config" value="$(arg algorithm_config)"/>
     <arg name="sources_config" value="$(arg sources_config)"/>
+    <arg name="republish_world" value="$(arg republish_world)"/>
   </include>
 
   <include file="$(find xd_uav_single_tf_manager)/launch/single_tf.launch">

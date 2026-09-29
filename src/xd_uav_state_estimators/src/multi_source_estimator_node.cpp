@@ -518,6 +518,7 @@ struct SourceRuntime {
   std::string raw_frame;
   ros::Time filter_stamp;
   ros::Time latest_raw_stamp;
+  ros::Time last_alignment_publish_stamp;
   Eigen::Vector3d alignment_translation{Eigen::Vector3d::Zero()};
   double alignment_yaw{0.0};
   bool alignment_initialized{false};
@@ -1834,6 +1835,7 @@ class MultiSourceEstimatorNode {
     source->raw_frame.clear();
     source->filter_stamp = ros::Time();
     source->latest_raw_stamp = ros::Time();
+    source->last_alignment_publish_stamp = ros::Time();
     source->alignment_translation.setZero();
     source->alignment_yaw = 0.0;
     source->filter_reseed_pending = false;
@@ -2637,11 +2639,15 @@ class MultiSourceEstimatorNode {
     publishStatus(now, localization_valid, state_valid);
   }
 
-  void publishAlignment(const SourceRuntime& source,
+  void publishAlignment(SourceRuntime& source,
                         const ros::Time& stamp) {
     if (!source.alignment_initialized ||
         source.raw_frame.empty() ||
         source.raw_frame == odom_frame_) {
+      return;
+    }
+    // 同一帧里程计拆出的多种修正共用时间戳；对齐量只需发布一次。
+    if (stamp == source.last_alignment_publish_stamp && !stamp.isZero()) {
       return;
     }
     geometry_msgs::TransformStamped message;
@@ -2658,6 +2664,7 @@ class MultiSourceEstimatorNode {
     rotation.setRPY(0.0, 0.0, source.alignment_yaw);
     message.transform.rotation = tf2::toMsg(rotation);
     source.alignment_publisher.publish(message);
+    source.last_alignment_publish_stamp = stamp;
   }
 
   void publishStatus(const ros::Time& now,
@@ -2814,6 +2821,7 @@ class MultiSourceEstimatorNode {
       source->raw = RawState();
       source->fused_raw = RawState();
       source->raw_frame.clear();
+      source->last_alignment_publish_stamp = ros::Time();
       source->required_corrections_were_connected = false;
       source->required_corrections_were_fresh = false;
       source->filter_reseed_pending = false;

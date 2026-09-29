@@ -730,6 +730,12 @@ class ThreePackageIntegration(unittest.TestCase):
 
         buffer = tf2_ros.Buffer()
         listener = tf2_ros.TransformListener(buffer)
+        world_origin = self._wait_for(
+            lambda: buffer.lookup_transform(
+                "world", "uav1/local_origin", rospy.Time(0), rospy.Duration(0.2)
+            )
+        )
+        self.assertEqual(world_origin.child_frame_id, "uav1/local_origin")
         transform = self._wait_for(
             lambda: buffer.lookup_transform(
                 "world", "uav1/base_link", rospy.Time(0), rospy.Duration(0.2)
@@ -737,7 +743,12 @@ class ThreePackageIntegration(unittest.TestCase):
         )
         self.assertEqual(transform.header.frame_id, "world")
         self.assertEqual(transform.child_frame_id, "uav1/base_link")
-        self.assertAlmostEqual(transform.transform.translation.z, 2.0, delta=0.3)
+        self.assertAlmostEqual(
+            transform.transform.translation.z
+            - world_origin.transform.translation.z,
+            2.0,
+            delta=0.3,
+        )
 
         local_alignment = self._wait_for(
             lambda: buffer.lookup_transform(
