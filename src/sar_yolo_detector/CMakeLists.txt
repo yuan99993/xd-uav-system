@@ -81,6 +81,7 @@ add_message_files(
   TrackedDetection2D.msg
   TrackedDetection2DArray.msg
   UavDecisionHeartbeat.msg
+  DetectorModelInfo.msg
 )
 
 add_service_files(
@@ -95,6 +96,7 @@ add_service_files(
   SubmitTaskAssignment.srv
   SwitchSmartTrackerModel.srv
   SwitchTrackingMode.srv
+  ListDetectorModels.srv
 )
 
 generate_messages(
@@ -324,6 +326,7 @@ install(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 catkin_install_python(PROGRAMS
+  scripts/verify_registered_engines.py
   examples/sign_and_submit_task.py
   test/test_detector_interfaces.py
   test/test_decision_bridge.py
@@ -346,6 +349,9 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_smart_tracker_image_codec.py)
   catkin_add_nosetests(test/test_manual_box_tracker.py)
   catkin_add_nosetests(test/test_shared_detector_outputs.py)
+  catkin_add_nosetests(test/test_model_runtime_status.py)
+  catkin_add_nosetests(test/test_model_registry.py)
+  catkin_add_nosetests(test/test_model_switch.py)
   catkin_add_nosetests(test/test_interface_v1_md5.py)
   catkin_add_gtest(test_yolo_postprocessor
     test/test_yolo_postprocessor.cpp

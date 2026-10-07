@@ -1,0 +1,32 @@
+<launch>
+  <!-- Hardware/mission-neutral composition. No Gazebo, MAVROS, flight driver
+       or gimbal motor control is launched. Device bringup remains external. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="deployment_config" default="$(find xd_uav_track)/config/perception_deployment.yaml"/>
+  <arg name="track_config" default="$(find xd_uav_track)/config/track.yaml"/>
+  <arg name="detector_config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml"/>
+  <arg name="reid_config" default="$(find xd_uav_track)/config/reid.yaml"/>
+  <arg name="enable_gimbal_overlay" default="true"/>
+  <group ns="$(arg UAV_NAME)">
+    <rosparam command="load" file="$(arg track_config)" ns="track"/>
+    <rosparam command="load" file="$(arg detector_config)" ns="sar_yolo_multi_source_detection"/>
+    <rosparam command="load" file="$(arg reid_config)" ns="sar_yolo_multi_source_detection"/>
+    <rosparam command="load" file="$(arg deployment_config)" subst_value="true"/>
+    <!-- Cannot be overridden by an erroneous deployment YAML. The binary also
+         enforces the boundary against services and DetectionArray commands. -->
+    <param name="track/runtime/perception_only" value="true"/>
+    <node pkg="xd_uav_track" type="run_with_config_preflight.py" name="track"
+          output="screen" required="true"
+          args="--track-config $(arg track_config) --perception-config $(arg deployment_config) --node-package xd_uav_track --node-type xd_uav_track_node"/>
+    <node pkg="sar_yolo_detector" type="sar_yolo_multi_source_detection"
+          name="sar_yolo_multi_source_detection" output="screen" required="true">
+      <env name="SAR_YOLO_PYTHON" value="$(optenv SAR_YOLO_PYTHON)"/>
+    </node>
+    <node pkg="xd_uav_track" type="perception_mode_manager.py"
+          name="perception_mode_manager" output="screen" required="true"/>
+    <node pkg="xd_uav_track" type="perception_overlay_node.py"
+          name="fixed_perception_overlay" output="screen" required="true"/>
+    <node if="$(arg enable_gimbal_overlay)" pkg="xd_uav_track" type="perception_overlay_node.py"
+          name="gimbal_perception_overlay" output="screen" required="true"/>
+  </group>
+</launch>

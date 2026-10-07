@@ -12,6 +12,10 @@ bool has_normalized_bbox
 
 float32 confidence
 
+# Empty is legacy detector input. visual_tracker cannot create/confirm identity
+# or refresh YOLO classification, ReID prototypes or real detection freshness.
+string measurement_source         # detector / visual_tracker
+
 # Optional L2-normalized visual embedding for C++ appearance ReID.
 # Empty keeps all existing detector publishers fully compatible.
 float32[] appearance_embedding
@@ -25,4 +29,3 @@ float32[3] relative_velocity_body
 float32[9] position_covariance
 float32[9] velocity_covariance
 bool range_valid
-

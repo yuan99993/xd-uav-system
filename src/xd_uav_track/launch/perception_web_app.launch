@@ -1,0 +1,23 @@
+<launch>
+  <!-- Web transport/UI only; launch the perception stack exactly once elsewhere. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="address" default="127.0.0.1"/>
+  <arg name="websocket_port" default="9090"/>
+  <arg name="http_port" default="8080"/>
+  <arg name="enable_video" default="true"/>
+  <include file="$(find xd_uav_track)/launch/perception_web_bridge.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="address" value="$(arg address)"/>
+    <arg name="port" value="$(arg websocket_port)"/>
+    <arg name="enable_video" value="$(arg enable_video)"/>
+  </include>
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="xd_uav_track" type="serve_perception_web.py" name="perception_web_http"
+          required="true" output="screen">
+      <param name="address" value="$(arg address)"/>
+      <param name="port" value="$(arg http_port)"/>
+      <param name="uav_name" value="$(arg UAV_NAME)"/>
+      <param name="websocket_port" value="$(arg websocket_port)"/>
+    </node>
+  </group>
+</launch>

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XD 检测 / 跟踪 / 融合</title>
+<style>
+:root{font:15px system-ui,sans-serif;color:#e8eef7;background:#101923;color-scheme:dark}
+body{max-width:1480px;margin:0 auto;padding:20px}h1{font-size:24px;margin:0 0 14px}
+.panel{background:#192635;border:1px solid #324357;border-radius:10px;padding:14px;margin-bottom:14px}
+.controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+label{display:inline-flex;align-items:center;gap:7px}input,select,button{font:inherit;border:1px solid #53677e;border-radius:5px;padding:8px;background:#152232;color:inherit}
+input{max-width:100%;min-width:100px}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}
+button.active{border-color:#40c6da;background:#174457}.muted{color:#a4b4c7}.status{color:#68d5a8}.lost{color:#ffad9a}
+#videos{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:14px}
+.video-card{background:#172330;border:1px solid #324357;border-radius:9px;overflow:hidden}
+.video-card.chosen{border-color:#40c6da}.video-top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px}
+.video-area{height:360px;background:#000;position:relative;overflow:hidden}
+canvas{display:block;width:100%;height:100%;object-fit:contain;touch-action:none;cursor:crosshair}
+.video-notice{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;background:#0009;color:#f4c2b9}
+.video-notice[hidden]{display:none}
+.video-meta{padding:10px;font-size:13px;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:9px;text-align:left;border-bottom:1px solid #344355}
+.table-wrap{overflow:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0;font-size:13px}
+#result{min-height:22px}details summary{cursor:pointer}.hint{margin:12px 0 0;line-height:1.6}
+@media(max-width:650px){body{padding:10px}.video-area{height:260px}input#url{width:210px}h1{font-size:20px}}
+</style>
+</head>
+<body>
+<h1>XD 检测 / 跟踪 / 融合</h1>
+<p><a href="switch_test.html">简易模式 / 模型切换测试页（不订阅视频）</a></p>
+<section class="panel">
+<div class="controls">
+<label>WebSocket <input id="url" aria-label="WebSocket 地址"></label>
+<label>无人机 <input id="ns" value="uav1" size="10" aria-label="无人机命名空间"></label>
+<button id="connect">连接 / 重连</button><span id="connection" class="muted" role="status">未连接</span>
+</div>
+</section>
+<section class="panel">
+<div class="controls">
+<span>感知模式</span>
+<button data-command data-mode="detect" disabled>检测 detect</button>
+<button data-command data-mode="track" disabled>跟踪 track</button>
+<button data-command data-mode="fusion" disabled>融合 fusion</button>
+<label>检测模型 <select id="models" disabled aria-label="检测模型"></select></label>
+<button data-command id="switch" disabled>切换模型</button>
+</div>
+<p id="actual" class="muted">等待实际运行状态</p>
+<div class="controls">
+<label>操作画面 <select id="source" aria-label="选择图像来源"></select></label>
+<button data-command id="freeze" disabled>冻结当前帧</button>
+<button id="resume" disabled>恢复播放 / 取消框选</button>
+<button data-command id="clear" disabled>取消目标追踪</button>
+</div>
+<p class="hint muted">检测：全图检测和多目标 ID；跟踪：选中目标局部跟踪；融合：检测与选中目标跟踪联合校验。点击画面选择目标，拖拽画出追踪区域；按下鼠标时冻结该原帧，松开后提交。框选完成后恢复播放。</p>
+<pre id="result" aria-live="polite"></pre>
+</section>
+<section id="videos" aria-label="同帧检测视频"></section>
+<p id="empty" class="muted">等待视频。各图像来源独立显示，视频与目标数据必须来自同一个原帧。</p>
+<section class="panel table-wrap">
+<table><thead><tr><th>来源 / 原帧</th><th>类别</th><th>公开 ID / UID</th><th>原图中心像素 / 边框</th><th>位置 / 坐标系</th><th>状态 / 证据</th><th>操作</th></tr></thead><tbody id="targets"></tbody></table>
+<p id="trajectory" class="muted">等待选中目标轨迹</p>
+</section>
+<details class="panel"><summary>运行状态与接口</summary><pre id="state">等待 state</pre>
+<p class="muted">像素位置以原图左上角为原点。有效三维位置单独显示其坐标系和测量时间；缺少测量时显示无效。视频使用后端同帧标注的无损 PNG，画布内部宽高等于原图，页面仅缩放显示。</p>
+<p><a href="perception_api.json">机器可读接口文件</a> · <a href="perception_client.js">可嵌入客户端</a> · <a href="perception_video.js">视频与坐标工具</a></p>
+</details>
+<script src="perception_video.js"></script>
+<script src="perception_client.js"></script>
+<script src="perception_ui.js"></script>
+</body>
+</html>

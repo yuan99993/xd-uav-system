@@ -306,6 +306,9 @@ class TrackController {
                                    std::string* rejection_reason = nullptr) const;
   TrackVelocity compute(double now);
   void setVehicleState(const VehicleState& state);
+  // Read-only capture-time pose shared by guidance and global identities.
+  // Caller must use the same synchronization as setVehicleState().
+  bool vehicleStateAtObservationTime(double stamp, VehicleState* state) const;
   void setGimbalState(const GimbalStateData& state);
   void clearMeasurement(const std::string& reason = "target box is invalid");
   bool setProfile(FollowerProfile profile);
@@ -391,7 +394,6 @@ class TrackController {
   bool metricObservationFromMeasurement(const TargetMeasurement& incoming,
                                         MetricObservation* observation,
                                         std::string* rejection_reason) const;
-  bool vehicleStateAtObservationTime(double stamp, VehicleState* state) const;
   bool applyMetricObservation(const MetricObservation& observation,
                               bool enforce_gate,
                               std::string* rejection_reason);

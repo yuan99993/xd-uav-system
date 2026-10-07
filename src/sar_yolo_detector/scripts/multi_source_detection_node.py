@@ -9,11 +9,14 @@ xd_uav_track remains the owner of all temporal identities.
 from __future__ import annotations
 
 import math
+import json
+from collections import deque
 import resource
 import sys
 import threading
 import time
 from dataclasses import replace
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -23,8 +26,13 @@ import cv2
 import numpy as np
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from sensor_msgs.msg import Image
+from std_msgs.msg import String
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
-from xd_uav_track.msg import DetectionArray, DetectionCandidate, TrackStateArray
+from xd_uav_track.msg import (DetectionArray, DetectionCandidate, TrackStateArray,
+                              PerceptionState, PerceptionTargetArray, SetDetectorModelCommand, DetectorModelCommit)
+from xd_uav_track.perception_policy import detector_rate, admit_frame
+from sar_yolo_detector.msg import DetectorModelInfo
+from sar_yolo_detector.srv import ListDetectorModels, ListDetectorModelsResponse
 from xd_uav_track.reid import AppearanceEncoder
 from xd_uav_track.pixel_lock import (blend_boxes, coast_box, color_box, compatible_box, flow_box,
                                       turn_compatible_box)
@@ -35,6 +43,9 @@ from sar_yolo_detector.pixeagle.backends.tensorrt_compat import (
     sha256_file,
 )
 from sar_yolo_detector.scripts_compat import image_to_bgr
+from sar_yolo_detector.model_registry import load_model_registry, identify_model
+from sar_yolo_detector.model_runtime_status import build_model_status
+from sar_yolo_detector.model_switch import ModelSwitch, SwitchError
 from sar_yolo_detector.pixeagle.detection_adapter import NormalizedDetection
 
 
@@ -79,6 +90,7 @@ def _xd_candidate(detection, width: int, height: int):
     output.track_id_is_stable = False
     output.class_id = int(detection.class_id)
     output.confidence = _bounded(detection.confidence, 0.0, 0.0, 1.0)
+    output.measurement_source = "detector"
     output.bbox = [x1, y1, x2, y2]
     output.has_bbox = True
     return output
@@ -122,6 +134,8 @@ class MultiSourceDetectionNode:
         self._reid_stale = 0
         self._reid_ms_ewma = 0.0
         self._inference_ms_ewma = 0.0
+        self._gpu_wait_ms_ewma = 0.0
+        self._batch_total_ms_ewma = 0.0
         self._inference_batches = 0
         self._last_batch_size = 0
         self._last_success_wall = 0.0
@@ -130,9 +144,19 @@ class MultiSourceDetectionNode:
         self._startup_started_wall = time.monotonic()
         self._startup_duration_sec = 0.0
         self._tracking_lock = threading.Lock()
+        self._pixel_roi_requests = {}
+        self._pixel_observations = {}
+        self._independent_pixels = bool(rospy.get_param('perception/high_frequency_pixel_enabled', False))
+        self._gpu_lock = threading.Lock()
+        self._switch_ready = threading.Event()
         self._priority_source = str(rospy.get_param(
             "~priority_source", "") or "").strip()
         self._priority_source_wall = time.monotonic() if self._priority_source else 0.0
+        self._selected_source_wall: Dict[str, float] = {}
+        self._preferred_tracking_source = str(rospy.get_param(
+            "~preferred_tracking_source", "") or "").strip()
+        self._search_priority_source = str(rospy.get_param(
+            "~search_priority_source", "") or "").strip()
         self._priority_source_timeout_sec = max(0.1, float(rospy.get_param(
             "~priority_source_timeout_sec", 0.75)))
         self._discovery_max_fps = max(0.0, float(rospy.get_param(
@@ -205,6 +229,12 @@ class MultiSourceDetectionNode:
             "~pause_without_subscribers", True))
         self._package_root = Path(rospkg.RosPack().get_path(
             "sar_yolo_detector")).resolve()
+        registry_path = str(rospy.get_param(
+            "~model_registry", str(self._package_root / "config/model_registry.yaml")))
+        self._model_registry = load_model_registry(registry_path,
+                                                   self._package_root)
+        self._model_epoch = int(rospy.get_param("perception/model_epoch", 0)) + 1
+        self._source_model_sha256 = ""
         config: Dict[str, Any] = dict(rospy.get_param("~SmartTracker", {}))
         self._allowed_class_ids = frozenset(
             int(value) for value in config.get(
@@ -224,6 +254,7 @@ class MultiSourceDetectionNode:
             "~inference_backend", "tensorrt_fp16") or "tensorrt_fp16").strip().lower()
         model_path = str(rospy.get_param(
             "~model_path", config.get("SMART_TRACKER_GPU_MODEL_PATH", "")) or "").strip()
+        self._configured_model_path = model_path
         engine_path = str(rospy.get_param("~engine_path", "") or "").strip()
         auto_export_engine = False
         auto_engine_options = None
@@ -234,6 +265,7 @@ class MultiSourceDetectionNode:
                 "SMART_TRACKER_MODEL_SHA256", "") or "").strip()
             engine_source_sha256 = str(rospy.get_param(
                 "~engine_source_model_sha256", "") or "").strip().lower()
+            self._source_model_sha256 = engine_source_sha256
             auto_export_engine = bool(rospy.get_param("~auto_export_engine", True))
             auto_engine_options = {
                 "cache_dir": Path(str(rospy.get_param(
@@ -256,6 +288,7 @@ class MultiSourceDetectionNode:
                 engine_sha256 = observed_engine_sha256
             else:
                 source_model_sha256 = sha256_file(Path(model_path).expanduser())
+                self._source_model_sha256 = source_model_sha256
                 if (expected_model_sha256 and
                         source_model_sha256 != expected_model_sha256.lower()):
                     raise RuntimeError(
@@ -303,6 +336,7 @@ class MultiSourceDetectionNode:
             }
         else:
             requested_model = model_path
+            self._source_model_sha256 = sha256_file(Path(model_path).expanduser())
         if not requested_model:
             raise RuntimeError("~model_path or SmartTracker GPU model path is required")
         self._backend = create_backend("ultralytics", config=config)
@@ -349,6 +383,15 @@ class MultiSourceDetectionNode:
                 fallback_enabled=allow_cpu_fallback,
                 context="multi_source_detection_host_matched_engine",
             )
+        self._active_model_id = identify_model(
+            self._model_registry, self._source_model_sha256)
+        rospy.set_param("perception/model_epoch", self._model_epoch)
+        self._backend_config = deepcopy(config)
+        self._class_names = self._model_registry.get(self._active_model_id, {}).get(
+            "class_names", [])
+        self._model_snapshot = (self._runtime, self._active_model_id,
+            self._source_model_sha256, self._model_epoch, self._class_names,
+            self._configured_model_path)
         self._confidence = _bounded(config.get("SMART_TRACKER_CONFIDENCE_THRESHOLD", 0.25),
                                     0.25, 0.0, 1.0)
         self._iou = _bounded(config.get("SMART_TRACKER_IOU_THRESHOLD", 0.45),
@@ -396,6 +439,7 @@ class MultiSourceDetectionNode:
                     profile_config["active_model_profile"] = profile
                 self._encoders[profile] = AppearanceEncoder(profile_config)
             source = dict(raw)
+            source["image_source"] = image_source
             source["last_stamp"] = rospy.Time(0)
             source["xd_publisher"] = (rospy.Publisher(
                 xd_topic, DetectionArray, queue_size=1) if xd_topic else None)
@@ -406,8 +450,21 @@ class MultiSourceDetectionNode:
             source["reid_profile"] = profile
             source["maximum_reid_rois"] = max(1, int(raw.get("maximum_reid_rois_per_frame", 32)))
             source["last_accept_wall"] = 0.0
+            for mode, default in (("discovery", self._discovery_max_fps),
+                                  ("priority", self._priority_max_fps),
+                                  ("standby", self._standby_max_fps)):
+                source[mode + "_max_fps"] = max(0.0, float(raw.get(
+                    mode + "_max_fps", default)))
             source["roi_recovery_enabled"] = bool(raw.get(
                 "roi_recovery_enabled", name == "fixed"))
+            source["pixel_tracking_attempts"] = 0
+            source["pixel_tracking_valid"] = 0
+            source["pixel_assist_frames"] = 0
+            source["pixel_assist_rejected"] = 0
+            source["pixel_color_attempts"] = 0
+            source["pixel_color_valid"] = 0
+            source["roi_attempts"] = 0
+            source["roi_hits"] = 0
             source["roi_padding_ratio"] = max(0.25, min(3.0, float(raw.get(
                 "roi_padding_ratio", 1.0))))
             source["roi_target_short_side"] = max(16, int(raw.get(
@@ -433,7 +490,29 @@ class MultiSourceDetectionNode:
             self._sources[name] = source
         self._priority_source = self._source_name_by_image_source.get(
             self._priority_source, self._priority_source)
+        self._preferred_tracking_source = self._source_name_by_image_source.get(
+            self._preferred_tracking_source, self._preferred_tracking_source)
+        self._search_priority_source = self._source_name_by_image_source.get(
+            self._search_priority_source, self._search_priority_source)
+        for source_name in (self._priority_source, self._preferred_tracking_source,
+                            self._search_priority_source):
+            if source_name and source_name not in self._sources:
+                raise RuntimeError("unknown detector priority source: %s" % source_name)
         self._tracking_subscriber = None
+        self._perception_state = None
+        self._perception_state_wall = 0.0
+        self._runtime_signature = None
+        self._runtime_generation = 0
+        self._runtime_reset_requested = threading.Event()
+        self._track_anchor_fps = max(0.2, float(rospy.get_param("~track_anchor_fps", 1.0)))
+        self._track_standby_fps = max(0.2, float(rospy.get_param("~track_standby_fps", 0.5)))
+        self._pixel_roi_subscriber = rospy.Subscriber('perception/internal/roi_request', String,
+            self._pixel_roi_callback, queue_size=1)
+        self._pixel_observations_subscriber = rospy.Subscriber('perception/internal/pixel_observations',
+            PerceptionTargetArray,self._pixel_observations_callback,queue_size=1)
+        self._perception_subscriber = rospy.Subscriber(
+            "perception/state", PerceptionState, self._perception_callback,
+            queue_size=1, tcp_nodelay=True)
         if self._tracking_tracks_topic:
             self._tracking_subscriber = rospy.Subscriber(
                 self._tracking_tracks_topic, TrackStateArray,
@@ -446,9 +525,26 @@ class MultiSourceDetectionNode:
                 target=self._reid_worker_loop,
                 name="multi_source_reid", daemon=True)
             self._reid_worker.start()
-        self._worker.start()
         self._diagnostics_publisher = rospy.Publisher(
             "/diagnostics", DiagnosticArray, queue_size=2)
+        self._model_status_publisher = rospy.Publisher(
+            "~model_status", DiagnosticArray, queue_size=1, latch=True)
+        self._list_models_service = rospy.Service(
+            "~list_models", ListDetectorModels, self._list_models)
+        self._public_models_service = rospy.Service(
+            "perception/models/list", ListDetectorModels, self._list_models)
+        self._model_commit_pub = rospy.Publisher(
+            "perception/internal/model/result", DetectorModelCommit, queue_size=10, latch=True)
+        self._switcher = ModelSwitch(
+            self._model_registry, self._load_switch_candidate, self._gpu_memory,
+            self._wake_switch, self._switch_failed,
+            reserve_bytes=int(rospy.get_param("~model_switch/reserve_mib", 256)) * 1024**2,
+            candidate_bytes=int(rospy.get_param("~model_switch/candidate_mib", 768)) * 1024**2)
+        self._model_command_sub = rospy.Subscriber(
+            "perception/internal/model/set", SetDetectorModelCommand,
+            self._model_command, queue_size=1)
+        self._worker.start()
+        self._publish_model_status()
         self._diagnostics_timer = rospy.Timer(
             rospy.Duration(1.0), self._publish_diagnostics)
         rospy.on_shutdown(self.close)
@@ -471,6 +567,7 @@ class MultiSourceDetectionNode:
             self._condition.notify_all()
         with self._reid_condition:
             self._reid_condition.notify_all()
+        self._switcher.close()
         if self._worker is not threading.current_thread():
             self._worker.join(timeout=3.0)
         if (self._reid_worker is not None and
@@ -499,9 +596,23 @@ class MultiSourceDetectionNode:
             rospy.logwarn_throttle(2.0, "shared YOLO rejected zero image timestamp")
             return
         now = rospy.Time.now()
+        if not now.is_zero() and not stamp.is_zero() and (stamp - now).to_sec() > 1.0:
+            return
         if (not stamp.is_zero() and not now.is_zero() and self._maximum_age_sec > 0.0 and
                 (now - stamp).to_sec() > self._maximum_age_sec):
             return
+        previous = source["last_stamp"]
+        if (self._reject_out_of_order and not stamp.is_zero() and
+                not previous.is_zero() and stamp < previous and
+                (previous - stamp).to_sec() > 5.0):
+            # Invalidate in-flight inference/ReID before accepting the new time
+            # segment. Worker performs template/cache cleanup at batch boundary.
+            # Never take tracking lock while holding the condition lock.
+            with self._tracking_lock:
+                self._runtime_generation += 1
+                self._runtime_reset_requested.set()
+            source["last_stamp"] = rospy.Time(0)
+            rospy.logwarn("shared YOLO source clock restarted: %s", source_name)
         with self._condition:
             previous = source["last_stamp"]
             if self._reject_out_of_order and not stamp.is_zero() and not previous.is_zero() and stamp <= previous:
@@ -515,6 +626,8 @@ class MultiSourceDetectionNode:
             self._condition.notify()
 
     def _tracking_callback(self, message: TrackStateArray) -> None:
+        if message.model_epoch and message.model_epoch != self._model_epoch:
+            return
         """Feed only source priority and prediction ROI hints from the tracker.
 
         This is a one-way scheduling hint.  Detection remains authoritative for
@@ -525,6 +638,7 @@ class MultiSourceDetectionNode:
         if source is None:
             return
         selected = None
+        selected_for_priority = False
         hints = []
         now_wall = time.monotonic()
         for track in message.tracks:
@@ -535,6 +649,9 @@ class MultiSourceDetectionNode:
                 continue
             if track.selected:
                 selected = ((x1, y1, x2, y2), int(track.class_id), now_wall)
+                selected_for_priority = (
+                    track.lifecycle_state in ("confirmed", "occluded") and
+                    track.frames_since_detection <= 3)
             if (track.selected or
                     (track.lifecycle_state in (
                         "tentative", "confirmed", "occluded", "lost")
@@ -553,9 +670,13 @@ class MultiSourceDetectionNode:
         pixel_hints = [item[2] for item in hints[:self._pixel_assist_max_tracks]]
         with self._tracking_lock:
             if selected is not None:
-                self._priority_source = source
-                self._priority_source_wall = time.monotonic()
                 self._tracked_boxes[source] = selected
+                if selected_for_priority:
+                    self._selected_source_wall[source] = now_wall
+                else:
+                    self._selected_source_wall.pop(source, None)
+            else:
+                self._selected_source_wall.pop(source, None)
             if not pixel_hints:
                 self._pixel_track_hints.pop(source, None)
             else:
@@ -567,44 +688,89 @@ class MultiSourceDetectionNode:
 
     def _current_priority_source(self) -> str:
         with self._tracking_lock:
+            now = time.monotonic()
+            for source, updated in tuple(self._selected_source_wall.items()):
+                if now - updated > self._priority_source_timeout_sec:
+                    del self._selected_source_wall[source]
+            if self._preferred_tracking_source in self._selected_source_wall:
+                return self._preferred_tracking_source
+            if self._priority_source in self._selected_source_wall:
+                return self._priority_source
+            if self._selected_source_wall:
+                return max(self._selected_source_wall,
+                           key=self._selected_source_wall.get)
             if (self._priority_source and
-                    time.monotonic() - self._priority_source_wall <=
+                    now - self._priority_source_wall <=
                     self._priority_source_timeout_sec):
                 return self._priority_source
-            self._priority_source = ""
             return ""
+
+    def _perception_callback(self, message):
+        if message.mode not in ("detect", "track", "fusion"):
+            return
+        with self._tracking_lock:
+            signature = (message.session_id, message.mode, message.model_epoch)
+            previous = getattr(self, "_runtime_signature", None)
+            self._runtime_signature = signature
+            if previous is not None and previous != signature:
+                self._runtime_generation = getattr(self, "_runtime_generation", 0) + 1
+                if not hasattr(self, "_runtime_reset_requested"):
+                    self._runtime_reset_requested = threading.Event()
+                self._runtime_reset_requested.set()
+            self._perception_state = message
+            self._perception_state_wall = time.monotonic()
+            selected = self._source_name_by_image_source.get(message.selected_image_source)
+            if selected and message.selection_active:
+                self._priority_source = selected
+                self._priority_source_wall = self._perception_state_wall
+        # Never take condition while holding tracking_lock: the inference
+        # scheduler takes those locks in the opposite order.
+        if hasattr(self, "_condition"):
+            with self._condition:
+                self._condition.notify_all()
 
     def _source_rate_available(self, source_name: str, source: Dict[str, Any]) -> bool:
         priority = self._current_priority_source()
         if priority:
-            limit = self._priority_max_fps if source_name == priority else self._standby_max_fps
+            mode = "priority" if source_name == priority else "standby"
         else:
-            limit = self._discovery_max_fps
-        if limit <= 0.0:
-            return True
-        now = time.monotonic()
-        last = float(source.get("last_accept_wall", 0.0))
-        if last > 0.0 and now - last < 1.0 / limit:
-            return False
-        source["last_accept_wall"] = now
-        return True
+            mode = "discovery"
+        limit = source[mode + "_max_fps"]
+        with self._tracking_lock:
+            state = self._perception_state
+            if state is not None and time.monotonic()-self._perception_state_wall < 2.5:
+                if state.mode in ("detect", "fusion"):
+                    # Selecting a SOT must not throttle background discovery.
+                    # Track alone deliberately trades search rate for its lock.
+                    limit = source["discovery_max_fps"]
+                limit = detector_rate(
+                    state.mode, state.operating_state == "TRACKING",
+                    state.selected_image_source, source["image_source"], limit,
+                    self._track_anchor_fps, self._track_standby_fps)
+        return admit_frame(source, time.monotonic(), limit)
 
     def _worker_loop(self) -> None:
         if not self._run_startup_warmup():
             return
         while not rospy.is_shutdown():
+            self._commit_switch()
             with self._condition:
-                while not self._pending and not self._closing and not rospy.is_shutdown():
+                while (not self._pending and not self._switch_ready.is_set() and
+                       not self._runtime_reset_requested.is_set() and
+                       not self._closing and not rospy.is_shutdown()):
                     self._condition.wait(timeout=0.25)
                 if self._closing or rospy.is_shutdown():
                     return
+                if self._switch_ready.is_set() or self._runtime_reset_requested.is_set():
+                    continue
                 # A short collection window batches simultaneously-arriving cameras;
                 # latest-only semantics keep latency bounded under overload.
                 deadline = time.monotonic() + self._batch_wait_sec
                 while (len(self._pending) < self._maximum_batch_size and
                        time.monotonic() < deadline and not self._closing):
                     self._condition.wait(timeout=max(0.0, deadline - time.monotonic()))
-                priority = self._current_priority_source()
+                priority = (self._current_priority_source() or
+                            self._search_priority_source)
                 items = sorted(
                     self._pending.items(),
                     key=lambda item: (0 if priority and item[0] == priority else 1)
@@ -617,17 +783,26 @@ class MultiSourceDetectionNode:
                 rospy.logerr_throttle(1.0, "shared YOLO processing failed: %s", error)
 
     def _process_batch(self, items: List[Tuple[str, Image]]) -> None:
+        batch_started = time.perf_counter()
+        generation = getattr(self, "_runtime_generation", 0)
         decoded = [(name, message, image_to_bgr(message)) for name, message in items]
         frames = [item[2] for item in decoded]
         same_shape = len({tuple(frame.shape) for frame in frames}) == 1
         start = time.perf_counter()
-        if len(frames) > 1 and same_shape:
-            results = self._backend.detect_many(frames, self._confidence, self._iou,
-                                                self._maximum_detections)
-        else:
-            results = [self._backend.detect(frame, self._confidence, self._iou,
-                                            self._maximum_detections) for frame in frames]
-        inference_ms = 1000.0 * (time.perf_counter() - start)
+        # Serialize CUDA calls against candidate warmup, not CPU decoding,
+        # pixel tracking, ROS serialization or publishing.
+        with self._gpu_lock:
+            gpu_started = time.perf_counter()
+            if len(frames) > 1 and same_shape:
+                results = self._backend.detect_many(frames, self._confidence, self._iou,
+                                                    self._maximum_detections)
+            else:
+                results = [self._backend.detect(frame, self._confidence, self._iou,
+                                                self._maximum_detections) for frame in frames]
+            inference_ms = 1000.0 * (time.perf_counter() - gpu_started)
+        wait_ms = 1000.0 * (gpu_started - start)
+        previous_wait = getattr(self, '_gpu_wait_ms_ewma', wait_ms)
+        self._gpu_wait_ms_ewma = previous_wait + .1 * (wait_ms - previous_wait)
         self._inference_batches += 1
         self._last_batch_size = len(items)
         self._inference_ms_ewma = (
@@ -635,27 +810,43 @@ class MultiSourceDetectionNode:
             self._inference_ms_ewma + 0.10 *
             (inference_ms - self._inference_ms_ewma))
         for (name, message, frame), (_, detections) in zip(decoded, results):
+            if generation != getattr(self, "_runtime_generation", 0):
+                continue
             now = rospy.Time.now()
             if (not message.header.stamp.is_zero() and not now.is_zero() and
                     self._maximum_age_sec > 0.0 and
                     (now - message.header.stamp).to_sec() > self._maximum_age_sec):
                 continue
-            self._publish(name, message, frame, detections)
+            self._publish(name, message, frame, detections, generation)
             self._processed += 1
             self._last_success_wall = time.monotonic()
+        total_ms = 1000.0 * (time.perf_counter() - batch_started)
+        previous_total = getattr(self, '_batch_total_ms_ewma', total_ms)
+        self._batch_total_ms_ewma = total_ms if self._inference_batches == 1 else previous_total + .1 * (total_ms - previous_total)
         rospy.loginfo_throttle(10.0, "shared YOLO received=%d processed=%d backlog_drop=%d batch=%d inference_ms=%.2f",
                                self._received, self._processed, self._dropped_backlog,
                                len(items), inference_ms)
 
-    def _publish(self, name: str, message: Image, frame, detections) -> None:
+    def _publish(self, name: str, message: Image, frame, detections,
+                 generation=None) -> None:
+        if generation is None:
+            generation = getattr(self, "_runtime_generation", 0)
         source = self._sources[name]
         detections = self._filter_oversized(detections, message.width, message.height)
-        detections = self._recover_with_prediction_roi(name, frame, detections)
+        if not getattr(self, '_independent_pixels', False):
+            detections = self._recover_with_prediction_roi(name, frame, detections)
         detections = self._filter_oversized(detections, message.width, message.height)
         detections = self._filter_detection_area(
             source, detections, message.width, message.height)
-        detections, pixel_assists = self._add_pixel_assist(
-            name, message, frame, detections)
+        if getattr(self, '_independent_pixels', False):
+            detections, pixel_assists = self._merge_pixel_observations(name,message,detections)
+            with self._tracking_lock:
+                request = self._pixel_roi_requests.pop(name, None)
+            if request is not None and time.monotonic() - request[2] <= 1.:
+                detections = self._recover_with_prediction_roi(name, frame, detections, request)
+        else:
+            detections, pixel_assists = self._add_pixel_assist(name, message, frame, detections)
+        detections = self._filter_oversized(detections, message.width, message.height)
         detections = self._filter_detection_area(
             source, detections, message.width, message.height)
         xd_output = DetectionArray() if source["xd_publisher"] is not None else None
@@ -666,8 +857,13 @@ class MultiSourceDetectionNode:
             xd_output.image_source = str(source.get("image_source", name))
             xd_output.sensor_id = str(source.get("sensor_id", name))
             xd_output.detector_name = str(source.get("detector_name", "sar_yolo_detector"))
-            xd_output.model_version = str(source.get("model_version", "unknown"))
+            xd_output.model_version = "%s:%s" % (self._active_model_id,
+                                                  self._source_model_sha256)
+            xd_output.model_epoch = self._model_epoch
+            xd_output.class_names = self._class_names
         vision = Detection2DArray() if source["vision_publisher"] is not None else None
+        if generation != getattr(self, "_runtime_generation", 0):
+            return
         if vision is not None:
             vision.header = message.header
         pixel_assist_ids = {id(item) for item in pixel_assists}
@@ -681,31 +877,36 @@ class MultiSourceDetectionNode:
             if xd_output is not None:
                 candidate = _xd_candidate(detection, int(message.width), int(message.height))
                 if candidate is not None:
+                    if is_pixel_assist:
+                        candidate.measurement_source = "visual_tracker"
                     xd_output.candidates.append(candidate)
                     if is_pixel_assist:
                         pixel_candidate_indices.add(len(xd_output.candidates) - 1)
-        if vision is not None:
-            source["vision_publisher"].publish(vision)
-        if xd_output is None:
-            return
-        reid_indices = [index for index in range(len(xd_output.candidates))
+        reid_indices = [index for index in range(len(xd_output.candidates) if xd_output else 0)
                         if index not in pixel_candidate_indices]
-        if source["reid_enabled"] and reid_indices:
+        if xd_output is not None and source["reid_enabled"] and reid_indices:
             self._attach_recent_reid(name, xd_output, reid_indices)
         # Tracking observations must never wait for a slow appearance model.
         # The worker caches descriptors for a later geometrically matched
         # frame, instead of dropping this DetectionArray on ReID timeout.
-        if source["xd_publisher"] is not None:
+        # Commit publication under a short generation lock. A mode callback
+        # cannot invalidate this batch between its final check and ROS publish.
+        with self._tracking_lock:
+            if generation != getattr(self, "_runtime_generation", 0):
+                return
+            if vision is not None:
+                source["vision_publisher"].publish(vision)
+            if xd_output is None:
+                return
             source["xd_publisher"].publish(xd_output)
-        if not source["reid_enabled"] or not reid_indices:
-            return
-        # ReID is intentionally decoupled from YOLO. One newest job is retained
-        # per source so a crowded frame cannot stall the next detector batch.
-        with self._reid_condition:
-            if name in self._pending_reid:
-                self._reid_dropped_backlog += 1
-            self._pending_reid[name] = (frame, xd_output, reid_indices)
-            self._reid_condition.notify()
+            if not source["reid_enabled"] or not reid_indices:
+                return
+            # ReID stays decoupled, with only the newest source job retained.
+            with self._reid_condition:
+                if name in self._pending_reid:
+                    self._reid_dropped_backlog += 1
+                self._pending_reid[name] = (frame, xd_output, reid_indices, generation)
+                self._reid_condition.notify()
 
     def _filter_detection_area(self, source, detections, width, height):
         """Optional per-camera valid image region; benchmark masks are not global."""
@@ -729,7 +930,7 @@ class MultiSourceDetectionNode:
     def _attach_recent_reid(self, name, output, candidate_indices):
         with self._reid_condition:
             cached = self._recent_reid.get(name)
-        if cached is None:
+        if cached is None or cached.get("epoch", 0) != output.model_epoch:
             return
         age = output.header.stamp.to_sec() - cached["stamp"]
         if not 0.0 < age <= self._reid_cache_age_sec:
@@ -794,6 +995,7 @@ class MultiSourceDetectionNode:
                         image_velocity)
 
     def _add_pixel_assist(self, name, message, frame, detections):
+        source = self._sources[name]
         with self._tracking_lock:
             hints = tuple(self._pixel_track_hints.get(name, ()))
             confirmed_boxes = tuple(self._other_confirmed_boxes.get(name, ()))
@@ -819,16 +1021,19 @@ class MultiSourceDetectionNode:
             moved = None
             if within_gap and track_id in previous_boxes:
                 self._pixel_tracking_attempts += 1
+                source["pixel_tracking_attempts"] += 1
                 start = time.perf_counter()
                 moved = self._flow_bbox(previous["gray"], gray,
                                         previous_boxes[track_id], dt_sec,
                                         velocity)
                 if moved is None and previous.get("frame") is not None:
                     self._pixel_color_attempts += 1
+                    source["pixel_color_attempts"] += 1
                     moved = color_box(previous["frame"], frame,
                                       previous_boxes[track_id], dt_sec)
                     if moved is not None:
                         self._pixel_color_valid += 1
+                        source["pixel_color_valid"] += 1
                 elapsed_ms = 1000.0 * (time.perf_counter() - start)
                 self._pixel_assist_ms_ewma = (
                     elapsed_ms if self._pixel_tracking_attempts == 1 else
@@ -836,7 +1041,8 @@ class MultiSourceDetectionNode:
                     (elapsed_ms - self._pixel_assist_ms_ewma))
             if moved is not None:
                 self._pixel_tracking_valid += 1
-                available = [item for item in detections if id(item) not in claimed]
+                source["pixel_tracking_valid"] += 1
+                available = (item for item in detections if id(item) not in claimed)
                 matched = self._matching_detection(available, moved, class_id)
                 belongs_to_other = (matched is not None and any(
                     other_id != track_id and
@@ -885,12 +1091,15 @@ class MultiSourceDetectionNode:
                         assists.append(synthetic)
                         claimed.add(id(synthetic))
                         self._pixel_assist_frames += 1
+                        source["pixel_assist_frames"] += 1
                     else:
                         self._pixel_assist_rejected += 1
+                        source["pixel_assist_rejected"] += 1
             else:
                 if within_gap and track_id in previous_boxes:
                     self._pixel_assist_rejected += 1
-                available = [item for item in detections if id(item) not in claimed]
+                    source["pixel_assist_rejected"] += 1
+                available = (item for item in detections if id(item) not in claimed)
                 # Lead is a bounded association hint only: it never creates a
                 # box or a new ID without current image evidence.
                 lead = coast_box(box, velocity, min(0.25, max(0.0, elapsed)),
@@ -930,12 +1139,105 @@ class MultiSourceDetectionNode:
                 accepted.append(item)
         return accepted
 
-    def _recover_with_prediction_roi(self, name: str, frame, detections):
+    def _pixel_observations_callback(self, message):
+        name = self._source_name_by_image_source.get(message.image_source)
+        if (not name or message.model_epoch != self._model_epoch or
+                message.image_width <= 0 or message.image_height <= 0):
+            return
+        with self._tracking_lock:
+            history = self._pixel_observations.setdefault(name,deque(maxlen=16))
+            if history and message.header.stamp <= history[-1].header.stamp:
+                return
+            # Do not accept unlimited externally supplied targets.
+            snapshot = deepcopy(message)
+            snapshot.targets = snapshot.targets[:self._pixel_assist_max_tracks]
+            history.append(snapshot)
+
+    def _merge_pixel_observations(self, name, message, detections):
+        with self._tracking_lock:
+            history = self._pixel_observations.get(name, ())
+            snapshot = next((m for m in reversed(history) if m.model_epoch == self._model_epoch and
+                m.header.stamp == message.header.stamp and m.image_width == message.width and
+                m.image_height == message.height),None)
+        if snapshot is None:
+            return detections, ()
+        result, assists, claimed = list(detections), [], set()
+        targets = [t for t in snapshot.targets if t.lifecycle_state=='confirmed' and
+            t.measurement_source=='visual_tracker' and t.tracking_quality >= .4]
+        # A detector box spanning two independent image observations is not a
+        # new vehicle. Discard the merged observation before it can anchor a
+        # new high-confidence identity or contaminate either visual target.
+        filtered=[]
+        for detection in result:
+            box=detection.aabb_xyxy
+            covered=[t for t in targets if box is not None and
+                _association_class_compatible(detection.class_id,t.class_id,self._compatible_class_ids) and
+                _box_iou(box,t.bbox_xyxy)>=.02 and
+                box[0]<=t.center_px[0]<=box[2] and box[1]<=t.center_px[1]<=box[3]]
+            if len(covered)>=2 and (box[2]-box[0])*(box[3]-box[1])>=1.15*max(
+                    (t.bbox_xyxy[2]-t.bbox_xyxy[0])*(t.bbox_xyxy[3]-t.bbox_xyxy[1]) for t in covered):
+                continue
+            filtered.append(detection)
+        result=filtered
+        for target in targets:
+            moved = tuple(target.bbox_xyxy)
+            if (not 0 <= moved[0] < moved[2] <= message.width or
+                    not 0 <= moved[1] < moved[3] <= message.height):
+                continue
+            matched = self._matching_detection([d for d in result if id(d) not in claimed],
+                moved,target.class_id)
+            competitor = matched is not None and any(t.track_id != target.track_id and
+                _box_iou(matched.aabb_xyxy,t.bbox_xyxy) >= .15 for t in targets)
+            if matched is not None and (compatible_box(moved,matched.aabb_xyxy) or
+                    not competitor and turn_compatible_box(moved,matched.aabb_xyxy)):
+                box = blend_boxes(moved,matched.aabb_xyxy)
+                corrected = replace(matched,aabb_xyxy=box,
+                    center_xy=(int((box[0]+box[2])/2),int((box[1]+box[3])/2)))
+                result = [corrected if d is matched else d for d in result]
+                claimed.add(id(corrected))
+            elif not any(d.aabb_xyxy is not None and _box_iou(moved,d.aabb_xyxy)>=.15 for d in result) and \
+                    not any(t.track_id != target.track_id and _box_iou(moved,t.bbox_xyxy)>=.35 for t in targets):
+                synthetic = NormalizedDetection(track_id=-1,track_id_is_stable=False,
+                    class_id=target.class_id,confidence=self._pixel_assist_confidence,
+                    aabb_xyxy=moved,center_xy=(int(target.center_px[0]),int(target.center_px[1])))
+                result.append(synthetic); assists.append(synthetic)
+        return result, tuple(assists)
+
+    def _pixel_roi_callback(self, message):
+        if len(message.data)>2048:
+            return
+        try:
+            data = json.loads(message.data)
+            name = self._source_name_by_image_source.get(data.get('image_source'))
+            stamp = float(data['capture_stamp'])
+            box = [float(value) for value in data['box']]
+            if (not name or int(data['model_epoch']) != self._model_epoch or len(box) != 4 or
+                    not all(math.isfinite(v) for v in box) or not math.isfinite(stamp) or
+                    not 0. < box[2] <= 1. or not 0. < box[3] <= 1. or
+                    not 0. <= box[0] <= 1. or not 0. <= box[1] <= 1. or
+                    abs((rospy.Time.now() - rospy.Time.from_sec(stamp)).to_sec()) > 1.):
+                return
+            source = self._sources[name]
+            # Pixel coordinates are resolved on the next actual image, not on
+            # a caller-provided resolution. Requests are bounded by source.
+            with self._tracking_lock:
+                self._pixel_roi_requests[name] = (box, int(data['class_id']), time.monotonic())
+        except (ValueError, TypeError, KeyError):
+            return
+
+    def _recover_with_prediction_roi(self, name: str, frame, detections, request=None):
         source = self._sources[name]
         if not source.get("roi_recovery_enabled", False):
             return detections
-        with self._tracking_lock:
-            hint = self._tracked_boxes.get(name)
+        if request is not None:
+            norm, class_id, wall = request
+            h, w = frame.shape[:2]
+            cx, cy, bw, bh = norm
+            hint = ((int((cx-bw/2)*w), int((cy-bh/2)*h),
+                     int((cx+bw/2)*w), int((cy+bh/2)*h)), class_id, wall)
+        else:
+            with self._tracking_lock:
+                hint = self._tracked_boxes.get(name)
         if hint is None:
             return detections
         predicted_box, predicted_class, hint_wall = hint
@@ -968,12 +1270,14 @@ class MultiSourceDetectionNode:
                 bottom - top < source.get("roi_min_short_side", 24):
             return detections
         self._roi_attempts += 1
+        source["roi_attempts"] += 1
         start = time.perf_counter()
         try:
-            _, roi_detections = self._backend.detect(
-                frame[top:bottom, left:right], self._confidence, self._iou,
-                self._maximum_detections,
-                self._roi_inference_image_size or None)
+            with self._gpu_lock:
+                _, roi_detections = self._backend.detect(
+                    frame[top:bottom, left:right], self._confidence, self._iou,
+                    self._maximum_detections,
+                    self._roi_inference_image_size or None)
         except Exception as error:
             rospy.logwarn_throttle(2.0, "prediction ROI recovery failed for %s: %s",
                                    name, error)
@@ -995,6 +1299,8 @@ class MultiSourceDetectionNode:
                        max(0, min(width, int(rx2 + left))),
                        max(0, min(height, int(ry2 + top))))
             if shifted[2] <= shifted[0] or shifted[3] <= shifted[1]:
+                continue
+            if request is not None and _box_iou(predicted_box,shifted)<.18:
                 continue
             predicted_center = ((predicted_box[0] + predicted_box[2]) * 0.5,
                                 (predicted_box[1] + predicted_box[3]) * 0.5)
@@ -1027,6 +1333,7 @@ class MultiSourceDetectionNode:
             merged.sort(key=lambda item: float(item.confidence), reverse=True)
             merged = merged[:self._maximum_detections]
         self._roi_hits += 1
+        source["roi_hits"] += 1
         return merged
 
     def _reid_worker_loop(self) -> None:
@@ -1038,16 +1345,22 @@ class MultiSourceDetectionNode:
                 if self._closing or rospy.is_shutdown():
                     return
                 name = next(iter(self._pending_reid))
-                frame, output, candidate_indices = self._pending_reid.pop(name)
+                frame, output, candidate_indices, generation = self._pending_reid.pop(name)
             try:
                 self._encode_reid_cache(
-                    name, frame, output, candidate_indices)
+                    name, frame, output, candidate_indices, generation)
             except Exception as error:
                 rospy.logerr_throttle(1.0, "shared ReID processing failed: %s", error)
 
     def _encode_reid_cache(
             self, name: str, frame, output: DetectionArray,
-            candidate_indices: List[int]) -> None:
+            candidate_indices: List[int], generation=None) -> None:
+        if generation is None:
+            generation = getattr(self, "_runtime_generation", 0)
+        if generation != getattr(self, "_runtime_generation", 0):
+            return
+        if output.model_epoch != self._model_epoch:
+            return
         source = self._sources[name]
         start = time.perf_counter()
         encoder = self._encoders[source["reid_profile"]]
@@ -1070,10 +1383,14 @@ class MultiSourceDetectionNode:
             self._reid_stale += 1
         elif entries:
             with self._reid_condition:
+                if (output.model_epoch != self._model_epoch or
+                        generation != getattr(self, "_runtime_generation", 0)):
+                    self._reid_stale += 1
+                    return
                 previous = self._recent_reid.get(name)
                 stamp = output.header.stamp.to_sec()
                 if previous is None or stamp > previous["stamp"]:
-                    self._recent_reid[name] = {"stamp": stamp,
+                    self._recent_reid[name] = {"stamp": stamp, "epoch": output.model_epoch,
                                                "entries": entries}
         elapsed_ms = 1000.0 * (time.perf_counter() - start)
         self._reid_processed += 1
@@ -1102,10 +1419,180 @@ class MultiSourceDetectionNode:
             return False
 
     @staticmethod
+    def _gpu_memory():
+        import torch
+        if not torch.cuda.is_available():
+            raise SwitchError("GPU_UNAVAILABLE", "hot switching requires CUDA")
+        return torch.cuda.mem_get_info()
+
+    def _load_switch_candidate(self, item):
+        config = deepcopy(self._backend_config)
+        config["SMART_TRACKER_MODEL_SHA256_BY_NAME"] = {
+            Path(item["engine_path"]).name: item["engine_sha256"]}
+        config["SMART_TRACKER_ALLOWED_CLASS_IDS"] = list(range(len(item["class_names"])))
+        config["SMART_TRACKER_INFERENCE_IMAGE_SIZE"] = item["input_size"]
+        backend = create_backend("ultralytics", config=config)
+        try:
+            runtime = backend.load_model(item["engine_path"], DevicePreference.CUDA,
+                fallback_enabled=False, context="model_switch_candidate")
+            frame = np.zeros((item["input_size"], item["input_size"], 3), dtype=np.uint8)
+            # Separate acquisitions allow live batches between warmup passes.
+            for _ in range(2):
+                with self._gpu_lock:
+                    backend.detect(frame, self._confidence, self._iou, self._maximum_detections)
+            if [backend.get_model_labels()[i] for i in range(len(item["class_names"]))] != item["class_names"]:
+                raise SwitchError("CLASS_CONTRACT_MISMATCH", "engine labels differ from registry")
+            return backend, runtime
+        except Exception:
+            backend.unload_model()
+            raise
+
+    def _model_command(self, command):
+        # Public session/version/TTL validation belongs to the mode manager.
+        # Refuse internal commands not associated with its current live session.
+        state = self._perception_state
+        if not self._startup_ready:
+            self._switch_failed(command, "BUSY", "startup warmup is not complete")
+            return
+        if state is None or command.session_id != state.session_id:
+            self._switch_failed(command, "STALE_SESSION", "no matching perception session")
+            return
+        if command.expected_state_version != state.state_version:
+            self._switch_failed(command, "STALE_STATE", "perception state changed")
+            return
+        try:
+            self._switcher.submit(command)
+        except SwitchError as error:
+            self._switch_failed(command, error.code, str(error))
+
+    def _wake_switch(self):
+        self._switch_ready.set()
+        with self._condition:
+            self._condition.notify_all()
+
+    def _switch_result(self, command, success, code, reason):
+        runtime, model_id, digest, epoch, classes, _ = self._model_snapshot
+        output = DetectorModelCommit()
+        output.header.stamp = rospy.Time.now()
+        output.request_id, output.session_id = command.request_id, command.session_id
+        output.success, output.error_code, output.message = success, code, reason
+        output.model_id = model_id
+        output.model_epoch = epoch
+        output.source_sha256 = digest
+        output.backend = str(runtime.get("backend", "unknown"))
+        output.class_names = classes
+        self._model_commit_pub.publish(output)
+
+    def _switch_failed(self, command, code, reason):
+        self._switch_result(command, False, code, reason)
+
+    def _commit_switch(self):
+        reset = getattr(self, "_runtime_reset_requested", None)
+        if reset is not None and reset.is_set():
+            reset.clear()
+            self._reset_tracking_runtime()
+        candidate = self._switcher.take_ready()
+        if candidate is None:
+            return
+        self._switch_ready.clear()
+        command, item, (backend, runtime) = candidate
+        state = self._perception_state
+        expired = command.ttl_sec > 0 and not command.issued_at.is_zero() and \
+            (rospy.Time.now() - command.issued_at).to_sec() > command.ttl_sec
+        expired = expired or time.monotonic() > self._switcher.deadline
+        if (self._closing or expired or state is None or state.session_id != command.session_id or
+                state.state_version != command.expected_state_version):
+            backend.unload_model()
+            self._switcher.complete()
+            self._switch_failed(command, "EXPIRED" if expired else "STALE_STATE",
+                                "candidate discarded before commit; old model retained")
+            return
+        old = self._backend
+        # Called by the sole inference worker, after all outputs of its previous
+        # batch. No full-frame or ROI inference can straddle this boundary.
+        self._backend, self._runtime = backend, runtime
+        self._active_model_id = command.model_id
+        self._source_model_sha256 = item["pt_sha256"]
+        self._configured_model_path = item["pt_path"]
+        self._class_names = item["class_names"]
+        self._allowed_class_ids = frozenset(range(len(self._class_names)))
+        self._model_epoch += 1
+        self._model_snapshot = (self._runtime, self._active_model_id,
+            self._source_model_sha256, self._model_epoch, self._class_names,
+            self._configured_model_path)
+        rospy.set_param("perception/model_epoch", self._model_epoch)
+        self._reset_tracking_runtime()
+        old.unload_model()
+        self._switcher.complete()
+        self._publish_model_status()
+        self._switch_result(command, True, "", "candidate warmed and committed at batch boundary")
+
+    def _reset_tracking_runtime(self):
+        """Inference-worker-only reset; GPU weights and public IDs stay loaded."""
+        with self._condition:
+            self._pending.clear()
+        with self._reid_condition:
+            self._pending_reid.clear()
+            self._recent_reid.clear()
+        with self._tracking_lock:
+            getattr(self, '_pixel_roi_requests', {}).clear()
+            getattr(self, '_pixel_observations', {}).clear()
+            for cache in (self._tracked_boxes, self._pixel_track_hints,
+                          self._other_confirmed_boxes, self._pixel_previous_frames):
+                cache.clear()
+        for source in self._sources.values():
+            source["last_accept_wall"] = 0.0
+            source.pop("rate_deadline", None)
+            source.pop("rate_limit", None)
+
+    @staticmethod
     def _diagnostic_value(key: str, value: Any) -> KeyValue:
         return KeyValue(key=key, value=str(value))
 
+    def _publish_model_status(self) -> None:
+        runtime, model_id, digest, epoch, classes, path = self._model_snapshot
+        self._model_status_publisher.publish(build_model_status(
+            runtime,
+            node_name=rospy.get_name(),
+            stamp=rospy.Time.now(),
+            configured_model_path=path,
+            startup_ready=self._startup_ready,
+            startup_error=self._startup_error,
+            active_model_id=model_id,
+            source_model_sha256=digest,
+            model_epoch=epoch,
+            class_names=classes,
+        ))
+
+    def _list_models(self, _request):
+        runtime, active_model_id, _, epoch, _, _ = self._model_snapshot
+        response = ListDetectorModelsResponse()
+        response.success = True
+        response.message = "registered detector models"
+        for model_id in sorted(self._model_registry):
+            item = self._model_registry[model_id]
+            info = DetectorModelInfo()
+            info.model_id = model_id
+            info.display_name = str(item.get("display_name", model_id))
+            info.pt_path = item["pt_path"]
+            info.pt_sha256 = item["pt_sha256"]
+            info.class_names = item["class_names"]
+            info.input_size = item["input_size"]
+            info.engine_prepared = item["engine_prepared"]
+            info.engine_path = item["engine_path"]
+            info.engine_sha256 = item["engine_sha256"]
+            info.validated = bool(item.get("validated", False))
+            response.models.append(info)
+        response.active_model_id = active_model_id
+        response.loaded_artifact_path = str(runtime.get("model_path", ""))
+        response.loaded_artifact_sha256 = str(
+            runtime.get("artifact_sha256", ""))
+        response.active_backend = str(runtime.get("backend", "unknown"))
+        response.model_epoch = epoch
+        return response
+
     def _publish_diagnostics(self, _event) -> None:
+        self._publish_model_status()
         status = DiagnosticStatus()
         status.name = rospy.get_name() + ": shared_yolo"
         status.hardware_id = str(self._runtime.get("effective_device", "unknown"))
@@ -1141,6 +1628,8 @@ class MultiSourceDetectionNode:
             "priority_source": self._current_priority_source(),
             "last_batch_size": self._last_batch_size,
             "inference_ms_ewma": round(self._inference_ms_ewma, 3),
+            "gpu_wait_ms_ewma": round(self._gpu_wait_ms_ewma, 3),
+            "batch_total_ms_ewma": round(self._batch_total_ms_ewma, 3),
             "pending_reid": pending_reid,
             "reid_processed": self._reid_processed,
             "reid_dropped_backlog": self._reid_dropped_backlog,
@@ -1166,6 +1655,14 @@ class MultiSourceDetectionNode:
             "oversized_detections_rejected": self._oversized_detections,
             "rss_peak_mib": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2),
         }
+        for source_name, source in self._sources.items():
+            safe_name = "".join(character if character.isalnum() else "_"
+                                for character in source_name)
+            for metric in ("pixel_tracking_attempts", "pixel_tracking_valid",
+                           "pixel_assist_frames", "pixel_assist_rejected",
+                           "pixel_color_attempts", "pixel_color_valid",
+                           "roi_attempts", "roi_hits"):
+                values["source_{}_{}".format(safe_name, metric)] = source[metric]
         # ReID runs on its own latest-only worker. Report the actual backend
         # selected by the model session, rather than echoing the requested
         # device from YAML (which may have fallen back to CPU).

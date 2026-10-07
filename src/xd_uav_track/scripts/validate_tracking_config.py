@@ -308,15 +308,94 @@ def validate_detector(config, report, label, strict_metric):
         report.error(label + ".localization.method must be lidar_camera, ground_plane, or gimbal_lrf")
 
 
+def validate_perception_deployment(config, report, label):
+    """Check the device-neutral composition before executing its core node.
+
+    Raw roslaunch path/frame substitutions are left intact here; ROS resolves
+    them when loading parameters. Compare source wiring, not hardware TF that
+    may legitimately be absent in a 2-D-only deployment.
+    """
+    detector = _mapping(config.get("sar_yolo_multi_source_detection"), label + ".detector", report)
+    manager = _mapping(config.get("perception_mode_manager"), label + ".manager", report)
+    tracker = _mapping(config.get("track"), label + ".track", report)
+    runtime = _mapping(tracker.get("runtime"), label + ".track.runtime", report)
+    if runtime.get("perception_only") is not True:
+        report.error(label + ": pure perception requires runtime.perception_only=true")
+    if runtime.get("publish_control_reference") is not False:
+        report.error(label + ": pure perception requires publish_control_reference=false")
+    if manager.get("initial_mode") not in ("detect", "track", "fusion"):
+        report.error(label + ": initial_mode must be detect, track, or fusion")
+    detector_sources, manager_sources = {}, {}
+    for node, field, table in ((detector, "input_image_topic", detector_sources),
+                               (manager, "image_topic", manager_sources)):
+        sources = node.get("sources")
+        if not isinstance(sources, list) or not 1 <= len(sources) <= 8:
+            report.error(label + ": sources must contain 1..8 cameras")
+            continue
+        for source in sources:
+            source = _mapping(source, label + ".source", report)
+            name = source.get("image_source")
+            if not isinstance(name, str) or not name.strip() or len(name) > 128:
+                report.error(label + ": invalid image_source")
+                continue
+            if name in table:
+                report.error(label + ": duplicate image_source " + name)
+            report.require_topic(source.get(field), label + ".source." + field)
+            table[name] = source.get(field)
+            if field == "input_image_topic":
+                for key in ("name", "sensor_id", "xd_detections_topic"):
+                    report.require_topic(source.get(key), label + ".source." + key)
+                for key in ("discovery_max_fps", "priority_max_fps", "standby_max_fps"):
+                    report.finite(source.get(key), label + ".source." + key, positive=True)
+    if detector_sources != manager_sources:
+        report.error(label + ": detector and manager sources/topics differ")
+    source_limits = _mapping(_mapping(tracker.get("tracker"), label + ".tracker", report).get("sources"),
+                             label + ".tracker.sources", report)
+    allowed = source_limits.get("allowed")
+    if (not isinstance(allowed, list) or not all(isinstance(item, str) for item in allowed)
+            or len(set(allowed)) != len(allowed) or set(allowed) != set(detector_sources)):
+        report.error(label + ": tracker allowlist must exactly match camera sources")
+    maximum = source_limits.get("maximum_count")
+    if not isinstance(maximum, int) or isinstance(maximum, bool) or not len(detector_sources) <= maximum <= 8:
+        report.error(label + ": invalid maximum source count")
+    ttl = source_limits.get("idle_ttl_sec")
+    if report.finite(ttl, label + ".source TTL", positive=True) and ttl < 1:
+        report.error(label + ": source TTL must be at least 1 second")
+    for node_name in ("fixed_perception_overlay", "gimbal_perception_overlay"):
+        overlay = config.get(node_name)
+        if overlay is None:
+            continue
+        overlay = _mapping(overlay, label + "." + node_name, report)
+        source = overlay.get("image_source")
+        if not isinstance(source, str) or source not in manager_sources or \
+                overlay.get("input_image_topic") != manager_sources.get(source):
+            report.error(label + ": overlay is not paired with the original camera image")
+    frames = _mapping(tracker.get("frames"), label + ".frames", report)
+    if frames.get("body_frd") != manager.get("body_frd_frame"):
+        report.error(label + ": tracker and manager body FRD frame differ")
+    for key in ("frame_cache_size",):
+        value = manager.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or not 2 <= value <= 60:
+            report.error(label + ": frame_cache_size must be in [2,60]")
+    trajectory = _mapping(manager.get("trajectory"), label + ".trajectory", report)
+    count = trajectory.get("maximum_points")
+    if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 6000:
+        report.error(label + ": trajectory maximum_points must be in [1,6000]")
+    report.finite(trajectory.get("retention_sec"), label + ".trajectory.retention_sec", positive=True)
+    report.require_topic(detector.get("model_path"), label + ".model_path")
+    report.require_topic(detector.get("model_registry"), label + ".model_registry")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--track-config", action="append", default=[], metavar="YAML")
     parser.add_argument("--detector-config", action="append", default=[], metavar="YAML")
+    parser.add_argument("--perception-config", action="append", default=[], metavar="YAML")
     parser.add_argument("--strict-metric", action="store_true",
                         help="reject uncalibrated metric detector configurations")
     args = parser.parse_args()
-    if not args.track_config and not args.detector_config:
-        parser.error("at least one --track-config or --detector-config is required")
+    if not args.track_config and not args.detector_config and not args.perception_config:
+        parser.error("at least one configuration file is required")
     report = Report()
     tracker_config = {}
     for path in args.track_config:
@@ -326,14 +405,16 @@ def main():
                          " + ".join(args.track_config))
     for path in args.detector_config:
         validate_detector(_load(path, report), report, path, args.strict_metric)
+    for path in args.perception_config:
+        validate_perception_deployment(_load(path, report), report, path)
     for text in report.warnings:
         print("WARNING: " + text, file=sys.stderr)
     for text in report.errors:
         print("ERROR: " + text, file=sys.stderr)
     if report.errors:
         return 2
-    print("Configuration preflight passed (%d tracker, %d detector file(s))." %
-          (len(args.track_config), len(args.detector_config)))
+    print("Configuration preflight passed (%d tracker, %d detector, %d perception file(s))." %
+          (len(args.track_config), len(args.detector_config), len(args.perception_config)))
     return 0
 
 

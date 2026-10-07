@@ -1,0 +1,37 @@
+<launch>
+  <!-- One simulation, one shared inference runtime, one public web contract. -->
+  <arg name="gui" default="false"/>
+  <arg name="enable_gimbal_camera" default="true"/>
+  <arg name="enable_high_frequency_pixels" default="false"/>
+  <arg name="address" default="127.0.0.1"/>
+  <arg name="http_port" default="8080"/>
+  <arg name="websocket_port" default="9090"/>
+  <arg name="metrics_dir" default=""/>
+  <include file="$(find xd_uav_track)/launch/moving_uav_vehicle_search_demo.launch">
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="enable_gimbal_camera" value="$(arg enable_gimbal_camera)"/>
+    <arg name="enable_high_frequency_pixels" value="$(arg enable_high_frequency_pixels)"/>
+    <arg name="enable_perception_modes" value="true"/>
+    <arg name="enable_web_video" value="true"/>
+    <arg name="show_overlay" value="false"/>
+    <arg name="show_gimbal_overlay" value="false"/>
+    <arg name="show_combined_overlay" value="false"/>
+    <arg name="detector_fps" value="3.0"/>
+    <arg name="gimbal_search_fps" value="2.0"/>
+    <arg name="auto_export_engine" value="false"/>
+    <arg name="gimbal_metrics_output" value="$(eval arg('metrics_dir') + '/gimbal_truth.json' if arg('metrics_dir') else '')"/>
+  </include>
+  <include file="$(find xd_uav_track)/launch/perception_web_app.launch">
+    <arg name="UAV_NAME" value="moving_uav_search"/>
+    <arg name="address" value="$(arg address)"/>
+    <arg name="http_port" value="$(arg http_port)"/>
+    <arg name="websocket_port" value="$(arg websocket_port)"/>
+  </include>
+  <group ns="moving_uav_search">
+    <node if="$(eval arg('metrics_dir') != '')" pkg="xd_uav_track"
+          type="gimbal_tracking_metrics.py" name="fixed_truth_metrics" output="screen">
+      <param name="image_source" value="search_fixed"/>
+      <param name="output_path" value="$(arg metrics_dir)/fixed_truth.json"/>
+    </node>
+  </group>
+</launch>

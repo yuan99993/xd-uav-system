@@ -1,0 +1,12 @@
+{
+  "builder_optimization_level": 1,
+  "dynamic": false,
+  "engine": "/home/promise/mrs_test/src/sar_yolo_detector/models/xd_vehicle_latest/xd_vehicle_latest.engine",
+  "engine_sha256": "6321096500ced1c3f2bd466758216081968da4c21480ff5987a03d67157e76f1",
+  "image_size": 640,
+  "precision": "fp16",
+  "source_model": "/home/promise/mrs_test/src/sar_yolo_detector/models/xd_vehicle_latest/xd_vehicle_latest.pt",
+  "source_sha256": "932c04d47e426143e9fa5084a4ca6a6ff49c1a3aff70fa2b44c643b165e5151f",
+  "tensorrt_version": "10.1.0",
+  "workspace_gib": 0.5
+}

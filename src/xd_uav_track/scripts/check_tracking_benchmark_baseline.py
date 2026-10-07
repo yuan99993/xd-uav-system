@@ -14,12 +14,13 @@ import math
 import pathlib
 import threading
 import time
+from sensor_msgs.msg import Image
 
 import rospy
 from diagnostic_msgs.msg import DiagnosticArray
 from gazebo_msgs.srv import GetWorldProperties
 from std_msgs.msg import String
-from xd_uav_track.msg import TrackStateArray
+from xd_uav_track.msg import TrackStateArray, PerceptionTargetArray
 
 
 def assign_confirmed_tracks(tracks, truth, maximum_distance_m):
@@ -73,6 +74,11 @@ class BaselineMonitor:
         self.unmatched_events = []
         self.projection_outlier_events = []
         self.detector_diagnostics = {}
+        self.image_arrivals = collections.OrderedDict()
+        self.presentation_latencies = collections.deque(maxlen=1024)
+        self.presentation_frames = self.presentation_pair_frames = 0
+        self.presentation_last_stamp = None
+        self.application_p95_ms = None
         self.truth_sub = rospy.Subscriber(
             "/tracking_benchmark/ground_truth/state_json", String,
             self.on_truth, queue_size=1)
@@ -81,6 +87,45 @@ class BaselineMonitor:
             self.on_tracks, queue_size=1)
         self.diagnostics_sub = rospy.Subscriber(
             "/diagnostics", DiagnosticArray, self.on_diagnostics, queue_size=1)
+        self.image_sub = rospy.Subscriber('/tracking_benchmark/fixed_camera/image_raw',
+            Image,self.on_image,queue_size=1,buff_size=4*1024*1024)
+        self.presentation_sub = rospy.Subscriber('/tracking_benchmark/perception/targets',
+            PerceptionTargetArray,self.on_presentation,queue_size=1)
+        self.pixel_diagnostics_sub = rospy.Subscriber('/tracking_benchmark/perception/pixel_diagnostics',
+            DiagnosticArray,self.on_pixel_diagnostics,queue_size=1)
+
+    def on_pixel_diagnostics(self, message):
+        for status in message.status:
+            if status.name != 'perception/image_to_targets':
+                continue
+            try:
+                value=float(next(item.value for item in status.values if item.key=='callback_to_targets_p95_ms'))
+                if not math.isfinite(value) or value<0:
+                    continue
+                with self.lock:
+                    self.application_p95_ms=value
+            except (ValueError,StopIteration):
+                pass
+
+    def on_image(self, message):
+        with self.lock:
+            self.image_arrivals[message.header.stamp.to_nsec()] = time.monotonic()
+            while len(self.image_arrivals)>64:
+                self.image_arrivals.popitem(last=False)
+
+    def on_presentation(self, message):
+        with self.lock:
+            if self.started_at is None or (self.presentation_last_stamp is not None and
+                    message.header.stamp <= self.presentation_last_stamp):
+                return
+            self.presentation_last_stamp=message.header.stamp
+            self.presentation_frames+=1
+            ids={t.track_id for t in message.targets if t.lifecycle_state=='confirmed' and
+                 t.measurement_source in ('detector','visual_tracker')}
+            self.presentation_pair_frames+=int(set(self.target_ids.values())<=ids)
+            received=self.image_arrivals.get(message.header.stamp.to_nsec())
+            if received is not None:
+                self.presentation_latencies.append(1000*(time.monotonic()-received))
 
     def on_diagnostics(self, message):
         for status in message.status:
@@ -208,6 +253,13 @@ class BaselineMonitor:
                                 time.monotonic() - self.last_alive_pair_at)
             return {
                 "duration_sec": round(duration, 3),
+                "presentation_frames": self.presentation_frames,
+                "application_camera_callback_to_targets_p95_ms": self.application_p95_ms,
+                "presentation_pair_ratio": self.presentation_pair_frames/self.presentation_frames
+                    if self.presentation_frames else 0.,
+                "image_receipt_to_targets_p95_ms": sorted(self.presentation_latencies)[
+                    min(len(self.presentation_latencies)-1,int(.95*len(self.presentation_latencies)))]
+                    if self.presentation_latencies else None,
                 "tracker_frames": self.frames,
                 "pair_confirmed_frames": self.pair_frames,
                 "pair_confirmed_ratio": self.pair_frames / self.frames

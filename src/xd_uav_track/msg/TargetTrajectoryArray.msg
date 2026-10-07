@@ -1,0 +1,15 @@
+std_msgs/Header header
+string session_id
+uint64 state_version
+string mode
+uint64 model_epoch
+string target_uid
+int32 track_id
+int32 class_id
+string class_name
+bool class_valid
+bool active
+string status
+float32 retention_sec
+uint32 maximum_points
+xd_uav_track/TargetTrajectoryPoint[] points

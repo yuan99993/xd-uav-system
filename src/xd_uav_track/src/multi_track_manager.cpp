@@ -125,11 +125,13 @@ std::vector<int> globalAssignment(const std::vector<std::vector<double>>& scores
   const int columns = real_columns + rows;
   std::vector<double> u(rows + 1), v(columns + 1);
   std::vector<int> p(columns + 1), way(columns + 1);
+  std::vector<double> minv(columns + 1);
+  std::vector<bool> used(columns + 1);
   for (int row = 1; row <= rows; ++row) {
     p[0] = row;
     int column = 0;
-    std::vector<double> minv(columns + 1, std::numeric_limits<double>::infinity());
-    std::vector<bool> used(columns + 1, false);
+    std::fill(minv.begin(), minv.end(), std::numeric_limits<double>::infinity());
+    std::fill(used.begin(), used.end(), false);
     do {
       used[column] = true;
       const int current = p[column];
@@ -327,11 +329,15 @@ struct PersistentTrack {
   bool detector_id_stable{false};
   int class_id{-1};
   bool class_locked{false};
+  std::uint32_t class_hits{1};
   std::map<int, double> class_evidence;
   double confidence{0.0};
+  double visual_quality{0.0};
   BoxKalmanFilter filter;
   xd_uav_track::DetectionCandidate latest_detection;
   std::array<double, 2> metric_relative_xy{{0.0, 0.0}};
+  std::array<double, 2> last_metric_measurement_xy{{0.0, 0.0}};
+  ros::Time last_metric_measurement_stamp;
   bool has_metric_relative_xy{false};
   std_msgs::Header latest_header;
   std::vector<float> appearance;
@@ -342,6 +348,7 @@ struct PersistentTrack {
   std::uint32_t missing{0};
   double missing_seconds{0.0};
   bool detected{true};
+  bool visually_measured{false};
   bool reidentified{false};
   bool reacquisition_pending{false};
   std::uint32_t reacquisition_hits{0};
@@ -351,6 +358,9 @@ struct PersistentTrack {
   int exit_edge{0};
   std::string association{"new"};
   ros::Time last_stamp;
+  ros::Time last_observation_stamp;
+  ros::Time last_detection_stamp;
+  ros::Time last_position_stamp;
 };
 
 }  // namespace
@@ -481,6 +491,10 @@ ManagedDetectionFrame MultiTrackManager::update(
   output.candidates.command = detections.command;
   output.tracks.header = detections.header;
   output.tracks.image_source = image_source;
+  output.tracks.model_epoch = detections.model_epoch;
+  output.tracks.class_names = detections.class_names;
+  output.candidates.model_epoch = detections.model_epoch;
+  output.candidates.class_names = detections.class_names;
   ++impl_->stats.input_frames;
 
   const ros::Time frame_stamp = detections.header.stamp.isZero()
@@ -499,6 +513,11 @@ ManagedDetectionFrame MultiTrackManager::update(
   prepared.reserve(detections.candidates.size());
   for (std::size_t index = 0; index < detections.candidates.size(); ++index) {
     const auto& raw = detections.candidates[index];
+    if (!raw.measurement_source.empty() && raw.measurement_source != "detector" &&
+        raw.measurement_source != "visual_tracker") {
+      ++impl_->stats.rejected_detections;
+      continue;
+    }
     NormalizedBox box;
     const bool embedding_valid = raw.appearance_embedding.size() <=
         static_cast<std::size_t>(impl_->config.maximum_embedding_dimension);
@@ -523,6 +542,7 @@ ManagedDetectionFrame MultiTrackManager::update(
     ++track.missing;
     track.missing_seconds += std::max(0.0, frame_dt);
     track.detected = false;
+    track.visually_measured = false;
     track.reidentified = false;
     track.association = "predicted";
     const int predicted_exit_edge = track.filter.outsideEdge();
@@ -659,8 +679,10 @@ ManagedDetectionFrame MultiTrackManager::update(
     std::vector<bool> ambiguous_rows(detection_indices.size(), false);
     const double ambiguity_margin = impl_->config.association_ambiguity_margin;
     if (ambiguity_margin > 0.0) {
+      std::vector<std::pair<double, int>> ranked;
+      ranked.reserve(std::max(scores.size(), track_ids.size()));
       for (std::size_t row = 0; row < scores.size(); ++row) {
-        std::vector<std::pair<double, int>> ranked;
+        ranked.clear();
         for (std::size_t column = 0; column < track_ids.size(); ++column)
           if (scores[row][column] > 0.0)
             ranked.emplace_back(scores[row][column], static_cast<int>(column));
@@ -676,7 +698,7 @@ ManagedDetectionFrame MultiTrackManager::update(
         }
       }
       for (std::size_t column = 0; column < track_ids.size(); ++column) {
-        std::vector<std::pair<double, int>> ranked;
+        ranked.clear();
         for (std::size_t row = 0; row < scores.size(); ++row)
           if (scores[row][column] > 0.0)
             ranked.emplace_back(scores[row][column], static_cast<int>(row));
@@ -714,7 +736,8 @@ ManagedDetectionFrame MultiTrackManager::update(
 
   // Create bounded new tracks for the unmatched detections.
   for (std::size_t index = 0; index < prepared.size(); ++index) {
-    if (assigned_ids[index] >= 0 || ambiguous_detections[index] ||
+    if (prepared[index].message.measurement_source == "visual_tracker" ||
+        assigned_ids[index] >= 0 || ambiguous_detections[index] ||
         prepared[index].message.confidence < std::max(
             impl_->config.minimum_new_track_confidence,
             impl_->config.high_confidence_threshold) ||
@@ -746,6 +769,10 @@ ManagedDetectionFrame MultiTrackManager::update(
     track.latest_detection = prepared[index].message;
     track.has_metric_relative_xy = metricRelativeXY(
         prepared[index].message, &track.metric_relative_xy);
+    if (track.has_metric_relative_xy) {
+      track.last_metric_measurement_xy = track.metric_relative_xy;
+      track.last_metric_measurement_stamp = frame_stamp;
+    }
     track.latest_header = detections.header;
     track.appearance = prepared[index].message.appearance_embedding;
     track.last_stamp = frame_stamp;
@@ -769,17 +796,21 @@ ManagedDetectionFrame MultiTrackManager::update(
     if (track_it == impl_->tracks.end()) continue;
     auto& track = track_it->second;
     const bool existing_track = assigned_methods[index] != "new";
+    const bool detector_measurement =
+        prepared[index].message.measurement_source.empty() ||
+        prepared[index].message.measurement_source == "detector";
     const bool long_gap_reacquisition = existing_track &&
         tracks_missing_before_frame.count(assigned_id) != 0 &&
         track.missing_seconds >= impl_->config.reacquisition_after_sec;
     if (existing_track) {
       track.filter.update(prepared[index].box,
                           clampValue(prepared[index].message.confidence, 0.0, 1.0));
-      ++track.hits;
+      if (detector_measurement) ++track.hits;
     }
     track.missing = 0;
     track.missing_seconds = 0.0;
-    track.detected = true;
+    track.detected = detector_measurement;
+    track.visually_measured = !detector_measurement;
     track.reidentified = assigned_methods[index] == "appearance";
     if (long_gap_reacquisition &&
         impl_->config.reacquisition_mode != "aggressive") {
@@ -787,7 +818,7 @@ ManagedDetectionFrame MultiTrackManager::update(
       track.reacquisition_hits = 0;
       track.have_reacquisition_candidate = false;
     }
-    if (track.reacquisition_pending) {
+    if (track.reacquisition_pending && detector_measurement) {
       const bool same_candidate = track.have_reacquisition_candidate &&
           sameReacquisitionCandidate(track.reacquisition_box,
               track.reacquisition_candidate, prepared[index], 0.05,
@@ -808,12 +839,16 @@ ManagedDetectionFrame MultiTrackManager::update(
         assigned_methods[index];
     const double measurement_confidence = clampValue(
         prepared[index].message.confidence, 0.0, 1.0);
-    track.confidence = impl_->config.confidence_smoothing_alpha * track.confidence +
-        (1.0 - impl_->config.confidence_smoothing_alpha) * measurement_confidence;
+    if (detector_measurement)
+      track.confidence = impl_->config.confidence_smoothing_alpha * track.confidence +
+          (1.0 - impl_->config.confidence_smoothing_alpha) * measurement_confidence;
+    else
+      track.visual_quality = measurement_confidence;
     const bool provisional_class_bridge = track.class_id >= 0 &&
         prepared[index].message.class_id >= 0 &&
         track.class_id != prepared[index].message.class_id;
-    if (!track.class_locked && prepared[index].message.class_id >= 0) {
+    if (detector_measurement && !track.class_locked && prepared[index].message.class_id >= 0) {
+      if (existing_track) ++track.class_hits;
       if (existing_track)
         track.class_evidence[prepared[index].message.class_id] +=
             measurement_confidence;
@@ -824,13 +859,13 @@ ManagedDetectionFrame MultiTrackManager::update(
           });
       if (strongest != track.class_evidence.end())
         track.class_id = strongest->first;
-      if (track.hits >= static_cast<std::uint32_t>(
+      if (track.class_hits >= static_cast<std::uint32_t>(
               impl_->config.confirmation_hits)) {
         track.class_locked = true;
         track.class_evidence.clear();
       }
     }
-    if (prepared[index].message.class_id >= 0 &&
+    if (detector_measurement && prepared[index].message.class_id >= 0 &&
         (track.class_history.empty() || track.class_history.back() !=
             prepared[index].message.class_id))
       track.class_history.push_back(prepared[index].message.class_id);
@@ -844,7 +879,7 @@ ManagedDetectionFrame MultiTrackManager::update(
     } else if (!track.detector_id_stable) {
       track.detector_track_id = prepared[index].message.track_id;
     }
-    if (!prepared[index].message.appearance_embedding.empty()) {
+    if (detector_measurement && !prepared[index].message.appearance_embedding.empty()) {
       track.appearance = prepared[index].message.appearance_embedding;
       const double box_pixels = prepared[index].box.width * image_width *
                                 prepared[index].box.height * image_height;
@@ -862,17 +897,21 @@ ManagedDetectionFrame MultiTrackManager::update(
       if (!track.has_metric_relative_xy) {
         track.metric_relative_xy = observed_metric;
         track.has_metric_relative_xy = true;
+        track.last_metric_measurement_xy = observed_metric;
+        track.last_metric_measurement_stamp = frame_stamp;
       } else {
         const double jump = std::hypot(
-            observed_metric[0] - track.metric_relative_xy[0],
-            observed_metric[1] - track.metric_relative_xy[1]);
+            observed_metric[0] - track.last_metric_measurement_xy[0],
+            observed_metric[1] - track.last_metric_measurement_xy[1]);
         const double elapsed = std::max(
-            0.0, (frame_stamp - track.last_stamp).toSec());
+            0.0, (frame_stamp - track.last_metric_measurement_stamp).toSec());
         const double physical_gate = impl_->config.metric_relative_jump_tolerance_m +
             impl_->config.metric_relative_max_speed_mps * elapsed;
         metric_outlier_held = impl_->config.metric_relative_association_enabled &&
             existing_track && jump > physical_gate;
         if (!metric_outlier_held) {
+          track.last_metric_measurement_xy = observed_metric;
+          track.last_metric_measurement_stamp = frame_stamp;
           const double alpha = impl_->config.metric_relative_smoothing_alpha;
           for (int axis = 0; axis < 2; ++axis)
             track.metric_relative_xy[axis] =
@@ -900,6 +939,27 @@ ManagedDetectionFrame MultiTrackManager::update(
       track.association = "metric_outlier_hold";
     }
     track.latest_detection.track_id = assigned_id;
+    track.last_observation_stamp = detections.header.stamp;
+    if (detector_measurement) track.last_detection_stamp = detections.header.stamp;
+    bool valid_metric = detector_measurement && track.latest_detection.range_valid &&
+        track.latest_detection.has_relative_position_body && !metric_outlier_held;
+    for (const float value : track.latest_detection.relative_position_body)
+      valid_metric = valid_metric && finiteFloat(value);
+    for (const float value : track.latest_detection.position_covariance)
+      valid_metric = valid_metric && finiteFloat(value);
+    if (valid_metric) {
+      Eigen::Matrix3d covariance;
+      for (int row = 0; row < 3; ++row)
+        for (int column = 0; column < 3; ++column)
+          covariance(row, column) = track.latest_detection.position_covariance[row * 3 + column];
+      const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigen(covariance);
+      valid_metric = covariance.isApprox(covariance.transpose(), 1e-5) &&
+          eigen.info() == Eigen::Success && eigen.eigenvalues().minCoeff() >= -1e-6;
+    }
+    if (valid_metric && !detections.header.stamp.isZero())
+      track.last_position_stamp = detections.header.stamp;
+    else
+      track.latest_detection.range_valid = false;
     track.latest_detection.track_id_is_stable = true;
     // YOLO still supplies geometry each frame; its viewpoint-dependent label
     // is not allowed to relabel a confirmed physical target downstream.
@@ -920,11 +980,12 @@ ManagedDetectionFrame MultiTrackManager::update(
   for (auto& entry : impl_->tracks) {
     auto& track = entry.second;
     if (!track.detected) {
-      const double decay_rate = clampValue(impl_->config.confidence_decay_rate,
-                                           0.0, 1.0);
-      const double elapsed_reference_frames = frame_dt * impl_->config.reference_fps;
-      track.confidence *= std::pow(1.0 - decay_rate,
-                                   elapsed_reference_frames);
+      if (!track.visually_measured) {
+        const double decay_rate = clampValue(impl_->config.confidence_decay_rate,
+                                             0.0, 1.0);
+        const double elapsed_reference_frames = frame_dt * impl_->config.reference_fps;
+        track.confidence *= std::pow(1.0 - decay_rate, elapsed_reference_frames);
+      }
       if (track.reacquisition_pending) {
         track.reacquisition_hits = 0;
         track.have_reacquisition_candidate = false;
@@ -941,7 +1002,7 @@ ManagedDetectionFrame MultiTrackManager::update(
     state.track_id = track.public_id;
     state.detector_track_id = track.detector_track_id;
     state.detector_id_stable = track.detector_id_stable;
-    state.class_id = track.class_id;
+    state.class_id = track.class_locked ? track.class_id : -1;
     state.confidence = static_cast<float>(clampValue(track.confidence, 0.0, 1.0));
     state.normalized_bbox = {static_cast<float>(box.cx), static_cast<float>(box.cy),
                              static_cast<float>(box.width),
@@ -975,7 +1036,10 @@ ManagedDetectionFrame MultiTrackManager::update(
       state.lifecycle_state = "lost";
     }
     state.detected = track.detected;
-    state.predicted = !track.detected;
+    state.predicted = !track.detected && !track.visually_measured;
+    state.measurement_source = track.detected ? "detector" :
+        (track.visually_measured ? "visual_tracker" : "prediction");
+    state.last_detection_stamp = track.last_detection_stamp;
     state.reidentification_match = track.reidentified;
     state.selected = track.public_id == impl_->selected_track_id;
     state.control_measurement_ready = track.detected &&
@@ -984,10 +1048,14 @@ ManagedDetectionFrame MultiTrackManager::update(
     const double missing_decay = std::max(0.0, 1.0 -
         track.missing_seconds / impl_->config.removal_timeout_sec);
     state.tracking_quality = static_cast<float>(
-        clampValue(track.confidence * missing_decay, 0.0, 1.0));
+        clampValue((track.visually_measured ? track.visual_quality : track.confidence) *
+                   missing_decay, 0.0, 1.0));
     state.association_method = track.association;
     const auto& latest = track.latest_detection;
     state.has_relative_position_body = latest.has_relative_position_body;
+    state.last_observation_stamp = track.last_observation_stamp;
+    state.position_stamp = track.last_position_stamp;
+    state.position_frame = track.last_position_stamp.isZero() ? std::string() : impl_->config.position_frame;
     state.has_relative_velocity_body = latest.has_relative_velocity_body;
     state.range_valid = latest.range_valid && latest.has_relative_position_body;
     state.relative_position_body = latest.relative_position_body;
@@ -1024,6 +1092,20 @@ void MultiTrackManager::reset() {
   impl_->selected_track_id = -1;
   impl_->last_frame_stamp = ros::Time();
   impl_->stats.active_tracks = 0;
+}
+
+void MultiTrackManager::invalidateClasses() {
+  for (auto& entry : impl_->tracks) {
+    auto& track = entry.second;
+    track.class_id = -1;
+    track.class_locked = false;
+    track.class_hits = 0;
+    track.class_evidence.clear();
+    track.class_history.clear();
+    track.latest_detection.class_id = -1;
+    track.appearance.clear();
+    track.appearance_gallery.clear();
+  }
 }
 
 MultiTrackStatistics MultiTrackManager::statistics() const {

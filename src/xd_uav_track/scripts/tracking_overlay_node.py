@@ -35,6 +35,9 @@ class TrackingOverlay:
             "~show_confirmed_only", False))
         self._show_selected_lost = bool(rospy.get_param(
             "~show_selected_lost", False))
+        configured_class_names = rospy.get_param(
+            "~class_names", ["car", "ar-car", "tank", "m142"])
+        self._class_names = [str(name) for name in configured_class_names]
         self._selected_lost_max_frames = max(0, int(rospy.get_param(
             "~selected_lost_max_frames", 3)))
 
@@ -105,18 +108,17 @@ class TrackingOverlay:
             color = (255, 210, 0)
         return color[::-1] if rgb_image else color
 
-    @staticmethod
-    def _label(track) -> str:
-        kind = "PRED" if track.predicted or not track.detected else "DET"
-        ready = " READY" if track.control_measurement_ready else ""
-        # Tentative tracks have only a provisional YOLO label. Show identity
-        # and tracking state first; publish the latched class only once the
-        # track manager confirms the entity.
-        class_label = (" c{}".format(track.class_id)
-                       if track.lifecycle_state in ("confirmed", "occluded", "lost")
-                       and track.class_id >= 0 else "")
-        return "ID {}{} {:.2f} {}{}".format(
-            track.track_id, class_label, track.confidence, kind, ready)
+    def _label(self, track) -> str:
+        # Display only the track manager's latched class and assigned ID.
+        # This is visualization of the existing tracker output: it must not
+        # trigger another detector pass or draw raw detections independently.
+        if track.class_id >= 0:
+            class_name = (self._class_names[track.class_id]
+                          if track.class_id < len(self._class_names) else
+                          "class_{}".format(track.class_id))
+        else:
+            class_name = "unknown"
+        return "{} ID {}".format(class_name, track.track_id)
 
     def _draw(self, image, tracks, status, age_sec, rgb_image=False,
               pixel_boxes=None) -> None:
@@ -160,9 +162,9 @@ class TrackingOverlay:
                 x1, y1, x2, y2 = (pixel_boxes[track.track_id] if flowed else
                                   [int(value) for value in track.bbox])
                 x1 = max(0, min(width - 1, x1))
-                x2 = max(0, min(width - 1, x2))
+                x2 = max(0, min(width, x2))
                 y1 = max(0, min(height - 1, y1))
-                y2 = max(0, min(height - 1, y2))
+                y2 = max(0, min(height, y2))
                 if x2 <= x1 or y2 <= y1:
                     continue
                 visible_tracks += 1
@@ -170,21 +172,16 @@ class TrackingOverlay:
                 color = ((0, 190, 255)[::-1] if rgb_image else (0, 190, 255)) \
                     if predicted_display else self._color(track, rgb_image)
                 thickness = 3 if track.selected else 2
-                cv2.rectangle(image, (x1, y1), (x2, y2), color,
+                cv2.rectangle(image, (x1, y1), (x2 - 1, y2 - 1), color,
                               thickness, cv2.LINE_AA)
+                center = (min(width - 1, int(round(0.5 * (x1 + x2)))),
+                          min(height - 1, int(round(0.5 * (y1 + y2)))))
+                cv2.circle(image, center, 3, (255, 255, 255), -1,
+                           cv2.LINE_AA)
                 label = self._label(track)
-                if flowed:
-                    marker = " PRED" if predicted_display else " PIX"
-                    label = label.replace(" DET", marker).replace(" PRED", marker)
                 cv2.putText(image, label, (x1, max(18, y1 - 6)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2,
                             cv2.LINE_AA)
-                association = str(track.association_method or "")
-                if association:
-                    cv2.putText(image, association,
-                                (x1, min(height - 5, y2 + 16)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1,
-                                cv2.LINE_AA)
 
         if tracks is None:
             panel = "{} | no tracks".format(self._source)
