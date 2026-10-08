@@ -1,0 +1,17 @@
+name: terrain-nav-web
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.10
+  - nodejs=20
+  - gdal>=3.6,<3.8
+  - numpy=1.26
+  - scipy=1.11
+  - pip
+  - pip:
+      - fastapi==0.110.0
+      - "uvicorn[standard]==0.27.1"
+      - heapdict==1.0.1
+      - python-multipart==0.0.9
+      - roslibpy==1.5.0

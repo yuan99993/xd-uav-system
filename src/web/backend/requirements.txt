@@ -1,0 +1,10 @@
+# Pip-only fallback for the Python application.
+# GDAL is intentionally installed by environment.yml through conda-forge.
+# Without GDAL, the backend can still use its synthetic-terrain fallback.
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+numpy==1.26.4
+scipy==1.11.4
+heapdict==1.0.1
+python-multipart==0.0.9
+roslibpy==1.5.0

@@ -1,0 +1,182 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 320px;
+  flex-shrink: 0;          /* 不被压缩 */
+  padding: 16px;
+  background: #f7f7f7;
+  border-right: 1px solid #ddd;
+  overflow-y: auto;
+}
+
+.mission-console-entry {
+  display: grid;
+  gap: 5px;
+  margin: 12px 0 16px;
+  padding: 10px;
+  border: 1px solid #b9d8df;
+  border-radius: 7px;
+  background: #edf8fa;
+}
+
+.mission-console-entry strong { color: #164e5a; font-size: 13px; }
+.mission-console-entry span { color: #557078; font-size: 11px; line-height: 1.4; }
+.mission-console-entry a {
+  width: fit-content;
+  color: #08788a;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.mission-console-entry a:hover { text-decoration: underline; }
+
+/* 地图容器：用 flex:1 + min-width:0 占满剩余空间 */
+.map-container {
+  flex: 1 1 0;
+  min-width: 0;          /* flex 子项收缩的关键，否则内容会撑破容器 */
+  position: relative;
+  height: 100%;
+  background: #d0e0ec;
+}
+
+.map-container .leaflet-container {
+  height: 100%;
+  width: 100%;
+  background: #d0e0ec;
+}
+
+/* 小屏适配：窗口 < 900px 时侧边栏收窄 */
+@media (max-width: 900px) {
+  .sidebar {
+    width: 260px;
+    padding: 10px;
+  }
+  .sidebar h2 { font-size: 14px; }
+  .sidebar .section { padding: 8px; margin-bottom: 10px; }
+}
+
+/* 极窄窗口下给个兜底提示，避免地图完全看不见 */
+.map-too-narrow-hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0,0,0,0.7);
+  color: white;
+  padding: 12px 20px;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: center;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+h2 {
+  font-size: 16px;
+  margin-bottom: 12px;
+  color: #333;
+}
+
+.section {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: white;
+  border-radius: 6px;
+  border: 1px solid #e0e0e0;
+}
+
+.section h3 {
+  font-size: 13px;
+  margin-bottom: 8px;
+  color: #666;
+}
+
+button {
+  padding: 6px 12px;
+  border: 1px solid #ccc;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-right: 6px;
+  margin-bottom: 6px;
+}
+
+button:hover {
+  background: #e8e8e8;
+}
+
+button.primary {
+  background: #1677ff;
+  color: white;
+  border-color: #1677ff;
+}
+
+button.primary:hover {
+  background: #0958d9;
+}
+
+button.danger {
+  background: #ff4d4f;
+  color: white;
+  border-color: #ff4d4f;
+}
+
+button:disabled {
+  background: #f0f0f0;
+  color: #999;
+  cursor: not-allowed;
+}
+
+label {
+  display: block;
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+  margin-top: 8px;
+}
+
+input[type="number"] {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.status {
+  font-size: 12px;
+  color: #666;
+  padding: 6px;
+  background: #fafafa;
+  border-radius: 4px;
+  margin-top: 6px;
+}
+
+.status.ok { color: #52c41a; }
+.status.error { color: #ff4d4f; }
+.status.info { color: #1677ff; }
+
+.hint {
+  font-size: 11px;
+  color: #999;
+  margin-top: 4px;
+  line-height: 1.4;
+}

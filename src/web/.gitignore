@@ -1,0 +1,48 @@
+# Operating systems and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.trae/
+*.swp
+*.swo
+
+# Local secrets and overrides
+.env
+.env.*
+!.env.example
+
+# Python and Conda
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+backend/.venv/
+backend/venv/
+backend/data/
+.conda/
+
+# Node and Vite
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Vendored terrain-navigation build/runtime outputs
+terrain-navigation/build/
+terrain-navigation/devel/
+terrain-navigation/install/
+terrain-navigation/log/
+terrain-navigation/output/
+
+# Generic runtime logs
+*.log
+
+# Only the operator-facing manual is published from this Web subtree.
+**/*.md
+!使用说明.md
