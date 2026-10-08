@@ -1,0 +1,28 @@
+# M6 deterministic Davosdorf/Gazebo acceptance profile.
+# Coordinates are the centers of 10 m DEM cells. Endpoint Z is sampled
+# terrain elevation + 80 m, inside the production 51..119 m safe AGL band.
+routes:
+  - uav_name: uav1
+    goal_id: 6201
+    nominal_speed_mps: 15.0
+    takeoff_altitude_m: 30.0
+    minimum_motion_m: 250.0
+    points:
+      - {x: 600.0, y: -2000.0, z: 1622.6483154296875}
+      - {x: 1200.0, y: -2000.0, z: 1629.913818359375}
+  - uav_name: uav2
+    goal_id: 6202
+    nominal_speed_mps: 15.0
+    takeoff_altitude_m: 30.0
+    minimum_motion_m: 250.0
+    points:
+      - {x: 600.0, y: -1700.0, z: 1644.424560546875}
+      - {x: 1200.0, y: -1700.0, z: 1632.3648681640625}
+  - uav_name: uav3
+    goal_id: 6203
+    nominal_speed_mps: 15.0
+    takeoff_altitude_m: 30.0
+    minimum_motion_m: 250.0
+    points:
+      - {x: 600.0, y: -1400.0, z: 1651.70556640625}
+      - {x: 1200.0, y: -1400.0, z: 1632.1815185546875}

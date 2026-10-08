@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="gui" default="false"/>
+  <arg name="start_gazebo" default="true"/>
+  <arg name="run_acceptance" default="false"/>
+  <arg name="auto_spawn_initial" default="$(arg run_acceptance)"/>
+  <arg name="spatial_only_blocks_release" default="false"/>
+  <arg name="web_api_url"
+       default="http://127.0.0.1:8000/api/swarm/dispatch"/>
+  <arg name="world"
+       default="$(find px4)/Tools/sitl_gazebo/worlds/empty.world"/>
+  <arg name="map_path"
+       default="$(find terrain_navigation)/../resources/davosdorf.tif"/>
+  <arg name="fleet_config"
+       default="$(find xd_uav_planning)/config/demo/terrain_fixedwing_fleet.yaml"/>
+  <arg name="acceptance_config"
+       default="$(find xd_uav_planning)/config/demo/terrain_fixedwing_swarm_sitl.yaml"/>
+
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find px4)/Tools/sitl_gazebo/models:$(optenv GAZEBO_MODEL_PATH)"/>
+  <include if="$(arg start_gazebo)"
+           file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+  </include>
+
+  <!-- Owns every namespaced PX4/MAVROS/control/planning chain. Acceptance
+       preloads the verified three-aircraft scenario; interactive operation
+       starts empty and Web/API requests add validated example slots. -->
+  <node pkg="xd_uav_planning" type="terrain_fleet_manager.py"
+        name="terrain_fleet_manager" output="screen" required="true">
+    <rosparam command="load" file="$(arg fleet_config)"/>
+    <param name="auto_spawn_initial" value="$(arg auto_spawn_initial)"/>
+    <param name="map_path" value="$(arg map_path)"/>
+    <param name="vehicle_launch"
+           value="terrain_fixedwing_swarm_vehicle.launch"/>
+    <param name="status_topic" value="/terrain_swarm/fleet"/>
+    <param name="spawn_service" value="/terrain_swarm/fleet/spawn"/>
+    <param name="remove_service" value="/terrain_swarm/fleet/remove"/>
+  </node>
+
+  <!-- A task batch defines the exact participating set, goal IDs and nominal
+       speeds. Online aircraft without a task do not block safety analysis. -->
+  <node pkg="xd_uav_planning" type="terrain_swarm_monitor.py"
+        name="terrain_swarm_monitor" output="screen" required="true">
+    <rosparam command="load"
+              file="$(find xd_uav_planning)/config/terrain_swarm.yaml"/>
+    <param name="common_frame" value="world"/>
+    <param name="spatial_only_blocks_release"
+           value="$(arg spatial_only_blocks_release)"/>
+    <param name="task_topic" value="/terrain_swarm/tasks"/>
+    <rosparam param="vehicles">[]</rosparam>
+  </node>
+
+  <node pkg="xd_uav_planning" type="terrain_swarm_release_gate.py"
+        name="terrain_swarm_release_gate" output="screen" required="true">
+    <param name="common_frame" value="world"/>
+    <param name="task_topic" value="/terrain_swarm/tasks"/>
+    <param name="status_topic" value="/terrain_swarm/status"/>
+    <param name="release_topic" value="/terrain_swarm/release"/>
+    <rosparam param="vehicles">[]</rosparam>
+  </node>
+
+  <include file="$(find rosbridge_server)/launch/rosbridge_websocket.launch">
+    <arg name="address" value="127.0.0.1"/>
+    <arg name="port" value="9090"/>
+    <arg name="websocket_null_origin" value="false"/>
+    <arg name="output" value="log"/>
+  </include>
+
+  <node if="$(arg run_acceptance)" pkg="xd_uav_planning"
+        type="terrain_fixedwing_swarm_acceptance.py"
+        name="terrain_fixedwing_swarm_acceptance" output="screen"
+        required="false">
+    <param name="web_api_url" value="$(arg web_api_url)"/>
+    <rosparam command="load" file="$(arg acceptance_config)"/>
+  </node>
+</launch>

@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<launch>
+    <node pkg="rosbag" type="record" name="rosbag_recorder" args="record -o /home/ethzasl/rosbag/ 
+        /candidate_goal_marker
+        /candidate_start_marker
+        /geometric_controller/path
+        /grid_map
+        /path_segments
+        /planner_status
+        /position_target
+        /reference/path
+        /goal_amrker
+        /vehicle_path
+        /vehicle_pose_marker
+        /vehicle_velocity
+        /mavros/setpoint_raw/global
+        /mavros/local_position/pose
+        /mavros/local_position/velocity_local
+        /mavros/state
+        /mavros/wind_estimation
+        /tree
+        /mavros/global_position/gp_origin"/>
+</launch>

@@ -1,0 +1,32 @@
+<launch>
+  <include file="$(find xd_uav_planning)/launch/internal/terrain_planner.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+    <arg name="random_seed" value="20261005"/>
+    <arg name="status_topic" value="planning/terrain_status"/>
+  </include>
+  <include file="$(find xd_uav_planning)/launch/internal/terrain_planner.launch">
+    <arg name="UAV_NAME" value="uav2"/>
+    <arg name="random_seed" value="20261006"/>
+    <arg name="status_topic" value="planning/terrain_status"/>
+  </include>
+  <include file="$(find xd_uav_planning)/launch/internal/terrain_planner.launch">
+    <arg name="UAV_NAME" value="uav3"/>
+    <arg name="random_seed" value="20261007"/>
+    <arg name="status_topic" value="planning/terrain_status"/>
+  </include>
+
+  <node pkg="xd_uav_planning" type="terrain_swarm_monitor.py"
+        name="terrain_swarm_monitor" output="screen" required="true">
+    <rosparam command="load" file="$(find xd_uav_planning)/config/terrain_swarm.yaml"/>
+    <rosparam param="vehicles">
+      - {name: uav1, path_topic: /uav1/planning/terrain_path, status_topic: /uav1/planning/terrain_status, nominal_speed_mps: 15.0}
+      - {name: uav2, path_topic: /uav2/planning/terrain_path, status_topic: /uav2/planning/terrain_status, nominal_speed_mps: 15.0}
+      - {name: uav3, path_topic: /uav3/planning/terrain_path, status_topic: /uav3/planning/terrain_status, nominal_speed_mps: 15.0}
+    </rosparam>
+  </node>
+
+  <test test-name="terrain_fixedwing_swarm_three"
+        pkg="xd_uav_planning"
+        type="test_terrain_fixedwing_swarm_three.py"
+        time-limit="90"/>
+</launch>

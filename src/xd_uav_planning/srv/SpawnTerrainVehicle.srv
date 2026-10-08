@@ -1,0 +1,6 @@
+string uav_name
+geometry_msgs/Point world_origin
+geometry_msgs/Point gazebo_spawn
+---
+bool accepted
+string message

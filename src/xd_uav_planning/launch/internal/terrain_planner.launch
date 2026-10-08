@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="uav_name" default="$(arg UAV_NAME)"/>
+  <arg name="common_frame" default="world"/>
+  <arg name="map_path"
+       default="$(find terrain_navigation)/../resources/davosdorf.tif"/>
+  <arg name="config"
+       default="$(find xd_uav_planning)/config/terrain_planner.yaml"/>
+  <arg name="request_topic" default="planning/task_path"/>
+  <arg name="output_topic" default="planning/terrain_path"/>
+  <arg name="status_topic" default="planning/status"/>
+  <arg name="minimum_turning_radius_m" default="66.66667"/>
+  <arg name="terrain_elevation_offset_m" default="0.0"/>
+  <arg name="random_seed" default="0"/>
+  <arg name="solve_time_per_leg_s" default="5.0"/>
+  <arg name="maximum_solve_attempts" default="1"/>
+
+  <group ns="$(arg uav_name)">
+    <node pkg="xd_uav_planning"
+          type="terrain_planner_node"
+          name="terrain_planner"
+          output="screen"
+          required="true">
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="map_path" value="$(arg map_path)"/>
+      <param name="common_frame" value="$(arg common_frame)"/>
+      <param name="request_topic" value="$(arg request_topic)"/>
+      <param name="output_topic" value="$(arg output_topic)"/>
+      <param name="status_topic" value="$(arg status_topic)"/>
+      <param name="minimum_turning_radius_m"
+             value="$(arg minimum_turning_radius_m)"/>
+      <param name="terrain_elevation_offset_m"
+             value="$(arg terrain_elevation_offset_m)"/>
+      <param name="random_seed" value="$(arg random_seed)"/>
+      <param name="solve_time_per_leg_s"
+             value="$(arg solve_time_per_leg_s)"/>
+      <param name="maximum_solve_attempts"
+             value="$(arg maximum_solve_attempts)"/>
+    </node>
+  </group>
+</launch>

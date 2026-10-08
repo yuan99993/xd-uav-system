@@ -12,10 +12,14 @@
   <depend>diagnostic_msgs</depend>
   <depend>geographic_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>grid_map_core</depend>
+  <depend>grid_map_geo</depend>
   <build_depend>message_generation</build_depend>
   <exec_depend>message_runtime</exec_depend>
   <depend>mavros_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>ompl</depend>
+  <depend>roscpp</depend>
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
@@ -25,6 +29,8 @@
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
   <depend>tf2_sensor_msgs</depend>
+  <depend>terrain_navigation</depend>
+  <depend>terrain_planner</depend>
   <depend>xd_uav_controller</depend>
   <depend>xd_uav_task_allocate</depend>
   <exec_depend>python3-numpy</exec_depend>
@@ -32,6 +38,7 @@
   <exec_depend>ego_planner</exec_depend>
   <exec_depend>mavros</exec_depend>
   <exec_depend>px4</exec_depend>
+  <exec_depend>rosbridge_server</exec_depend>
   <exec_depend>xd_uav_control_manager</exec_depend>
   <exec_depend>xd_uav_state_estimators</exec_depend>
   <exec_depend>xd_uav_single_tf_manager</exec_depend>

@@ -1,0 +1,20 @@
+<launch>
+  <include file="$(find xd_uav_planning)/launch/internal/terrain_planner.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+    <arg name="status_topic" value="planning/terrain_status"/>
+    <arg name="random_seed" value="20261005"/>
+  </include>
+
+  <include file="$(find xd_uav_planning)/launch/internal/terrain_planner.launch">
+    <arg name="UAV_NAME" value="uav2"/>
+    <arg name="status_topic" value="planning/terrain_status"/>
+    <arg name="random_seed" value="20261005"/>
+  </include>
+
+  <include file="$(find xd_uav_planning)/launch/terrain_fixedwing_swarm_monitor.launch"/>
+
+  <test test-name="terrain_fixedwing_swarm"
+        pkg="xd_uav_planning"
+        type="test_terrain_fixedwing_swarm.py"
+        time-limit="60"/>
+</launch>

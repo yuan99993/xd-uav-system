@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config"
+       default="$(find xd_uav_planning)/config/terrain_swarm.yaml"/>
+  <arg name="common_frame" default="world"/>
+  <arg name="minimum_separation_m" default="133.33334"/>
+  <arg name="spatial_only_blocks_release" default="true"/>
+  <arg name="uav1_name" default="uav1"/>
+  <arg name="uav2_name" default="uav2"/>
+  <arg name="uav1_path_topic"
+       default="/$(arg uav1_name)/planning/terrain_path"/>
+  <arg name="uav2_path_topic"
+       default="/$(arg uav2_name)/planning/terrain_path"/>
+  <arg name="uav1_status_topic"
+       default="/$(arg uav1_name)/planning/terrain_status"/>
+  <arg name="uav2_status_topic"
+       default="/$(arg uav2_name)/planning/terrain_status"/>
+  <arg name="uav1_nominal_speed_mps" default="15.0"/>
+  <arg name="uav2_nominal_speed_mps" default="15.0"/>
+  <arg name="status_topic" default="/terrain_swarm/status"/>
+  <arg name="marker_topic" default="/terrain_swarm/markers"/>
+
+  <node pkg="xd_uav_planning"
+        type="terrain_swarm_monitor.py"
+        name="terrain_swarm_monitor"
+        output="screen"
+        required="true">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="common_frame" value="$(arg common_frame)"/>
+    <param name="minimum_separation_m" value="$(arg minimum_separation_m)"/>
+    <param name="spatial_only_blocks_release"
+           value="$(arg spatial_only_blocks_release)"/>
+    <param name="status_topic" value="$(arg status_topic)"/>
+    <param name="marker_topic" value="$(arg marker_topic)"/>
+    <rosparam param="vehicles" subst_value="true">
+      - name: $(arg uav1_name)
+        path_topic: $(arg uav1_path_topic)
+        status_topic: $(arg uav1_status_topic)
+        nominal_speed_mps: $(arg uav1_nominal_speed_mps)
+      - name: $(arg uav2_name)
+        path_topic: $(arg uav2_path_topic)
+        status_topic: $(arg uav2_status_topic)
+        nominal_speed_mps: $(arg uav2_nominal_speed_mps)
+    </rosparam>
+  </node>
+</launch>

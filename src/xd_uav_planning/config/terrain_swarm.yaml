@@ -1,0 +1,16 @@
+# M4 is a planning-screen layer, not a certified in-flight separation system.
+# The default is 2 x the terrain planner's 66.66667 m minimum turn radius.
+minimum_separation_m: 133.33334
+
+# Conservative deployment default. The SITL demo explicitly overrides this
+# to false so spatial crossings with different predicted arrival times remain
+# visible warnings while only spatiotemporal conflicts block release.
+spatial_only_blocks_release: true
+
+# Subdivision is used only for a conservative spatial index; exact segment
+# distances are still evaluated after indexing.
+index_segment_length_m: 20.0
+publication_rate_hz: 2.0
+common_frame: world
+status_topic: /terrain_swarm/status
+marker_topic: /terrain_swarm/markers

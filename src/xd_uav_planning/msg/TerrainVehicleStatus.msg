@@ -1,0 +1,6 @@
+string uav_name
+xd_uav_task_allocate/PlannerStatus planner_status
+bool path_available
+uint32 path_points
+float64 path_length_m
+float64 nominal_speed_mps

@@ -1,0 +1,25 @@
+<package>
+  <name>terrain_navigation</name>
+  <version>0.0.1</version>
+  <description>Steep terrain navigation package</description>
+
+  <maintainer email="jalim@ethz.ch">Jaeyoung Lim</maintainer>
+
+  <author>Jaeyoung Lim</author>
+
+  <license>BSD-3</license>
+
+  <url type="website">https://github.com/Jaeyoung-Lim/steep-terrain-navigation</url>
+  <url type="bugtracker">https://github.com/Jaeyoung-Lim/steep-terrain-navigation/issues</url>
+
+  <!-- Dependencies which this package needs to build itself. -->
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>eigen_catkin</build_depend>
+  <build_depend>grid_map_core</build_depend>
+  <build_depend>grid_map_geo</build_depend>
+  <build_depend>libgdal-dev</build_depend>
+  <run_depend>eigen_catkin</run_depend>
+  <run_depend>gdal-bin</run_depend>
+  <export>
+  </export>
+</package>

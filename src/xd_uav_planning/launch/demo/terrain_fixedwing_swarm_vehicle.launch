@@ -1,0 +1,88 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- One dynamically managed fixed-wing vehicle. Gazebo and the global
+       swarm monitor/release gate are owned by the parent fleet launch. -->
+  <arg name="UAV_NAME"/>
+  <arg name="instance"/>
+  <arg name="system_id"/>
+  <arg name="mavlink_udp_port"/>
+  <arg name="mavlink_tcp_port"/>
+  <arg name="mavros_fcu_url"/>
+  <arg name="gst_udp_port"/>
+  <arg name="camera_udp_port"/>
+  <arg name="gazebo_x"/>
+  <arg name="gazebo_y"/>
+  <arg name="gazebo_z" default="0.0"/>
+  <arg name="world_origin_x"/>
+  <arg name="world_origin_y"/>
+  <arg name="world_origin_z"/>
+  <arg name="terrain_random_seed" default="0"/>
+  <!-- Interactive mountain planning gets three independent bounded searches.
+       Geometry, climb, turn-radius and clearance limits remain unchanged. -->
+  <arg name="terrain_solve_time_per_leg_s" default="10.0"/>
+  <arg name="terrain_maximum_solve_attempts" default="3"/>
+  <arg name="map_path"
+       default="$(find terrain_navigation)/../resources/davosdorf.tif"/>
+  <arg name="plane_sdf"
+       default="$(find px4)/Tools/sitl_gazebo/models/plane/plane.sdf.jinja"/>
+
+  <include file="$(find xd_uav_control_manager)/launch/sitl/px4_sitl_vehicle.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="instance" value="$(arg instance)"/>
+    <arg name="system_id" value="$(arg system_id)"/>
+    <arg name="vehicle" value="plane"/>
+    <arg name="sdf_source" value="$(arg plane_sdf)"/>
+    <arg name="x" value="$(arg gazebo_x)"/>
+    <arg name="y" value="$(arg gazebo_y)"/>
+    <arg name="z" value="$(arg gazebo_z)"/>
+    <arg name="mavlink_udp_port" value="$(arg mavlink_udp_port)"/>
+    <arg name="mavlink_tcp_port" value="$(arg mavlink_tcp_port)"/>
+    <arg name="mavros_fcu_url" value="$(arg mavros_fcu_url)"/>
+    <arg name="gst_udp_port" value="$(arg gst_udp_port)"/>
+    <arg name="mavlink_cam_udp_port" value="$(arg camera_udp_port)"/>
+    <arg name="imu_frame_id" value="$(arg UAV_NAME)/fcu"/>
+  </include>
+
+  <node pkg="xd_uav_planning" type="multi_odom_registration.py"
+        name="$(arg UAV_NAME)_terrain_odom_registration"
+        output="screen" required="true">
+    <param name="parent_frame" value="world"/>
+    <param name="alignment_valid_rate_hz" value="10.0"/>
+    <rosparam param="registrations" subst_value="true">
+      - {child_frame: $(arg UAV_NAME)/odom, translation_m: [$(arg world_origin_x), $(arg world_origin_y), $(arg world_origin_z)], validity_topic: /$(arg UAV_NAME)/single_tf_manager/local_alignment_valid}
+    </rosparam>
+  </node>
+
+  <include file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="sources_config"
+         value="$(find xd_uav_planning)/config/demo/fixedwing_mavros_sources.yaml"/>
+  </include>
+  <include file="$(find xd_uav_state_estimators)/launch/estimator.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="sources_config"
+         value="$(find xd_uav_planning)/config/demo/fixedwing_mavros_sources.yaml"/>
+    <arg name="body_frame" value="$(arg UAV_NAME)/fcu"/>
+  </include>
+
+  <include file="$(find xd_uav_control_manager)/launch/fixedwing_system.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="offboard_config"
+         value="$(find xd_uav_planning)/config/demo/fixedwing_offboard.yaml"/>
+    <arg name="safety_config"
+         value="$(find xd_uav_planning)/config/demo/fixedwing_sitl_safety.yaml"/>
+    <arg name="simple_goal_topic" value="/$(arg UAV_NAME)/move_base_simple/goal"/>
+  </include>
+
+  <include file="$(find xd_uav_planning)/launch/terrain_fixedwing_planning.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="common_frame" value="world"/>
+    <arg name="map_path" value="$(arg map_path)"/>
+    <arg name="terrain_random_seed" value="$(arg terrain_random_seed)"/>
+    <arg name="terrain_solve_time_per_leg_s"
+         value="$(arg terrain_solve_time_per_leg_s)"/>
+    <arg name="terrain_maximum_solve_attempts"
+         value="$(arg terrain_maximum_solve_attempts)"/>
+    <arg name="adjusted_path_topic" value="planning/swarm_staged_path"/>
+  </include>
+</launch>

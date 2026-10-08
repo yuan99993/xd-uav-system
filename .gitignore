@@ -101,6 +101,7 @@ ENV/
 
 # Python build outputs
 dist/
+/src/web/frontend/dist-swarm/
 build/lib/
 *.egg-info/
 pip-wheel-metadata/
@@ -151,8 +152,19 @@ profile/
 .DS_Store
 Thumbs.db
 
-# Codex local scratch and task state.
+# Codex local scratch, task state, and private root-level discussion notes.
 /.codex-tmp/
+/*_TASK_NOTES.md
+
+# Local handoff artifact from the Web author. The normalized source is kept in
+# src/web; do not upload the original archive or its duplicate upstream tree.
+/src/web.zip
+/src/web/terrain-navigation/
+
+# These are project sources despite the generic build/report rules above.
+!/src/web/frontend/index.html
+!/src/web/frontend/swarm.html
+!/src/terrain-navigation/Makefile
 
 # Upstream control design notes do not describe the LTJ control overlays.
 /src/xd_uav_controller/docs/control_base_refactor_audit.md

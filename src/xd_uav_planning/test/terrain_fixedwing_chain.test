@@ -1,0 +1,19 @@
+<launch>
+  <include file="$(find xd_uav_controller)/launch/controller.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+    <arg name="vehicle_type" value="fixedwing"/>
+    <arg name="airframe_type" value="fixedwing"/>
+  </include>
+
+  <include file="$(find xd_uav_planning)/launch/terrain_fixedwing_planning.launch">
+    <arg name="UAV_NAME" value="uav1"/>
+    <arg name="common_frame" value="world"/>
+    <arg name="terrain_random_seed" value="20261005"/>
+    <arg name="dynamic_failure_cancel_service" value=""/>
+  </include>
+
+  <test test-name="terrain_fixedwing_chain"
+        pkg="xd_uav_planning"
+        type="test_terrain_fixedwing_chain.py"
+        time-limit="45"/>
+</launch>
