@@ -17,7 +17,7 @@ frames:
 
 tracker:
   enabled_at_startup: true
-  image_source: "search_fixed"
+  image_source: ""
   selection:
     # Keep all confirmed identities visible; flight-follow is opt-in by ID.
     default_mode: "all"
@@ -25,9 +25,13 @@ tracker:
     # operator returns to all/global mode or selects another target.
     locked_target_release_timeout_sec: 0.0
   sources:
-    allowed: [search_fixed]
-    maximum_sources: 1
+    allowed: [search_fixed, search_gimbal]
+    maximum_sources: 2
     ttl_sec: 8.0
+  tracklet_stitching:
+    # The low-load gimbal runs at 2 FPS, so a 0.50 s confirmation window would
+    # reset on normal scheduling jitter. Keep three measurements, not fewer.
+    maximum_confirmation_gap_sec: 1.25
   association:
     metric_relative:
       enabled: false

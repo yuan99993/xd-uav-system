@@ -4,6 +4,7 @@
 import json
 import math
 import threading
+from collections import deque
 
 import rospy
 import tf.transformations as transformations
@@ -12,15 +13,17 @@ from gazebo_msgs.msg import ModelState
 from gazebo_msgs.srv import SetModelState
 from geometry_msgs.msg import Pose, TransformStamped, Twist
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 
-from xd_uav_track.msg import TrackStateArray
+from xd_uav_track.msg import GimbalState, TrackStateArray, PerceptionState, PerceptionTargetArray
 
 
 WORLD = "world"
 BODY = "moving_uav_search/base_link"
 CAMERA = "moving_uav_search/fixed_camera_optical_frame"
+GIMBAL_CAMERA = "moving_uav_search/gimbal_camera_optical_frame"
 ALTITUDE_M = 28.0
 GROUND_Z_M = 0.0
 
@@ -46,6 +49,8 @@ class MovingSearchDriver:
         self.minimum_altitude_m = float(rospy.get_param("~minimum_altitude_m", 28.0))
         self.maximum_altitude_m = float(rospy.get_param("~maximum_altitude_m", 60.0))
         self.altitude_rate_mps = max(0.1, float(rospy.get_param("~altitude_rate_mps", 1.5)))
+        self.altitude_descent_rate_mps = max(0.05, float(
+            rospy.get_param("~altitude_descent_rate_mps", 0.35)))
         self.expected_target_count = max(0, int(rospy.get_param("~expected_target_count", 0)))
         self.coverage_margin_m = max(0.0, float(rospy.get_param("~coverage_margin_m", 2.0)))
         self.camera_horizontal_fov_rad = float(
@@ -83,7 +88,8 @@ class MovingSearchDriver:
             float(rospy.get_param("~search_area/max_y_m", 18.0)))
         if (not all(math.isfinite(value) for value in (
                 self.altitude_m, self.minimum_altitude_m, self.maximum_altitude_m,
-                self.altitude_rate_mps, self.coverage_margin_m,
+                self.altitude_rate_mps, self.altitude_descent_rate_mps,
+                self.coverage_margin_m,
                 self.camera_horizontal_fov_rad, self.search_cruise_speed_mps,
                 self.coverage_transit_speed_mps, self.follow_max_speed_mps,
                 self.horizontal_acceleration_mps2, self.yaw_rate_limit_radps,
@@ -117,6 +123,65 @@ class MovingSearchDriver:
             min(self.maximum_altitude_m, self.follow_overview_altitude_m))
         self.uav_name = "moving_uav_search"
         self.drone_model = str(rospy.get_param("~drone_model", "search_quadrotor"))
+        self.gimbal_camera_enabled = bool(rospy.get_param(
+            "~gimbal_camera_enabled", False))
+        self.global_search_image_source = str(rospy.get_param(
+            "~global_search_image_source",
+            rospy.get_param("~tracking_image_source", "search_fixed"))).strip()
+        if not self.global_search_image_source:
+            self.global_search_image_source = "search_fixed"
+        follow_sources = rospy.get_param(
+            "~follow_tracking_sources", [self.global_search_image_source,
+                                          "search_gimbal"] if self.gimbal_camera_enabled
+            else [self.global_search_image_source])
+        if isinstance(follow_sources, str):
+            follow_sources = follow_sources.split(",")
+        self.follow_tracking_sources = {
+            str(source).strip() for source in follow_sources if str(source).strip()}
+        self.follow_tracking_sources.add(self.global_search_image_source)
+        # Compatibility for callers using the former single-source setting.
+        self.tracking_image_source = self.global_search_image_source
+        self.gimbal_model = str(rospy.get_param(
+            "~gimbal_model", "search_gimbal_camera"))
+        self.gimbal_pan_amplitude_rad = max(0.0, min(math.radians(70.0), float(
+            rospy.get_param("~gimbal_pan_amplitude_rad", math.radians(30.0)))))
+        self.gimbal_sweep_frequency_hz = max(0.01, min(0.25, float(
+            rospy.get_param("~gimbal_sweep_frequency_hz", 0.01))))
+        self.gimbal_pan_rate_limit_radps = max(0.005, min(0.5, float(
+            rospy.get_param("~gimbal_pan_rate_limit_radps",
+                            math.radians(2.0)))))
+        self.gimbal_tilt_rate_limit_radps = max(0.005, min(0.5, float(
+            rospy.get_param("~gimbal_tilt_rate_limit_radps",
+                            math.radians(2.0)))))
+        self.gimbal_look_down_rad = max(0.10, min(1.35, float(
+            rospy.get_param("~gimbal_look_down_rad", 0.62))))
+        gimbal_min_look_down = float(rospy.get_param(
+            "~gimbal_min_look_down_rad", 0.10))
+        gimbal_standoff_margin = float(rospy.get_param(
+            "~gimbal_safe_standoff_margin_m", 2.0))
+        if (not math.isfinite(gimbal_min_look_down) or
+                not math.isfinite(gimbal_standoff_margin) or
+                gimbal_standoff_margin < 0.0):
+            raise ValueError("invalid gimbal lower-angle or standoff configuration")
+        self.gimbal_min_look_down_rad = max(0.05, min(0.45, gimbal_min_look_down))
+        self.gimbal_safe_standoff_margin_m = gimbal_standoff_margin
+        self.current_gimbal_pan_rad = 0.0
+        self.current_gimbal_look_down_rad = self.gimbal_look_down_rad
+        self.last_gimbal_pan_stamp = rospy.Time()
+        self.perception_gimbal_lock = threading.Lock()
+        self.perception_gimbal_selection = None
+        self.perception_gimbal_selection_stamp = rospy.Time()
+        self.perception_gimbal_aim = None
+        self.gimbal_angle_history = deque(maxlen=200)
+        self.gimbal_camera_intrinsics = None
+        self.perception_gimbal_source = str(rospy.get_param(
+            "~perception_gimbal_image_source", "search_gimbal"))
+        self.gimbal_pan_limit_rad = max(self.gimbal_pan_amplitude_rad, min(math.pi,
+            float(rospy.get_param("~gimbal_pan_limit_rad", math.radians(70.0)))))
+        self.gimbal_tracking_rate_radps = max(0.005, min(0.5, float(rospy.get_param(
+            "~gimbal_tracking_rate_radps", math.radians(6.0)))))
+        self.gimbal_visual_coast_sec = max(0.2, min(5.0, float(rospy.get_param(
+            "~gimbal_visual_coast_sec", 3.0))))
         self.drone_xy = [-34.0, -21.0]
         self.drone_velocity = [0.0, 0.0]
         self.drone_yaw = 0.0
@@ -160,6 +225,9 @@ class MovingSearchDriver:
                                                persistent=True)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster()
         self.tf_static_broadcaster = tf2_ros.StaticTransformBroadcaster()
+        self.gimbal_state_pub = rospy.Publisher(
+            "/{}/track/gimbal_state".format(self.uav_name), GimbalState,
+            queue_size=1) if self.gimbal_camera_enabled else None
         self._publish_static_camera_transform()
 
         ns = "/" + self.uav_name
@@ -179,6 +247,8 @@ class MovingSearchDriver:
             "world_frame": WORLD,
             "scene": "moving_uav_vehicle_search",
             "camera": "/{}/fixed_camera/image_raw".format(self.uav_name),
+            "gimbal_camera": ("/{}/gimbal_camera/image_raw".format(self.uav_name)
+                              if self.gimbal_camera_enabled else None),
             "search_route": "four-lane rounded lawnmower",
             "uav_control_source": "xd_uav_track TrackStateArray only; no Gazebo truth",
             "vehicles": [{"public_id": v["id"], "model": v["name"],
@@ -191,6 +261,72 @@ class MovingSearchDriver:
         self.target_mode_sub = rospy.Subscriber(ns + "/track/target_mode", String,
                                                 self._target_mode_callback,
                                                 queue_size=1)
+        if self.gimbal_camera_enabled:
+            self.perception_state_sub = rospy.Subscriber(ns + "/perception/state",
+                PerceptionState, self._perception_gimbal_state, queue_size=1)
+            self.perception_targets_sub = rospy.Subscriber(ns + "/perception/targets",
+                PerceptionTargetArray, self._perception_gimbal_targets, queue_size=1)
+            self.gimbal_info_sub = rospy.Subscriber(ns + "/gimbal_camera/camera_info",
+                CameraInfo, self._gimbal_camera_info, queue_size=1)
+
+    def _gimbal_camera_info(self, message):
+        values = (message.K[0], message.K[4], message.K[2], message.K[5])
+        if (message.width <= 0 or message.height <= 0 or
+                not all(math.isfinite(value) for value in values) or
+                values[0] <= 0 or values[1] <= 0):
+            return
+        with self.perception_gimbal_lock:
+            self.gimbal_camera_intrinsics = (message.width, message.height, values)
+
+    def _perception_gimbal_state(self, message):
+        selection = ((message.session_id, message.model_epoch, message.selected_target_uid)
+            if message.mode in ("track", "fusion") and message.selection_active and
+            message.selected_image_source == self.perception_gimbal_source else None)
+        with self.perception_gimbal_lock:
+            if selection != self.perception_gimbal_selection:
+                self.perception_gimbal_aim = None
+                self.perception_gimbal_selection_stamp = rospy.Time.now()
+            self.perception_gimbal_selection = selection
+
+    def _perception_gimbal_targets(self, message):
+        if message.image_source != self.perception_gimbal_source:
+            return
+        age = (rospy.Time.now() - message.header.stamp).to_sec()
+        if message.header.stamp.is_zero() or not -0.05 <= age <= 0.8:
+            return
+        with self.perception_gimbal_lock:
+            selection = self.perception_gimbal_selection
+            info = self.gimbal_camera_intrinsics
+            if (selection is None or info is None or
+                    (message.session_id, message.model_epoch) != selection[:2] or
+                    (message.image_width, message.image_height) != info[:2]):
+                return
+            target = next((t for t in message.targets if t.target_uid == selection[2]
+                           and t.selected and t.lifecycle_state == "confirmed" and
+                           t.measurement_source in ("detector", "visual_tracker")), None)
+            if target is None or not self.gimbal_angle_history:
+                return
+            captured = min(self.gimbal_angle_history,
+                key=lambda item: abs((item[0]-message.header.stamp).to_sec()))
+            if abs((captured[0]-message.header.stamp).to_sec()) > 0.15:
+                return
+            if self.perception_gimbal_aim and message.header.stamp <= self.perception_gimbal_aim[0]:
+                return
+            width, height, (fx, fy, cx, cy) = info
+            u, v = target.center_px
+            if not (math.isfinite(u) and math.isfinite(v) and 0 <= u < width and 0 <= v < height):
+                return
+            # Optical x is right, y down; this model's tilt is off-nadir,
+            # not pitch from the horizon. Reconstruct the measured world ray
+            # using capture-time angles, avoiding delayed-frame feedback drift.
+            x, y = (u-cx)/fx, (v-cy)/fy
+            tilt = captured[2]
+            forward, right, down = math.sin(tilt)-y*math.cos(tilt), x, math.cos(tilt)+y*math.sin(tilt)
+            bearing = captured[3] + captured[1] + math.atan2(-right, forward)
+            off_nadir = math.atan2(math.hypot(forward, right), down)
+            if down <= 0:
+                return
+            self.perception_gimbal_aim = (message.header.stamp, bearing, off_nadir)
 
     @staticmethod
     def _make_search_path():
@@ -243,6 +379,142 @@ class MovingSearchDriver:
         transform.transform.rotation.z = q[2]
         transform.transform.rotation.w = q[3]
         self.tf_static_broadcaster.sendTransform(transform)
+
+    def _update_gimbal_angles(self, stamp, elapsed):
+        amplitude = self.gimbal_pan_amplitude_rad
+        desired_pan = amplitude * math.sin(
+            2.0 * math.pi * self.gimbal_sweep_frequency_hz * elapsed)
+        desired_look_down = self.gimbal_look_down_rad
+        if self.selection_mode == "follow" and self.target_world is not None:
+            age = ((stamp - self.last_visual_measurement).to_sec()
+                   if not self.last_visual_measurement.is_zero() else 0.0)
+            horizon = max(0.0, min(2.0, age + 0.25))
+            target_x = self.target_world[0] + self.target_velocity_world[0] * horizon
+            target_y = self.target_world[1] + self.target_velocity_world[1] * horizon
+            body_cos, body_sin = math.cos(self.drone_yaw), math.sin(self.drone_yaw)
+            camera_x = self.drone_xy[0] + body_cos * 0.10
+            camera_y = self.drone_xy[1] + body_sin * 0.10
+            world_bearing = math.atan2(target_y - camera_y,
+                                       target_x - camera_x)
+            desired_pan = max(-amplitude, min(amplitude,
+                self._angle_delta(world_bearing, self.drone_yaw)))
+            camera_z = self.altitude_m - 0.12
+            horizontal_range = math.hypot(target_x - camera_x,
+                                          target_y - camera_y)
+            desired_look_down = math.atan2(horizontal_range,
+                                           max(0.1, camera_z))
+            desired_look_down = max(self.gimbal_min_look_down_rad,
+                                   min(1.35, desired_look_down))
+
+        with self.perception_gimbal_lock:
+            aim = self.perception_gimbal_aim
+            selected = self.perception_gimbal_selection is not None
+            selected_stamp = self.perception_gimbal_selection_stamp
+        web_tracking = selected and aim is not None and \
+            0 <= (stamp-aim[0]).to_sec() <= self.gimbal_visual_coast_sec
+        if web_tracking:
+            desired_pan = self._angle_delta(aim[1], self.drone_yaw)
+            desired_look_down = aim[2]
+        elif selected:
+            # Briefly hold the last physical angle, then resume a slow scan.
+            hold_stamp = aim[0] if aim else selected_stamp
+            if 0 <= (stamp-hold_stamp).to_sec() <= self.gimbal_visual_coast_sec + 1.0:
+                desired_pan = self.current_gimbal_pan_rad
+                desired_look_down = self.current_gimbal_look_down_rad
+
+        dt = ((stamp - self.last_gimbal_pan_stamp).to_sec()
+              if not self.last_gimbal_pan_stamp.is_zero() else 0.0)
+        dt = max(0.0, min(0.2, dt))
+        maximum_step = (self.gimbal_tracking_rate_radps if web_tracking else
+                        self.gimbal_pan_rate_limit_radps) * dt
+        pan_error = self._angle_delta(desired_pan, self.current_gimbal_pan_rad)
+        self.current_gimbal_pan_rad += max(-maximum_step,
+                                           min(maximum_step, pan_error))
+        # A cancelled selection changes the desired scan, not the physical
+        # limit; narrowing the clamp here would jump instantly from 70 to 30°.
+        pan_limit = self.gimbal_pan_limit_rad
+        self.current_gimbal_pan_rad = max(-pan_limit, min(pan_limit,
+                                               self.current_gimbal_pan_rad))
+        tilt_step = (self.gimbal_tracking_rate_radps if web_tracking else
+                     self.gimbal_tilt_rate_limit_radps) * dt
+        tilt_error = desired_look_down - self.current_gimbal_look_down_rad
+        self.current_gimbal_look_down_rad += max(-tilt_step,
+            min(tilt_step, tilt_error))
+        self.current_gimbal_look_down_rad = max(self.gimbal_min_look_down_rad,
+            min(1.35,
+            self.current_gimbal_look_down_rad))
+        self.last_gimbal_pan_stamp = stamp
+        with self.perception_gimbal_lock:
+            self.gimbal_angle_history.append((stamp, self.current_gimbal_pan_rad,
+                self.current_gimbal_look_down_rad, self.drone_yaw))
+        return self.current_gimbal_pan_rad, self.current_gimbal_look_down_rad
+
+    def _publish_gimbal_camera_pose(self, stamp, elapsed):
+        if not self.gimbal_camera_enabled:
+            return
+        pan, look_down = self._update_gimbal_angles(stamp, elapsed)
+        world_yaw = self.drone_yaw + pan
+        mount_x, mount_z = 0.10, -0.12
+        body_cos, body_sin = math.cos(self.drone_yaw), math.sin(self.drone_yaw)
+        camera_x = self.drone_xy[0] + body_cos * mount_x
+        camera_y = self.drone_xy[1] + body_sin * mount_x
+        camera_z = self.altitude_m + mount_z
+
+        state = self._model_state(self.gimbal_model, camera_x, camera_y,
+                                  camera_z, world_yaw,
+                                  self.drone_velocity[0], self.drone_velocity[1])
+        model_pitch = math.pi / 2.0 - look_down - 0.95
+        q_yaw = transformations.quaternion_about_axis(world_yaw, (0.0, 0.0, 1.0))
+        q_pitch = transformations.quaternion_about_axis(model_pitch,
+                                                          (0.0, 1.0, 0.0))
+        q_model = transformations.quaternion_multiply(q_yaw, q_pitch)
+        state.pose.orientation.x = q_model[0]
+        state.pose.orientation.y = q_model[1]
+        state.pose.orientation.z = q_model[2]
+        state.pose.orientation.w = q_model[3]
+        try:
+            response = self.state_client(state)
+            if not response.success:
+                rospy.logwarn_throttle(2.0, "Gazebo rejected gimbal pose: %s",
+                                       response.status_message)
+        except rospy.ServiceException as error:
+            rospy.logwarn_throttle(2.0, "gimbal Gazebo state update failed: %s", error)
+
+        # Express the camera optical frame relative to the aircraft body. The
+        # camera is kept tilted forward and down while its pan sweeps, matching
+        # the Gazebo sensor's local pitch and the image topic's frame_id.
+        q_pan = transformations.quaternion_about_axis(pan, (0.0, 0.0, 1.0))
+        q_tilt = transformations.quaternion_about_axis(
+            -look_down, (0.0, 1.0, 0.0))
+        nadir_matrix = transformations.identity_matrix()
+        nadir_matrix[0:3, 0:3] = ((0.0, -1.0, 0.0),
+                                  (-1.0, 0.0, 0.0),
+                                  (0.0, 0.0, -1.0))
+        q_nadir = transformations.quaternion_from_matrix(nadir_matrix)
+        q_relative = transformations.quaternion_multiply(
+            transformations.quaternion_multiply(q_pan, q_tilt), q_nadir)
+
+        transform = TransformStamped()
+        transform.header.stamp = stamp
+        transform.header.frame_id = BODY
+        transform.child_frame_id = GIMBAL_CAMERA
+        transform.transform.translation.x = mount_x
+        transform.transform.translation.z = mount_z
+        transform.transform.rotation.x = q_relative[0]
+        transform.transform.rotation.y = q_relative[1]
+        transform.transform.rotation.z = q_relative[2]
+        transform.transform.rotation.w = q_relative[3]
+        self.tf_broadcaster.sendTransform(transform)
+
+        if self.gimbal_state_pub is not None:
+            state = GimbalState()
+            state.header.stamp = stamp
+            state.header.frame_id = BODY
+            state.yaw_rad = pan
+            state.pitch_rad = math.pi / 2.0 - look_down
+            state.roll_rad = 0.0
+            state.valid = True
+            self.gimbal_state_pub.publish(state)
 
     def _path_at(self, distance):
         distance = max(0.0, min(self.search_length, distance))
@@ -326,23 +598,35 @@ class MovingSearchDriver:
             return candidate[1], candidate[2], candidate[3]
 
     def _track_callback(self, message):
-        if message.image_source != "search_fixed":
+        source = str(message.image_source)
+        # Global mode keeps searching and accumulating all target tracks. Only
+        # the configured wide-view camera contributes the search catalog.
+        if self.selection_mode != "follow":
+            if source == self.global_search_image_source:
+                self._update_known_targets(message)
+            self.manual_selection_active = False
             return
-        self._update_known_targets(message)
+        if source not in self.follow_tracking_sources:
+            return
         selected_tracks = [track for track in message.tracks if track.selected]
-        self.manual_selection_active = (self.selection_mode == "follow" or
-                                        bool(selected_tracks))
+        if source == self.global_search_image_source:
+            # Keep the global catalog fresh while fixed-camera search remains
+            # active. A gimbal frame contributes only the selected identity.
+            self._update_known_targets(message)
+        elif selected_tracks:
+            self._update_known_targets(
+                message, {track.track_id for track in selected_tracks})
+        self.manual_selection_active = True
         if not selected_tracks:
-            if self.follow_track_id is not None and self.selection_mode != "follow":
-                rospy.loginfo("global multi-target mode enabled; clearing flight-follow target")
-                self.follow_track_id = None
-                self.last_visual_measurement = rospy.Time()
-                self.target_world = None
-                self.target_velocity_world = [0.0, 0.0]
-                self.previous_target_world = None
-                self.previous_target_stamp = rospy.Time()
             return
         target_track = selected_tracks[0]
+        # The fixed/global view is authoritative for an explicit operator
+        # selection. Other views can initialize only before it arrives, and
+        # afterwards must report the same public/global track ID.
+        if (self.follow_track_id is not None and
+                target_track.track_id != self.follow_track_id and
+                source != self.global_search_image_source):
+            return
         if target_track.track_id != self.follow_track_id:
             self.follow_track_id = target_track.track_id
             self.follow_mode_started_at = rospy.Time.now()
@@ -427,6 +711,45 @@ class MovingSearchDriver:
             math.tan(0.5 * self.camera_horizontal_fov_rad) *
             self.camera_image_height / float(self.camera_image_width))
 
+    def _gimbal_safe_standoff_m(self):
+        if not self.gimbal_camera_enabled:
+            return 0.0
+        camera_z = max(1.0, self.altitude_m - 0.12)
+        # Keep the selected vehicle away from the camera's nadir centerline;
+        # the margin accounts for body/mount occlusion and imperfect limits.
+        return (camera_z * math.tan(self.gimbal_min_look_down_rad) +
+                self.gimbal_safe_standoff_margin_m)
+
+    def _gimbal_safe_follow_point(self, target):
+        """Return a pursuit point that does not put the target under the UAV."""
+        radius = self._gimbal_safe_standoff_m()
+        if radius <= 0.0:
+            return tuple(target)
+        dx = self.drone_xy[0] - target[0]
+        dy = self.drone_xy[1] - target[1]
+        distance = math.hypot(dx, dy)
+        if distance <= 1e-6:
+            dx, dy = math.cos(self.drone_yaw), math.sin(self.drone_yaw)
+            distance = 1.0
+        return (target[0] + radius * dx / distance,
+                target[1] + radius * dy / distance)
+
+    def _search_area_fits_viewpoint(self, position, yaw, altitude):
+        min_x, max_x, min_y, max_y = self.search_area_bounds
+        usable_altitude = min(self.altitude_m, altitude)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        half_lateral = usable_altitude * math.tan(
+            0.5 * self.camera_horizontal_fov_rad) - self.coverage_margin_m
+        half_forward = usable_altitude * math.tan(
+            0.5 * self._vertical_fov_rad()) - self.coverage_margin_m
+        for x, y in ((min_x, min_y), (min_x, max_y),
+                     (max_x, min_y), (max_x, max_y)):
+            dx, dy = x - position[0], y - position[1]
+            if (abs(-sy * dx + cy * dy) > half_lateral or
+                    abs(cy * dx + sy * dy) > half_forward):
+                return False
+        return True
+
     def _follow_altitude_target(self, lookahead_sec=1.0):
         """Keep the predicted vehicle inside the inner fixed-camera FOV."""
         dx = (self.target_world[0] + self.target_velocity_world[0] * lookahead_sec -
@@ -480,8 +803,18 @@ class MovingSearchDriver:
             self.follow_overview_fraction * (cy * dx + sy * dy)))
         lateral_bias = max(-lateral_room, min(lateral_room,
             self.follow_overview_fraction * (-sy * dx + cy * dy)))
-        return ((center_x + cy * forward_bias - sy * lateral_bias,
-                 center_y + sy * forward_bias + cy * lateral_bias), altitude)
+        position = (center_x + cy * forward_bias - sy * lateral_bias,
+                    center_y + sy * forward_bias + cy * lateral_bias)
+        if (self.gimbal_camera_enabled and
+                math.hypot(position[0] - predicted_target[0],
+                           position[1] - predicted_target[1]) <
+                self._gimbal_safe_standoff_m()):
+            safe_position = self._gimbal_safe_follow_point(predicted_target)
+            if not self._search_area_fits_viewpoint(safe_position,
+                                                    self.drone_yaw, altitude):
+                return None
+            position = safe_position
+        return position, altitude
 
     def _advance_search_route(self, dt):
         """Join and traverse a fallback sweep without jumping onto its path."""
@@ -522,8 +855,9 @@ class MovingSearchDriver:
             else:
                 self.altitude_target_m = max(self.altitude_m,
                                              self.local_reacquire_altitude_m)
-                self._move_toward_xy(anchor, dt, self.search_cruise_speed_mps,
-                                     gain=0.55)
+                safe_anchor = self._gimbal_safe_follow_point(anchor)
+                self._move_toward_xy(safe_anchor, dt,
+                                     self.search_cruise_speed_mps, gain=0.55)
             return self.drone_yaw
 
         plan = self._global_coverage_plan(stamp)
@@ -537,9 +871,11 @@ class MovingSearchDriver:
                                      self.local_reacquire_altitude_m)
         return self._advance_search_route(dt)
 
-    def _update_known_targets(self, message):
+    def _update_known_targets(self, message, track_ids=None):
         observations = []
         for track in message.tracks:
+            if track_ids is not None and track.track_id not in track_ids:
+                continue
             if (track.lifecycle_state not in ("confirmed", "occluded") or
                     not track.detected or track.predicted or track.hit_count < 3):
                 continue
@@ -550,6 +886,8 @@ class MovingSearchDriver:
         with self.target_state_lock:
             for track_id, stamp, position, hit_count in observations:
                 previous = self.known_targets.get(track_id)
+                if previous is not None and stamp <= previous["stamp"]:
+                    continue
                 velocity = [0.0, 0.0]
                 if previous is not None and not stamp.is_zero():
                     dt = (stamp - previous["stamp"]).to_sec()
@@ -575,6 +913,15 @@ class MovingSearchDriver:
     @staticmethod
     def _angle_delta(target, current):
         return math.atan2(math.sin(target - current), math.cos(target - current))
+
+    def _approach_altitude_target(self, dt):
+        if dt <= 0.0:
+            return
+        error = self.altitude_target_m - self.altitude_m
+        rate = (self.altitude_rate_mps if error >= 0.0
+                else self.altitude_descent_rate_mps)
+        step = rate * dt
+        self.altitude_m += max(-step, min(step, error))
 
     def _global_coverage_plan(self, stamp):
         if self.expected_target_count <= 0:
@@ -821,13 +1168,14 @@ class MovingSearchDriver:
                     target_velocity = clamp_vector(
                         self.target_velocity_world[0],
                         self.target_velocity_world[1], 2.0)
+                    safe_target = self._gimbal_safe_follow_point(predicted_target)
                     self._move_toward_xy(
-                        predicted_target, dt, self.follow_max_speed_mps,
+                        safe_target, dt, self.follow_max_speed_mps,
                         gain=0.45, feedforward=target_velocity)
-                # A quadrotor can translate while holding yaw. Keeping the
-                # rigid nadir camera level in image coordinates reduces
-                # apparent box motion during target turns.
-                desired_yaw = self.drone_yaw
+                # Turn toward the selected target at the configured low yaw
+                # rate; this keeps it inside the gimbal's limited pan sector.
+                desired_yaw = math.atan2(predicted_target[1] - self.drone_xy[1],
+                                         predicted_target[0] - self.drone_xy[0])
             elif self.selection_mode == "follow" and self.manual_selection_active:
                 reference_stamp = (self.last_visual_measurement
                                    if not self.last_visual_measurement.is_zero()
@@ -850,9 +1198,13 @@ class MovingSearchDriver:
                                 overview[0], dt, self.coverage_transit_speed_mps,
                                 gain=0.45)
                         else:
+                            safe_target = self._gimbal_safe_follow_point(predicted_target)
                             self._move_toward_xy(
-                                predicted_target, dt, self.search_cruise_speed_mps,
+                                safe_target, dt, self.search_cruise_speed_mps,
                                 gain=0.55)
+                        desired_yaw = math.atan2(
+                            predicted_target[1] - self.drone_xy[1],
+                            predicted_target[0] - self.drone_xy[0])
                     else:
                         self._move_toward_xy(
                             self.drone_xy, dt, self.search_cruise_speed_mps)
@@ -876,9 +1228,7 @@ class MovingSearchDriver:
                 self.altitude_target_m = self.minimum_altitude_m
                 desired_yaw = self._advance_search_route(dt)
 
-            altitude_step = self.altitude_rate_mps * dt
-            altitude_error = self.altitude_target_m - self.altitude_m
-            self.altitude_m += max(-altitude_step, min(altitude_step, altitude_error))
+            self._approach_altitude_target(dt)
 
             yaw_delta = math.atan2(math.sin(desired_yaw - self.drone_yaw),
                                    math.cos(desired_yaw - self.drone_yaw))
@@ -887,6 +1237,7 @@ class MovingSearchDriver:
             self.drone_yaw = math.atan2(math.sin(self.drone_yaw + yaw_step),
                                         math.cos(self.drone_yaw + yaw_step))
             self._publish_uav_pose(stamp, self.drone_velocity[0], self.drone_velocity[1])
+            self._publish_gimbal_camera_pose(stamp, elapsed)
 
             self.loop_count += 1
             if self.loop_count % 2 == 0:

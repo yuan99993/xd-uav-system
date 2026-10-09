@@ -1,13 +1,19 @@
-# XD vehicle train7 candidate archive
+# XD vehicle train7 model
 
 This is the train7 model that was tested against `predict7`, `predict4`, and
-`car.rar`. It was not kept as the active SmartTracker model because its
+`car.rar`. In the earlier SmartTracker evaluation it was not kept as the active model because its
 positive-set coverage was lower than the previous train model on all tested
 datasets.
 
+That rollback describes the archived SmartTracker entry point. The current
+`xd_uav_track/launch/vision_tracking_stack.launch` and shared detector launch
+default to this train7 model with TensorRT FP16. This default does not supersede
+the earlier accuracy findings and does not prove what a running node loaded.
+Read the shared detector's latched `~model_status` topic for runtime identity.
+
 - Model: `xd_vehicle_train7.pt`
 - SHA-256: `8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54`
-- Active model after rollback: `../xd_vehicle_latest/xd_vehicle_latest.pt`
+- Historical SmartTracker rollback artifact: `../xd_vehicle_latest/xd_vehicle_latest.pt`
 
 FP16 deployment artifact for this host:
 

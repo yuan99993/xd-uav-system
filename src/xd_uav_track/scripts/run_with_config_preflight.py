@@ -40,12 +40,14 @@ _load = _validator._load
 merge_mappings = _validator.merge_mappings
 validate_detector = _validator.validate_detector
 validate_tracker = _validator.validate_tracker
+validate_perception_deployment = _validator.validate_perception_deployment
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--track-config", action="append", default=[], metavar="YAML")
     parser.add_argument("--detector-config", action="append", default=[], metavar="YAML")
+    parser.add_argument("--perception-config", action="append", default=[], metavar="YAML")
     parser.add_argument("--strict-metric", action="store_true")
     parser.add_argument("--node-package", required=True)
     parser.add_argument("--node-type", required=True)
@@ -58,6 +60,8 @@ def main():
         validate_tracker(tracker_config, report, " + ".join(args.track_config))
     for path in args.detector_config:
         validate_detector(_load(path, report), report, path, args.strict_metric)
+    for path in args.perception_config:
+        validate_perception_deployment(_load(path, report), report, path)
     for text in report.warnings:
         print("WARNING: " + text, file=sys.stderr)
     if report.errors:

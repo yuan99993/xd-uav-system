@@ -1,0 +1,22 @@
+<launch>
+  <!-- Explicit GPU integration test, not included in routine CPU regression. -->
+  <include file="$(find sar_yolo_detector)/launch/xd_yolo_multi_source_detection_integration.launch">
+    <arg name="UAV_NAME" value="model_switch_test"/>
+    <arg name="reid_enabled" value="false"/>
+    <arg name="discovery_max_fps" value="4"/>
+    <arg name="pause_without_subscribers" value="false"/>
+    <arg name="maximum_batch_size" value="1"/>
+  </include>
+  <group ns="model_switch_test">
+    <node pkg="xd_uav_track" type="perception_mode_manager.py" name="mode_manager" output="screen">
+      <rosparam param="sources">
+        - image_source: fixed_rgb
+          image_topic: fixed_camera/image_raw
+        - image_source: gimbal_rgb
+          image_topic: gimbal_camera/image_raw
+      </rosparam>
+    </node>
+  </group>
+  <test test-name="gpu_model_switch_contract" pkg="sar_yolo_detector"
+        type="test_model_switch_gpu.py" time-limit="150"/>
+</launch>

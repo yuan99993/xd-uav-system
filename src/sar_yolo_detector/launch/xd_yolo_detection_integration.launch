@@ -7,6 +7,12 @@
   <arg name="overlay_config" default="" />
   <arg name="model_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt" />
   <arg name="model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54" />
+  <arg name="inference_backend" default="tensorrt_fp16" />
+  <arg name="engine_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.engine" />
+  <arg name="engine_sha256" default="88ed19419dcefdf64f6c90f31aa7961ef906c31d3581633afba69fa586bc850f" />
+  <arg name="engine_source_model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54" />
+  <arg name="auto_export_engine" default="true" />
+  <arg name="detector_fps" default="4.0" />
   <arg name="use_gpu" default="true" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
   <arg name="camera_info_topic" default="down_camera/camera_info" />
@@ -40,6 +46,13 @@
       <arg name="pause_without_subscribers" value="$(arg pause_without_subscribers)" />
       <arg name="model_path" value="$(arg model_path)" />
       <arg name="model_sha256" value="$(arg model_sha256)" />
+      <arg name="inference_backend" value="$(arg inference_backend)" />
+      <arg name="engine_path" value="$(arg engine_path)" />
+      <arg name="engine_sha256" value="$(arg engine_sha256)" />
+      <arg name="engine_source_model_sha256" value="$(arg engine_source_model_sha256)" />
+      <arg name="auto_export_engine" value="$(arg auto_export_engine)" />
+      <arg name="discovery_max_fps" value="$(arg detector_fps)" />
+      <arg name="tracking_tracks_topic" value="track/tracks_by_source" />
       <arg name="use_gpu" value="$(arg use_gpu)" />
     </include>
   </group>

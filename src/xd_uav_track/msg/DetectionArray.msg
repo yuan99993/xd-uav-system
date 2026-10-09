@@ -11,3 +11,5 @@ string image_source               # eo / ir / logical stream name
 string sensor_id
 string detector_name
 string model_version
+uint64 model_epoch                 # zero only for legacy publishers
+string[] class_names               # authoritative class contract for this epoch

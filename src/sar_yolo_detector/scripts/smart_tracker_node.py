@@ -16,6 +16,7 @@ import diagnostic_updater
 import numpy as np
 import rospkg
 import rospy
+from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import Image, RegionOfInterest
 from vision_msgs.msg import BoundingBox2D, Detection2D, ObjectHypothesisWithPose
 
@@ -157,6 +158,10 @@ class SmartTrackerNode:
         self._processed_frames = 0
         self._rejected_frames = 0
         self._last_processing_ms = 0.0
+        self._selected_track_id: Optional[int] = None
+        self._selected_track_id_is_stable = False
+        self._selected_class_id: Optional[int] = None
+        self._selected_last_bbox: Optional[Tuple[int, int, int, int]] = None
 
         self._input_topic = rospy.get_param("~input_image_topic", "camera/image_raw")
         tracked_topic = rospy.get_param(
@@ -168,6 +173,13 @@ class SmartTrackerNode:
         )
         annotated_topic = rospy.get_param(
             "~annotated_image_topic", "sar_yolo_detector/smart/annotated"
+        )
+        selected_detections_topic = rospy.get_param(
+            "~selected_detections_topic",
+            "sar_yolo_detector/smart/selected_tracked_detections",
+        )
+        select_pixel_topic = rospy.get_param(
+            "~select_pixel_topic", "sar_yolo_detector/smart/select_pixel"
         )
         self._publish_annotated = bool(
             rospy.get_param("~publish_annotated_image", True)
@@ -279,6 +291,9 @@ class SmartTrackerNode:
         self._annotated_publisher = rospy.Publisher(
             annotated_topic, Image, queue_size=1
         )
+        self._selected_detections_publisher = rospy.Publisher(
+            selected_detections_topic, TrackedDetection2DArray, queue_size=3
+        )
 
         self._select_service = rospy.Service(
             "~select", SelectSmartTrack, self._select
@@ -295,6 +310,13 @@ class SmartTrackerNode:
             self._image_callback,
             queue_size=1,
             buff_size=16 * 1024 * 1024,
+            tcp_nodelay=True,
+        )
+        self._select_pixel_subscriber = rospy.Subscriber(
+            select_pixel_topic,
+            PointStamped,
+            self._select_pixel_callback,
+            queue_size=1,
             tcp_nodelay=True,
         )
         self._manual_roi_subscriber = None
@@ -320,6 +342,11 @@ class SmartTrackerNode:
             self._input_topic,
             self._tracking_mode,
             self._manual_initial_roi_topic if self._manual_enabled else "disabled",
+        )
+        rospy.loginfo(
+            "Click selection: pixel_topic=%s (negative pixel cancels) selected_detections=%s",
+            select_pixel_topic,
+            selected_detections_topic,
         )
 
     def close(self) -> None:
@@ -453,6 +480,12 @@ class SmartTrackerNode:
                 )
                 self._publish_detections(message, detections)
                 self._publish_state(message, output)
+            else:
+                detections = ()
+
+            selected_detection = self._selected_detection_for_frame(detections)
+            self._publish_selected_detections(message, selected_detection)
+            self._highlight_selected_detection(annotated, selected_detection)
 
             self._last_processing_ms = (time.perf_counter() - started) * 1000.0
             self._last_header = message.header
@@ -587,6 +620,152 @@ class SmartTrackerNode:
         self._tracked_publisher.publish(output)
 
     @staticmethod
+    def _point_to_box_distance_squared(x: float, y: float, detection) -> float:
+        x1, y1, x2, y2 = detection.aabb_xyxy
+        dx = max(float(x1) - x, 0.0, x - float(x2))
+        dy = max(float(y1) - y, 0.0, y - float(y2))
+        return dx * dx + dy * dy
+
+    def _select_pixel_callback(self, message: PointStamped) -> None:
+        """Lock the detection box nearest to a UI click in source-image pixels."""
+        x = _finite(message.point.x, float("nan"))
+        y = _finite(message.point.y, float("nan"))
+        with self._lock:
+            if not math.isfinite(x) or not math.isfinite(y):
+                rospy.logwarn("Ignoring non-finite target pixel click")
+                return
+            if x < 0 or y < 0:
+                self._clear_selected_target()
+                self._publish_empty_selected_detections()
+                rospy.loginfo("UI canceled selected YOLO target with negative pixel")
+                return
+            width = int(self._controller.video_handler.width)
+            height = int(self._controller.video_handler.height)
+            if x >= width or y >= height:
+                rospy.logwarn(
+                    "Ignoring target pixel click outside current image: (%.1f, %.1f) in %dx%d",
+                    x, y, width, height,
+                )
+                return
+            if self._current_manual_tracker() is not None:
+                rospy.logwarn("Ignoring target pixel click while manual tracking is active")
+                return
+            detections = tuple(self._tracker.last_detections or ())
+            if not detections:
+                self._clear_selected_target()
+                rospy.logwarn("Ignoring target pixel click: no current YOLO detections")
+                return
+
+            def rank(detection):
+                distance = self._point_to_box_distance_squared(x, y, detection)
+                center_x, center_y = detection.center_xy
+                center_distance = (float(center_x) - x) ** 2 + (float(center_y) - y) ** 2
+                return (distance, center_distance, -_finite(detection.confidence))
+
+            selected = min(detections, key=rank)
+            self._remember_selected_detection(selected)
+            rospy.loginfo(
+                "UI selected YOLO box: pixel=(%.1f, %.1f) track_id=%d stable=%s class=%d",
+                x,
+                y,
+                int(selected.track_id),
+                bool(selected.track_id_is_stable),
+                int(selected.class_id),
+            )
+
+    def _remember_selected_detection(self, detection) -> None:
+        self._selected_track_id = int(detection.track_id)
+        self._selected_track_id_is_stable = bool(detection.track_id_is_stable)
+        self._selected_class_id = int(detection.class_id)
+        self._selected_last_bbox = tuple(int(value) for value in detection.aabb_xyxy)
+
+    def _clear_selected_target(self) -> None:
+        self._selected_track_id = None
+        self._selected_track_id_is_stable = False
+        self._selected_class_id = None
+        self._selected_last_bbox = None
+
+    def _publish_empty_selected_detections(self) -> None:
+        output = TrackedDetection2DArray()
+        if self._last_header is not None:
+            output.header = self._last_header
+        else:
+            output.header.stamp = rospy.Time.now()
+        output.provenance = self._identity
+        self._selected_detections_publisher.publish(output)
+
+    def _selected_detection_for_frame(self, detections):
+        if self._selected_track_id is None:
+            return None
+        if self._selected_track_id_is_stable:
+            for detection in detections:
+                if int(detection.track_id) == self._selected_track_id:
+                    self._selected_last_bbox = tuple(
+                        int(value) for value in detection.aabb_xyxy
+                    )
+                    return detection
+            return None
+
+        # Some backends do not expose persistent IDs. In that case, associate
+        # each new YOLO result with the selected class's nearest previous box.
+        candidates = [
+            detection for detection in detections
+            if int(detection.class_id) == self._selected_class_id
+        ]
+        if not candidates:
+            return None
+        if self._selected_last_bbox is None:
+            selected = candidates[0]
+        else:
+            x1, y1, x2, y2 = self._selected_last_bbox
+            previous_center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+            selected = min(
+                candidates,
+                key=lambda detection: (
+                    (float(detection.center_xy[0]) - previous_center[0]) ** 2
+                    + (float(detection.center_xy[1]) - previous_center[1]) ** 2
+                ),
+            )
+        self._remember_selected_detection(selected)
+        return selected
+
+    def _publish_selected_detections(self, image: Image, detection) -> None:
+        output = TrackedDetection2DArray()
+        output.header = image.header
+        output.provenance = self._identity
+        if detection is not None:
+            tracked = TrackedDetection2D()
+            tracked.detection = self._detection_message(image.header, detection)
+            tracked.track_id = int(detection.track_id)
+            tracked.track_id_is_stable = bool(detection.track_id_is_stable)
+            output.detections.append(tracked)
+        # Empty arrays keep the gimbal idle before selection and while YOLO
+        # misses the selected target.
+        self._selected_detections_publisher.publish(output)
+
+    @staticmethod
+    def _highlight_selected_detection(frame: np.ndarray, detection) -> None:
+        """Highlight the selected box on the all-detections annotated image."""
+        if detection is None:
+            return
+        x1, y1, x2, y2 = (int(value) for value in detection.aabb_xyxy)
+        colour = (0, 0, 255)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 4, cv2.LINE_AA)
+        label = "SELECTED %d %.2f" % (
+            int(detection.track_id), _finite(detection.confidence)
+        )
+        cv2.putText(
+            frame,
+            label,
+            (x1, max(18, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            colour,
+            1,
+            cv2.LINE_AA,
+        )
+
+    @staticmethod
     def _fill_bbox(message: BoundingBox2D, bbox: Optional[Tuple[int, int, int, int]]) -> None:
         if not bbox:
             return
@@ -670,6 +849,7 @@ class SmartTrackerNode:
                     self._manual_pending_roi = None
                     self._manual_active = False
                 self._tracker.clear_selection()
+                self._clear_selected_target()
                 response.success = True
                 response.message = "Selection cleared"
                 response.selected_target_id = -1
@@ -727,6 +907,12 @@ class SmartTrackerNode:
                 return response
 
             response.success = bool(self._tracker.select_object_by_click(*point))
+            if response.success:
+                selected_id = int(self._tracker.selected_object_id)
+                for detection in detections:
+                    if int(detection.track_id) == selected_id:
+                        self._remember_selected_detection(detection)
+                        break
             response.tracking_active = bool(self._tracker.selected_object_id is not None)
             response.selected_target_id = int(
                 self._tracker.selected_object_id
@@ -790,6 +976,7 @@ class SmartTrackerNode:
             self._tracking_mode = requested_mode
             self._last_error = ""
             self._tracker.clear_selection()
+            self._clear_selected_target()
 
             response.success = True
             response.active_mode = self._tracking_mode
@@ -836,6 +1023,7 @@ class SmartTrackerNode:
             response.effective_model_path = str(model_info.get("path", model_path))
             response.class_count = int(model_info.get("num_classes", 0) or 0)
             if response.success:
+                self._clear_selected_target()
                 runtime = self._tracker.get_runtime_info()
                 self._identity.model_version = str(runtime.get("model_name", model_path.name))
                 self._identity.model_sha256 = str(

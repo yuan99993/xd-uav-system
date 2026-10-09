@@ -1,0 +1,17 @@
+<launch>
+  <group ns="perception_storage_test">
+    <node pkg="xd_uav_track" type="xd_uav_track_node" name="track" required="true" output="screen">
+      <rosparam command="load" file="$(find xd_uav_track)/config/track.yaml"/>
+      <param name="runtime/perception_only" value="true"/>
+      <param name="runtime/publish_rate_hz" value="2"/>
+      <param name="tracker/selection/auto_select" value="false"/>
+      <rosparam param="tracker/sources/allowed">[alpha, beta]</rosparam>
+      <param name="tracker/sources/maximum_count" value="1"/>
+      <param name="tracker/sources/idle_ttl_sec" value="1"/>
+      <param name="tracker/tracklet_stitching/enabled" value="false"/>
+      <param name="tracker/tracklet_stitching/archive_ttl_sec" value="1"/>
+      <param name="tracker/tracklet_stitching/maximum_identities" value="16"/>
+    </node>
+  </group>
+  <test test-name="perception_storage" pkg="xd_uav_track" type="test_perception_storage_ros.py" time-limit="25"/>
+</launch>

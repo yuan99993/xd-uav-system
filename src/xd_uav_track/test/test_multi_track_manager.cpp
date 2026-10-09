@@ -53,6 +53,129 @@ TEST(MultiTrackManager, PreservesStableDetectorIdsAndConfirmsTracks) {
   EXPECT_TRUE(second.tracks.tracks[0].control_measurement_ready);
 }
 
+TEST(MultiTrackManager, VisualAssistancePreservesIdentityNotDetectorFreshness) {
+  xd_uav_track::MultiTrackConfig config;
+  config.compatible_class_ids = {0, 1, 2, 3};
+  xd_uav_track::MultiTrackManager manager(config);
+  auto detector = candidate(41, true, .25F, .9F);
+  manager.update(frame(1.0, {detector}), 640, 480);
+  manager.update(frame(1.1, {detector}), 640, 480);
+  auto visual = detector;
+  visual.measurement_source = "visual_tracker";
+  visual.confidence = .45F;
+  visual.class_id = 1;
+  visual.has_relative_position_body = true;
+  visual.range_valid = true;
+  auto result = manager.update(frame(1.2, {visual}), 640, 480);
+  ASSERT_EQ(1U, result.tracks.tracks.size());
+  const auto& track = result.tracks.tracks.front();
+  EXPECT_EQ(41, track.track_id);
+  EXPECT_EQ(2, track.class_id);
+  EXPECT_FALSE(track.detected);
+  EXPECT_FALSE(track.predicted);
+  EXPECT_FALSE(track.control_measurement_ready);
+  EXPECT_FALSE(track.range_valid);
+  EXPECT_NEAR(.9, track.confidence, 1e-5);
+  EXPECT_NEAR(.45, track.tracking_quality, 1e-5);
+  EXPECT_EQ("visual_tracker", track.measurement_source);
+  EXPECT_EQ(ros::Time(1.1), track.last_detection_stamp);
+  EXPECT_EQ(ros::Time(1.2), track.last_observation_stamp);
+  xd_uav_track::MultiTrackManager empty;
+  visual.confidence = .99F;
+  EXPECT_TRUE(empty.update(frame(1.2, {visual}), 640, 480).tracks.tracks.empty());
+}
+
+TEST(MultiTrackManager, ModelContractInvalidationRetainsIdentityAndReconfirmsClass) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 3;
+  xd_uav_track::MultiTrackManager manager(config);
+  auto item = candidate(-1, false, .4F, .9F);
+  xd_uav_track::ManagedDetectionFrame latest;
+  for (int i = 0; i < 3; ++i)
+    latest = manager.update(frame(1.0 + i * .1, {item}), 640, 480);
+  ASSERT_EQ(1U, latest.tracks.tracks.size());
+  const int identity = latest.tracks.tracks[0].track_id;
+  EXPECT_EQ(2, latest.tracks.tracks[0].class_id);
+  manager.invalidateClasses();
+  item.class_id = 1;
+  for (int i = 0; i < 3; ++i) {
+    auto input = frame(2.0 + i * .1, {item});
+    input.model_epoch = 2; input.class_names = {"car", "tank"};
+    latest = manager.update(input, 640, 480);
+    ASSERT_EQ(1U, latest.tracks.tracks.size());
+    EXPECT_EQ(identity, latest.tracks.tracks[0].track_id);
+    EXPECT_EQ(2U, latest.tracks.model_epoch);
+    EXPECT_EQ(i < 2 ? -1 : 1, latest.tracks.tracks[0].class_id);
+  }
+}
+
+TEST(MultiTrackManager, KeepsIndependentFrdPositionAndObservationTimeDuringPrediction) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.position_frame = "uav7/base_link_frd";
+  xd_uav_track::MultiTrackManager manager(config);
+  const auto observed = manager.update(frame(10.0, {metricCandidate(.4F, 3.F)}), 640, 480);
+  ASSERT_EQ(1U, observed.tracks.tracks.size());
+  const auto& measurement = observed.tracks.tracks[0];
+  EXPECT_EQ("eo_optical_frame", measurement.header.frame_id);
+  EXPECT_EQ("uav7/base_link_frd", measurement.position_frame);
+  EXPECT_EQ(ros::Time(10.0), measurement.last_observation_stamp);
+  EXPECT_EQ(ros::Time(10.0), measurement.position_stamp);
+  const auto image_only = manager.update(frame(10.1, {candidate(-1, false, .4F, .9F)}), 640, 480);
+  ASSERT_EQ(1U, image_only.tracks.tracks.size());
+  EXPECT_EQ(ros::Time(10.1), image_only.tracks.tracks[0].last_observation_stamp);
+  EXPECT_EQ(ros::Time(10.0), image_only.tracks.tracks[0].position_stamp);
+  EXPECT_FALSE(image_only.tracks.tracks[0].range_valid);
+  const auto predicted = manager.update(frame(10.2, {}), 640, 480);
+  ASSERT_EQ(1U, predicted.tracks.tracks.size());
+  EXPECT_TRUE(predicted.tracks.tracks[0].predicted);
+  EXPECT_EQ(ros::Time(10.1), predicted.tracks.tracks[0].last_observation_stamp);
+  EXPECT_EQ(ros::Time(10.0), predicted.tracks.tracks[0].position_stamp);
+}
+
+TEST(MultiTrackManager, MetricOutlierDoesNotRefreshRealPositionStamp) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.metric_relative_association_enabled = true;
+  config.metric_relative_max_distance_m = 100;
+  config.metric_relative_max_speed_mps = .1;
+  config.metric_relative_jump_tolerance_m = .1;
+  xd_uav_track::MultiTrackManager manager(config);
+  manager.update(frame(10.0, {metricCandidate(.4F, 1.F)}), 640, 480);
+  const auto outlier = manager.update(frame(10.1, {metricCandidate(.4F, 8.F)}), 640, 480);
+  ASSERT_EQ(1U, outlier.tracks.tracks.size());
+  EXPECT_EQ("metric_outlier_hold", outlier.tracks.tracks[0].association_method);
+  EXPECT_EQ(ros::Time(10.0), outlier.tracks.tracks[0].position_stamp);
+  EXPECT_EQ(ros::Time(10.1), outlier.tracks.tracks[0].last_observation_stamp);
+  EXPECT_FALSE(outlier.tracks.tracks[0].range_valid);
+  ASSERT_EQ(1U, outlier.candidates.candidates.size());
+  EXPECT_FALSE(outlier.candidates.candidates[0].range_valid);
+}
+
+TEST(MultiTrackManager, MetricGateDoesNotFreezeLegitimateMotionBehindSmoothing) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.metric_relative_association_enabled = true;
+  config.metric_relative_max_distance_m = 100;
+  config.metric_relative_max_speed_mps = 6;
+  config.metric_relative_jump_tolerance_m = .5;
+  config.metric_relative_smoothing_alpha = .05;
+  xd_uav_track::MultiTrackManager manager(config);
+  int original = -1;
+  for (int index = 0; index < 24; ++index) {
+    const double stamp = 20.0 + .2 * index;
+    const auto result = manager.update(frame(stamp,
+        {metricCandidate(.4F, static_cast<float>(index))}),640,480);
+    ASSERT_EQ(1U,result.tracks.tracks.size());
+    const auto& track = result.tracks.tracks.front();
+    if (index == 0) original = track.track_id;
+    EXPECT_EQ(original,track.track_id);
+    EXPECT_NE("metric_outlier_hold",track.association_method);
+    EXPECT_TRUE(track.range_valid);
+    EXPECT_EQ(ros::Time(stamp),track.position_stamp);
+  }
+}
+
 TEST(MultiTrackManager, AssignsPersistentIdsToUnstableDetections) {
   xd_uav_track::MultiTrackManager manager;
   auto first = manager.update(frame(2.0, {candidate(-1, false, 0.4F, 0.8F)}),

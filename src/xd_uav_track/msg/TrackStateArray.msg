@@ -3,3 +3,5 @@
 std_msgs/Header header
 string image_source
 xd_uav_track/TrackState[] tracks
+uint64 model_epoch
+string[] class_names

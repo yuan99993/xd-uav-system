@@ -14,6 +14,7 @@
 namespace xd_uav_track {
 
 struct MultiTrackConfig {
+  std::string position_frame{"base_link_frd"};
   int confirmation_hits{2};
   int occlusion_frames{5};
   int removal_frames{30};
@@ -103,6 +104,7 @@ class MultiTrackManager {
   void setSelectedTrackId(int track_id);
   int selectedTrackId() const;
   void reset();
+  void invalidateClasses();
   MultiTrackStatistics statistics() const;
 
  private:

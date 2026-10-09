@@ -30,7 +30,9 @@ ground_projection:
   box_anchor_y_ratio: 0.50
   pixel_stddev_px: 2.0
   ground_height_stddev_m: 0.10
-  position_stddev_m: 0.25
+  # The bbox centroid is a ground-plane proxy, not an exact vehicle-origin
+  # measurement (measured simulation radial P95 approximately 2 m).
+  position_stddev_m: 1.0
   tf_timeout_sec: 0.15
   tf_use_latest_on_failure: false
   require_detection_timestamp: true
