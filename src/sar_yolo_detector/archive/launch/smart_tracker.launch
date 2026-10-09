@@ -7,6 +7,8 @@
   <arg name="tracked_detections_topic" default="sar_yolo_detector/smart/tracked_detections" />
   <arg name="state_topic" default="sar_yolo_detector/smart/state" />
   <arg name="annotated_image_topic" default="sar_yolo_detector/smart/annotated" />
+  <arg name="selected_detections_topic" default="sar_yolo_detector/smart/selected_tracked_detections" />
+  <arg name="select_pixel_topic" default="sar_yolo_detector/smart/select_pixel" />
   <arg name="model_path" default="" />
   <arg name="model_sha256" default="" />
   <arg name="use_gpu" default="true" />
@@ -33,6 +35,8 @@
     <param name="tracked_detections_topic" value="$(arg tracked_detections_topic)" />
     <param name="state_topic" value="$(arg state_topic)" />
     <param name="annotated_image_topic" value="$(arg annotated_image_topic)" />
+    <param name="selected_detections_topic" value="$(arg selected_detections_topic)" />
+    <param name="select_pixel_topic" value="$(arg select_pixel_topic)" />
     <param name="publish_annotated_image" value="$(arg publish_annotated_image)" />
     <param name="mission_id" value="$(arg mission_id)" />
     <param name="uav_id" value="$(arg uav_id)" />

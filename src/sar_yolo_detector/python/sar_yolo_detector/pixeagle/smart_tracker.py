@@ -908,7 +908,7 @@ class SmartTracker:
 
         logger.info("[SmartTracker] Tracking cleared")
 
-    def track_and_draw(self, frame: np.ndarray) -> np.ndarray:
+    def track_and_draw(self, frame: np.ndarray, *, detections=None, draw=True) -> np.ndarray:
         """
         Runs detection + tracking via the backend, draws overlays, and returns the annotated frame.
         Uses TrackingStateManager for robust ID tracking with spatial fallback.
@@ -917,7 +917,9 @@ class SmartTracker:
         self._last_frame_shape = frame.shape[:2]
         t0 = time.perf_counter()
         try:
-            if self._should_run_track_api():
+            if detections is not None:
+                self.last_detections = list(detections)
+            elif self._should_run_track_api():
                 _, self.last_detections = self.backend.detect_and_track(
                     frame,
                     conf=self.conf_threshold,
@@ -1039,7 +1041,7 @@ class SmartTracker:
         show_passive_labels = self.config.get('SMART_TRACKER_SHOW_PASSIVE_LABELS', True)
 
         # --- Pass 1: Draw passive (untracked) detections first (back layer) ---
-        for det in self.last_detections:
+        for det in self.last_detections if draw else ():
             x1, y1, x2, y2 = det.aabb_xyxy
             track_id = int(det.track_id)
             class_id = int(det.class_id)
@@ -1079,7 +1081,7 @@ class SmartTracker:
                                     self.passive_hud_color, HUDColors.PASSIVE_LABEL_BG,
                                     s['passive_label_plate_alpha'], s)
 
-        if prediction_only and self.selected_bbox is not None:
+        if draw and prediction_only and self.selected_bbox is not None:
             x1, y1, x2, y2 = self.selected_bbox
             self.draw_dashed_box(
                 frame,
@@ -1144,6 +1146,9 @@ class SmartTracker:
                     self.selected_bbox,
                     self.selected_center
                 )
+
+            if not draw:
+                continue
 
             # Subtle interior shading (green tint for active)
             self.draw_box_fill(
@@ -1211,7 +1216,7 @@ class SmartTracker:
                 self.app_controller.tracker.clear_external_override()
 
         # FPS Counter
-        if self.show_fps:
+        if draw and self.show_fps:
             self.fps_counter += 1
             if time.time() - self.fps_timer >= 1.0:
                 self.fps_display = self.fps_counter

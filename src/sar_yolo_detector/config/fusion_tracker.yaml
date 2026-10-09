@@ -1,0 +1,39 @@
+# Additional mode only. Original YOLO/feature/color configuration is preserved.
+FusionTracker:
+  allow_template_fallback: false
+  visual_hold_sec: 1.5
+  prediction_hold_sec: 0.35
+  reacquire_hold_sec: 8.0
+  # Short tracking ends at 8 s; one selected identity remains recoverable up
+  # to 60 s. No archive refresh on failed/pending candidates. HSV is weak
+  # evidence: long recovery additionally requires a continuous camera-motion
+  # chain, strong appearance/ROI quality and distinct consecutive detections.
+  identity_memory_ttl_sec: 60.0
+  long_reacquire_appearance_gate: 0.85
+  long_reacquire_quality_gate: 0.65
+  long_reacquire_minimum_score: 0.65
+  long_reacquire_require_camera_motion: true
+  reacquire_motion_horizon_sec: 2.0
+  max_frame_gap_sec: 0.75
+  max_area_ratio: 2.5
+  center_gate_sizes: 1.4
+  appearance_gate: 0.70
+  quality_gate: 0.35
+  ambiguity_margin: 0.12
+  reacquire_confirm_frames: 3
+  detector_weight: 0.70
+  detector_authority_confidence: 0.85
+  minimum_detector_confidence: 0.50
+  minimum_maintenance_confidence: 0.10
+  class_groups: [[0, 1, 2, 3]]
+  selection_max_age_sec: 0.75
+  selection_max_frames: 24
+  selection_max_bytes: 25165824
+  # Late detections require validated frame-to-frame LK alignment, never a
+  # raw old-frame box relabelled with a new timestamp. All caches are bounded.
+  async_max_result_age_sec: 0.75
+  camera_motion:
+    enabled: true
+    max_gap_sec: 0.75
+    max_features: 160
+    minimum_inliers: 12

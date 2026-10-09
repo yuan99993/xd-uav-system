@@ -80,6 +80,8 @@ add_message_files(
   TaskExecutionStatus.msg
   TrackedDetection2D.msg
   TrackedDetection2DArray.msg
+  FusionDetection2D.msg
+  FusionDetection2DArray.msg
   UavDecisionHeartbeat.msg
   DetectorModelInfo.msg
 )
@@ -96,6 +98,7 @@ add_service_files(
   SubmitTaskAssignment.srv
   SwitchSmartTrackerModel.srv
   SwitchTrackingMode.srv
+  SelectFusionROI.srv
   ListDetectorModels.srv
 )
 
@@ -302,8 +305,11 @@ install(TARGETS sar_yolo_postprocessor sar_yolo_inference_backend sar_model_inte
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
-install(DIRECTORY config launch training models
+install(DIRECTORY config launch training models docs
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
+install(DIRECTORY archive/launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/archive
 )
 install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md
   requirements-smart-tracker.txt requirements-tensorrt-cu12.txt
@@ -326,6 +332,9 @@ install(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 catkin_install_python(PROGRAMS
+  scripts/validate_fusion_runtime.py
+  scripts/validate_formal_gazebo_fusion.py
+  test/test_fusion_bridge.py
   scripts/verify_registered_engines.py
   examples/sign_and_submit_task.py
   test/test_detector_interfaces.py
@@ -348,6 +357,13 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_pixeagle_portable.py)
   catkin_add_nosetests(test/test_smart_tracker_image_codec.py)
   catkin_add_nosetests(test/test_manual_box_tracker.py)
+  catkin_add_nosetests(test/test_box_fusion.py)
+  catkin_add_nosetests(test/test_loss_journal.py)
+  catkin_add_nosetests(test/test_fusion_metrics.py)
+  catkin_add_nosetests(test/test_async_pipeline.py)
+  catkin_add_nosetests(test/test_camera_motion.py)
+  catkin_add_nosetests(test/test_capture_clock.py)
+  catkin_add_nosetests(test/test_fusion_adapter.py)
   catkin_add_nosetests(test/test_shared_detector_outputs.py)
   catkin_add_nosetests(test/test_model_runtime_status.py)
   catkin_add_nosetests(test/test_model_registry.py)
