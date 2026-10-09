@@ -1,0 +1,32 @@
+schema_version: 1
+models:
+  train:
+    display_name: XD vehicle train
+    pt_path: models/xd_vehicle_latest/xd_vehicle_latest.pt
+    pt_sha256: 932c04d47e426143e9fa5084a4ca6a6ff49c1a3aff70fa2b44c643b165e5151f
+    engine_path: models/xd_vehicle_latest/xd_vehicle_latest.engine
+    engine_sha256: 6321096500ced1c3f2bd466758216081968da4c21480ff5987a03d67157e76f1
+    engine_source_model_sha256: 932c04d47e426143e9fa5084a4ca6a6ff49c1a3aff70fa2b44c643b165e5151f
+    class_names: [car, ar-car, tank]
+    input_size: 640
+    validated: false
+  train4:
+    display_name: XD vehicle train4
+    pt_path: models/xd_vehicle_train4/xd_vehicle_train4.pt
+    pt_sha256: 12e26bd00dfe18bd5f2e3cbc579aaad911f12b05239bb3ada3656deacd0d90e5
+    engine_path: models/xd_vehicle_train4/xd_vehicle_train4.engine
+    engine_sha256: c2af98c1f7279b253b2c63dde0a228d6df5df881201edd7f4bd5f229fc5397d4
+    engine_source_model_sha256: 12e26bd00dfe18bd5f2e3cbc579aaad911f12b05239bb3ada3656deacd0d90e5
+    class_names: [car, ar-car, tank, m142]
+    input_size: 640
+    validated: false
+  train7:
+    display_name: XD vehicle train7
+    pt_path: models/xd_vehicle_train7/xd_vehicle_train7.pt
+    pt_sha256: 8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54
+    class_names: [car, ar-car, tank, m142]
+    input_size: 640
+    engine_path: models/xd_vehicle_train7/xd_vehicle_train7.engine
+    engine_sha256: 88ed19419dcefdf64f6c90f31aa7961ef906c31d3581633afba69fa586bc850f
+    engine_source_model_sha256: 8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54
+    validated: false

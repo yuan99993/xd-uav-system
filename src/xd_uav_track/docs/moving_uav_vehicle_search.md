@@ -94,7 +94,9 @@ From the `mrs_test` ROS workspace after sourcing its setup file:
 roslaunch xd_uav_track moving_uav_vehicle_search_demo.launch
 ```
 
-This opens Gazebo and an image window showing confirmed tracker boxes. The
+This opens Gazebo and one image window showing confirmed tracker boxes at
+`/moving_uav_search/tracking_visualization`. The boxes carry the tracker's
+stable class and public ID; visualization does not run a second detector. The
 detector runs at 4 Hz while the simulated camera runs at 10 Hz. `gui:=false`
 can be passed to run without the Gazebo window; `show_overlay:=false` suppresses
 the image window. Set `enable_reid:=false` to reduce optional appearance
@@ -103,7 +105,8 @@ inference load.
 Useful topics:
 
 - `/moving_uav_search/fixed_camera/image_raw`
-- `/moving_uav_search/fixed_camera/tracking_overlay`
+- `/moving_uav_search/tracking_visualization` (single public visual output)
+- `/moving_uav_search/fixed_camera/tracking_overlay` (internal per-camera view)
 - `/moving_uav_search/track/tracks_by_source`
 - `/moving_uav_search/scenario/phase` (`GLOBAL_COVERAGE`, `FOLLOW`,
   `FOLLOW_COAST`, `FOLLOW_LOCAL_REACQUIRE`, or `FOLLOW_REACQUIRE_SEARCH`)

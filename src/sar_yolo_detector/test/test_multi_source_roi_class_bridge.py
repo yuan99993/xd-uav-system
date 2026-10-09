@@ -46,6 +46,15 @@ class _Publisher:
 
 class PredictionRoiClassBridgeTest(unittest.TestCase):
     @staticmethod
+    def pixel_counters(node):
+        fields = ("pixel_tracking_attempts", "pixel_tracking_valid",
+                  "pixel_assist_frames", "pixel_assist_rejected",
+                  "pixel_color_attempts", "pixel_color_valid")
+        node._sources = {"fixed": dict.fromkeys(fields, 0)}
+        node._pixel_color_attempts = 0
+        node._pixel_color_valid = 0
+
+    @staticmethod
     def node(backend):
         node = MODULE.MultiSourceDetectionNode.__new__(
             MODULE.MultiSourceDetectionNode)
@@ -56,6 +65,8 @@ class PredictionRoiClassBridgeTest(unittest.TestCase):
             "roi_min_padding_ratio": 0.35,
             "roi_max_padding_ratio": 1.0,
             "roi_min_short_side": 24,
+            "roi_attempts": 0,
+            "roi_hits": 0,
         }}
         node._tracking_lock = threading.Lock()
         node._tracked_boxes = {
@@ -109,6 +120,7 @@ class PredictionRoiClassBridgeTest(unittest.TestCase):
         node._allowed_class_ids = frozenset((0, 1, 2, 3))
         node._priority_source = ""
         node._priority_source_wall = 0.0
+        node._selected_source_wall = {}
 
         message = TrackStateArray()
         message.image_source = "benchmark_fixed"
@@ -137,12 +149,59 @@ class PredictionRoiClassBridgeTest(unittest.TestCase):
         node._tracking_callback(message)
         self.assertNotIn("fixed", node._pixel_track_hints)
 
+    def test_fixed_search_and_gimbal_follow_priority_do_not_oscillate(self):
+        from xd_uav_track.msg import TrackState, TrackStateArray
+        import rospy
+
+        node = MODULE.MultiSourceDetectionNode.__new__(
+            MODULE.MultiSourceDetectionNode)
+        node._source_name_by_image_source = {
+            "search_fixed": "fixed", "search_gimbal": "gimbal"}
+        node._tracking_lock = threading.Lock()
+        node._selected_source_wall = {}
+        node._tracked_boxes = {}
+        node._pixel_track_hints = {}
+        node._other_confirmed_boxes = {}
+        node._pixel_assist_max_tracks = 4
+        node._allowed_class_ids = frozenset((0, 1, 2, 3))
+        node._priority_source = ""
+        node._priority_source_wall = 0.0
+        node._priority_source_timeout_sec = 0.75
+        node._preferred_tracking_source = "gimbal"
+
+        def update(source, lifecycle="confirmed", selected=True):
+            message = TrackStateArray()
+            message.image_source = source
+            message.header.stamp = rospy.Time.from_sec(12.0)
+            track = TrackState()
+            track.track_id = 7
+            track.class_id = 2
+            track.bbox = [10, 20, 50, 60]
+            track.selected = selected
+            track.lifecycle_state = lifecycle
+            track.frames_since_detection = 0
+            message.tracks = [track]
+            node._tracking_callback(message)
+
+        self.assertEqual(node._current_priority_source(), "")
+        update("search_fixed")
+        self.assertEqual(node._current_priority_source(), "fixed")
+        update("search_gimbal")
+        self.assertEqual(node._current_priority_source(), "gimbal")
+        update("search_fixed")
+        self.assertEqual(node._current_priority_source(), "gimbal")
+        update("search_gimbal", "lost")
+        self.assertEqual(node._current_priority_source(), "fixed")
+        update("search_fixed", selected=False)
+        self.assertEqual(node._current_priority_source(), "")
+
     def test_pixel_flow_runs_on_hits_and_only_fills_detection_misses(self):
         from types import SimpleNamespace
         import rospy
 
         node = MODULE.MultiSourceDetectionNode.__new__(
             MODULE.MultiSourceDetectionNode)
+        self.pixel_counters(node)
         node._tracking_lock = threading.Lock()
         node._pixel_track_hints = {"fixed": [(
             (10, 20, 50, 60), 1, 7, 12.1, time.monotonic(), (0.0, 0.0), "lost")]}
@@ -189,6 +248,7 @@ class PredictionRoiClassBridgeTest(unittest.TestCase):
 
         node = MODULE.MultiSourceDetectionNode.__new__(
             MODULE.MultiSourceDetectionNode)
+        self.pixel_counters(node)
         node._tracking_lock = threading.Lock()
         node._pixel_track_hints = {"fixed": [(
             (10, 20, 50, 60), 1, 7, 12.1, time.monotonic(), (0.0, 0.0), "confirmed")]}
@@ -225,6 +285,7 @@ class PredictionRoiClassBridgeTest(unittest.TestCase):
 
         node = MODULE.MultiSourceDetectionNode.__new__(
             MODULE.MultiSourceDetectionNode)
+        self.pixel_counters(node)
         node._tracking_lock = threading.Lock()
         now = time.monotonic()
         first, second = (10, 20, 40, 50), (100, 20, 130, 50)
@@ -264,6 +325,7 @@ class PredictionRoiClassBridgeTest(unittest.TestCase):
 
         node = MODULE.MultiSourceDetectionNode.__new__(
             MODULE.MultiSourceDetectionNode)
+        self.pixel_counters(node)
         node._tracking_lock = threading.Lock()
         node._pixel_track_hints = {"fixed": [(
             (10, 20, 50, 60), 1, 7, 12.0, time.monotonic(),
@@ -336,6 +398,11 @@ class PredictionRoiClassBridgeTest(unittest.TestCase):
         node = MODULE.MultiSourceDetectionNode.__new__(
             MODULE.MultiSourceDetectionNode)
         publisher = _Publisher()
+        node._tracking_lock = threading.Lock()
+        node._active_model_id = "train7"
+        node._source_model_sha256 = "test-digest"
+        node._model_epoch = 1
+        node._class_names = ["car", "ar-car", "tank", "m142"]
         node._sources = {"fixed": {
             "xd_publisher": publisher, "vision_publisher": None,
             "reid_enabled": True, "image_source": "benchmark_fixed",
@@ -362,6 +429,7 @@ class PredictionRoiClassBridgeTest(unittest.TestCase):
         self.assertEqual(publisher.messages[0].candidates[0].appearance_embedding, [])
 
         node._recent_reid["fixed"] = {
+            "epoch": 1,
             "stamp": 12.0,
             "entries": [{"bbox": (10, 20, 50, 60), "class_id": 1,
                          "embedding": [0.6, 0.8]}]}

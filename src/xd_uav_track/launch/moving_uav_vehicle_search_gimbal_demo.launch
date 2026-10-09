@@ -1,0 +1,47 @@
+<launch>
+  <!-- Fixed nadir camera searches globally; the vehicle-mounted gimbal follows an explicitly selected target. -->
+  <arg name="gui" default="true"/>
+  <arg name="show_gimbal_overlay" default="false"/>
+  <arg name="show_overlay" default="false"/>
+  <arg name="show_combined_overlay" default="true"/>
+  <arg name="gimbal_pan_amplitude_rad" default="0.5235987756"/>
+  <arg name="gimbal_sweep_frequency_hz" default="0.01"/>
+  <arg name="gimbal_pan_rate_limit_radps" default="0.034906585"/>
+  <arg name="gimbal_tilt_rate_limit_radps" default="0.034906585"/>
+  <arg name="gimbal_min_look_down_rad" default="0.10"/>
+  <arg name="gimbal_safe_standoff_margin_m" default="2.0"/>
+  <arg name="detector_fps" default="4.0"/>
+  <arg name="enable_reid" default="true"/>
+  <arg name="metrics_output" default=""/>
+  <arg name="uav_altitude_m" default="58.0"/>
+  <arg name="minimum_altitude_m" default="54.0"/>
+  <arg name="maximum_altitude_m" default="60.0"/>
+  <arg name="altitude_descent_rate_mps" default="0.35"/>
+  <arg name="yaw_rate_limit_radps" default="0.12"/>
+  <include file="$(find xd_uav_track)/launch/moving_uav_vehicle_search_demo.launch">
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="world" value="$(find xd_uav_track)/worlds/moving_uav_vehicle_search_gimbal.world"/>
+    <arg name="enable_gimbal_camera" value="true"/>
+    <arg name="tracking_image_source" value="search_fixed"/>
+    <arg name="global_search_image_source" value="search_fixed"/>
+    <arg name="follow_tracking_sources" value="search_fixed,search_gimbal"/>
+    <arg name="gimbal_pan_amplitude_rad" value="$(arg gimbal_pan_amplitude_rad)"/>
+    <arg name="gimbal_sweep_frequency_hz" value="$(arg gimbal_sweep_frequency_hz)"/>
+    <arg name="gimbal_pan_rate_limit_radps" value="$(arg gimbal_pan_rate_limit_radps)"/>
+    <arg name="gimbal_tilt_rate_limit_radps" value="$(arg gimbal_tilt_rate_limit_radps)"/>
+    <arg name="gimbal_min_look_down_rad" value="$(arg gimbal_min_look_down_rad)"/>
+    <arg name="gimbal_safe_standoff_margin_m" value="$(arg gimbal_safe_standoff_margin_m)"/>
+    <arg name="enable_fixed_perception" value="true"/>
+    <arg name="show_overlay" value="$(arg show_overlay)"/>
+    <arg name="show_gimbal_overlay" value="$(arg show_gimbal_overlay)"/>
+    <arg name="show_combined_overlay" value="$(arg show_combined_overlay)"/>
+    <arg name="gimbal_metrics_output" value="$(arg metrics_output)"/>
+    <arg name="uav_altitude_m" value="$(arg uav_altitude_m)"/>
+    <arg name="minimum_altitude_m" value="$(arg minimum_altitude_m)"/>
+    <arg name="maximum_altitude_m" value="$(arg maximum_altitude_m)"/>
+    <arg name="altitude_descent_rate_mps" value="$(arg altitude_descent_rate_mps)"/>
+    <arg name="yaw_rate_limit_radps" value="$(arg yaw_rate_limit_radps)"/>
+    <arg name="detector_fps" value="$(arg detector_fps)"/>
+    <arg name="enable_reid" value="$(arg enable_reid)"/>
+  </include>
+</launch>

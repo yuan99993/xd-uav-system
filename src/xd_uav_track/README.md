@@ -1,5 +1,93 @@
 # xd_uav_track
 
+完整启动、三模式、接口字段、网页接入和跨主机部署说明见
+[感知使用与部署指南](docs/perception_user_deployment_guide.md)。该指南区分已实现能力、
+当前云台/LRF 依赖缺口和真实场景验收边界，部署时优先按它核对。
+
+**仅部署感知推荐** `roslaunch xd_uav_perception_bringup perception.launch`。
+入口使用 [统一现场配置](config/perception_deployment.yaml)，提供 detect/track/fusion、
+身份、锁定、选中目标的有界轨迹和失联状态，不启动飞行或仿真。节点内部禁止
+发布 follower/速度/reference，旧启动服务不能越过隔离。设备驱动、航线和
+运动学由外部系统负责。详见指南第 12.5 节；不要与兼容入口重复运行。
+
+三模式、原帧 ROI/UID 选择、有界轨迹与注册 YOLO 模型切换接口见
+[网页合同](docs/perception_web_contract.md)及[阶段验收](docs/perception_stage_6_7_8_acceptance.md)。
+[网页视频与交互接口](docs/perception_web_video_interface.md)涵盖原分辨率叠框视频、位置表、点击/ROI 选择和模式/模型开关；[接口文件](web/perception_api.json)可交给网页端集成。
+严格跨源身份/时延验收尚未通过，兼容 vision_tracking_stack 入口暂保持
+`enable_perception_modes:=false`，联调显式设 true。纯感知组合直接启用三模式，
+初始 detect，在现场配置中修改 initial_mode。
+网页/Gazebo 联调入口为 `perception_gazebo_web_test.launch`，部署依赖组合见
+`xd_uav_perception_bringup`。功能回归不等于实景精度认证。
+
+兼容机型/定位编排入口是
+[`vision_tracking_stack.launch`](launch/vision_tracking_stack.launch)。它默认使用
+train7 TensorRT FP16、单实例双相机检测、预测 ROI、像素辅助、车辆 ReID 和
+tracker 统一 ID 管理；不启动 Gazebo 或 PX4。它默认订阅固定相机与云台两路，
+可先于设备驱动启动，任一路图像上线即自动进入识别/跟踪，不会额外加载第二份模型。
+设备驱动本身并不会凭空启动此 launch；部署时应将它加入无人机的 bringup，且每机只启动一次。
+目前工作区没有固定相机/云台的设备级图像发布 launch。将来接入驱动后，
+由统一的设备 bringup 包含一次本 launch，再包含实际驱动 launch；不要让两路驱动各自
+启动一套识别模型。示例（设备 launch 路径换成真实驱动）：
+
+```xml
+<include file="$(find xd_uav_track)/launch/vision_tracking_stack.launch">
+  <arg name="UAV_NAME" value="uav1"/>
+</include>
+<!-- 此处包含固定相机及/或云台的真实设备驱动 launch -->
+```
+
+识别和多目标公开 ID 会随图像自动运行；飞行跟随/控制仍需明确选择并启动 tracker，
+不会仅因相机上线而自动解锁或下发飞行指令。
+只识别时传
+`enable_tracking:=false`，仍从每路 `detect/input/*/detections_2d` 输出检测。
+
+```bash
+roslaunch xd_uav_track vision_tracking_stack.launch UAV_NAME:=uav1
+roslaunch xd_uav_track vision_tracking_stack.launch UAV_NAME:=uav1 enable_tracking:=false
+```
+
+以上两条是互斥的启动方式，不要同时运行。真实设备还需把各相机图像、内参、
+TF 和云台状态话题映射到该 launch 的参数；没有标定不能声称已完成 metric 锁定。
+固定翼传 `vehicle_type:=fixedwing`；不使用云台时传
+`enable_sar_gimbal:=false enable_gimbal_lrf:=false`。云台/LRF 的测距标定默认
+`calibrated: false`，未标定时只允许安全降级，不把背景测距当目标距离。旧四种组合 launch 是
+同一入口的兼容别名，不再运行上游 SmartTracker。Gazebo 演示使用
+[`moving_uav_vehicle_search_demo.launch`](launch/moving_uav_vehicle_search_demo.launch)，
+其中的场景高度和运动模型不能直接用于实机。
+正式入口也默认发布 `/<UAV_NAME>/tracking_visualization`：固定相机单独
+在线时显示一路，两路在线时并排显示；设
+`enable_tracking_visualization:=false` 可在无显示需求的机载部署中省去
+叠框计算。固定相机优先全局搜索，云台对已选中目标取得推理排队优先级；
+云台失去可信轨迹后自动回退固定相机。内部检测、轨迹和控制话题不变。
+目标框中心点另发布到 `/<UAV_NAME>/track/target_pixels_by_source`。
+每条消息含相机来源、采集时间、原图宽高，以及每个已确认目标的公开 ID、
+类别和 `(x,y)`。坐标以**对应相机原图左上角为原点**，`x` 向右、`y` 向下；
+框采用 `[x_min,y_min,x_max,y_max)`，中心为
+`((x_min+x_max)/2, (y_min+y_max)/2)`，允许半像素。`predicted` 字段标明
+短暂失检后的预测点，不能将它当作新一次视觉检测。双相机组合画面不缩放：
+固定相机位于左侧，云台位于右侧，较矮画面仅在下方补空白；目标点仍使用各自
+原图坐标，不使用组合画面的偏移坐标。
+验证机载云台时用
+[`moving_uav_vehicle_search_gimbal_demo.launch`](launch/moving_uav_vehicle_search_gimbal_demo.launch)：
+它沿用同一张地图和车辆路线，同时开启固定下视相机与云台相机、共享 YOLO 推理和
+tracker：全局搜索及目标目录由 `search_fixed` 提供；操作员确认目标后，用
+`/moving_uav_search/track/set_target_mode` 指定 `image_source: search_fixed` 和公开
+`target_id`，云台再转向该实体，并可用两路观测持续更新它。启动时先全局搜索，不会因自动
+选中的框直接追逐；切回 `mode: all` 即可恢复。默认从 58 m 高度开始、最低保持 54 m，
+下降速度限制为 0.35 m/s，机体偏航上限为 0.12 rad/s。云台 ROI
+仍关闭。若目标落在云台中心视线的机腹安全半径内，控制器保持高度并水平错开；固定相机
+仍负责维持目标世界位置，不会把云台看不到误判为目标丢失。安全半径按云台最小离轴角、
+当前高度和可配置余量计算，默认余量为 2 m。
+
+该演示默认只打开一个组合可视化窗口，输出到
+`/moving_uav_search/tracking_visualization`，固定相机和云台的跟踪画面并排显示。每个来源中每条
+轨迹只绘制一个框，框上的类别名来自 tracker 已确认的类别；可视化复用同一份 YOLO 检测结果，不会
+为显示类别额外触发检测。原有机器话题 `track/detections`、`track/tracks` 和
+`track/tracks_by_source` 保持不变，两个来源各自的叠框话题仍保留作诊断。
+
+图像窗口使用独立的 Qt 配置目录，避免恢复旧的浮动置顶停靠布局。在 WSLg 桌面启动时应使用
+桌面登录用户而非 root 身份，以保证窗口管理器能正常移动和关闭窗口。
+
 `xd_uav_track` 把 PixEagle/现有 ROS 包中与“选定目标框跟随”直接相关的 Tracker 和
 Follower 能力合并到一个 ROS 包中：
 
@@ -240,6 +328,54 @@ interfaces:
 不启动 Gazebo/PX4 的实拍视频检测与 ID 回归入口见
 [`docs/video_replay.md`](docs/video_replay.md)：支持单路、双路同步回放，
 以及有 MOT 真值时的轻量指标计算。
+
+### 感知模式 V2（分阶段启用）
+
+正式共享 YOLO 入口已经接入与飞行 `all/follow` 状态完全分离的视觉模式管理器。
+为保留现有链路的 A/B 回退，当前需显式启用：
+
+```bash
+roslaunch xd_uav_track vision_tracking_stack.launch \
+  enable_perception_modes:=true
+```
+
+主要相对接口位于 `/<uav>/perception/`：
+
+- `mode/set`：`SetPerceptionModeCommand`，支持 `detect/track/fusion`；
+- `target/select`：`SelectPerceptionTargetCommand`，支持公共 ID、原图点或任意 ROI；
+- `command_result`：区分 `ACCEPTED/APPLIED/REJECTED/FAILED`；
+- `state`：锁存的会话、版本、模式、选择、实际 SOT 算法和实际模型状态；
+- `targets`：统一数值/显示数据源，包含原图像素框、左上角原点的中心点、归一化框和
+  `detector/visual_tracker/prediction` 来源。
+
+ROI 命令必须携带原始相机源以及 `frame_seq` 或 `capture_stamp`；指定帧已离开有界缓存
+时返回 `STALE_FRAME`，不会把旧 ROI 套到最新帧。人工框先以 `unknown` 类别持续跟踪，
+只有与同一 YOLO 目标连续唯一重叠后才确认类别。新 overlay 严格使用目标快照对应的
+原图帧，不再自行移动框，因此画面框和 `perception/targets` 坐标一致。
+
+点击选择也必须指定原始帧；匹配使用该帧的轨迹快照而非最新目标列表。已有 ID 的选择
+会初始化实际 SOT；detect 中成功选择会进入 track。共享 YOLO 在 track 已稳定跟踪时
+默认将选中来源降为 1 FPS 检测锚定、其他来源降为 0.5 FPS（检测器参数
+`~track_anchor_fps/~track_standby_fps`），失联恢复原全图搜索；fusion 保持正常全图检测
+并对选中 SOT 做同帧几何/外观/歧义校验。失效视觉证据标 lost/stale，不冒充实测。
+
+人工 ROI 通过 C++ `track/manage_visual_identity` 注册为同一全局实体；连续三帧通过
+唯一检测和外观门控后，普通轨迹继承人工 ID，原世界状态、深度特征库和跨源映射迁入
+该实体。切回 detect 保留有界后台视觉跟踪（最多 8 个），身份 TTL 默认 60 秒。
+跨相机继承仍要求可靠世界定位，不靠相似颜色强行合并；图像跟踪本身没有三维控制权。
+
+失锁输出为 `lost/stale` 身份状态，旧框和中心点清零；overlay 不绘制失锁框，只显示
+`LOST ID`。有效框带 `DET/SOT` 标记，真实短时预测带 `PRED` 虚线，默认最多 0.5 秒
+（包括传输延迟）。相机停更会主动发出一次清除快照，不保留“仍在锁定”的旧实线框。
+
+三维位置使用独立的 FRD `position_frame/position_stamp`，不是图像 `header.frame_id`。
+纯 SOT、预测、失锁和过期测距的 `position_valid=false`；`age_ms` 是真实图像观测的
+发布年龄，未知为 -1。部署需配置/发布正确的 `body_frd_frame` TF，并同步更新新增字段的
+`TrackState` 生成消息后重启相关节点，不能混用旧 MD5 消息。
+
+完整合同和当前完成边界见
+[`perception_modes_and_model_switch_plan.md`](docs/perception_modes_and_model_switch_plan.md)。
+运行时模型目前可查询但尚不可热切换；不得调用旧 SmartTracker 切换服务冒充新链路。
 
 ### 车辆 ReID、低分框与短时漏框
 

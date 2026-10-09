@@ -1,0 +1,15 @@
+time capture_stamp
+uint32 frame_seq
+uint64 segment_id
+string segment_reason
+string image_source
+string measurement_source
+bool observed
+bool predicted
+float32[2] center_px
+float32[2] center_norm
+bool position_valid
+string position_frame
+time position_stamp
+float32[3] position_xyz
+float32[9] position_covariance

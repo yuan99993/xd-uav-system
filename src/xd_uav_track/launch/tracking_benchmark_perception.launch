@@ -116,9 +116,15 @@
       <param name="display_rate_hz" value="$(arg overlay_display_rate_hz)"/>
       <param name="maximum_pair_delta_sec" value="$(arg overlay_maximum_pair_delta_sec)"/>
     </node>
+    <node pkg="xd_uav_track" type="combined_tracking_view_node.py"
+          name="combined_tracking_view" output="screen">
+      <param name="enable_fixed" value="true"/>
+      <param name="enable_gimbal" value="false"/>
+      <param name="fixed_overlay_topic" value="fixed_camera/tracking_overlay"/>
+      <param name="output_image_topic" value="tracking_visualization"/>
+    </node>
     <node if="$(arg show_overlay)" pkg="rqt_image_view" type="rqt_image_view"
-          name="fixed_tracking_overlay_view"
-          args="/tracking_benchmark/fixed_camera/tracking_overlay"
+          name="tracking_view" args="/$(arg UAV_NAME)/tracking_visualization"
           output="screen"/>
   </group>
 </launch>

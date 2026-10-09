@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "namespace_template": "/{UAV_NAME}/perception/",
+  "defaults": {"uav_name": "uav1", "http_port": 8080, "websocket_port": 9090},
+  "transport": "rosbridge_json_websocket",
+  "modes": ["detect", "track", "fusion"],
+  "subscribe": {
+    "video": {"type": "xd_uav_track/PerceptionVideoFrame", "queue_length": 2, "throttle_rate_ms": 0},
+    "targets": {"type": "xd_uav_track/PerceptionTargetArray", "queue_length": 2},
+    "state": {"type": "xd_uav_track/PerceptionState", "latched": true},
+    "command_result": {"type": "xd_uav_track/PerceptionCommandResult", "queue_length": 32},
+    "trajectory": {"type": "xd_uav_track/TargetTrajectoryArray", "latched": true}
+  },
+  "publish": {
+    "mode/set": {"type": "xd_uav_track/SetPerceptionModeCommand", "field": "mode"},
+    "model/set": {"type": "xd_uav_track/SetDetectorModelCommand", "field": "model_id"},
+    "target/select": {"type": "xd_uav_track/SelectPerceptionTargetCommand", "selection_type": ["clear", "track_id", "point", "roi"]}
+  },
+  "services": {
+    "state/get": {"type": "xd_uav_track/GetPerceptionState", "request": {}},
+    "models/list": {"type": "sar_yolo_detector/ListDetectorModels", "request": {}}
+  },
+  "command_envelope": ["request_id", "session_id", "expected_state_version", "issued_at", "ttl_sec"],
+  "terminal_stages": ["APPLIED", "REJECTED", "FAILED"],
+  "switch_initialization": {
+    "automatic": true,
+    "policy": "soft_runtime_reset_after_successful_transition",
+    "preserve_global_ids": true,
+    "preserve_long_term_identity": true,
+    "mode_change_reloads_gpu_model": false,
+    "clear_temporary_trajectory": true,
+    "failure_keeps_current_model": true
+  },
+  "video": {
+    "codec": "png",
+    "lossless": true,
+    "resize": false,
+    "default_max_pixels": 16777216,
+    "default_max_encoded_bytes": 16777216,
+    "default_client_max_sources": 8,
+    "image_field": "image.data",
+    "metadata_field": "targets",
+    "source_field": "targets.image_source",
+    "frame_seq_field": "targets.frame_seq",
+    "capture_stamp_field": "targets.header.stamp",
+    "frame_revision_field": "frame_revision",
+    "ordering": "capture_stamp first; revision only for the same capture",
+    "pixel_origin": "top_left",
+    "x_axis": "right",
+    "y_axis": "down",
+    "output_center_field": "targets.targets[].center_px",
+    "output_box_format": "[xmin,ymin,xmax,ymax)",
+    "selection_roi_format": "[left/W,top/H,width/W,height/H]",
+    "selection_point_format": "[x/W,y/H]",
+    "note": "Image is annotated at native resolution. CSS may scale display only. ROI binds to the displayed bundle, never the latest unrelated frame."
+  },
+  "position": {"validity_field": "position_valid", "frame_field": "position_frame", "stamp_field": "position_stamp", "default_convention": "relative_body_FRD_meters"},
+  "safety": {
+    "flight_control_exposed": false,
+    "default_listen_address": "127.0.0.1",
+    "remote_access": "SSH tunnel or authenticated HTTPS/WSS reverse proxy",
+    "no_infinite_lock_guarantee": true
+  }
+}

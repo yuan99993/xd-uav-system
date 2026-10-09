@@ -1,0 +1,53 @@
+<launch>
+  <arg name="high_frequency_pixels" default="false"/>
+  <!-- Real ROS/rosbridge transport with synthetic camera/detector inputs.
+       No YOLO engine, GPU, Gazebo, PX4 or control publisher is started. -->
+  <group ns="web_video_test">
+    <param name="perception/high_frequency_pixel_enabled" value="$(arg high_frequency_pixels)"/>
+    <node pkg="xd_uav_track" type="xd_uav_track_node" name="track" output="screen">
+      <rosparam command="load" file="$(find xd_uav_track)/config/track.yaml"/>
+      <param name="runtime/publish_control_reference" value="false"/>
+      <param name="tracker/selection/auto_select" value="false"/>
+      <param name="frames/body_frd" value="web_video_test/base_link_frd"/>
+    </node>
+    <node pkg="xd_uav_track" type="perception_mode_manager.py" name="mode_manager" output="screen">
+      <param name="initial_mode" value="detect"/>
+      <param name="frame_cache_size" value="20"/>
+      <param name="source_timeout_sec" value="1.0"/>
+      <param name="trajectory/maximum_points" value="80"/>
+      <rosparam param="sources">
+        - image_source: fixed_rgb
+          image_topic: fixed_camera/image_raw
+        - image_source: gimbal_rgb
+          image_topic: gimbal_camera/image_raw
+      </rosparam>
+    </node>
+    <node pkg="xd_uav_track" type="perception_overlay_node.py" name="fixed_overlay" output="screen">
+      <param name="image_source" value="fixed_rgb"/>
+      <param name="input_image_topic" value="fixed_camera/image_raw"/>
+      <param name="output_image_topic" value="perception/fixed_rgb/overlay"/>
+      <param name="enable_web_video" value="true"/>
+      <param name="video_rate_hz" value="6.0"/>
+    </node>
+    <node pkg="xd_uav_track" type="perception_overlay_node.py" name="gimbal_overlay" output="screen">
+      <param name="image_source" value="gimbal_rgb"/>
+      <param name="input_image_topic" value="gimbal_camera/image_raw"/>
+      <param name="output_image_topic" value="perception/gimbal_rgb/overlay"/>
+      <param name="enable_web_video" value="true"/>
+      <param name="video_rate_hz" value="6.0"/>
+    </node>
+    <node pkg="xd_uav_track" type="serve_perception_web.py" name="perception_web_http" output="screen">
+      <param name="address" value="127.0.0.1"/>
+      <param name="port" value="24179"/>
+      <param name="uav_name" value="web_video_test"/>
+      <param name="websocket_port" value="24178"/>
+    </node>
+  </group>
+  <include file="$(find xd_uav_track)/launch/perception_web_bridge.launch">
+    <arg name="UAV_NAME" value="web_video_test"/>
+    <arg name="port" value="24178"/>
+    <arg name="enable_video" value="true"/>
+  </include>
+  <test test-name="video_web_contract" pkg="xd_uav_track"
+        type="test_perception_video_web_ros.py" time-limit="80"/>
+</launch>

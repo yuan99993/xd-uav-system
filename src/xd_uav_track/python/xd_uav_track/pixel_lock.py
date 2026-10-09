@@ -227,3 +227,93 @@ def flow_box(previous_gray, current_gray, box, dt_sec, min_features=7,
              max(0, min(width, int(round(box[2] + dx)))),
              max(0, min(height, int(round(box[3] + dy)))))
     return moved if moved[2] > moved[0] and moved[3] > moved[1] else None
+
+
+def flow_boxes(previous_gray, current_gray, boxes, dt_sec, min_features=7,
+               fb_error_px=1.5, maximum_speed=300.0, initial_transform=None,
+               rejections=None):
+    """One forward/backward LK pair (and pyramid pair) for all target ROIs.
+
+    Returns accepted image observations only; absence is failure, not detection.
+    Points are extracted from cropped interiors, never a full-size mask per ROI.
+    """
+    if previous_gray.shape != current_gray.shape or not 0 < dt_sec <= .8:
+        return {}
+    height, width = previous_gray.shape
+    groups, all_points = {}, []
+    offset = 0
+    for identity, box in boxes.items():
+        x1, y1, x2, y2 = [int(round(v)) for v in box]
+        ix, iy = max(1, int((x2-x1)*.08)), max(1, int((y2-y1)*.08))
+        x1, y1, x2, y2 = max(0,x1+ix), max(0,y1+iy), min(width,x2-ix), min(height,y2-iy)
+        if x2-x1 < 5 or y2-y1 < 5:
+            continue
+        points = cv2.goodFeaturesToTrack(previous_gray[y1:y2,x1:x2],
+            maxCorners=48, qualityLevel=.015, minDistance=4, blockSize=5)
+        if points is None or len(points) < min_features:
+            continue
+        points += np.array([x1,y1], np.float32)
+        groups[identity] = (offset,offset+len(points))
+        offset += len(points)
+        all_points.append(points)
+    if not all_points:
+        return {}
+    points = np.concatenate(all_points)
+    options = dict(winSize=(21,21),maxLevel=3,
+        criteria=(cv2.TERM_CRITERIA_EPS|cv2.TERM_CRITERIA_COUNT,20,.03))
+    guess = None
+    if initial_transform is not None:
+        guess = cv2.perspectiveTransform(points, np.asarray(initial_transform,np.float64))
+        options['flags'] = cv2.OPTFLOW_USE_INITIAL_FLOW
+    moved, forward, _ = cv2.calcOpticalFlowPyrLK(previous_gray,current_gray,points,guess,**options)
+    if moved is None or forward is None:
+        return {}
+    options.pop('flags',None)
+    returned, backward, _ = cv2.calcOpticalFlowPyrLK(current_gray,previous_gray,moved,None,**options)
+    if returned is None or backward is None:
+        return {}
+    old, new, back = [p.reshape(-1,2) for p in (points,moved,returned)]
+    valid = (forward.ravel()!=0)&(backward.ravel()!=0)
+    valid &= np.isfinite(new).all(axis=1)&(np.linalg.norm(old-back,axis=1)<=fb_error_px)
+    results = {}
+    for identity,(start,end) in groups.items():
+        chosen = valid[start:end]
+        if np.count_nonzero(chosen)<min_features:
+            continue
+        before = old[start:end][chosen]
+        after = new[start:end][chosen]
+        affine, mask = cv2.estimateAffinePartial2D(before, after,
+            method=cv2.RANSAC, ransacReprojThreshold=2.5, maxIters=100,
+            confidence=.95, refineIters=5)
+        if affine is None or mask is None or not np.isfinite(affine).all():
+            continue
+        inliers = mask.ravel() != 0
+        if np.count_nonzero(inliers)<min_features or np.mean(inliers)<.4:
+            continue
+        box = boxes[identity]
+        scale = float(np.hypot(affine[0,0], affine[1,0]))
+        if not .80 <= scale <= 1.25:
+            if rejections is not None:
+                rejections[identity] = 'scale_anomaly'
+            continue
+        center = np.array([.5*(box[0]+box[2]),.5*(box[1]+box[3]),1.])
+        dx,dy = affine.dot(center) - center[:2]
+        # A pose seed permits large *camera* displacement but not arbitrary
+        # target residual motion. Raw flow without pose remains physically bounded.
+        residual = np.array([dx,dy])
+        if initial_transform is not None:
+            center = np.array([[[.5*(box[0]+box[2]),.5*(box[1]+box[3])]]],np.float32)
+            residual -= (cv2.perspectiveTransform(center,np.asarray(initial_transform,np.float64))-center).ravel()
+        if np.linalg.norm(residual)>max(6.0,maximum_speed*dt_sec):
+            continue
+        # Repeatedly enclosing a rotated axis-aligned rectangle inflates it
+        # even for a rigid target. Use measured center/scale; YOLO anchors the
+        # silhouette/aspect. Never accumulate bounding-rectangle rotation.
+        cx,cy = .5*(box[0]+box[2])+dx,.5*(box[1]+box[3])+dy
+        bw,bh = (box[2]-box[0])*scale,(box[3]-box[1])*scale
+        shifted = (max(0,int(round(cx-bw/2))),max(0,int(round(cy-bh/2))),
+                   min(width,int(round(cx+bw/2))),min(height,int(round(cy+bh/2))))
+        if shifted[2]-shifted[0]<4 or shifted[3]-shifted[1]<4:
+            continue
+        results[identity] = (shifted,float(np.count_nonzero(inliers)/(end-start)))
+    return results

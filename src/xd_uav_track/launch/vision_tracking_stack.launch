@@ -1,15 +1,17 @@
 <launch>
-  <!-- Configurable perception-to-tracker composition.  Each camera has its
-       own detector/bridge instance and input topic, but both use the existing
-       DetectionArray output contract. -->
+  <!-- Production vehicle pipeline: one train7 TensorRT detector serves both
+       cameras; xd_uav_track alone owns identities and reacquisition. -->
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
   <arg name="vehicle_type" default="multirotor"/> <!-- multirotor | fixedwing -->
+  <arg name="enable_tracking" default="true"/>
   <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
+  <arg name="body_frd_frame" default="$(arg UAV_NAME)/base_link_frd"/>
   <arg name="world_frame" default="$(arg UAV_NAME)/local_origin"/>
   <arg name="enable_fixed_camera" default="true"/>
-  <arg name="enable_gimbal_lrf" default="false"/>
+  <!-- Keep both subscriptions alive: cameras may publish after this stack starts. -->
+  <arg name="enable_gimbal_lrf" default="true"/>
   <arg name="enable_sar_fixed" default="true"/>
-  <arg name="enable_sar_gimbal" default="false"/>
+  <arg name="enable_sar_gimbal" default="true"/>
   <arg name="fixed_detect_config" default="$(find xd_uav_detect)/config/multirotor_fixed_camera.yaml"/>
   <arg name="gimbal_detect_config" default="$(find xd_uav_detect)/config/gimbal_lrf_camera.yaml"/>
   <arg name="track_config" default="$(find xd_uav_track)/config/track.yaml"/>
@@ -21,31 +23,67 @@
   <arg name="fixed_sensor_id" default="fixed_camera"/>
   <arg name="gimbal_image_source" default="gimbal_rgb"/>
   <arg name="gimbal_sensor_id" default="gimbal_camera"/>
+  <arg name="detector_config" default="$(find sar_yolo_detector)/config/xd_vehicle_detection.yaml"/>
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt"/>
+  <arg name="model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54"/>
+  <arg name="inference_backend" default="tensorrt_fp16"/>
+  <arg name="engine_path" default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.engine"/>
+  <arg name="engine_sha256" default="88ed19419dcefdf64f6c90f31aa7961ef906c31d3581633afba69fa586bc850f"/>
+  <arg name="engine_source_model_sha256" default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54"/>
+  <arg name="auto_export_engine" default="true"/>
+  <arg name="detector_fps" default="4.0"/>
+  <arg name="enable_reid" default="true"/>
+  <arg name="gimbal_roi_recovery_enabled" default="false"/>
+  <arg name="enable_tracking_visualization" default="true"/>
+  <arg name="tracking_visualization_rate_hz" default="3.0"/>
+  <!-- Web frames are native-resolution lossless PNG + the exact target snapshot.
+       Encoding is latest-only and runs only when a video subscriber exists. -->
+  <arg name="enable_web_video" default="true"/>
+  <arg name="web_video_rate_hz" default="6.0"/>
+  <arg name="web_video_max_pixels" default="16777216"/>
+  <arg name="web_video_max_encoded_bytes" default="16777216"/>
+  <!-- New runtime perception contract. Keep false until the staged rollout is
+       accepted; the existing detector/tracker remains available for A/B. -->
+  <!-- Release gate: real cross-source identity/latency acceptance is pending. -->
+  <arg name="enable_perception_modes" default="false"/>
+  <!-- Experimental until same-scene non-regression acceptance passes. -->
+  <arg name="enable_high_frequency_pixels" default="false"/>
+  <arg name="initial_perception_mode" default="detect"/>
+  <arg name="perception_frame_cache_size" default="15"/>
 
-  <include if="$(arg enable_sar_fixed)"
-           file="$(find sar_yolo_detector)/launch/xd_smart_tracker_integration.launch">
+  <include if="$(eval arg('enable_sar_fixed') or arg('enable_sar_gimbal'))"
+           file="$(find sar_yolo_detector)/launch/xd_yolo_multi_source_detection_integration.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
-    <arg name="instance_name" value="fixed"/>
-    <arg name="input_image_topic" value="$(arg fixed_image_topic)"/>
-    <arg name="camera_info_topic" value="$(arg fixed_camera_info_topic)"/>
-    <arg name="tracked_detections_topic" value="sar_yolo_detector/fixed/tracked_detections"/>
-    <arg name="output_detections_topic" value="detect/input/fixed/detections_2d"/>
-    <arg name="image_source" value="$(arg fixed_image_source)"/>
-    <arg name="sensor_id" value="$(arg fixed_sensor_id)"/>
-  </include>
-  <include if="$(arg enable_sar_gimbal)"
-           file="$(find sar_yolo_detector)/launch/xd_smart_tracker_integration.launch">
-    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
-    <arg name="instance_name" value="gimbal"/>
-    <arg name="input_image_topic" value="$(arg gimbal_image_topic)"/>
-    <arg name="camera_info_topic" value="$(arg gimbal_camera_info_topic)"/>
-    <arg name="tracked_detections_topic" value="sar_yolo_detector/gimbal/tracked_detections"/>
-    <arg name="output_detections_topic" value="detect/input/gimbal/detections_2d"/>
-    <arg name="image_source" value="$(arg gimbal_image_source)"/>
-    <arg name="sensor_id" value="$(arg gimbal_sensor_id)"/>
+    <arg name="config" value="$(arg detector_config)"/>
+    <arg name="model_path" value="$(arg model_path)"/>
+    <arg name="model_sha256" value="$(arg model_sha256)"/>
+    <arg name="inference_backend" value="$(arg inference_backend)"/>
+    <arg name="engine_path" value="$(arg engine_path)"/>
+    <arg name="engine_sha256" value="$(arg engine_sha256)"/>
+    <arg name="engine_source_model_sha256" value="$(arg engine_source_model_sha256)"/>
+    <arg name="auto_export_engine" value="$(arg auto_export_engine)"/>
+    <arg name="maximum_batch_size" value="1"/>
+    <arg name="fixed_image_topic" value="$(eval arg('fixed_image_topic') if arg('enable_sar_fixed') else 'fixed_camera/disabled_image')"/>
+    <arg name="gimbal_image_topic" value="$(eval arg('gimbal_image_topic') if arg('enable_sar_gimbal') else 'gimbal_camera/disabled_image')"/>
+    <arg name="fixed_output_topic" value="detect/input/fixed/detections_2d"/>
+    <arg name="gimbal_output_topic" value="detect/input/gimbal/detections_2d"/>
+    <arg name="fixed_image_source" value="$(arg fixed_image_source)"/>
+    <arg name="fixed_sensor_id" value="$(arg fixed_sensor_id)"/>
+    <arg name="gimbal_image_source" value="$(arg gimbal_image_source)"/>
+    <arg name="gimbal_sensor_id" value="$(arg gimbal_sensor_id)"/>
+    <arg name="tracking_tracks_topic" value="$(eval 'track/tracks_by_source' if arg('enable_tracking') else '')"/>
+    <arg name="search_priority_source" value="$(eval 'fixed' if arg('enable_sar_fixed') and arg('enable_fixed_camera') else 'gimbal')"/>
+    <arg name="preferred_tracking_source" value="$(eval 'gimbal' if arg('enable_sar_gimbal') and arg('enable_gimbal_lrf') else 'fixed')"/>
+    <arg name="pause_without_subscribers" value="$(eval 'true' if arg('enable_tracking') else 'false')"/>
+    <arg name="reid_enabled" value="$(eval 'true' if arg('enable_tracking') and arg('enable_reid') else 'false')"/>
+    <arg name="discovery_max_fps" value="$(arg detector_fps)"/>
+    <arg name="priority_max_fps" value="$(arg detector_fps)"/>
+    <arg name="standby_max_fps" value="$(arg detector_fps)"/>
+    <arg name="pixel_assist_enabled" value="true"/>
+    <arg name="gimbal_roi_recovery_enabled" value="$(arg gimbal_roi_recovery_enabled)"/>
   </include>
 
-  <include if="$(arg enable_fixed_camera)" file="$(find xd_uav_track)/launch/detect_instance.launch">
+  <include if="$(eval arg('enable_tracking') and arg('enable_fixed_camera'))" file="$(find xd_uav_track)/launch/detect_instance.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="node_name" value="detect_fixed"/>
     <arg name="config" value="$(arg fixed_detect_config)"/>
@@ -58,7 +96,7 @@
     <arg name="camera_info_topic" value="$(arg fixed_camera_info_topic)"/>
     <arg name="detections_2d_topic" value="detect/input/fixed/detections_2d"/>
   </include>
-  <include if="$(arg enable_gimbal_lrf)" file="$(find xd_uav_track)/launch/detect_instance.launch">
+  <include if="$(eval arg('enable_tracking') and arg('enable_gimbal_lrf'))" file="$(find xd_uav_track)/launch/detect_instance.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="node_name" value="detect_gimbal_lrf"/>
     <arg name="config" value="$(arg gimbal_detect_config)"/>
@@ -72,14 +110,89 @@
     <arg name="detections_2d_topic" value="detect/input/gimbal/detections_2d"/>
   </include>
 
-  <include if="$(eval arg('vehicle_type') == 'multirotor')" file="$(find xd_uav_track)/launch/track.launch">
+  <include if="$(eval arg('enable_tracking') and arg('vehicle_type') == 'multirotor')" file="$(find xd_uav_track)/launch/track.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="body_frame" value="$(arg body_frame)"/>
+    <arg name="body_frd_frame" value="$(arg body_frd_frame)"/>
     <arg name="config" value="$(arg track_config)"/>
   </include>
-  <include if="$(eval arg('vehicle_type') == 'fixedwing')" file="$(find xd_uav_track)/launch/track_fixedwing_sitl.launch">
+  <include if="$(eval arg('enable_tracking') and arg('vehicle_type') == 'fixedwing')" file="$(find xd_uav_track)/launch/track_fixedwing_sitl.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="body_frame" value="$(arg body_frame)"/>
+    <arg name="body_frd_frame" value="$(arg body_frd_frame)"/>
     <arg name="config" value="$(arg track_config)"/>
   </include>
+
+  <!-- One public annotated image for fixed-only or dual-camera deployments.
+       Labels come from confirmed tracker state, not another YOLO pass. -->
+  <group ns="$(arg UAV_NAME)">
+    <param name="perception/high_frequency_pixel_enabled" value="$(eval arg('enable_tracking') and arg('enable_perception_modes') and arg('enable_high_frequency_pixels'))"/>
+    <node if="$(eval arg('enable_tracking') and arg('enable_perception_modes'))"
+          pkg="xd_uav_track" type="perception_mode_manager.py"
+          name="perception_mode_manager" output="screen" required="true">
+      <param name="initial_mode" value="$(arg initial_perception_mode)"/>
+      <param name="frame_cache_size" value="$(arg perception_frame_cache_size)"/>
+      <param name="body_frd_frame" value="$(arg body_frd_frame)"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="model_status_topic" value="sar_yolo_multi_source_detection/model_status"/>
+      <rosparam param="class_names">[car, ar-car, tank, m142]</rosparam>
+      <rosparam param="sources" subst_value="true">
+        - image_source: $(arg fixed_image_source)
+          image_topic: $(arg fixed_image_topic)
+        - image_source: $(arg gimbal_image_source)
+          image_topic: $(arg gimbal_image_topic)
+      </rosparam>
+    </node>
+    <node if="$(eval arg('enable_tracking') and arg('enable_tracking_visualization') and not arg('enable_perception_modes') and arg('enable_fixed_camera') and arg('enable_sar_fixed'))"
+          pkg="xd_uav_track" type="tracking_overlay_node.py" name="fixed_tracking_overlay" output="screen">
+      <param name="image_source" value="$(arg fixed_image_source)"/>
+      <param name="input_image_topic" value="$(arg fixed_image_topic)"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="status_topic" value="track/status"/>
+      <param name="output_image_topic" value="fixed_camera/tracking_overlay"/>
+      <param name="show_confirmed_only" value="true"/>
+      <param name="display_rate_hz" value="6.0"/>
+    </node>
+    <node if="$(eval arg('enable_tracking') and arg('enable_tracking_visualization') and not arg('enable_perception_modes') and arg('enable_gimbal_lrf') and arg('enable_sar_gimbal'))"
+          pkg="xd_uav_track" type="tracking_overlay_node.py" name="gimbal_tracking_overlay" output="screen">
+      <param name="image_source" value="$(arg gimbal_image_source)"/>
+      <param name="input_image_topic" value="$(arg gimbal_image_topic)"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="status_topic" value="track/status"/>
+      <param name="output_image_topic" value="gimbal_camera/tracking_overlay"/>
+      <param name="show_confirmed_only" value="true"/>
+      <param name="display_rate_hz" value="6.0"/>
+    </node>
+    <node if="$(eval arg('enable_tracking') and (arg('enable_tracking_visualization') or arg('enable_web_video')) and arg('enable_perception_modes') and arg('enable_fixed_camera') and arg('enable_sar_fixed'))"
+          pkg="xd_uav_track" type="perception_overlay_node.py" name="fixed_perception_overlay" output="screen">
+      <param name="image_source" value="$(arg fixed_image_source)"/>
+      <param name="input_image_topic" value="$(arg fixed_image_topic)"/>
+      <param name="targets_topic" value="perception/targets"/>
+      <param name="output_image_topic" value="fixed_camera/tracking_overlay"/>
+      <param name="enable_web_video" value="$(arg enable_web_video)"/>
+      <param name="video_rate_hz" value="$(arg web_video_rate_hz)"/>
+      <param name="video_max_pixels" value="$(arg web_video_max_pixels)"/>
+      <param name="video_max_encoded_bytes" value="$(arg web_video_max_encoded_bytes)"/>
+    </node>
+    <node if="$(eval arg('enable_tracking') and (arg('enable_tracking_visualization') or arg('enable_web_video')) and arg('enable_perception_modes') and arg('enable_gimbal_lrf') and arg('enable_sar_gimbal'))"
+          pkg="xd_uav_track" type="perception_overlay_node.py" name="gimbal_perception_overlay" output="screen">
+      <param name="image_source" value="$(arg gimbal_image_source)"/>
+      <param name="input_image_topic" value="$(arg gimbal_image_topic)"/>
+      <param name="targets_topic" value="perception/targets"/>
+      <param name="output_image_topic" value="gimbal_camera/tracking_overlay"/>
+      <param name="enable_web_video" value="$(arg enable_web_video)"/>
+      <param name="video_rate_hz" value="$(arg web_video_rate_hz)"/>
+      <param name="video_max_pixels" value="$(arg web_video_max_pixels)"/>
+      <param name="video_max_encoded_bytes" value="$(arg web_video_max_encoded_bytes)"/>
+    </node>
+    <node if="$(eval arg('enable_tracking') and arg('enable_tracking_visualization') and ((arg('enable_fixed_camera') and arg('enable_sar_fixed')) or (arg('enable_gimbal_lrf') and arg('enable_sar_gimbal'))))"
+          pkg="xd_uav_track" type="combined_tracking_view_node.py" name="combined_tracking_view" output="screen">
+      <param name="enable_fixed" value="$(eval arg('enable_fixed_camera') and arg('enable_sar_fixed'))"/>
+      <param name="enable_gimbal" value="$(eval arg('enable_gimbal_lrf') and arg('enable_sar_gimbal'))"/>
+      <param name="fixed_overlay_topic" value="fixed_camera/tracking_overlay"/>
+      <param name="gimbal_overlay_topic" value="gimbal_camera/tracking_overlay"/>
+      <param name="output_image_topic" value="tracking_visualization"/>
+      <param name="publish_rate_hz" value="$(arg tracking_visualization_rate_hz)"/>
+    </node>
+  </group>
 </launch>

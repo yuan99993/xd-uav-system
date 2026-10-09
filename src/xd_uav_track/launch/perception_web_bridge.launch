@@ -1,0 +1,18 @@
+<launch>
+  <!-- Optional contract bridge; no camera, detector or flight nodes duplicated. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="port" default="9090"/>
+  <arg name="address" default="127.0.0.1"/>
+  <arg name="enable_video" default="true"/>
+  <!-- PNG uint8[] is JSON base64; allow its bounded payload without resizing. -->
+  <arg name="max_message_size" default="33554432"/>
+  <node pkg="xd_uav_track" type="bound_rosbridge_websocket.py"
+        name="rosbridge_websocket" output="screen" required="true">
+    <param name="port" value="$(arg port)"/>
+    <param name="address" value="$(arg address)"/>
+    <param name="topics_glob" value="$(eval '[/'+arg('UAV_NAME')+'/perception/mode/set,/'+arg('UAV_NAME')+'/perception/target/select,/'+arg('UAV_NAME')+'/perception/model/set,/'+arg('UAV_NAME')+'/perception/command_result,/'+arg('UAV_NAME')+'/perception/state,/'+arg('UAV_NAME')+'/perception/targets,/'+arg('UAV_NAME')+'/perception/trajectory'+(',/'+arg('UAV_NAME')+'/perception/video' if arg('enable_video') else '')+']')"/>
+    <param name="services_glob" value="[/$(arg UAV_NAME)/perception/models/list,/$(arg UAV_NAME)/perception/state/get]"/>
+    <param name="params_glob" value="[]"/>
+    <param name="max_message_size" value="$(arg max_message_size)"/>
+  </node>
+</launch>
