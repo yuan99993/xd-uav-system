@@ -73,7 +73,6 @@ class DavosdorfWorldFrame:
         self.center_northing = transform[3] + transform[5] * self.terrain.rows / 2.0
         self.width_m = abs(transform[1] * self.terrain.cols)
         self.height_m = abs(transform[5] * self.terrain.rows)
-
         projected = osr.SpatialReference()
         if projected.ImportFromWkt(self.terrain.wkt) != 0:
             raise RuntimeError("DEM projection WKT is invalid")
@@ -180,9 +179,9 @@ class DavosdorfWorldFrame:
                 "uav_name": name,
                 "world_origin": {"x": start_x, "y": y, "z": start_ground},
                 "gazebo_spawn": {
-                    "x": 0.0,
-                    "y": -300.0 + 300.0 * index,
-                    "z": 0.0,
+                    "x": start_x,
+                    "y": y,
+                    "z": start_ground,
                 },
                 "route": route,
             })
@@ -208,6 +207,10 @@ class DavosdorfWorldFrame:
             "geo_bounds": self._geo_bounds(),
             "elevation_min_m": float(np.nanmin(self.terrain.elevation)),
             "elevation_max_m": float(np.nanmax(self.terrain.elevation)),
+            "gazebo_frame": {
+                "horizontal_mapping": "gazebo_x_y_equals_world_x_y",
+                "vertical_mapping": "gazebo_z_equals_elevation_msl_m",
+            },
             "web_dem_sha256": self.web_dem_sha256,
             "canonical_dem_sha256": self.canonical_dem_sha256,
             "canonical_dem_match": self.canonical_match,

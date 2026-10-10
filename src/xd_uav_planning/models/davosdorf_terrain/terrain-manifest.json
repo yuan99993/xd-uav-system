@@ -1,0 +1,42 @@
+{
+  "coordinate_reference_system": "EPSG:21781",
+  "elevation_m": {
+    "prepared_max": 2843.078125,
+    "prepared_min": 1535.9202880859375,
+    "source_max": 2843.078125,
+    "source_min": 1535.9202880859375
+  },
+  "gazebo_heightmap": {
+    "dem_loader_preserves_minimum_msl_m": 1535.9202880859375,
+    "position_z_m": 0.0,
+    "size_x_m": 5590.0,
+    "size_y_m": 4950.0,
+    "size_z_m": 1307.1578369140625
+  },
+  "prepared": {
+    "height": 513,
+    "name": "davosdorf_gazebo.tif",
+    "sha256": "e7599ed9e0972f171cec29be83ecea283a34ce012eddcb6a3c2f64754fd4a709",
+    "width": 513
+  },
+  "projected_bounds_m": {
+    "east": 785093.0,
+    "north": 190480.0,
+    "south": 185530.0,
+    "west": 779503.0
+  },
+  "resampling": "nearest",
+  "schema": "xd-uav-gazebo-dem/v1",
+  "source": {
+    "height": 495,
+    "name": "davosdorf.tif",
+    "sha256": "90dc357883a27088242468d8bc48a65f86f3288cd7440e423fc5ae350912e35c",
+    "width": 559
+  },
+  "vertical_datum": "MSL",
+  "world_frame": {
+    "x": "projected_easting_minus_dem_center_easting_m",
+    "y": "projected_northing_minus_dem_center_northing_m",
+    "z": "elevation_msl_m"
+  }
+}

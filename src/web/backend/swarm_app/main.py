@@ -144,6 +144,11 @@ def _spawn_example(request):
             status_code=409,
             detail="所选起点高程与当前 DEM 不一致，请重新在地图选点")
     example["world_origin"] = {"x": x, "y": y, "z": ground}
+    example["gazebo_spawn"] = {
+        "x": x,
+        "y": y,
+        "z": ground,
+    }
     example["route"]["points"][0] = {
         "x": x, "y": y, "z": ground + 80.0}
     example["route"]["display_points"] = frame.display_points([

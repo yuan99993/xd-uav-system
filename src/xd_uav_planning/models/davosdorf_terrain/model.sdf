@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="davosdorf_terrain">
+    <static>true</static>
+    <link name="terrain">
+      <!-- The source-of-truth is the canonical GeoTIFF used by the planner.
+           Gazebo Classic consumes the square, georeferenced GeoTIFF cache
+           described by terrain-manifest.json.  X/Y are DEM-centred metres
+           and Z remains metres MSL in every subsystem. -->
+      <collision name="terrain_collision">
+        <geometry>
+          <heightmap>
+            <uri>model://davosdorf_terrain/materials/heightmaps/davosdorf_gazebo.tif</uri>
+            <size>5590 4950 1307.1578369140625</size>
+            <pos>0 0 0</pos>
+            <sampling>2</sampling>
+          </heightmap>
+        </geometry>
+      </collision>
+      <visual name="terrain_visual">
+        <cast_shadows>true</cast_shadows>
+        <geometry>
+          <heightmap>
+            <uri>model://davosdorf_terrain/materials/heightmaps/davosdorf_gazebo.tif</uri>
+            <size>5590 4950 1307.1578369140625</size>
+            <pos>0 0 0</pos>
+            <texture>
+              <diffuse>file://media/materials/textures/dirt_diffusespecular.png</diffuse>
+              <normal>file://media/materials/textures/flat_normal.png</normal>
+              <size>80</size>
+            </texture>
+            <blend><min_height>0</min_height><fade_dist>180</fade_dist></blend>
+            <sampling>2</sampling>
+          </heightmap>
+        </geometry>
+      </visual>
+    </link>
+  </model>
+</sdf>

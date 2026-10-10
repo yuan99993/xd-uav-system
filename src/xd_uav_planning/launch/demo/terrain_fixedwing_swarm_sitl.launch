@@ -8,7 +8,7 @@
   <arg name="web_api_url"
        default="http://127.0.0.1:8000/api/swarm/dispatch"/>
   <arg name="world"
-       default="$(find px4)/Tools/sitl_gazebo/worlds/empty.world"/>
+       default="$(find xd_uav_planning)/worlds/davosdorf.world"/>
   <arg name="map_path"
        default="$(find terrain_navigation)/../resources/davosdorf.tif"/>
   <arg name="fleet_config"
@@ -17,7 +17,10 @@
        default="$(find xd_uav_planning)/config/demo/terrain_fixedwing_swarm_sitl.yaml"/>
 
   <env name="GAZEBO_MODEL_PATH"
-       value="$(find px4)/Tools/sitl_gazebo/models:$(optenv GAZEBO_MODEL_PATH)"/>
+       value="$(find xd_uav_planning)/models:$(find px4)/Tools/sitl_gazebo/models:$(optenv GAZEBO_MODEL_PATH)"/>
+  <env name="OSR_DEFAULT_AXIS_MAPPING_STRATEGY"
+       value="TRADITIONAL_GIS_ORDER"/>
+  <env name="OGR_CT_FORCE_TRADITIONAL_GIS_ORDER" value="YES"/>
   <include if="$(arg start_gazebo)"
            file="$(find gazebo_ros)/launch/empty_world.launch">
     <arg name="world_name" value="$(arg world)"/>

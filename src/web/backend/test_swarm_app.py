@@ -159,6 +159,12 @@ class TerrainFrameTest(unittest.TestCase):
             self.assertAlmostEqual(elevation, item["world_origin"]["z"])
             self.assertAlmostEqual(
                 elevation + 80.0, item["route"]["points"][0]["z"])
+            self.assertAlmostEqual(
+                item["world_origin"]["x"], item["gazebo_spawn"]["x"])
+            self.assertAlmostEqual(
+                item["world_origin"]["y"], item["gazebo_spawn"]["y"])
+            self.assertAlmostEqual(
+                elevation, item["gazebo_spawn"]["z"])
 
     def test_later_vehicle_examples_respect_endpoint_angle_budget(self):
         for item in self.frame.vehicle_examples()[3:]:
@@ -190,6 +196,10 @@ class TerrainFrameTest(unittest.TestCase):
         self.assertEqual(0.0, example["world_origin"]["x"])
         self.assertEqual(0.0, example["world_origin"]["y"])
         self.assertAlmostEqual(ground, example["world_origin"]["z"])
+        self.assertEqual(0.0, example["gazebo_spawn"]["x"])
+        self.assertEqual(0.0, example["gazebo_spawn"]["y"])
+        self.assertAlmostEqual(
+            ground, example["gazebo_spawn"]["z"])
         self.assertAlmostEqual(
             ground + 80.0, example["route"]["points"][0]["z"])
 

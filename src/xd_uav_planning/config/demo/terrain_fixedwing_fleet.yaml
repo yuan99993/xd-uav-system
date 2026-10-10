@@ -1,18 +1,19 @@
 # Configurable dynamic fleet capacity. Initial vehicles preserve the verified
-# three-route DEM and Gazebo geometry; additional vehicles are requested by
-# the Web/API with their own verified world origin and spawn position.
+# three-route DEM geometry. Gazebo and planning share one frame: X/Y are
+# metres from the DEM centre and Z is elevation MSL. Additional vehicles
+# receive the same transform from the Web/API.
 capacity: 8
 publication_rate_hz: 2.0
 initial_vehicles:
   - uav_name: uav1
     preferred_instance: 0
     world_origin_m: [600.0, -2000.0, 1542.6483154296875]
-    gazebo_spawn_m: [0.0, -300.0, 0.0]
+    gazebo_spawn_m: [600.0, -2000.0, 1542.6483154296875]
   - uav_name: uav2
     preferred_instance: 1
     world_origin_m: [600.0, -1700.0, 1564.424560546875]
-    gazebo_spawn_m: [0.0, 0.0, 0.0]
+    gazebo_spawn_m: [600.0, -1700.0, 1564.424560546875]
   - uav_name: uav3
     preferred_instance: 2
     world_origin_m: [600.0, -1400.0, 1571.70556640625]
-    gazebo_spawn_m: [0.0, 300.0, 0.0]
+    gazebo_spawn_m: [600.0, -1400.0, 1571.70556640625]

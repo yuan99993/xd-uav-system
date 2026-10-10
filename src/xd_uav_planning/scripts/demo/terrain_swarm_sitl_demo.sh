@@ -180,7 +180,29 @@ case "${1:-}" in
       MISSION_WEB_RUNTIME_DIR="${runtime}/web" "${web_launcher}" start
     fi
     trap stop_all EXIT INT TERM
-    world_file="$(rospack find px4)/Tools/sitl_gazebo/worlds/empty.world"
+    planning_share="$(rospack find xd_uav_planning)"
+    default_world="${planning_share}/worlds/davosdorf.world"
+    world_file="${GAZEBO_WORLD_FILE:-${default_world}}"
+    [[ -r "${world_file}" ]] || {
+      echo "Gazebo world is unavailable: ${world_file}" >&2
+      exit 1
+    }
+    if [[ "$(readlink -f "${world_file}")" == "$(readlink -f "${default_world}")" ]]; then
+      terrain_model="${planning_share}/models/davosdorf_terrain"
+      canonical_dem="$(rospack find terrain_navigation)/../resources/davosdorf.tif"
+      python3 "${planning_share}/scripts/tools/verify_gazebo_dem.py" \
+        --source "${canonical_dem}" \
+        --prepared "${terrain_model}/materials/heightmaps/davosdorf_gazebo.tif" \
+        --manifest "${terrain_model}/terrain-manifest.json" \
+        --model-sdf "${terrain_model}/model.sdf"
+    fi
+    export GAZEBO_MODEL_PATH="${planning_share}/models:$(rospack find px4)/Tools/sitl_gazebo/models:${GAZEBO_MODEL_PATH:-}"
+    # GDAL 3 follows authority-axis order by default, while Gazebo Classic's
+    # DEM loader predates that change and expects traditional GIS X/Y order.
+    # Without both settings EPSG:21781 is interpreted as lat/lon-swapped and
+    # Gazebo silently stretches the terrain horizontally.
+    export OSR_DEFAULT_AXIS_MAPPING_STRATEGY=TRADITIONAL_GIS_ORDER
+    export OGR_CT_FORCE_TRADITIONAL_GIS_ORDER=YES
     # Starting gzclient concurrently with gzserver is unreliable on WSL and
     # can leave a healthy headless simulation behind a crashed GUI.  Bring up
     # the server first, then attach the optional client after its ROS API is
@@ -205,7 +227,6 @@ case "${1:-}" in
       exit 1
     }
     if [[ "${GUI:-false}" == true ]]; then
-      export GAZEBO_MODEL_PATH="$(rospack find px4)/Tools/sitl_gazebo/models:${GAZEBO_MODEL_PATH:-}"
       # The gazebo_ros wrapper also injects the ROS API plugin into gzclient.
       # That GUI-side plugin is unnecessary for rendering and can segfault on
       # WSL while the server-side API is still healthy.

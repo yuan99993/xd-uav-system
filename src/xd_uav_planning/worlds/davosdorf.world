@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="davosdorf">
+    <include><uri>model://sun</uri></include>
+    <include><uri>model://davosdorf_terrain</uri></include>
+
+    <physics name="fixedwing_sitl" type="ode">
+      <real_time_update_rate>250</real_time_update_rate>
+      <max_step_size>0.004</max_step_size>
+    </physics>
+    <scene>
+      <ambient>0.42 0.46 0.50 1</ambient>
+      <background>0.55 0.68 0.78 1</background>
+      <shadows>true</shadows>
+    </scene>
+    <gui fullscreen="0">
+      <camera name="overview">
+        <pose>4100 -3900 3400 0 0.48 2.35</pose>
+      </camera>
+    </gui>
+  </world>
+</sdf>

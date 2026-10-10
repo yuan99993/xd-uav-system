@@ -145,6 +145,12 @@ install(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
+install(PROGRAMS
+  scripts/tools/prepare_gazebo_dem.py
+  scripts/tools/verify_gazebo_dem.py
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/scripts/tools
+)
+
 install(TARGETS xd_uav_terrain_path_validator terrain_planner_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
@@ -155,7 +161,7 @@ install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
-install(DIRECTORY config docs launch worlds
+install(DIRECTORY config docs launch models worlds
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
