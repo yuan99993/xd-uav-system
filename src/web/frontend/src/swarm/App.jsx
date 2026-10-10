@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import SwarmMap from './SwarmMap.jsx'
+import SwarmThreeD from './SwarmThreeD.jsx'
 import { vehicleColor } from './vehiclePalette.js'
+import { consumeMissionDraft } from '../missionDraft.js'
 import {
   dispatchSwarm, geoToWorld, getFleet, getSwarmHealth, getSwarmSnapshot,
-  getSwarmTerrain, getRuntimeCapabilities, getWorldElevation, landFleet, removeVehicle, spawnVehicle,
+  getSwarmTerrain, getSwarmTerrainRaster, getRuntimeCapabilities, getWorldElevation, landFleet, removeVehicle, spawnVehicle,
   restartSwarm, takeoffFleet,
 } from './api.js'
 
@@ -80,6 +82,9 @@ export default function App() {
   const [restarting, setRestarting] = useState(false)
   const [selectingSpawn, setSelectingSpawn] = useState(false)
   const [spawnDraft, setSpawnDraft] = useState(null)
+  const [pendingMissionDraft, setPendingMissionDraft] = useState(null)
+  const [visualMode, setVisualMode] = useState('2d')
+  const [terrainRaster, setTerrainRaster] = useState(null)
   const [hasDispatched, setHasDispatched] = useState(false)
   const [notice, setNotice] = useState({ type: 'info', text: '正在加载固定地形和飞行接口…' })
 
@@ -143,10 +148,71 @@ export default function App() {
     ? `执行系统在线 · ${runtime.aircraft_count} 架`
     : runtime?.rosbridge_reachable ? 'ROS 接口可连接' : 'Web 独立运行'
 
+  useEffect(() => {
+    if (!terrain) return
+    let draft
+    try {
+      draft = consumeMissionDraft()
+    } catch (error) {
+      setNotice({ type: 'error', text: error.message })
+      return
+    }
+    if (!draft) return
+    const clearance = Math.max(51, Math.min(119, Number(draft.requested_clearance_m) || PLANNING_CLEARANCE_M))
+    Promise.all([
+      geoToWorld(draft.start.longitude, draft.start.latitude, clearance),
+      geoToWorld(draft.goal.longitude, draft.goal.latitude, clearance),
+    ]).then(([startWorld, goalWorld]) => {
+      setPendingMissionDraft({ draft, clearance, startWorld, goalWorld })
+      setNotice({
+        type: 'ok',
+        text: '地图任务草稿已接收：起点用于创建下一架飞机，终点将在新建任务时带入；仍须由正式 ROS 规划器重新规划',
+      })
+    }).catch((error) => {
+      setNotice({
+        type: 'error',
+        text: `地图草稿不能用于当前执行地形：${error.message}。旧页面仍可预览任意在线 DEM，但 ROS/Gazebo 当前只执行 Davosdorf 基准。`,
+      })
+    })
+  }, [terrain])
+
+  useEffect(() => {
+    if (!pendingMissionDraft || !nextVehicleExample || spawnDraft) return
+    const world = pendingMissionDraft.startWorld
+    setSpawnDraft({
+      uav_name: nextVehicleExample.uav_name,
+      world_origin: {
+        x: Number(world.x.toFixed(3)),
+        y: Number(world.y.toFixed(3)),
+        z: Number(world.ground_elevation_m.toFixed(3)),
+      },
+      display_position: {
+        lng: pendingMissionDraft.draft.start.longitude,
+        lat: pendingMissionDraft.draft.start.latitude,
+      },
+    })
+  }, [pendingMissionDraft, nextVehicleExample, spawnDraft])
+
   const markEdited = () => {
     setSnapshot(null)
     setPreviewRoutes([])
     setHasDispatched(false)
+  }
+  const switchVisualMode = async (nextMode) => {
+    if (nextMode === '2d') {
+      setVisualMode('2d')
+      return
+    }
+    setVisualMode('3d')
+    if (terrainRaster) return
+    try {
+      setNotice({ type: 'info', text: '正在加载与 ROS 一致的三维 DEM…' })
+      setTerrainRaster(await getSwarmTerrainRaster())
+      setNotice({ type: 'ok', text: '三维视图已加载；规划线来自当前正式结果，飞机标记来自实时状态' })
+    } catch (error) {
+      setVisualMode('2d')
+      setNotice({ type: 'error', text: `三维地形加载失败：${error.message}` })
+    }
   }
   const refreshFleetNow = async () => setFleet(await getFleet(mode === 'mock'))
   const switchMode = (nextMode) => {
@@ -259,12 +325,23 @@ export default function App() {
     try {
       const route = cloneRoute(example.route)
       route.points[0] = await currentRouteStart(uavName)
+      if (pendingMissionDraft) {
+        const goal = pendingMissionDraft.goalWorld
+        route.points = [route.points[0], {
+          x: Number(goal.x.toFixed(3)),
+          y: Number(goal.y.toFixed(3)),
+          z: Number(goal.flight_z_m.toFixed(3)),
+        }]
+      }
       delete route.display_points
       setRoutes((current) => [...current, route])
       setSelectedRoute(routes.length)
       setSelectedPoint(1)
       markEdited()
-      setNotice({ type: 'info', text: `已为 ${uavName} 新建任务；起点自动采用飞机当前位置的地面 + ${PLANNING_CLEARANCE_M} m` })
+      setNotice({ type: 'info', text: pendingMissionDraft
+        ? `已为 ${uavName} 带入地图终点；起点采用飞机当前位置，正式航迹仍需点击下发并规划`
+        : `已为 ${uavName} 新建任务；起点自动采用飞机当前位置的地面 + ${PLANNING_CLEARANCE_M} m` })
+      setPendingMissionDraft(null)
     } catch (error) { setNotice({ type: 'error', text: error.message }) } finally { setBusy(false) }
   }
   const deleteTask = (routeIndex) => {
@@ -418,6 +495,11 @@ export default function App() {
           <p className="fine-print">{mode === 'mock' ? '可新建、编辑和校验任务；结果是 Mock 回显，不表示飞机已收到。' : 'ROS 执行系统可接收任务；有 Gazebo/PX4 或实机执行端时才会产生真实运动。'}</p>
         </section>
         <section className="panel fleet-panel">
+          {pendingMissionDraft && <div className="imported-draft">
+            <strong>已接收地图任务草稿</strong>
+            <span>WGS84 / MSL · {pendingMissionDraft.draft.terrain?.source || '在线 DEM'}</span>
+            <small>先创建 {nextVehicleExample?.uav_name || '下一架飞机'}，再为它新建任务；旧页面预览航线不会直接成为飞行航线。</small>
+          </div>}
           <div className="section-title"><span>在线飞机</span><small>{vehicles.length} / {fleet?.capacity || 8}</small></div>
           <div className="spawn-controls">
             <button disabled={busy || !nextVehicleExample} onClick={() => {
@@ -462,7 +544,14 @@ export default function App() {
         <section className="flight-actions"><NumberField label="相对起飞高度 m" value={takeoffAltitude} step={5} onChange={setTakeoffAltitude} /><button className="takeoff-button" disabled={busy || !canTakeoff} onClick={handleTakeoff}>一键解锁并起飞</button><button className="land-button" disabled={busy || !vehicles.length} onClick={handleLand}>一键安全降落</button><small>固定翼收到降落指令后会继续飞行建立进近，以“已落地、未解锁”为完成；空间交叉但错峰到达仅提示，预测同时接近仍禁止起飞。</small></section>
       </aside>
       <section className="visual-panel">
-        <div className="map-wrap"><SwarmMap terrain={terrain} snapshot={snapshot} previewRoutes={previewRoutes} fleet={fleet} spawnDraft={spawnDraft} onPick={handleMapPick} />{vehicles.length > 0 && <div className="map-vehicle-legend">{vehicles.map((vehicle) => <span key={vehicle.uav_name}><i style={{ '--vehicle-color': vehicleColor(vehicle.uav_name) }} />{vehicle.uav_name}</span>)}</div>}<div className="map-caption"><span>Davosdorf DEM</span><span>规划线 + 实际飞机与尾迹</span><span className={terrain?.canonical_dem_match ? 'verified' : 'unverified'}>{terrain?.canonical_dem_match ? 'DEM 已与 ROS 核对' : 'DEM 待核对'}</span></div></div>
+        <div className="map-wrap">
+          {visualMode === '2d'
+            ? <SwarmMap terrain={terrain} snapshot={snapshot} previewRoutes={previewRoutes} fleet={fleet} spawnDraft={spawnDraft} onPick={handleMapPick} />
+            : <SwarmThreeD raster={terrainRaster} snapshot={snapshot} previewRoutes={previewRoutes} fleet={fleet} mode={mode} />}
+          <div className="visual-toggle"><button className={visualMode === '2d' ? 'active' : ''} onClick={() => switchVisualMode('2d')}>二维地图</button><button className={visualMode === '3d' ? 'active' : ''} onClick={() => switchVisualMode('3d')}>三维实况</button></div>
+          {vehicles.length > 0 && <div className="map-vehicle-legend">{vehicles.map((vehicle) => <span key={vehicle.uav_name}><i style={{ '--vehicle-color': vehicleColor(vehicle.uav_name) }} />{vehicle.uav_name}</span>)}</div>}
+          <div className="map-caption"><span>Davosdorf DEM</span><span>{visualMode === '2d' ? '规划线 + 实际飞机与尾迹' : 'world / MSL 三维实况'}</span><span className={terrain?.canonical_dem_match ? 'verified' : 'unverified'}>{terrain?.canonical_dem_match ? 'DEM 已与 ROS 核对' : 'DEM 待核对'}</span></div>
+        </div>
         <div className="telemetry-grid">
           <section className={`status-card ${statusTone}`}><div className="status-orb" /><div><span className="card-label">集群放行检查</span><strong>{!status ? '等待任务' : !status.analysis_ready ? '规划未齐' : !status.conflict_free ? `发现 ${blockingConflicts.length || conflicts.length} 个阻断冲突` : spatialWarnings.length ? `可放行 · ${spatialWarnings.length} 个空间交叉提醒` : '航迹可安全放行'}</strong><small>{status?.detail || '下发至少两架飞机的任务后生成结果'}</small></div></section>
           <section className="vehicles-card"><div className="card-label">规划与飞行状态</div><div className="vehicle-list">{(status?.vehicles || []).map((vehicle) => {

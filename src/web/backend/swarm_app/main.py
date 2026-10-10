@@ -199,6 +199,11 @@ def swarm_terrain_overlay():
     )
 
 
+@app.get("/api/swarm/terrain/raster")
+def swarm_terrain_raster(max_grid: int = Query(default=180, ge=32, le=320)):
+    return _frame_or_503().raster_payload(max_grid=max_grid)
+
+
 @app.post("/api/swarm/coordinates/to_world")
 def swarm_to_world(coordinate: GeoCoordinate):
     try:

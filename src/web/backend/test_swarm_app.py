@@ -134,6 +134,21 @@ class TerrainFrameTest(unittest.TestCase):
                            metadata["elevation_min_m"])
         self.assertTrue(self.frame.overlay_png().startswith(b"\x89PNG\r\n\x1a\n"))
 
+    def test_world_raster_is_bounded_and_keeps_dem_edges(self):
+        raster = self.frame.raster_payload(max_grid=48)
+        self.assertEqual("world", raster["frame_id"])
+        self.assertEqual("MSL", raster["vertical_datum"])
+        self.assertLessEqual(raster["rows"], 48)
+        self.assertLessEqual(raster["cols"], 48)
+        self.assertEqual(raster["rows"], len(raster["elevation"]))
+        self.assertEqual(raster["cols"], len(raster["elevation"][0]))
+        self.assertAlmostEqual(-raster["width_m"] / 2.0,
+                               raster["world_bounds"]["x_min"])
+        self.assertAlmostEqual(raster["height_m"] / 2.0,
+                               raster["world_bounds"]["y_max"])
+        self.assertTrue(any(value is not None
+                            for row in raster["elevation"] for value in row))
+
     def test_eight_vehicle_examples_use_sampled_dem_origins(self):
         examples = self.frame.vehicle_examples()
         self.assertEqual(8, len(examples))

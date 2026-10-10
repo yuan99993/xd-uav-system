@@ -27,6 +27,10 @@ export function getSwarmTerrain() {
   return request(`${BASE}/terrain`)
 }
 
+export function getSwarmTerrainRaster(maxGrid = 180) {
+  return request(`${BASE}/terrain/raster?max_grid=${maxGrid}`)
+}
+
 export function dispatchSwarm(routes, useMock) {
   return request(`${BASE}/dispatch`, {
     method: 'POST',

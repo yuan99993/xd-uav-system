@@ -215,5 +215,37 @@ class DavosdorfWorldFrame:
             "vehicle_examples": examples,
         }
 
+    def raster_payload(self, max_grid=180):
+        """Return a bounded world-frame DEM grid for the mission 3-D view."""
+        limit = max(32, min(int(max_grid), 320))
+        row_indices = np.linspace(
+            0, self.terrain.rows - 1,
+            min(self.terrain.rows, limit), dtype=int)
+        column_indices = np.linspace(
+            0, self.terrain.cols - 1,
+            min(self.terrain.cols, limit), dtype=int)
+        elevation = self.terrain.elevation[np.ix_(row_indices, column_indices)]
+        return {
+            "frame_id": "world",
+            "vertical_datum": "MSL",
+            "rows": int(elevation.shape[0]),
+            "cols": int(elevation.shape[1]),
+            "width_m": self.width_m,
+            "height_m": self.height_m,
+            "world_bounds": {
+                "x_min": -self.width_m / 2.0,
+                "y_min": -self.height_m / 2.0,
+                "x_max": self.width_m / 2.0,
+                "y_max": self.height_m / 2.0,
+            },
+            "elevation_min_m": float(np.nanmin(self.terrain.elevation)),
+            "elevation_max_m": float(np.nanmax(self.terrain.elevation)),
+            "elevation": [
+                [None if np.isnan(value) else round(float(value), 2)
+                 for value in row]
+                for row in elevation
+            ],
+        }
+
     def overlay_png(self):
         return _png_bytes(self.terrain.hillshade_rgba(max_size=1600))

@@ -65,6 +65,10 @@ button { cursor: pointer; }
 .fine-print { margin-top: 9px; margin-bottom: 0; }
 
 .secondary-wide { width: 100%; padding: 8px; border: 1px solid #2a6370; border-radius: 7px; color: #9ce8ef; background: #0b252d; font-size: 11px; font-weight: 750; }
+.imported-draft { display: grid; gap: 4px; margin-bottom: 12px; padding: 10px; border: 1px solid rgba(94, 227, 208, 0.34); border-radius: 8px; background: rgba(33, 111, 105, 0.14); }
+.imported-draft strong { color: #86f4df; font-size: 11px; }
+.imported-draft span { color: #b9dfe2; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.imported-draft small { color: #75949b; font-size: 9px; line-height: 1.45; }
 .fleet-list { margin-top: 9px; }
 .fleet-row { display: grid; grid-template-columns: minmax(120px, 1fr) auto auto; gap: 6px; align-items: center; padding: 8px 0; border-top: 1px solid rgba(130, 177, 187, 0.1); }
 .fleet-row strong { display: block; font-size: 12px; }
@@ -109,6 +113,11 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .map-wrap { position: relative; min-height: 0; border-bottom: 1px solid rgba(142, 187, 198, 0.16); }
 .swarm-map { width: 100%; height: 100%; background: #10242c; }
 .swarm-map .leaflet-control-attribution { font-size: 9px; }
+.swarm-three-d, .three-d-canvas { position: relative; width: 100%; height: 100%; }
+.three-d-toolbar { position: absolute; z-index: 5; top: 14px; left: 14px; display: flex; align-items: center; gap: 6px; padding: 7px 9px; border: 1px solid rgba(139, 202, 213, 0.25); border-radius: 8px; color: #b9d6db; background: rgba(4, 18, 23, 0.88); font-size: 9px; }
+.three-d-toolbar button, .visual-toggle button { padding: 5px 8px; border: 1px solid #2a5964; border-radius: 5px; color: #90afb7; background: #0a232b; font-size: 9px; }
+.three-d-toolbar button.active, .visual-toggle button.active { border-color: #5ee3d0; color: #062127; background: #5ee3d0; font-weight: 800; }
+.visual-toggle { position: absolute; z-index: 510; top: 14px; right: 14px; display: flex; gap: 5px; padding: 4px; border-radius: 8px; background: rgba(4, 18, 23, 0.88); }
 .aircraft-marker-wrap { position: relative; background: transparent; border: 0; }
 .aircraft-marker { display: grid; width: 30px; height: 30px; margin-left: 14px; place-items: center; border: 2px solid white; border-radius: 50%; color: #061319; background: var(--aircraft-color); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6); font-size: 17px; transform: rotate(45deg); }
 .aircraft-marker-label { position: absolute; top: 32px; left: 29px; min-width: 38px; padding: 2px 5px; transform: translateX(-50%); border: 1px solid rgba(255, 255, 255, 0.7); border-radius: 4px; color: #f4fbfc; background: rgba(4, 18, 23, 0.9); font: 800 9px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; white-space: nowrap; }
