@@ -1,6 +1,7 @@
 """ROS message boundary tests with deterministic detections and real OpenCV KCF."""
 import importlib.util
 import json
+import io
 import copy
 from collections import deque
 from pathlib import Path
@@ -16,6 +17,7 @@ from sensor_msgs.msg import Image, RegionOfInterest
 from geometry_msgs.msg import PointStamped
 from sar_yolo_detector.msg import PerceptionIdentity
 from sar_yolo_detector.srv import SelectFusionROIRequest, SelectSmartTrackRequest, SwitchTrackingModeRequest
+from rospy.msg import serialize_message
 from sar_yolo_detector.box_fusion import BoxFusion, Candidate
 from sar_yolo_detector.async_pipeline import LatestMailbox, FlowDetections, InferencePacket
 from sar_yolo_detector.camera_motion import CameraMotion
@@ -135,6 +137,41 @@ class FusionAdapterTest(unittest.TestCase):
         response = self.node._select(request)
         self.assertTrue(response.success, response.message)
         return response
+
+    def test_kcf_failure_uses_current_selected_flow_without_hiding_other_targets(self):
+        self.process()
+        self.select()
+        self.node._fusion.tracker.reset()
+        stamp = self.node._fusion.stamp + .1
+        self.image.header.stamp = rospy.Time.from_sec(stamp)
+        cue = SimpleNamespace(**vars(self.detection), measurement_source='visual_tracker',
+            detector_stamp=stamp-.1, flow_quality=.9)
+        other = NormalizedDetection(17, 2, .9, (135, 50, 175, 90), (155, 70))
+        self.node._process_fusion(self.image, self.frame, detections=[cue, other], detector_updated=False)
+        output = self.node._tracked_publisher.messages[-1]
+        self.assertEqual({d.track_id for d in output.detections}, {5, 17})
+        self.assertEqual(self.node._state_publisher.messages[-1].association_method, 'fusion_visual')
+        self.assertEqual(self.node._selected_detections_publisher.messages[-1].detections[0].track_id, 5)
+        evidence = json.loads(self.node._fusion_evidence_publisher.messages[-1].data)
+        self.assertTrue(evidence['diagnostics']['lk_selected_observation'])
+        self.assertEqual(evidence['last_detection_stamp'], stamp-.1)
+
+    def test_fresh_weak_yolo_and_kcf_failure_keep_independent_flow_evidence(self):
+        self.process()
+        self.select()
+        self.node._fusion.tracker.reset()
+        stamp = self.node._fusion.stamp + .1
+        self.image.header.stamp = rospy.Time.from_sec(stamp)
+        cue = SimpleNamespace(**vars(self.detection), measurement_source='visual_tracker',
+            detector_stamp=stamp-.1, flow_quality=.9)
+        self.node._flow.stamp = stamp
+        self.node._flow.visual_observations[5] = cue
+        weak = NormalizedDetection(5, 2, .2, (50, 50, 90, 90), (70, 70))
+        self.node._process_fusion(self.image, self.frame, detections=[weak],
+            detector_updated=True, detector_capture_stamp=stamp)
+        self.assertEqual(self.node._state_publisher.messages[-1].selected_track_id, 5)
+        self.assertTrue(self.node._state_publisher.messages[-1].control_measurement_ready)
+        self.assertEqual(len(self.node._selected_detections_publisher.messages[-1].detections), 1)
 
     def test_no_selection_keeps_all_yolo_targets(self):
         output_image = self.process()
@@ -340,11 +377,22 @@ class FusionAdapterTest(unittest.TestCase):
         self.process()
         request = SelectFusionROIRequest()
         request.header = copy.deepcopy(self.image.header)
-        request.header.seq += 100
+        request.header.stamp += rospy.Duration.from_sec(.01)
         request.roi = RegionOfInterest(x_offset=45, y_offset=45, width=55, height=55)
         response = self.node._select_fusion_roi(request)
         self.assertFalse(response.success)
         self.assertEqual(self.node._fusion.public_id, -1)
+
+    def test_roi_accepts_real_tcpros_serialization_sequence(self):
+        self.process()
+        request = SelectFusionROIRequest(header=copy.deepcopy(self.image.header))
+        request.roi = RegionOfInterest(x_offset=45, y_offset=45, width=55, height=55)
+        original = request.header.seq
+        serialize_message(io.BytesIO(), original+123, request)
+        self.assertNotEqual(request.header.seq, original)
+        response = self.node._select_fusion_roi(request)
+        self.assertTrue(response.success, response.message)
+        self.assertEqual(self.node._fusion.public_id, 5)
 
     def test_coarse_roi_reuses_tight_detector_box(self):
         self.process()
@@ -401,10 +449,33 @@ class FusionAdapterTest(unittest.TestCase):
     def test_click_rejects_wrong_original_frame(self):
         self.process()
         click = PointStamped(header=copy.deepcopy(self.image.header))
-        click.header.seq += 100
+        click.header.stamp += rospy.Duration.from_sec(.01)
         click.point.x = click.point.y = 70
         self.node._select_pixel_callback(click)
         self.assertEqual(self.node._fusion.public_id, -1)
+
+    def test_click_accepts_publisher_rewritten_sequence(self):
+        self.process()
+        click = PointStamped(header=copy.deepcopy(self.image.header))
+        serialize_message(io.BytesIO(), click.header.seq+123, click)
+        click.point.x = click.point.y = 70
+        self.node._select_pixel_callback(click)
+        self.assertEqual(self.node._fusion.public_id, 5)
+
+    def test_click_rejects_other_camera_with_same_timestamp(self):
+        self.process()
+        click = PointStamped(header=copy.deepcopy(self.image.header))
+        click.header.frame_id = 'other_camera'
+        click.point.x = click.point.y = 70
+        self.node._select_pixel_callback(click)
+        self.assertEqual(self.node._fusion.public_id, -1)
+
+    def test_unassigned_target_is_not_drawn_as_selected(self):
+        detection = NormalizedDetection(-1, 2, .9, (50, 50, 90, 90), (70, 70))
+        output = self.node._render_overlay(self.frame.copy(), ('boxes', [detection], {2: 'tank'}, -1, ''))
+        self.assertEqual(tuple(output[50, 70]), (255, 190, 0))
+        selected = self.node._render_overlay(self.frame.copy(), ('boxes', [self.detection], {2: 'tank'}, 5, ''))
+        self.assertEqual(tuple(selected[50, 70]), (0, 255, 100))
 
     def test_click_original_frame_initializes_selection(self):
         self.process()

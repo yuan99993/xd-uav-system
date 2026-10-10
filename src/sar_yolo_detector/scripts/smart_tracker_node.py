@@ -827,7 +827,7 @@ class SmartTrackerNode:
         _, detections, labels, selected_id, status = payload
         for detection in detections:
             x1, y1, x2, y2 = detection.aabb_xyxy
-            colour = (0, 255, 100) if detection.track_id == selected_id else (255, 190, 0)
+            colour = (0, 255, 100) if selected_id >= 0 and detection.track_id == selected_id else (255, 190, 0)
             cv2.rectangle(frame, (round(x1), round(y1)), (round(x2), round(y2)), colour, 2)
             cv2.putText(frame, "%s ID %d" % (labels.get(detection.class_id, "unknown"), detection.track_id),
                         (round(x1), max(18, round(y1)-5)), cv2.FONT_HERSHEY_SIMPLEX, .5, colour, 1)
@@ -885,9 +885,21 @@ class SmartTrackerNode:
             # confirmations. Only a NEW inference packet may rebind an ID.
             measured_candidates = [candidate for candidate in candidates
                 if detector_capture_stamp is None or candidate.detector_stamp == detector_capture_stamp]
+            # Feed the already validated same-identity LK observation to the
+            # selected SOT arbiter as well. It remains visual evidence, not a
+            # detector confirmation, including on same-capture corrections.
+            flow_detection = self._flow.visual_observations.get(self._fusion.local_id) if self._flow.stamp == stamp else None
+            if flow_detection is None:
+                flow_detection = next((d for d in detections
+                if int(d.track_id) == self._fusion.local_id
+                and getattr(d, 'measurement_source', '') == 'visual_tracker'
+                and getattr(d, 'flow_quality', 0.) >= .60), None)
             result = self._fusion.step(frame, stamp, measured_candidates if detector_updated else (),
                                       detector_updated=detector_updated,
                                       same_frame_correction=result_only,
+                                      visual_observation=self._fusion_candidate(flow_detection) if flow_detection is not None else None,
+                                      visual_quality=getattr(flow_detection, 'flow_quality', 0.),
+                                      visual_scale_ratio=getattr(flow_detection, 'flow_scale_ratio', None),
                                       camera_motion_reliable=getattr(getattr(self, '_camera_motion', None),
                                           'source', '') in ('background', 'pose_seeded_background'),
                                       camera_transform=self._camera_motion.between(self._fusion.stamp, stamp)
@@ -920,7 +932,8 @@ class SmartTrackerNode:
         # topics and the overlay must consume this one final, deduplicated list.
         keep = class_duplicate_indices([self._fusion_candidate(d) for d in output],
                                        self._fusion.class_groups,
-                                       result.public_id if result.observed else -1)
+                                       result.public_id if result.observed else -1,
+                                       suppress_selected_same_class=True)
         suppressed_class_duplicates += len(output) - len(keep)
         output = [output[index] for index in keep]
         self._last_processing_ms = (time.perf_counter() - started) * 1000.
@@ -1046,7 +1059,7 @@ class SmartTrackerNode:
                 response.message = "Fusion selection cleared"
                 return response
             snapshot = next((s for s in self._fusion_snapshots
-                             if s[0].stamp == request.header.stamp and s[0].seq == request.header.seq
+                             if s[0].stamp == request.header.stamp
                              and s[0].frame_id == request.header.frame_id), None)
             if snapshot is None or request.header.stamp.is_zero():
                 response.message = "Original image frame is not cached; refresh the displayed image"
@@ -1338,8 +1351,11 @@ class SmartTrackerNode:
                 return
             if self._tracking_mode == "fusion_tracker":
                 if not message.header.stamp.is_zero():
+                    # ROS TCPROS serialization rewrites top-level header.seq
+                    # for both topics and service requests. Stamp + camera
+                    # frame identify the capture; seq is transport metadata.
                     snapshot = next((s for s in self._fusion_snapshots if s[0].stamp == message.header.stamp
-                                     and s[0].seq == message.header.seq and s[0].frame_id == message.header.frame_id), None)
+                                     and s[0].frame_id == message.header.frame_id), None)
                     age = (rospy.Time.now() - message.header.stamp).to_sec()
                     if snapshot is None or age > self._fusion_snapshot_max_age or age < -self._future_tolerance:
                         rospy.logwarn("Fusion click original image is unavailable or stale")

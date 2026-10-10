@@ -305,7 +305,7 @@ install(TARGETS sar_yolo_postprocessor sar_yolo_inference_backend sar_model_inte
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
-install(DIRECTORY config launch training models docs
+install(DIRECTORY config launch training models docs web
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 install(DIRECTORY archive/launch
@@ -332,6 +332,8 @@ install(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 catkin_install_python(PROGRAMS
+  scripts/fusion_web_preview.py
+  scripts/fusion_interactive_viewer.py
   scripts/validate_fusion_runtime.py
   scripts/validate_formal_gazebo_fusion.py
   test/test_fusion_bridge.py
@@ -363,6 +365,8 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_async_pipeline.py)
   catkin_add_nosetests(test/test_camera_motion.py)
   catkin_add_nosetests(test/test_capture_clock.py)
+  catkin_add_nosetests(test/test_interactive_view.py)
+  catkin_add_nosetests(test/test_fusion_web_preview.py)
   catkin_add_nosetests(test/test_fusion_adapter.py)
   catkin_add_nosetests(test/test_shared_detector_outputs.py)
   catkin_add_nosetests(test/test_model_runtime_status.py)

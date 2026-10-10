@@ -4,6 +4,8 @@
   <arg name="world" default="$(arg formal_track_package)/worlds/moving_uav_vehicle_search.world" />
   <arg name="gui" default="true" />
   <arg name="show_image" default="true" />
+  <arg name="show_web" default="false" />
+  <arg name="web_port" default="8787" />
   <arg name="tracking_mode" default="FusionTracker" />
   <arg name="python_executable" default="" />
   <arg name="viewer_config" default="$(find sar_yolo_detector)/../../logs/fusion_viewer_config" />
@@ -69,9 +71,17 @@
       <param name="frames/body" value="moving_uav_search/base_link" />
       <param name="frames/body_frd" value="moving_uav_search/base_link_frd" />
     </node>
-    <node if="$(arg show_image)" pkg="rqt_image_view" type="rqt_image_view" name="fusion_fixed_viewer"
+    <!-- Original non-fusion modes remain preview-only with their original UI contract. -->
+    <node if="$(eval arg('show_image') and arg('tracking_mode').lower().replace('_', '') != 'fusiontracker')"
+          pkg="rqt_image_view" type="rqt_image_view" name="fusion_fixed_viewer"
           args="/moving_uav_search/sar_yolo_detector/fusion_fixed/annotated" output="screen">
       <env name="XDG_CONFIG_HOME" value="$(arg viewer_config)" />
     </node>
   </group>
+  <include if="$(eval arg('show_image') and arg('tracking_mode').lower().replace('_', '') == 'fusiontracker')"
+           file="$(find sar_yolo_detector)/launch/fusion_interactive_viewer.launch" />
+  <include if="$(eval arg('show_web') and arg('tracking_mode').lower().replace('_', '') == 'fusiontracker')"
+           file="$(find sar_yolo_detector)/launch/fusion_web_preview.launch">
+    <arg name="port" value="$(arg web_port)" />
+  </include>
 </launch>

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SAR · 融合跟踪测试</title><style>
+:root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#101722;color:#e5edf7}*{box-sizing:border-box}body{margin:0}header{padding:20px 28px;border-bottom:1px solid #304056;display:flex;justify-content:space-between;align-items:center}h1{font-size:20px;margin:0}small{color:#9cafc6}.badge{background:#194c44;padding:6px 12px;border-radius:20px;font-size:13px}main{padding:24px;display:grid;grid-template-columns:minmax(400px,1fr) 310px;gap:22px;max-width:1440px;margin:auto}.card{background:#182333;border:1px solid #304056;border-radius:12px;padding:18px}canvas{display:block;width:100%;height:auto;background:#05080c;touch-action:none;cursor:crosshair;border-radius:6px}.row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}button{padding:10px 15px;border:1px solid #507299;border-radius:7px;background:#294360;color:#fff;cursor:pointer}button:disabled{opacity:.5;cursor:wait}h2{font-size:15px;margin:0 0 16px}.metric{margin:16px 0;border-bottom:1px solid #304056;padding-bottom:14px}.metric span{display:block;color:#9cafc6;font-size:12px;margin-bottom:6px}.metric strong{font-size:20px;overflow-wrap:anywhere}.hint{font-size:13px;line-height:1.8;color:#b4c5da}#message{margin-top:14px;padding:12px;background:#101722;min-height:60px;font-size:13px;overflow-wrap:anywhere}table{width:100%;font-size:12px;border-collapse:collapse}td,th{text-align:left;padding:8px 4px;border-bottom:1px solid #304056}.error{color:#ffb1a8}.ok{color:#8fe0c2}@media(max-width:850px){main{grid-template-columns:1fr;padding:12px}header{padding:15px}}
+.card{min-width:0}.video-viewport{max-width:100%;overflow:auto;background:#05080c;border-radius:6px}canvas{width:var(--native-width,640px);max-width:none;height:auto}.video-viewport.fit canvas{width:100%}.view-controls{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-size:13px}.view-controls label{cursor:pointer}
+</style></head><body><header><div><h1>SAR · 融合跟踪测试</h1><small>本机实时画面 / PNG 无损 / 原帧选择 / train7</small></div><span class="badge" id="connection">连接中</span></header>
+<main><section class="card"><div class="row"><h2>固定相机 · FusionTracker</h2><button id="clear">取消选择 · Esc</button></div><div class="view-controls"><label><input type="checkbox" id="fit"> 适应窗口</label><span id="display-mode">PNG 无损 · 原尺寸显示</span></div><div class="video-viewport" id="viewport"><canvas id="video" width="640" height="480"></canvas></div><div class="hint">默认原尺寸显示；空间不足可滚动查看。左键点击目标，拖框选择区域；右键或 Esc 取消。绿色为选中目标，蓝色为其他目标。拖框时画面暂时冻结，算法继续运行。</div><div id="message" role="status">等待实时画面。此页面只选择感知目标，不控制无人机飞行。</div></section>
+<aside class="card"><h2>后端实际状态</h2><div class="metric"><span>选中实体 ID</span><strong id="identity">—</strong></div><div class="metric"><span>观测状态 / 原因</span><strong id="reason">—</strong></div><div class="metric"><span>原图尺寸 / 帧序号 / 画面年龄</span><div id="frame">—</div></div><h2>当前帧目标 · 原图中心像素</h2><table><thead><tr><th>ID / 类别</th><th>(x, y)</th></tr></thead><tbody id="targets"></tbody></table><p class="hint">像素原点为左上角，x 向右、y 向下。过期画面、多目标歧义会拒绝选择，不自动换选其他目标。</p></aside></main>
+<script>
+'use strict';
+const canvas=document.querySelector('#video'),ctx=canvas.getContext('2d'),message=document.querySelector('#message'),clear=document.querySelector('#clear');
+const fit=document.querySelector('#fit'),viewport=document.querySelector('#viewport');
+fit.checked=false;
+let displayed=null,bitmap=null,drag=null,busy=false,pendingClick=null;
+function tell(text,ok=true){message.textContent=text;message.className=ok?'ok':'error';}
+function point(e){const r=canvas.getBoundingClientRect();return [(e.clientX-r.left)*canvas.width/r.width,(e.clientY-r.top)*canvas.height/r.height];}
+function paint(){if(bitmap)ctx.drawImage(bitmap,0,0);if(drag){ctx.strokeStyle='#ffd34e';ctx.lineWidth=2;ctx.setLineDash([6,4]);ctx.strokeRect(drag.start[0],drag.start[1],drag.end[0]-drag.start[0],drag.end[1]-drag.start[1]);ctx.setLineDash([]);}}
+fit.addEventListener('change',()=>{drag=null;viewport.classList.toggle('fit',fit.checked);document.querySelector('#display-mode').textContent=fit.checked?'PNG 无损 · 适应窗口（显示缩放）':'PNG 无损 · 原尺寸显示';paint();});
+async function command(body){
+ if(busy){tell('BUSY：上一条命令尚未完成',false);return;}
+ busy=true;clear.disabled=true;
+ const frame=displayed,controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),6000);
+ const hit=body.point?frame?.objects.filter(o=>body.point[0]>=o.box[0]&&body.point[0]<=o.box[0]+o.box[2]&&body.point[1]>=o.box[1]&&body.point[1]<=o.box[1]+o.box[3]):[];
+ try{
+  const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:controller.signal}),v=await r.json();
+  tell((v.success?'已提交：':'拒绝：')+v.message,v.success);
+  if(v.sent)pendingClick={until:performance.now()+1800,previous:frame?.selected_id,expected:hit?.length===1?hit[0].id:null};
+ }catch(e){tell('接口请求失败或超时：请查看实际 ID；不要自动重发命令。'+e.message,false);}
+ finally{clearTimeout(timeout);busy=false;clear.disabled=false;}
+}
+canvas.addEventListener('pointerdown',e=>{if(e.button!==0||!displayed||busy)return;if(displayed.video_stale){tell('视频已中断，禁止选择旧画面',false);return;}canvas.setPointerCapture(e.pointerId);drag={start:point(e),end:point(e),token:displayed.frame_token};});
+canvas.addEventListener('pointermove',e=>{if(drag){drag.end=point(e);paint();}});
+canvas.addEventListener('pointerup',e=>{if(!drag||e.button!==0)return;const d=drag;d.end=point(e);drag=null;paint();const [x,y]=d.start,[u,v]=d.end;if(Math.hypot(u-x,v-y)<4)command({action:'click',frame_token:d.token,point:[u,v]});else command({action:'roi',frame_token:d.token,roi:[Math.floor(Math.min(x,u)),Math.floor(Math.min(y,v)),Math.floor(Math.abs(u-x)),Math.floor(Math.abs(v-y))]});});
+canvas.addEventListener('pointercancel',()=>{drag=null;paint();});
+function cancel(){drag=null;pendingClick=null;paint();command({action:'clear'});}
+canvas.addEventListener('contextmenu',e=>{e.preventDefault();cancel();});clear.onclick=cancel;document.addEventListener('keydown',e=>{if(e.key==='Escape')cancel();});
+async function poll(){
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),3000);
+ try{
+  if(drag)return;
+  const r=await fetch('/api/frame',{cache:'no-store',signal:controller.signal}),p=await r.json();
+  if(!p.ready){document.querySelector('#connection').textContent='等待相机与算法';return;}
+  if(drag)return;
+  if(p.frame_token!==displayed?.frame_token){
+   const image=new Image();image.src=p.png?'data:image/png;base64,'+p.png:'data:image/jpeg;base64,'+p.jpeg;await image.decode();
+   if(drag)return;
+   if(image.naturalWidth!==p.width||image.naturalHeight!==p.height)throw new Error('图像尺寸与原帧元数据不一致，拒绝显示及选择');
+   bitmap=image;canvas.width=p.width;canvas.height=p.height;canvas.style.setProperty('--native-width',p.width+'px');displayed=p;paint();
+  }else{displayed=p;}
+  document.querySelector('#connection').textContent=p.video_stale?'视频中断':'实时连接';
+  document.querySelector('#identity').textContent=p.selected_id>=0?p.selected_id:'未选择';
+  document.querySelector('#reason').textContent=p.source+' / '+p.reason;
+  document.querySelector('#frame').textContent=`${p.width} × ${p.height} · seq ${p.capture_header.seq} · ${Math.round(p.age_ms)} ms`;
+  const rows=document.querySelector('#targets');rows.replaceChildren();
+  for(const o of p.objects){const row=document.createElement('tr');for(const text of [`${o.id} / ${o.name}`,o.center.map(Math.round).join(', ')]){const cell=document.createElement('td');cell.textContent=text;row.append(cell);}rows.append(row);}
+  if(pendingClick){
+   if(p.selected_id>=0&&(p.selected_id!==pendingClick.previous||p.selected_id===pendingClick.expected)){tell('当前已选中实体 ID '+p.selected_id);pendingClick=null;}
+   else if(performance.now()>pendingClick.until){tell('未确认新的选择；请看实际 ID，或对目标快速拖框以获取服务回执。',false);pendingClick=null;}
+  }
+ }catch(e){document.querySelector('#connection').textContent='连接失败';tell(e.message,false);}
+ finally{clearTimeout(timeout);setTimeout(poll,200);}
+}
+poll();
+</script></body></html>

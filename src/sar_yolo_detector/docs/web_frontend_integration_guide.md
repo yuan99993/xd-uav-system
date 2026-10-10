@@ -402,6 +402,9 @@ PNG/视频网关应连同画面传递该 capture_header；不能用网关或视�
 ```
 
 完整 header 同样来自显示帧，点必须命中唯一检测目标。
+注意：ROS TCPROS会重写话题与服务请求的顶层`header.seq`，因此点击/框选以精确`stamp+frame_id`
+匹配缓存原帧，并保留新鲜度门禁；不会用点击话题的发布序号去匹配相机序号。
+原始seq保留用于前端审计，不能作为传输后相机帧身份的硬门限；输入时序管理仍拒绝非法/重复采集时间。
 失败通过 ROS 日志告警，没有对应 command_result；网页需看后续 fusion state/selected ID 确认生效，
 并区分“已发送”与“已生效”。需要可靠服务回执时，网页框选使用 7.2 的服务。
 
@@ -568,10 +571,10 @@ annotated 不与 raw 图像逐字节相同。无损编码只保证叠框图传�
 640×480、4 Hz、BGR 的裸像素约 3.69 MB/s，base64 约 4.92 MB/s，尚未计 JSON/TCP 开销。
 双路1080p/高帧率不要默认使用这种直传方式。
 
-新部署若需要更低带宽，应新增独立无损 PNG 或其他视频网关：保持原始尺寸，保留原 header、帧关联和快照，
+本地融合测试网页已实现第21节的独立无损PNG网关：保持原始尺寸，保留原 header、帧关联和快照，
 编码与推理解耦；不允许通过缩小原图/重新修框改变坐标合同。
 PNG 保真但耗 CPU；有损视频可作为另外明确标记的显示选项，不能声称原像素无损。
-该网关目前未实现，本指南没有提供虚构的视频 HTTP 地址。
+第21节提供真实可用的本地HTTP地址；它不等同于面向公网的WebRTC/HLS生产网关。
 
 ### 10.3 同帧显示策略
 
@@ -614,7 +617,7 @@ fusion 原帧框选/点击/取消；有效/视觉辅助/歧义/失联提示；�
 | 接口绑定 | 每个来源解析到本实验实例，旧 perception/* 不混用 |
 | 原像素/坐标 | 图像不重采样；页面缩放/黑边下点击仍映射原图；中心与同帧数值一致 |
 | 四模式 | 服务 success 和 active_mode 正确；手动模式提示等待 ROI；切换后不残留选中框 |
-| 融合框选 | 正确原帧成功；错 seq/stamp/frame、过期、未来、越界、多目标均拒绝 |
+| 融合框选 | 正确原帧成功；传输重写seq不影响；错stamp/frame、过期、未来、越界、多目标均拒绝 |
 | 锁定状态 | 辅助不冒充 YOLO；prediction/lost/ambiguous 不显示成有效实测 |
 | 两路隔离 | A路点击不选择B路；手动ROI分源；公共 ID 不擅自跨相机合并 |
 | 断网重连 | 不自动重发旧ROI/模型操作；新会话不沿用旧 ID；不积累订阅和解码队列 |
@@ -783,7 +786,7 @@ SAR 单选不自动写入 XD 的飞行跟随选择，部署时应由上层明确
 - ROS类型/桥接：rospy/roscpp、geometry/sensor/std/nav/diagnostic/vision/mavros_msgs、tf2等，详见两包 package.xml。
 - GPU运行：目标机驱动、与其兼容的PyTorch/torchvision CUDA环境、Ultralytics、lap、NumPy等。
 - 网页传输：rosbridge_server及其Python依赖；不是安装YOLO就会自带。
-- 仿真才需要：Gazebo/gazebo_ros、rqt_image_view、场景资源、地面定位所需xd_uav_detect。
+- 仿真才需要：Gazebo/gazebo_ros、场景资源、地面定位所需xd_uav_detect。桌面交互预览另需python3-pyqt5和cv_bridge；不再依赖rqt_image_view完成选择。
 - XD清单还包含其他xd系统运行包；若rosdep报告这些私有包无法解析，需提供对应包/已验证underlay，
   不能忽略后声称整套系统已独立部署。只运行SAR感知不等于运行了所有XD launch。
 
@@ -1154,7 +1157,7 @@ ROS节点不会自动读取/替换它。独立附件保留供机器读取；变�
 ```json
 {
   "document_schema": "sar-pixeagle-fusion-web-adaptation/1",
-  "updated_at": "2026-10-09",
+  "updated_at": "2026-10-10",
   "purpose": "Documentation-only interface binding template; not loaded by the ROS node and not a runtime discovery response.",
   "package": "sar_yolo_detector",
   "launch": "xd_smart_tracker_fusion_integration.launch",
@@ -1182,7 +1185,9 @@ ROS节点不会自动读取/替换它。独立附件保留供机器读取；变�
     "topic_root": "/moving_uav_search/sar_yolo_detector/fusion_fixed",
     "service_root": "/moving_uav_search/sar_yolo_smart_tracker_fusion_fixed",
     "input_image": "/moving_uav_search/fixed_camera/image_raw",
-    "bridge_output": "/moving_uav_search/detect/input/fixed/detections_2d"
+    "bridge_output": "/moving_uav_search/detect/input/fixed/detections_2d",
+    "interactive_viewer_launch": "fusion_interactive_viewer.launch",
+    "web_preview_launch": "fusion_web_preview.launch"
   },
   "model": {
     "default_path": "models/xd_vehicle_train7/xd_vehicle_train7.pt",
@@ -1279,7 +1284,7 @@ ROS节点不会自动读取/替换它。独立附件保留供机器读取；变�
       "request_fields": ["header", "roi", "clear_selection"],
       "response_fields": ["success", "message", "selected_target_id"],
       "required_mode": "fusion_tracker", "frame_bound": true,
-      "header_origin": "exact displayed annotated Image header"
+      "header_origin": "capture_header paired with the displayed annotated image by exact stamp/frame_id"
     },
     "switch_trusted_model": {
       "name": "{service_root}/switch_model", "type": "sar_yolo_detector/SwitchSmartTrackerModel",
@@ -1293,7 +1298,8 @@ ROS节点不会自动读取/替换它。独立附件保留供机器读取；变�
   "coordinates": {
     "origin": "top-left of original image", "x_direction": "right", "y_direction": "down", "unit": "pixel",
     "bbox": "center.x, center.y, size_x, size_y",
-    "selection_header_match": ["seq", "stamp.secs", "stamp.nsecs", "frame_id"],
+    "selection_header_match": ["stamp.secs", "stamp.nsecs", "frame_id"],
+    "pixel_topic_header_match": ["stamp.secs", "stamp.nsecs", "frame_id"],
     "cross_topic_pairing": ["stamp.secs", "stamp.nsecs", "frame_id"],
     "cross_topic_seq_equality_guaranteed": false,
     "results_pose_is_valid_metric_measurement": false
@@ -1413,3 +1419,124 @@ rosrun sar_yolo_detector validate_formal_gazebo_fusion.py \
 工具默认门限不替代既有项目性能基线；实际验收应取项目基线与场景要求中的更严格值。
 当前单元测试包含真实OpenCV KCF长失联后重获、转弯120帧基线、多候选拒绝、缓存上限和异步线程吞吐；
 这些是受控算法回归，不能代替UE/实拍标注视频验收。
+
+## 20. 桌面点选与框选交互窗口（2026-10-10）
+
+普通`rqt_image_view`不是本方案的交互选择前端。正式Gazebo融合入口的
+`show_image:=true`现在启动`SAR Fusion — click / drag to select`窗口：
+
+- 左键单击已检测目标：发送绑定原始帧的`geometry_msgs/PointStamped`到`{topic_root}/select_pixel`。
+- 左键快速拖框：调用`{service_root}/select_fusion_roi`。唯一候选存在时使用紧致检测框；
+  无候选时初始化未知类别的局部目标；包含多个候选则拒绝，不会强行合并。
+- 右键、Esc或顶部取消按钮：清除选中目标，继续全局检测。
+- 顶部显示原图尺寸、实际选中ID和后端原因；底部显示提交或拒绝结果。
+  点击话题没有请求应答，显示“已发送”不代表成功；必须以顶部实际ID与绿色框为准。
+
+现有Gazebo与算法已经运行时，只启动前端，**不要重复启动模型**：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/promise/mrs_test/sar_fusion_experiment.wlpAs3/devel/setup.bash
+roslaunch sar_yolo_detector fusion_interactive_viewer.launch \
+  UAV_NAME:=moving_uav_search instance_name:=fusion_fixed
+```
+
+其他主机可修改`UAV_NAME`、`instance_name`；自定义命名还可覆盖`image_topic`与`tracker_node`。
+前端使用系统Python/Qt/cv_bridge，不加载PyTorch或第二份YOLO，不要求采用推理虚拟环境。
+需要本机图形会话；远程网页仍按本文的ROS接口开发，不是把桌面窗口当网页服务。
+
+图像按比例缩放显示，图像消息尺寸不变；黑边不可选，鼠标坐标换算回左上角原点的原图像素。
+前端严格匹配图像stamp/frame_id与`fusion_evidence.capture_header`，原始seq取证据字段，
+绝不使用可能被ROS发布器重写的叠框图像seq。图像队列latest-only，元数据最多32条，
+显示刷新上限12.5Hz；不修改检测/跟踪节奏。视频中断会提示stale，旧画面选择受原帧门禁拒绝。
+
+拖框期间仅冻结当前显示，算法与无人机不暂停。超过默认0.75秒**仿真/ROS时间**或后端缓存
+窗口后选择会拒绝；请在实时画面快速拖框重试，不要放宽门禁去套用另一帧。
+此交互入口针对`fusion_tracker`；其他三种算法模式保留各自接口，不通过这个窗口切换模式。
+关闭窗口只关闭前端，不停止Gazebo或检测跟踪进程。
+
+点击话题/ROI服务的seq重写问题已修正：两者以精确时间戳和相机frame匹配原帧，忽略传输层重写的seq，
+不放宽原帧时间、相机来源与0.75秒新鲜度门禁。最终输出对**已验证选中框**增加同类别近乎重合
+去重（IoU至少0.85且中心差足够小），输入候选和歧义门控不变，不合并实体身份或隐藏邻近车辆。
+
+## 21. 本机简易网页测试（2026-10-10）
+
+Gazebo/融合算法已运行时，另开终端，只启动网页桥接：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/promise/mrs_test/sar_fusion_experiment.wlpAs3/devel/setup.bash
+roslaunch sar_yolo_detector fusion_web_preview.launch \
+  UAV_NAME:=moving_uav_search instance_name:=fusion_fixed port:=8787
+```
+
+浏览器优先打开`http://127.0.0.1:8787/`。本机Windows侧验证IPv4返回HTTP 200，
+而`localhost`曾超时；遇到此情况不要改成公网绑定，先使用IPv4地址。
+支持点击、快速框选、右键/Esc/按钮取消，显示实际选中ID、
+当前来源/原因、原图尺寸/序号/年龄、当前帧各目标类别/ID/中心像素。网页只服务当前融合实例，
+**不新增算法模式或模型切换功能，不发送飞行/云台控制命令**。当前类别显示合同是train7的四类；
+更换类别合同后须同步配置网页桥接节点的`~class_names`，不能把这一列表当模型运行时发现。
+
+从零启动场景、融合算法与网页时，使用`formal_gazebo_fusion_test.launch show_image:=false show_web:=true`，
+并按部署环境传入推理`python_executable`；`show_web`默认false，防止已有网页实例时占用重复端口。
+
+源文件：`web/dist/index.html`；ROS/HTTP桥接：`scripts/fusion_web_preview.py`；
+启动入口：`launch/fusion_web_preview.launch`。安装空间包含上述文件。
+系统Python使用cv_bridge/OpenCV，复用现有叠框图像与融合状态，**不创建第二个推理模型**。
+
+默认只监听`127.0.0.1:8787`，不是对公网开放的生产网关；跨主机建议SSH端口转发。
+如需修改`bind_address`直接开放网络，必须另加认证、TLS、防火墙和访问控制。
+接口拒绝跨Origin命令，JSON命令上限16KiB，最大8个HTTP工作线程，选择命令串行。
+
+| 本地HTTP接口 | 含义 |
+| --- | --- |
+| `GET /` | 静态测试网页，不依赖CDN |
+| `GET /api/frame` | JSON：同帧`png`(base64)、`image_mime:"image/png"`、width/height、原始capture_header、frame_token、selected_id、source/reason、objects、age_ms、video_stale |
+| `POST /api/command` | JSON：`action:click` + `frame_token` + `point:[x,y]`；`action:roi` + token + `roi:[x,y,w,h]`；或`action:clear` |
+
+`frame_token`仅在当前网页桥接进程有效，与后端实体ID无关。服务端最多缓存24个已显示帧的header，
+以token找到精确原帧后才转发ROS命令；未知token、过期帧、非法坐标拒绝，不回退选最新帧。
+点击202表示已发到原有`select_pixel`话题，**不是后端成功回执**；网页继续观察实际选中ID。
+框选/取消直接调用原有`select_fusion_roi`服务，200成功、409拒绝/BUSY，页面显示原因。
+HTTP客户端超时后不得自动重试选择命令，避免重复初始化。
+
+预览默认5FPS、**PNG无损传输、原尺寸显示**，不缩放编码图像。PNG采用压缩等级1以限制CPU开销，
+压缩等级仅影响体积与耗时，不影响像素精度；不再默认用JPEG质量85。无损保证针对`T/annotated`
+叠框输出的像素值，不会恢复被框/文字覆盖的raw像素，也不会提高相机本身的640×480分辨率。
+
+默认“适应窗口”开关关闭：canvas原始宽高与图像一致，以一图像像素对应一CSS像素显示，
+不为了填满卡片自动拉伸；小窗口可滚动查看完整图像。浏览器缩放、操作系统高DPI仍会影响物理屏幕像素映射，
+需要检查原图细节时建议浏览器缩放100%。开启“适应窗口”后仅改变CSS显示大小，可能放大或缩小，
+**不改变传输图像、canvas原始宽高或检测坐标**；关闭开关立即恢复原尺寸。
+两种显示方式的点击/框选均通过当前canvas显示矩形换算为原图像素；切换开关不会发选择/取消指令，
+也不会初始化算法，仅结束尚未提交的拖框手势。
+
+HTTP图像字段由旧`jpeg`迁移到`png`，新增`image_mime`；部署自己的前端需同步读取上述字段。
+本测试网页兼容旧JPEG响应用于滚动升级，但新后端只输出PNG；更新后请刷新浏览器，避免旧HTML仍读取`jpeg`。
+若PNG造成带宽/编码压力，可明确调整网页预览FPS，不能静默缩图、改回有损编码或改变检测推理节奏。
+拖框期间冻结当前帧，
+只提交这帧token；超过0.75秒ROS时间可被拒绝。网页不额外生成蓝/绿算法框，算法叠框与数值输出仍
+使用同一后端列表，拖拽临时黄框仅为选择提示。关网页不停止算法；停止桥接节点不停止Gazebo。
+
+## 22. 转弯连续性修正（2026-10-10）
+
+本次只修改SAR融合实现，不修改`xd_uav_track`、train7权重或现有ROS消息/服务。
+
+- 所有已有稳定ID的光流轨迹使用前后向检查及有界相似变换，支持平移、旋转和小幅尺度变化。
+  持续携带目标足迹，避免反复旋转轴对齐框造成框越来越大；不一致运动仍拒绝。
+- 有足够当前图像特征支持的部分出画目标，输出裁剪到原图范围的框；完全出画、不足四个有效点、
+  不可信运动或检测TTL超时仍停止输出，不靠旧位置伪装观测。
+- 选中目标的KCF失败时，可采用同一局部ID的当前LK观测，但还须通过位置、外观、尺度、质量及时间门控。
+  这是`visual_tracker`，不会更新`last_detector_stamp`，不能恢复新身份，也不延长既有辅助时限。
+  当前帧LK证据单独、有界保存，收到新YOLO结果时不再被覆盖；每个实例最多保留`max_tracks`份，
+  下一采集帧重新建立，不保留图像或延长检测TTL。
+- 尺度门控优先使用已验证光流足迹的面积比，而不是长车旋转后变化很大的AABB面积。
+  外观统计在颜色支撑充足时排除低饱和地面；灰白车辆仍使用原全框回退。它仍是弱外观线索，不能替代深度ReID。
+- 短间隔内同ID、同位置及外观证据充分的新YOLO观测可直接恢复，不因一帧KCF失败就重新等待三帧。
+  新ID、长失联、有竞争候选时仍走连续确认及歧义保护。
+- 新增内部参数`FusionTracker/local_template_refresh_sec`，默认0.75秒；仅在当前真实检测通过门控且与
+  局部观测一致时，以有界频率刷新KCF模板。不是增加检测频率，也不是周期性重置公开ID。
+
+网页仍只绘制后端最终输出框；绿色与蓝色框使用相同采集时间和像素坐标。辅助有效率改善不等于真实
+检测召回率提高，也不能保证完全遮挡时仍有真实目标位置。实时原因可查`~fusion_evidence`中的
+`diagnostics.lk.rejected`、`local_tracker`、`lk_selected_observation`及`rejected`。

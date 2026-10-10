@@ -25,6 +25,8 @@ FusionTracker:
   detector_authority_confidence: 0.85
   minimum_detector_confidence: 0.50
   minimum_maintenance_confidence: 0.10
+  # Refresh KCF from an independently gated, current YOLO observation only.
+  local_template_refresh_sec: 0.75
   class_groups: [[0, 1, 2, 3]]
   selection_max_age_sec: 0.75
   selection_max_frames: 24

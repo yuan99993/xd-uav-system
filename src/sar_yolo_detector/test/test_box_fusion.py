@@ -137,6 +137,55 @@ class BoxFusionTest(unittest.TestCase):
         self.assertEqual(result.source, "yolo")
         self.assertEqual(self.local.initializations, 2)
 
+    def test_one_failed_capture_does_not_require_same_id_rebinding(self):
+        self.local.valid = False
+        self.assertFalse(self.fusion.step(self.frame, 10.1, [], detector_updated=False).observed)
+        result = self.fusion.step(self.frame, 10.1,
+            [Candidate(self.candidate.box, 2, .9, 5, True, 10.1)], same_frame_correction=True)
+        self.assertTrue(result.observed, result.reason)
+        self.assertEqual(result.local_id, 5)
+        self.assertEqual(self.fusion.pending_count, 0)
+
+    def test_valid_same_id_flow_maintains_lock_when_kcf_fails(self):
+        self.local.valid = False
+        cue = Candidate((62, 60, 40, 40), 2, .65, 5, True, 10.)
+        result = self.fusion.step(image(cue.box), 10.1, [], detector_updated=False,
+            visual_observation=cue, visual_quality=.9)
+        self.assertEqual(result.source, 'visual')
+        self.assertEqual(result.box, cue.box)
+        self.assertEqual(result.last_detection_stamp, 10.)
+
+    def test_flow_cannot_rebind_or_bypass_quality_expiry_or_bounds(self):
+        self.local.valid = False
+        for cue, quality in ((Candidate(self.candidate.box, 2, .65, 17, True, 10.), .9),
+                             (Candidate(self.candidate.box, 2, .65, 5, True, 10.), .3),
+                             (Candidate((170, 60, 40, 40), 2, .65, 5, True, 10.), .9),
+                             (Candidate(self.candidate.box, 2, .65, 5, True, 8.), .9)):
+            fusion = BoxFusion(tracker=LocalTracker())
+            fusion.initialize(self.frame, self.candidate.box, 10., 99, self.candidate)
+            fusion.tracker.valid = False
+            result = fusion.step(self.frame, 10.1, [], detector_updated=False,
+                visual_observation=cue, visual_quality=quality)
+            self.assertFalse(result.observed)
+            self.assertEqual(fusion.local_id, 5)
+
+    def test_detector_refreshes_kcf_at_bounded_cadence(self):
+        for stamp in (10.2, 10.4, 10.6):
+            self.fusion.step(self.frame, stamp, [self.candidate])
+        self.assertEqual(self.local.initializations, 1)
+        self.fusion.step(self.frame, 10.8, [self.candidate])
+        self.assertEqual(self.local.initializations, 2)
+
+    def test_flow_scale_metadata_cannot_bypass_scale_gate(self):
+        cue = Candidate(self.candidate.box, 2, .65, 5, True, 10.)
+        for ratio in (0., .1, 3., float('nan'), float('inf')):
+            fusion = BoxFusion(tracker=LocalTracker())
+            fusion.initialize(self.frame, self.candidate.box, 10., 99, self.candidate)
+            fusion.tracker.valid = False
+            result = fusion.step(self.frame, 10.1, [], detector_updated=False,
+                visual_observation=cue, visual_quality=.9, visual_scale_ratio=ratio)
+            self.assertFalse(result.observed)
+
     def test_prediction_expires_and_is_not_observed(self):
         self.local.valid = False
         result = self.fusion.step(self.frame, 10.1, [])

@@ -1,6 +1,6 @@
 {
   "document_schema": "sar-pixeagle-fusion-web-adaptation/1",
-  "updated_at": "2026-10-09",
+  "updated_at": "2026-10-10",
   "purpose": "Documentation-only interface binding template; not loaded by the ROS node and not a runtime discovery response.",
   "package": "sar_yolo_detector",
   "launch": "xd_smart_tracker_fusion_integration.launch",
@@ -28,7 +28,9 @@
     "topic_root": "/moving_uav_search/sar_yolo_detector/fusion_fixed",
     "service_root": "/moving_uav_search/sar_yolo_smart_tracker_fusion_fixed",
     "input_image": "/moving_uav_search/fixed_camera/image_raw",
-    "bridge_output": "/moving_uav_search/detect/input/fixed/detections_2d"
+    "bridge_output": "/moving_uav_search/detect/input/fixed/detections_2d",
+    "interactive_viewer_launch": "fusion_interactive_viewer.launch",
+    "web_preview_launch": "fusion_web_preview.launch"
   },
   "model": {
     "default_path": "models/xd_vehicle_train7/xd_vehicle_train7.pt",
@@ -125,7 +127,7 @@
       "request_fields": ["header", "roi", "clear_selection"],
       "response_fields": ["success", "message", "selected_target_id"],
       "required_mode": "fusion_tracker", "frame_bound": true,
-      "header_origin": "exact displayed annotated Image header"
+      "header_origin": "capture_header paired with the displayed annotated image by exact stamp/frame_id"
     },
     "switch_trusted_model": {
       "name": "{service_root}/switch_model", "type": "sar_yolo_detector/SwitchSmartTrackerModel",
@@ -139,7 +141,8 @@
   "coordinates": {
     "origin": "top-left of original image", "x_direction": "right", "y_direction": "down", "unit": "pixel",
     "bbox": "center.x, center.y, size_x, size_y",
-    "selection_header_match": ["seq", "stamp.secs", "stamp.nsecs", "frame_id"],
+    "selection_header_match": ["stamp.secs", "stamp.nsecs", "frame_id"],
+    "pixel_topic_header_match": ["stamp.secs", "stamp.nsecs", "frame_id"],
     "cross_topic_pairing": ["stamp.secs", "stamp.nsecs", "frame_id"],
     "cross_topic_seq_equality_guaranteed": false,
     "results_pose_is_valid_metric_measurement": false

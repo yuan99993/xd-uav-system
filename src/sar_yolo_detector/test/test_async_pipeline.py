@@ -22,6 +22,84 @@ def detection(identity=5, stable=True):
 
 
 class AsyncPipelineTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._previous_cv_threads = cv2.getNumThreads()
+        cv2.setNumThreads(1)
+
+    @classmethod
+    def tearDownClass(cls):
+        cv2.setNumThreads(cls._previous_cv_threads)
+
+    def test_two_turning_targets_keep_geometry_between_detections(self):
+        texture = np.random.RandomState(23).randint(40, 220, (36, 80, 3), dtype=np.uint8)
+        def scene(index):
+            frame = np.full((240, 360, 3), 20, np.uint8)
+            detections = []
+            for identity, cx, cy, sign in ((5, 95, 80, 1), (17, 255, 165, -1)):
+                matrix = cv2.getRotationMatrix2D((40, 18), sign*index*7., 1.)
+                matrix[:, 2] += (cx-40+index*.5, cy-18)
+                corners = cv2.transform(np.float32([[[0, 0], [80, 0], [80, 36], [0, 36]]]), matrix)[0]
+                left, top = corners.min(axis=0)
+                right, bottom = corners.max(axis=0)
+                warped = cv2.warpAffine(texture, matrix, (360, 240))
+                mask = cv2.warpAffine(np.full((36, 80), 255, np.uint8), matrix, (360, 240))
+                frame[mask > 0] = warped[mask > 0]
+                detections.append(SimpleNamespace(track_id=identity, class_id=2, confidence=.9,
+                    aabb_xyxy=(left, top, right, bottom), center_xy=((left+right)/2, (top+bottom)/2),
+                    track_id_is_stable=True))
+            return frame, detections
+        flow = FlowDetections()
+        from test_box_fusion import LocalTracker
+        local = LocalTracker()
+        fusion = BoxFusion(tracker=local)
+        for index in range(31):
+            frame, truth = scene(index)
+            stamp = 10.+index*.1
+            output = flow.update(frame, stamp, truth if index % 5 == 0 else None,
+                frame if index % 5 == 0 else None, stamp if index % 5 == 0 else None)
+            self.assertEqual({item.track_id for item in output}, {5, 17}, (index, flow.diagnostics))
+            for item, target in zip(sorted(output, key=lambda d: d.track_id), truth):
+                a, b = item.aabb_xyxy, target.aabb_xyxy
+                self.assertGreater(iou((a[0], a[1], a[2]-a[0], a[3]-a[1]),
+                                       (b[0], b[1], b[2]-b[0], b[3]-b[1])), .70, index)
+            target = truth[0]
+            x1, y1, x2, y2 = target.aabb_xyxy
+            measured = Candidate((x1, y1, x2-x1, y2-y1), 2,
+                .9 if index == 0 else .2, 5, True, stamp)
+            if index == 0:
+                fusion.initialize(frame, measured.box, stamp, 99, measured)
+                local.valid = False
+                continue
+            cue = flow.visual_observations.get(5)
+            visual = None
+            if cue is not None:
+                a, b, c, d = cue.aabb_xyxy
+                visual = Candidate((a, b, c-a, d-b), 2, .65, 5, True, cue.detector_stamp)
+            result = fusion.step(frame, stamp, [measured] if index % 5 == 0 else [],
+                detector_updated=index % 5 == 0, visual_observation=visual,
+                visual_quality=getattr(cue, 'flow_quality', 0.),
+                visual_scale_ratio=getattr(cue, 'flow_scale_ratio', None))
+            self.assertTrue(result.observed, (index, result.reason, fusion.diagnostics))
+            self.assertEqual(result.public_id, 99)
+            self.assertGreater(iou(result.box, measured.box), .70, index)
+
+    def test_partially_visible_target_is_clipped_not_discarded(self):
+        frame = textured()
+        flow = FlowDetections()
+        flow.update(frame, 10., [detection()], frame, 10.)
+        # Known image rotation/translation may put a portion of a real target
+        # outside the sensor. Keep only the observed, in-image portion.
+        matrix = np.float64([[1, 0, -55], [0, 1, 0], [0, 0, 1]])
+        moved = cv2.warpPerspective(frame, matrix, (220, 160))
+        class Motion:
+            def between(self, earlier, later):
+                return matrix
+        output = flow.update(moved, 10.1, motion=Motion())
+        self.assertEqual(len(output), 1, flow.diagnostics)
+        self.assertEqual(output[0].aabb_xyxy[0], 0.)
+        self.assertGreater(output[0].aabb_xyxy[2], 30.)
+
     def test_latest_only_and_bounded_shutdown(self):
         queue = LatestMailbox()
         for index in range(1000):
@@ -91,6 +169,24 @@ class AsyncPipelineTest(unittest.TestCase):
             self.assertEqual(output[0].measurement_source, "visual_tracker")
             self.assertEqual(output[0].detector_stamp, 10.)
         self.assertFalse(flow.update(textured(6), 10.6, [], textured(6), 10.6))
+
+    def test_fresh_weak_detector_does_not_erase_independent_same_capture_flow(self):
+        flow = FlowDetections()
+        flow.update(textured(), 10., [detection()], textured(), 10.)
+        weak = detection()
+        weak.confidence = .2
+        weak.aabb_xyxy = (51, 50, 91, 90)
+        output = flow.update(textured(1), 10.1, [weak], textured(1), 10.1)
+        self.assertEqual(output[0].measurement_source, 'detector')
+        cue = flow.visual_observations[5]
+        self.assertEqual(cue.measurement_source, 'visual_tracker')
+        self.assertEqual(cue.detector_stamp, 10.)
+        self.assertGreaterEqual(cue.flow_quality, .60)
+        self.assertAlmostEqual(cue.aabb_xyxy[0], 51., delta=.5)
+        flow.update(textured(2), 10.2)
+        self.assertEqual(flow.visual_observations[5].detector_stamp, 10.1)
+        flow.update(textured(2), 11.5)
+        self.assertFalse(flow.visual_observations)
 
     def test_old_future_or_textureless_detection_cannot_create_current_box(self):
         for measured in (8., 11.):

@@ -50,18 +50,24 @@ def iou(a, b):
 
 
 def class_duplicate_indices(candidates, class_groups, preferred_id=-1,
-                            overlap=.75, center_fraction=.20):
+                            overlap=.75, center_fraction=.20,
+                            suppress_selected_same_class=False):
     """Keep original indices; suppress only near-identical sibling-class boxes.
 
     This is output suppression, not identity merging. Same-class competitors
-    remain available to ambiguity gating. Priority applies only to an already
-    validated selected observation, never a stale/predicted box.
+    remain available to ambiguity gating. At the final output boundary only,
+    an already validated selected box can suppress a near-identical same-class
+    duplicate. This never merges identities or affects input candidates.
     """
     def duplicate(a, b):
-        if a.class_id == b.class_id or not any(
-                a.class_id in group and b.class_id in group for group in class_groups):
+        same_class = a.class_id == b.class_id
+        if same_class:
+            if not (suppress_selected_same_class and preferred_id >= 0
+                    and preferred_id in (a.local_id, b.local_id)):
+                return False
+        elif not any(a.class_id in group and b.class_id in group for group in class_groups):
             return False
-        if iou(a.box, b.box) < overlap:
+        if iou(a.box, b.box) < (max(.85, overlap) if same_class else overlap):
             return False
         ax, ay, aw, ah = a.box
         bx, by, bw, bh = b.box
@@ -99,7 +105,15 @@ def appearance(frame, box):
     # Featureless background cannot maintain an identity or update its anchor.
     quality = min(1., float(gray.std()) / 18.) * min(1., min(w, h) / 24.)
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv], [0, 1], None, [16, 8], [0, 180, 0, 256]).ravel()
+    # A turning rectangular vehicle occupies a changing fraction of its AABB.
+    # Flat, low-saturation ground used to dominate the normalized histogram
+    # and reject the same vehicle after a perfectly coherent rotation. Use
+    # chromatic support if sufficient; preserve the original full-ROI fallback
+    # for gray/white vehicles. This remains weak appearance evidence, not ReID.
+    mask = cv2.inRange(hsv, np.array([0, 40, 20], np.uint8), np.array([179, 255, 255], np.uint8))
+    if cv2.countNonZero(mask) < max(16, int(.10*mask.size)):
+        mask = None
+    hist = cv2.calcHist([hsv], [0, 1], mask, [16, 8], [0, 180, 0, 256]).ravel()
     return hist / max(1e-9, np.linalg.norm(hist)), quality
 
 
@@ -130,6 +144,7 @@ class BoxFusion:
         self.detector_authority = self._unit("detector_authority_confidence", .85)
         self.min_detector_conf = self._unit("minimum_detector_confidence", .50)
         self.min_maintenance_conf = self._unit("minimum_maintenance_confidence", .10)
+        self.local_refresh_sec = self._positive("local_template_refresh_sec", .75)
         if self.min_maintenance_conf > self.min_detector_conf:
             raise ValueError("Maintenance confidence must not exceed identity confidence")
         self.class_groups = self.config.get("class_groups", [[0, 1, 2, 3]])
@@ -165,6 +180,7 @@ class BoxFusion:
         self.selection_stamp = 0.
         self.last_detection_stamp = 0.
         self.last_observation_stamp = 0.
+        self.last_local_seed_stamp = 0.
         self.last_confidence = 0.
         self.pending_id = None
         self.pending_count = 0
@@ -193,6 +209,7 @@ class BoxFusion:
         self.anchor, quality = appearance(frame, box)
         self.anchor_area = box[2] * box[3]
         self.tracker.initialize(frame, self.box)
+        self.last_local_seed_stamp = stamp
         if self.tracker.tracker_name == "template" and not self.config.get("allow_template_fallback", False):
             self.reset()
             raise ValueError("Fusion requires OpenCV contrib KCF/CSRT; template fallback is disabled")
@@ -234,7 +251,8 @@ class BoxFusion:
         return 1. / self.area_ratio <= ratio <= self.area_ratio and distance <= self.center_gate
 
     def step(self, frame, stamp, detections, *, detector_updated=True, same_frame_correction=False,
-             camera_transform=None, camera_motion_reliable=None):
+             camera_transform=None, camera_motion_reliable=None,
+             visual_observation=None, visual_quality=0., visual_scale_ratio=None):
         self.diagnostics = dict(detector_updated=bool(detector_updated), candidates=len(detections),
             rejected={}, local_tracker="not_run", camera_motion_available=False,
             frame_gap_sec=max(0., stamp-self.stamp) if math.isfinite(stamp) else None)
@@ -277,7 +295,10 @@ class BoxFusion:
                 rotated = cv2.perspectiveTransform(points.reshape(-1, 1, 2), camera_transform).reshape(-1, 2)
                 self.velocity = (rotated[1]-rotated[0])/.01
                 old_area = max(1., self.box[2]*self.box[3])
-                self.anchor_area *= transformed[2]*transformed[3]/old_area
+                x, y, w, h = self.box
+                corners = np.float32([[x, y], [x+w, y], [x+w, y+h], [x, y+h]])
+                projected = cv2.perspectiveTransform(corners.reshape(-1, 1, 2), camera_transform)
+                self.anchor_area *= abs(cv2.contourArea(projected))/old_area
                 self.box = transformed
                 if self.pending_box is not None:
                     self.pending_box = transform_box(self.pending_box, camera_transform)
@@ -301,6 +322,7 @@ class BoxFusion:
             "frame_gap_reset" if dt > self.max_gap else
             "valid" if local is not None and local.valid else
             str(getattr(local, "reason", "local_tracker_failed")))
+        flow_quality = visual_quality
         visual_box = self._visual_box if correction else local.bbox if local is not None else None
         visual_quality = self._visual_quality if correction else 0.
         if correction:
@@ -317,6 +339,38 @@ class BoxFusion:
             visual_box = None
             if local is not None and local.valid:
                 self.diagnostics['local_tracker'] = "position_or_bounds_rejected"
+        # The per-target LK worker already checked forward/backward support
+        # and coherent motion. Use only this bound identity's CURRENT visual
+        # observation, never a new YOLO box disguised as independent evidence.
+        # It cannot rebind an ID, renew detector time, or extend the hold budget.
+        flow = visual_observation
+        flow_valid = False
+        if flow is not None:
+            measured = flow.detector_stamp
+            flow_valid = (not self._long_recovery and dt <= self.max_gap
+                and flow.local_id == self.local_id and self.local_id >= 0 and flow.stable
+                and measured is not None and math.isfinite(measured) and 0 <= stamp-measured <= self.max_gap
+                and math.isfinite(flow_quality) and flow_quality >= .60
+                and self._class_compatible(flow.class_id) and valid_box(flow.box, frame.shape)
+                and self._compatible(flow.box, predicted))
+            if flow_valid:
+                feature, quality = appearance(frame, flow.box)
+                similarity = float(np.dot(feature, self.anchor)) if self.anchor is not None else 0.
+                ratio = flow.box[2]*flow.box[3]/max(1., self.anchor_area)
+                # Rotation of a long vehicle enlarges the AABB without a real
+                # scale change. Prefer the validated LK footprint's bounded
+                # area ratio; never relax the same per-frame position gate.
+                if visual_scale_ratio is not None:
+                    ratio = visual_scale_ratio if math.isfinite(visual_scale_ratio) else float('inf')
+                flow_valid = (quality >= self.quality_gate and similarity >= self.appearance_gate
+                    and 1./self.area_ratio <= ratio <= self.area_ratio)
+                if flow_valid:
+                    if visual_box is not None and iou(visual_box, flow.box) < .15:
+                        visual_box = None
+                        self.diagnostics['local_tracker'] = 'conflicting_visual_witnesses'
+                    else:
+                        visual_box, visual_quality = flow.box, min(flow_quality, quality)
+        self.diagnostics['lk_selected_observation'] = bool(flow_valid)
         self._visual_box, self._visual_quality = visual_box, visual_quality
 
         ranked = []
@@ -381,8 +435,19 @@ class BoxFusion:
             self.pending_count = 0
             self.pending_id = None
             return self._result(None, "ambiguous", "old_and_new_tracks_simultaneously_visible", 0.)
+        # One failed visual frame is not an identity change. A fresh, strongly
+        # gated SAME-ID detector observation may resume short continuity
+        # immediately. New IDs, prolonged loss and competing hypotheses still
+        # need the full consecutive-confirmation procedure.
+        recent_same_identity = (match is not None and match.local_id == self.local_id
+            and match.confidence >= self.min_detector_conf and ranked[0][0] >= .65
+            and iou(match.box, predicted) >= .30
+            and absence <= self.max_gap
+            and stamp-self.last_detection_stamp <= self.max_gap
+            and self.result.source != "ambiguous")
         rebound = match is not None and (self.local_id < 0 or match.local_id != self.local_id or self.pending_count > 0
-                                        or self._long_recovery or dt > self.max_gap or self.result.source in ("lost", "ambiguous", "prediction"))
+                                        or self._long_recovery or dt > self.max_gap
+                                        or (self.result.source in ("lost", "ambiguous", "prediction") and not recent_same_identity))
         if rebound:
             measured = stamp if match.detector_stamp is None else match.detector_stamp
             # Same backend ID is not sufficient if consecutive candidate
@@ -433,8 +498,15 @@ class BoxFusion:
             else:
                 fused, source = match.box, "yolo"
             # Rescale/reinitialize only for drift, failure, or confirmed new ID.
-            if not agree or rebound:
+            # KCF's old template can fail abruptly during a turn even while
+            # YOLO and LK agree. Refresh from a trusted CURRENT detector at a
+            # bounded cadence, not on every frame or on predictions.
+            refresh = (agree and stamp-self.last_local_seed_stamp >= self.local_refresh_sec
+                and match.confidence >= self.min_detector_conf
+                and (match.detector_stamp is None or match.detector_stamp == stamp))
+            if not agree or rebound or refresh:
                 self.tracker.initialize(frame, match.box)
+                self.last_local_seed_stamp = stamp
                 self.diagnostics['local_reinitialized'] = True
             if rebound:
                 # The old derivative is no longer valid after an identity
