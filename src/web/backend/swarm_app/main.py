@@ -138,12 +138,19 @@ def _spawn_example(request):
     frame = _frame_or_503()
     x = float(request.world_origin.x)
     y = float(request.world_origin.y)
-    ground = frame.elevation_at_world(x, y)
+    try:
+        launch_site = frame.validate_launch_site(x, y)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail="所选位置不适合固定翼地面起飞：{}".format(error)) from error
+    ground = launch_site["ground_elevation_msl_m"]
     if abs(float(request.world_origin.z) - ground) > 1.0:
         raise HTTPException(
             status_code=409,
             detail="所选起点高程与当前 DEM 不一致，请重新在地图选点")
     example["world_origin"] = {"x": x, "y": y, "z": ground}
+    example["launch_site"] = launch_site
     example["gazebo_spawn"] = {
         "x": x,
         "y": y,

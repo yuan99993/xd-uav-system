@@ -11,9 +11,9 @@ initial_vehicles:
     gazebo_spawn_m: [600.0, -2000.0, 1542.6483154296875]
   - uav_name: uav2
     preferred_instance: 1
-    world_origin_m: [600.0, -1700.0, 1564.424560546875]
-    gazebo_spawn_m: [600.0, -1700.0, 1564.424560546875]
+    world_origin_m: [580.0, -1700.0, 1569.193603515625]
+    gazebo_spawn_m: [580.0, -1700.0, 1569.193603515625]
   - uav_name: uav3
     preferred_instance: 2
-    world_origin_m: [600.0, -1400.0, 1571.70556640625]
-    gazebo_spawn_m: [600.0, -1400.0, 1571.70556640625]
+    world_origin_m: [600.0, -1390.0, 1570.616943359375]
+    gazebo_spawn_m: [600.0, -1390.0, 1570.616943359375]

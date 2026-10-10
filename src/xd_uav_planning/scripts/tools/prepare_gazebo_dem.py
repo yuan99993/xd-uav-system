@@ -161,6 +161,7 @@ def prepare(source, output, manifest, samples, vertical_datum):
             "size_z_m": float(prepared_values.max() - prepared_values.min()),
             "position_z_m": 0.0,
             "dem_loader_preserves_minimum_msl_m": float(prepared_values.min()),
+            "sampling": 1,
         },
         "resampling": "nearest",
     }

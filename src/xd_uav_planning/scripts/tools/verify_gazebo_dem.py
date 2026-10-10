@@ -43,6 +43,7 @@ def verify(source, prepared, manifest_path, model_sdf):
             raise RuntimeError("model heightmap URI does not match prepared DEM")
         size = [float(value) for value in heightmap.findtext("size").split()]
         position = [float(value) for value in heightmap.findtext("pos").split()]
+        sampling = int(heightmap.findtext("sampling"))
         if len(size) != 3 or not all(
                 math.isclose(actual, expected, abs_tol=1.0e-6)
                 for actual, expected in zip(size, expected_size)):
@@ -50,6 +51,8 @@ def verify(source, prepared, manifest_path, model_sdf):
         if len(position) != 3 or not math.isclose(
                 position[2], expected_position, abs_tol=1.0e-6):
             raise RuntimeError("model heightmap position does not match manifest")
+        if sampling != geometry["sampling"]:
+            raise RuntimeError("model heightmap sampling does not match manifest")
 
 
 def main():

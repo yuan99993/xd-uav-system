@@ -8,7 +8,7 @@ from urllib import request as http_request
 from urllib.parse import urlparse
 
 import rospy
-from mavros_msgs.msg import State
+from mavros_msgs.msg import ExtendedState, State
 from mavros_msgs.srv import ParamGet, ParamSet, ParamSetRequest
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
@@ -28,6 +28,7 @@ class TerrainFixedwingSwarmAcceptance:
         self.web_api_url = rospy.get_param(
             "~web_api_url", "http://127.0.0.1:8000/api/swarm/dispatch")
         self.states = {}
+        self.extended_states = {}
         self.control_states = {}
         self.planner_statuses = {}
         self.swarm_status = None
@@ -51,6 +52,10 @@ class TerrainFixedwingSwarmAcceptance:
                 rospy.Subscriber(
                     namespace + "/mavros/state", State,
                     lambda message, key=name: self.states.__setitem__(key, message)),
+                rospy.Subscriber(
+                    namespace + "/mavros/extended_state", ExtendedState,
+                    lambda message, key=name: self.extended_states.__setitem__(
+                        key, message)),
                 rospy.Subscriber(
                     namespace + "/control_manager/state", ControlState,
                     lambda message, key=name: self.control_states.__setitem__(key, message)),
@@ -207,6 +212,14 @@ class TerrainFixedwingSwarmAcceptance:
                 accepted[name] = False
         return accepted
 
+    def _landed_and_connected(self, name):
+        state = self.states.get(name)
+        extended_state = self.extended_states.get(name)
+        return bool(
+            state and state.connected and not state.armed and
+            extended_state and
+            extended_state.landed_state == ExtendedState.LANDED_STATE_ON_GROUND)
+
     def run(self):
         self._wait(lambda: all(self._stable(name) for name in self.names),
                    150.0, "all stable fixed-wing control states")
@@ -250,14 +263,15 @@ class TerrainFixedwingSwarmAcceptance:
         if not all(landing.values()):
             raise AcceptanceFailure("a landing request was rejected")
         self._wait(lambda: all(
-            name in self.states and not self.states[name].armed
-            for name in self.names), 180.0, "all aircraft landing and disarming")
+            self._landed_and_connected(name) for name in self.names),
+            180.0, "all connected aircraft landing on ground and disarming")
         return {
             "success": True,
             "web_dispatch": True,
             "conflict_free": True,
             "motion_m": motion,
             "landing_accepted": landing,
+            "landed_on_ground": {name: True for name in self.names},
         }
 
     def execute(self):

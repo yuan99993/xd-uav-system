@@ -13,7 +13,7 @@
             <uri>model://davosdorf_terrain/materials/heightmaps/davosdorf_gazebo.tif</uri>
             <size>5590 4950 1307.1578369140625</size>
             <pos>0 0 0</pos>
-            <sampling>2</sampling>
+            <sampling>1</sampling>
           </heightmap>
         </geometry>
       </collision>
@@ -30,7 +30,7 @@
               <size>80</size>
             </texture>
             <blend><min_height>0</min_height><fade_dist>180</fade_dist></blend>
-            <sampling>2</sampling>
+            <sampling>1</sampling>
           </heightmap>
         </geometry>
       </visual>

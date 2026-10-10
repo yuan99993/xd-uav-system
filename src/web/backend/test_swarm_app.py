@@ -12,6 +12,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from pydantic import ValidationError
+from fastapi import HTTPException
 
 from app.main import SAMPLE_TIF
 from app.terrain_resource import CANONICAL_DAVOSDORF_DEM
@@ -127,9 +128,9 @@ class TerrainFrameTest(unittest.TestCase):
         self.assertEqual(600.0,
                          first["points"][1]["x"] -
                          first["points"][0]["x"])
-        self.assertEqual(300.0,
-                         abs(second["points"][0]["y"] -
-                             third["points"][0]["y"]))
+        self.assertGreaterEqual(
+            abs(second["points"][0]["y"] - third["points"][0]["y"]),
+            300.0)
         self.assertGreater(metadata["elevation_max_m"],
                            metadata["elevation_min_m"])
         self.assertTrue(self.frame.overlay_png().startswith(b"\x89PNG\r\n\x1a\n"))
@@ -154,7 +155,7 @@ class TerrainFrameTest(unittest.TestCase):
         self.assertEqual(8, len(examples))
         self.assertEqual(["uav{}".format(index) for index in range(1, 9)],
                          [item["uav_name"] for item in examples])
-        expected = [1542.6483154296875, 1564.424560546875, 1571.70556640625]
+        expected = [1542.6483154296875, 1569.193603515625, 1570.616943359375]
         for item, elevation in zip(examples, expected):
             self.assertAlmostEqual(elevation, item["world_origin"]["z"])
             self.assertAlmostEqual(
@@ -165,6 +166,18 @@ class TerrainFrameTest(unittest.TestCase):
                 item["world_origin"]["y"], item["gazebo_spawn"]["y"])
             self.assertAlmostEqual(
                 elevation, item["gazebo_spawn"]["z"])
+            self.assertLessEqual(item["launch_site"]["slope_rad"], 0.10)
+            self.assertLessEqual(item["launch_site"]["relief_3x3_m"], 3.0)
+
+    def test_unsafe_ground_launch_is_rejected_instead_of_disabling_failsafes(self):
+        metrics = self.frame.launch_site_metrics(600.0, -1700.0)
+        self.assertGreater(metrics["slope_rad"], 0.10)
+        ground = metrics["ground_elevation_msl_m"]
+        with self.assertRaises(HTTPException) as context:
+            _spawn_example(FleetSpawnRequest(
+                uav_name="uav2", use_mock=True,
+                world_origin={"x": 600.0, "y": -1700.0, "z": ground}))
+        self.assertEqual(409, context.exception.status_code)
 
     def test_later_vehicle_examples_respect_endpoint_angle_budget(self):
         for item in self.frame.vehicle_examples()[3:]:
@@ -189,15 +202,16 @@ class TerrainFrameTest(unittest.TestCase):
                                sampled["ground_elevation_m"], places=5)
 
     def test_custom_spawn_origin_is_resampled_from_canonical_dem(self):
-        ground = self.frame.elevation_at_world(0.0, 0.0)
+        x, y = 600.0, -2000.0
+        ground = self.frame.elevation_at_world(x, y)
         example = _spawn_example(FleetSpawnRequest(
             uav_name="uav1", use_mock=True,
-            world_origin={"x": 0.0, "y": 0.0, "z": ground}))
-        self.assertEqual(0.0, example["world_origin"]["x"])
-        self.assertEqual(0.0, example["world_origin"]["y"])
+            world_origin={"x": x, "y": y, "z": ground}))
+        self.assertEqual(x, example["world_origin"]["x"])
+        self.assertEqual(y, example["world_origin"]["y"])
         self.assertAlmostEqual(ground, example["world_origin"]["z"])
-        self.assertEqual(0.0, example["gazebo_spawn"]["x"])
-        self.assertEqual(0.0, example["gazebo_spawn"]["y"])
+        self.assertEqual(x, example["gazebo_spawn"]["x"])
+        self.assertEqual(y, example["gazebo_spawn"]["y"])
         self.assertAlmostEqual(
             ground, example["gazebo_spawn"]["z"])
         self.assertAlmostEqual(

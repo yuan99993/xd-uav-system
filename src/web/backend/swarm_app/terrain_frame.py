@@ -138,6 +138,13 @@ class DavosdorfWorldFrame:
     def elevation_at_world(self, x, y):
         if not all(math.isfinite(value) for value in (x, y)):
             raise ValueError("world coordinates must be finite")
+        row, column = self._grid_index_at_world(x, y)
+        elevation = float(self.terrain.elevation[row, column])
+        if not math.isfinite(elevation):
+            raise ValueError("DEM elevation is unavailable at this coordinate")
+        return elevation
+
+    def _grid_index_at_world(self, x, y):
         transform = self.terrain.geo_transform
         easting = self.center_easting + x
         northing = self.center_northing + y
@@ -145,22 +152,79 @@ class DavosdorfWorldFrame:
         row = int(round((northing - transform[3]) / transform[5] - 0.5))
         if not 0 <= row < self.terrain.rows or not 0 <= column < self.terrain.cols:
             raise ValueError("world coordinate is outside the DEM")
-        elevation = float(self.terrain.elevation[row, column])
-        if not math.isfinite(elevation):
-            raise ValueError("DEM elevation is unavailable at this coordinate")
-        return elevation
+        return row, column
+
+    def launch_site_metrics(self, x, y):
+        """Evaluate a fixed-wing ground start against the canonical DEM."""
+        row, column = self._grid_index_at_world(x, y)
+        if (row < 1 or row + 1 >= self.terrain.rows
+                or column < 1 or column + 1 >= self.terrain.cols):
+            raise ValueError("launch site is too close to the DEM boundary")
+        transform = self.terrain.geo_transform
+        values = self.terrain.elevation
+        neighbourhood = values[row - 1:row + 2, column - 1:column + 2]
+        if not np.isfinite(neighbourhood).all():
+            raise ValueError("launch site contains unavailable DEM elevations")
+        dz_dx = ((values[row, column + 1] - values[row, column - 1])
+                 / (2.0 * abs(transform[1])))
+        # Raster rows increase southward while world Y increases northward.
+        dz_dy = ((values[row - 1, column] - values[row + 1, column])
+                 / (2.0 * abs(transform[5])))
+        return {
+            "ground_elevation_msl_m": float(values[row, column]),
+            "slope_rad": math.atan(math.hypot(float(dz_dx), float(dz_dy))),
+            "relief_3x3_m": float(np.max(neighbourhood) - np.min(neighbourhood)),
+        }
+
+    def validate_launch_site(self, x, y, maximum_slope_rad=0.10,
+                             maximum_relief_m=3.0):
+        metrics = self.launch_site_metrics(x, y)
+        if metrics["slope_rad"] > maximum_slope_rad:
+            raise ValueError(
+                "launch site slope {:.3f} rad exceeds {:.3f} rad".format(
+                    metrics["slope_rad"], maximum_slope_rad))
+        if metrics["relief_3x3_m"] > maximum_relief_m:
+            raise ValueError(
+                "launch site local relief {:.2f} m exceeds {:.2f} m".format(
+                    metrics["relief_3x3_m"], maximum_relief_m))
+        return metrics
+
+    def nearest_launch_site(self, nominal_x, nominal_y, search_radius_m=300.0):
+        """Find the nearest DEM cell that passes the same public spawn gate."""
+        resolution = min(
+            abs(self.terrain.geo_transform[1]),
+            abs(self.terrain.geo_transform[5]))
+        steps = int(math.floor(search_radius_m / resolution))
+        offsets = [
+            (math.hypot(dx, dy), abs(dy), abs(dx), dx, dy)
+            for row in range(-steps, steps + 1)
+            for column in range(-steps, steps + 1)
+            for dx, dy in ((column * resolution, row * resolution),)
+            if math.hypot(dx, dy) <= search_radius_m
+        ]
+        for _, _, _, dx, dy in sorted(offsets):
+            x = nominal_x + dx
+            y = nominal_y + dy
+            try:
+                metrics = self.validate_launch_site(x, y)
+                return x, y, metrics
+            except ValueError:
+                continue
+        raise ValueError("no terrain-safe launch site exists near the nominal point")
 
     def vehicle_examples(self, count=8):
         examples = []
         for index in range(int(count)):
             name = "uav{}".format(index + 1)
-            start_x = 600.0
+            nominal_x = 600.0
             # Preserve the three flight-verified routes. Later examples use a
             # longer leg so their DEM endpoint elevation does not itself
             # exceed the fixed-wing 0.15 rad climb/descent contract.
             end_x = 1200.0 if index < 3 else 2400.0
-            y = -2000.0 + 300.0 * index
-            start_ground = self.elevation_at_world(start_x, y)
+            nominal_y = -2000.0 + 300.0 * index
+            start_x, y, launch_site = self.nearest_launch_site(
+                nominal_x, nominal_y)
+            start_ground = launch_site["ground_elevation_msl_m"]
             end_ground = self.elevation_at_world(end_x, y)
             route = {
                 "uav_name": name,
@@ -178,6 +242,7 @@ class DavosdorfWorldFrame:
             examples.append({
                 "uav_name": name,
                 "world_origin": {"x": start_x, "y": y, "z": start_ground},
+                "launch_site": launch_site,
                 "gazebo_spawn": {
                     "x": start_x,
                     "y": y,
@@ -210,6 +275,11 @@ class DavosdorfWorldFrame:
             "gazebo_frame": {
                 "horizontal_mapping": "gazebo_x_y_equals_world_x_y",
                 "vertical_mapping": "gazebo_z_equals_elevation_msl_m",
+            },
+            "launch_site_policy": {
+                "maximum_slope_rad": 0.10,
+                "maximum_relief_3x3_m": 3.0,
+                "selection": "nearest_valid_dem_cell_within_300m",
             },
             "web_dem_sha256": self.web_dem_sha256,
             "canonical_dem_sha256": self.canonical_dem_sha256,
