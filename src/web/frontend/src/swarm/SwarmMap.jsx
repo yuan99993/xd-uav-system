@@ -42,10 +42,10 @@ export default function SwarmMap({ terrain, snapshot, previewRoutes, fleet, spaw
       [terrain.geo_bounds.south, terrain.geo_bounds.west],
       [terrain.geo_bounds.north, terrain.geo_bounds.east],
     ]
-    L.imageOverlay(swarmTerrainOverlayUrl(), bounds, { opacity: 0.82 })
+    L.imageOverlay(swarmTerrainOverlayUrl(terrain.terrain_id), bounds, { opacity: 0.82 })
       .addTo(terrainLayerRef.current)
     L.rectangle(bounds, { color: '#67e8f9', weight: 1.5, fill: false, dashArray: '6 5' })
-      .bindTooltip('Davosdorf · ROS world')
+      .bindTooltip(`${terrain.terrain_name || '任务地形'} · ROS world`)
       .addTo(terrainLayerRef.current)
     mapRef.current.fitBounds(bounds, { padding: [24, 24] })
   }, [terrain])

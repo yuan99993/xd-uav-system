@@ -8,15 +8,16 @@ function finitePair(point, label) {
   return { longitude: Number(point[0]), latitude: Number(point[1]) }
 }
 
-export function saveMissionDraft({ start, goal, startAlt, goalAlt, clearanceM, terrainInfo }) {
+export function saveMissionDraft({ start, goal, startAlt, goalAlt, clearanceM, terrainInfo, terrainPackage }) {
   const draft = {
     schema: 'xd-uav.fixedwing-mission-draft',
-    version: 1,
+    version: 2,
     created_at: new Date().toISOString(),
     horizontal_crs: 'EPSG:4326',
     vertical_datum: 'MSL',
     source: 'terrain-preview',
     terrain: {
+      terrain_id: terrainPackage?.terrain_id || null,
       source: terrainInfo?.terrain_meta?.source || terrainInfo?.filename || 'online_terrarium',
       bounds: terrainInfo?.bounds || null,
       elevation_min_m: terrainInfo?.elevation_min ?? null,
@@ -40,12 +41,15 @@ export function consumeMissionDraft() {
   } catch (_error) {
     throw new Error('共享任务草稿已损坏，请回到地图重新选择起终点')
   }
-  if (draft?.schema !== 'xd-uav.fixedwing-mission-draft' || draft?.version !== 1
+  if (draft?.schema !== 'xd-uav.fixedwing-mission-draft' || ![1, 2].includes(draft?.version)
       || draft.horizontal_crs !== 'EPSG:4326' || draft.vertical_datum !== 'MSL') {
     throw new Error('共享任务草稿的坐标基准不受支持')
   }
   finitePair([draft.start?.longitude, draft.start?.latitude], '起点')
   finitePair([draft.goal?.longitude, draft.goal?.latitude], '终点')
+  if (draft.version >= 2 && !draft.terrain?.terrain_id) {
+    throw new Error('共享任务草稿缺少正式地形标识，请回到地图重新转交')
+  }
   return draft
 }
 

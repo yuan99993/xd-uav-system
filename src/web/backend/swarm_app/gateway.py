@@ -241,6 +241,7 @@ class RosbridgeSwarmGateway:
         self._paths = {}
         self._status = None
         self._fleet = None
+        self._terrain_manifest = None
         self._control_states = {}
         self._path_statuses = {}
         self._trails = {}
@@ -265,6 +266,7 @@ class RosbridgeSwarmGateway:
         self._ros = ros
         self._subscribe_status()
         self._subscribe_fleet()
+        self._subscribe_terrain_manifest()
 
     def capabilities(self):
         """Return a fast, read-only view of optional ROS execution services."""
@@ -279,6 +281,7 @@ class RosbridgeSwarmGateway:
         with self._lock:
             connected = bool(self._ros is not None and self._ros.is_connected)
             fleet = copy.deepcopy(self._fleet)
+            terrain_manifest = copy.deepcopy(self._terrain_manifest)
         vehicles = (fleet or {}).get("vehicles", [])
         return {
             "rosbridge_reachable": reachable,
@@ -286,6 +289,8 @@ class RosbridgeSwarmGateway:
             "fleet_status_received": fleet is not None,
             "execution_available": connected and fleet is not None,
             "aircraft_count": len(vehicles),
+            "terrain_manifest_received": terrain_manifest is not None,
+            "terrain_id": (terrain_manifest or {}).get("terrain_id"),
             "endpoint": "{}:{}".format(self.host, self.port),
             "detail": detail,
         }
@@ -319,6 +324,41 @@ class RosbridgeSwarmGateway:
             self._ros, topic_name, "xd_uav_planning/TerrainFleetStatus")
         subscriber.subscribe(self._fleet_callback)
         self._subscribers[topic_name] = subscriber
+
+    def _subscribe_terrain_manifest(self):
+        topic_name = "/terrain_swarm/terrain_manifest"
+        if topic_name in self._subscribers:
+            return
+        import roslibpy
+        subscriber = roslibpy.Topic(self._ros, topic_name, "std_msgs/String")
+        subscriber.subscribe(self._terrain_manifest_callback)
+        self._subscribers[topic_name] = subscriber
+
+    def _terrain_manifest_callback(self, message):
+        import json
+        try:
+            payload = json.loads(message.get("data", ""))
+        except (TypeError, ValueError):
+            return
+        if not isinstance(payload, dict) or not payload.get("terrain_id"):
+            return
+        with self._lock:
+            self._terrain_manifest = copy.deepcopy(payload)
+
+    def require_terrain(self, terrain_id):
+        self._ensure_connected()
+        deadline = time.monotonic() + 3.0
+        runtime_id = None
+        while time.monotonic() < deadline:
+            with self._lock:
+                runtime_id = (self._terrain_manifest or {}).get("terrain_id")
+            if runtime_id:
+                break
+            time.sleep(0.05)
+        if runtime_id != terrain_id:
+            raise RuntimeError(
+                "execution terrain mismatch: Web={}, ROS={}; restart the execution system"
+                .format(terrain_id, runtime_id or "unreported"))
 
     def _subscribe_runtime(self, uav_name):
         import roslibpy
@@ -751,7 +791,7 @@ class RosbridgeSwarmGateway:
         failures = []
         for name in targets:
             service = roslibpy.Service(
-                self._ros, "/{}/control_manager/land".format(name),
+                self._ros, "/{}/control_manager/land_home".format(name),
                 "std_srvs/Trigger")
             try:
                 response = service.call(roslibpy.ServiceRequest({}), timeout=10)
@@ -765,7 +805,7 @@ class RosbridgeSwarmGateway:
         return {
             "accepted": True,
             "message": (
-                "已向 {} 架飞机发出降落请求；固定翼会继续飞行建立进近，"
+                "已向 {} 架飞机发出返航降落请求；固定翼会返回所选起飞点建立进近，"
                 "请以‘已落地、未解锁’为完成标志"
             ).format(len(targets)),
         }

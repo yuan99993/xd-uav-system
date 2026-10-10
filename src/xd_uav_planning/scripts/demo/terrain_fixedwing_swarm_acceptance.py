@@ -204,7 +204,7 @@ class TerrainFixedwingSwarmAcceptance:
         accepted = {}
         for name in self.names:
             try:
-                service = "/{}/control_manager/land".format(name)
+                service = "/{}/control_manager/land_home".format(name)
                 rospy.wait_for_service(service, timeout=10.0)
                 response = rospy.ServiceProxy(service, Trigger)()
                 accepted[name] = bool(response.success)

@@ -147,6 +147,7 @@ install(PROGRAMS
 
 install(PROGRAMS
   scripts/tools/prepare_gazebo_dem.py
+  scripts/tools/prepare_terrain_runtime.py
   scripts/tools/verify_gazebo_dem.py
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/scripts/tools
 )

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -16,6 +18,7 @@ import time
 import rospy
 from geometry_msgs.msg import Point
 from mavros_msgs.msg import ExtendedState, State
+from std_msgs.msg import String
 
 from xd_uav_planning.msg import TerrainFleetStatus, TerrainFleetVehicle
 from xd_uav_planning.srv import (
@@ -55,6 +58,14 @@ def _finite_point(values, label):
     return output
 
 
+def _sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 class TerrainFleetManager:
     def __init__(self):
         capacity = int(rospy.get_param("~capacity", 8))
@@ -72,12 +83,20 @@ class TerrainFleetManager:
         self._map_path = str(rospy.get_param("~map_path"))
         if not self._map_path or not Path(self._map_path).is_file():
             raise ValueError("map_path must reference the canonical DEM")
+        self._terrain_manifest = self._load_terrain_manifest(
+            str(rospy.get_param("~terrain_manifest_path", "")))
         runtime_default = "/tmp/xd_uav_terrain_fleet_{}".format(os.getuid())
         self._runtime = Path(rospy.get_param("~runtime_dir", runtime_default))
         self._runtime.mkdir(parents=True, exist_ok=True)
         self._publisher = rospy.Publisher(
             rospy.get_param("~status_topic", "/terrain_swarm/fleet"),
             TerrainFleetStatus, queue_size=5, latch=True)
+        self._terrain_publisher = rospy.Publisher(
+            rospy.get_param(
+                "~terrain_manifest_topic", "/terrain_swarm/terrain_manifest"),
+            String, queue_size=1, latch=True)
+        self._terrain_publisher.publish(String(
+            data=json.dumps(self._terrain_manifest, sort_keys=True)))
         self._spawn_service = rospy.Service(
             rospy.get_param("~spawn_service", "/terrain_swarm/fleet/spawn"),
             SpawnTerrainVehicle, self._spawn_callback)
@@ -104,6 +123,29 @@ class TerrainFleetManager:
             if initial_delay > 0.0:
                 time.sleep(initial_delay)
         self._timer = rospy.Timer(rospy.Duration(1.0 / rate), self._tick)
+
+    def _load_terrain_manifest(self, manifest_path):
+        map_path = Path(self._map_path).resolve()
+        digest = _sha256(map_path)
+        if not manifest_path:
+            return {
+                "schema": "xd-uav-terrain-runtime/v1",
+                "terrain_id": "davosdorf-sample-{}".format(digest[:16]),
+                "canonical_dem": str(map_path),
+                "canonical_dem_sha256": digest,
+                "vertical_datum": "MSL",
+            }
+        path = Path(manifest_path).resolve()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("schema") != "xd-uav-terrain-package/v1":
+            raise ValueError("terrain manifest schema is unsupported")
+        if Path(payload.get("canonical_dem", "")).resolve() != map_path:
+            raise ValueError("terrain manifest DEM does not match map_path")
+        if payload.get("canonical_dem_sha256") != digest:
+            raise ValueError("terrain manifest DEM SHA-256 does not match map_path")
+        if payload.get("vertical_datum") != "MSL":
+            raise ValueError("terrain manifest vertical datum must be MSL")
+        return payload
 
     def _command(self, name, slot, world_origin, gazebo_spawn):
         arguments = {

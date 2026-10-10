@@ -111,6 +111,6 @@ export function getWorldElevation(x, y, clearance = 80) {
   })
 }
 
-export function swarmTerrainOverlayUrl() {
-  return `${BASE}/terrain.png`
+export function swarmTerrainOverlayUrl(terrainId = '') {
+  return `${BASE}/terrain.png?v=${encodeURIComponent(terrainId)}`
 }

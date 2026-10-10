@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 runtime="${XD_UAV_TERRAIN_SWARM_RUNTIME:-/tmp/xd_uav_terrain_swarm_sitl_${UID}}"
+terrain_package_root="${XD_UAV_TERRAIN_RUNTIME:-/tmp/xd-uav-terrain-mission-${UID}}"
 pid_file="${runtime}/roslaunch.pid"
 log_file="${runtime}/roslaunch.log"
 gazebo_pid_file="${runtime}/gazebo_roslaunch.pid"
@@ -15,6 +16,38 @@ if [[ "${manage_web}" != true && "${manage_web}" != false ]]; then
   echo "MANAGE_WEB must be true or false" >&2
   exit 2
 fi
+
+resolve_terrain_python() {
+  if [[ -n "${SWARM_PYTHON:-}" ]]; then
+    [[ -x "${SWARM_PYTHON}" ]] || {
+      echo "SWARM_PYTHON is not executable: ${SWARM_PYTHON}" >&2
+      return 1
+    }
+    terrain_python="${SWARM_PYTHON}"
+  else
+    local conda_bin="${SWARM_CONDA:-}" candidate task_user_home
+    if [[ -z "${conda_bin}" ]] && command -v conda >/dev/null 2>&1; then
+      conda_bin="$(command -v conda)"
+    fi
+    task_user_home="${HOME:-}"
+    if [[ -z "${conda_bin}" ]]; then
+      for candidate in "${task_user_home}/miniconda3/bin/conda" \
+                       "${task_user_home}/anaconda3/bin/conda"; do
+        if [[ -x "${candidate}" ]]; then conda_bin="${candidate}"; break; fi
+      done
+    fi
+    if [[ -x "${conda_bin}" ]]; then
+      terrain_python="$("${conda_bin}" run -n terrain-nav-web python -c 'import sys; print(sys.executable)' 2>/dev/null | tail -n 1)"
+    else
+      terrain_python="$(command -v python3 || true)"
+    fi
+  fi
+  [[ -x "${terrain_python:-}" ]] && \
+    "${terrain_python}" -c 'from osgeo import gdal, osr' >/dev/null 2>&1 || {
+      echo "terrain-nav-web Python with GDAL is unavailable; set SWARM_PYTHON" >&2
+      return 1
+    }
+}
 
 resolve_setup() {
   local directory candidate resolved=""
@@ -149,7 +182,7 @@ stop_all() {
       vehicles=(uav1 uav2 uav3)
     fi
     for uav in "${vehicles[@]}"; do
-      timeout -k 1 8 rosservice call "/${uav}/control_manager/land" >/dev/null 2>&1 || true
+      timeout -k 1 8 rosservice call "/${uav}/control_manager/land_home" >/dev/null 2>&1 || true
     done
   fi
   if is_running || is_gazebo_launcher_running; then
@@ -181,22 +214,37 @@ case "${1:-}" in
     fi
     trap stop_all EXIT INT TERM
     planning_share="$(rospack find xd_uav_planning)"
+    resolve_terrain_python
     default_world="${planning_share}/worlds/davosdorf.world"
-    world_file="${GAZEBO_WORLD_FILE:-${default_world}}"
+    canonical_dem="$(rospack find terrain_navigation)/../resources/davosdorf.tif"
+    map_path="${canonical_dem}"
+    terrain_manifest_path=""
+    active_manifest="${TERRAIN_MANIFEST_PATH:-${terrain_package_root}/active.json}"
+    generated_terrain="${runtime}/terrain"
+    if [[ "${USE_ACTIVE_TERRAIN:-true}" == true && -r "${active_manifest}" ]]; then
+      "${terrain_python}" "${planning_share}/scripts/tools/prepare_terrain_runtime.py" \
+        --manifest "${active_manifest}" --runtime-dir "${generated_terrain}"
+      world_file="${GAZEBO_WORLD_FILE:-${generated_terrain}/terrain_mission.world}"
+      map_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["canonical_dem"])' "${active_manifest}")"
+      terrain_manifest_path="${active_manifest}"
+      runtime_models="${generated_terrain}/models"
+    else
+      world_file="${GAZEBO_WORLD_FILE:-${default_world}}"
+      runtime_models="${planning_share}/models"
+    fi
     [[ -r "${world_file}" ]] || {
       echo "Gazebo world is unavailable: ${world_file}" >&2
       exit 1
     }
     if [[ "$(readlink -f "${world_file}")" == "$(readlink -f "${default_world}")" ]]; then
       terrain_model="${planning_share}/models/davosdorf_terrain"
-      canonical_dem="$(rospack find terrain_navigation)/../resources/davosdorf.tif"
-      python3 "${planning_share}/scripts/tools/verify_gazebo_dem.py" \
+      "${terrain_python}" "${planning_share}/scripts/tools/verify_gazebo_dem.py" \
         --source "${canonical_dem}" \
         --prepared "${terrain_model}/materials/heightmaps/davosdorf_gazebo.tif" \
         --manifest "${terrain_model}/terrain-manifest.json" \
         --model-sdf "${terrain_model}/model.sdf"
     fi
-    export GAZEBO_MODEL_PATH="${planning_share}/models:$(rospack find px4)/Tools/sitl_gazebo/models:${GAZEBO_MODEL_PATH:-}"
+    export GAZEBO_MODEL_PATH="${runtime_models}:${planning_share}/models:$(rospack find px4)/Tools/sitl_gazebo/models:${GAZEBO_MODEL_PATH:-}"
     # GDAL 3 follows authority-axis order by default, while Gazebo Classic's
     # DEM loader predates that change and expects traditional GIS X/Y order.
     # Without both settings EPSG:21781 is interpreted as lat/lon-swapped and
@@ -247,6 +295,8 @@ case "${1:-}" in
       run_acceptance:="${run_acceptance}" \
       auto_spawn_initial:="${auto_spawn_initial}" \
       spatial_only_blocks_release:="${spatial_only_blocks_release}" \
+      map_path:="${map_path}" \
+      terrain_manifest_path:="${terrain_manifest_path}" \
       </dev/null >"${log_file}" 2>&1 &
     echo "$!" >"${pid_file}"
     sleep 3
@@ -270,6 +320,11 @@ case "${1:-}" in
       echo "Web: externally managed; start src/web/fixedwing_mission_web.sh separately"
     fi
     echo "ROS log: ${log_file}"
+    if [[ -n "${terrain_manifest_path}" ]]; then
+      echo "Terrain package: ${terrain_manifest_path}"
+    else
+      echo "Terrain package: tracked Davosdorf sample"
+    fi
     if [[ "${auto_spawn_initial}" != true ]]; then
       echo "Fleet: empty; add aircraft from the Web console"
     fi

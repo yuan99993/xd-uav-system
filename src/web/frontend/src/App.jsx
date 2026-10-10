@@ -4,6 +4,7 @@ import ThreeDView from './ThreeDView.jsx'
 import { saveMissionDraft } from './missionDraft.js'
 import {
   getHealth,
+  activateTerrain,
   getTerrainInfo,
   getTerrainRaster,
   loadTerrainGrid,
@@ -275,12 +276,15 @@ export default function App() {
     setStatus({ text: '已清空起终点', type: 'info' })
   }
 
-  const handleOpenMissionConsole = () => {
+  const handleOpenMissionConsole = async () => {
     if (!start || !goal || !terrainInfo || !raster) {
       setStatus({ text: '请先等待地形就绪并设置起点、终点', type: 'error' })
       return
     }
+    setBusy(true)
+    setStatus({ text: '正在生成供 ROS 与 Gazebo 共用的正式地形包…', type: 'info' })
     try {
+      const activated = await activateTerrain()
       saveMissionDraft({
         start,
         goal,
@@ -288,10 +292,13 @@ export default function App() {
         goalAlt,
         clearanceM: Math.max(51, Math.min(119, aglMin)),
         terrainInfo,
+        terrainPackage: activated.terrain,
       })
       window.location.assign('/swarm.html?mission_draft=1')
     } catch (error) {
       setStatus({ text: `任务转交失败：${error.message}`, type: 'error' })
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -485,7 +492,7 @@ export default function App() {
             onClick={handleOpenMissionConsole}
             disabled={busy || !start || !goal || !terrainInfo || !raster}
             style={{ width: '100%' }}
-            title="只转交起终点和坐标基准；旧页面预览路线不会直接下发飞机"
+            title="生成正式地形包并转交起终点；旧页面预览路线不会直接下发飞机"
           >转交到固定翼任务控制台</button>
           {path3d && (
             <div className="hint" style={{ marginTop: 6 }}>

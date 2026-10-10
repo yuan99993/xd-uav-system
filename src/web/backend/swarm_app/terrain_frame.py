@@ -1,4 +1,4 @@
-"""Display projection for the fixed Davosdorf terrain-planning world frame."""
+"""Display projection for the active terrain-planning world frame."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import sys
 import numpy as np
 
 from app.terrain import GDAL_OK, _png_bytes, load_terrain
+from app.terrain_mission import active_manifest, configure_projection_runtime
 from app.terrain_resource import CANONICAL_DAVOSDORF_DEM
 
 
@@ -29,7 +30,7 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-class DavosdorfWorldFrame:
+class TerrainWorldFrame:
     """Map local ROS world metres to WGS84 solely for browser display.
 
     The official terrain planner loads the raster into a grid_map centred at
@@ -37,19 +38,30 @@ class DavosdorfWorldFrame:
     class does not use or replace the per-aircraft datum in xd_uav_detect.
     """
 
-    def __init__(self):
+    def __init__(self, manifest=None):
         if not GDAL_OK:
-            raise RuntimeError("GDAL is required for the fixed DEM display projection")
-        if not CANONICAL_DEM.is_file():
-            raise RuntimeError(
-                "Canonical Davosdorf DEM is missing: {}".format(CANONICAL_DEM))
+            raise RuntimeError("GDAL is required for terrain display projection")
+        manifest = manifest if manifest is not None else active_manifest()
+        if manifest:
+            dem_path = Path(manifest["canonical_dem"])
+            self.terrain_id = str(manifest["terrain_id"])
+            self.terrain_name = str(manifest.get("name") or dem_path.name)
+            self.terrain_source = dict(manifest.get("source") or {})
+            self.is_sample = False
+        else:
+            dem_path = CANONICAL_DEM
+            self.terrain_name = "Davosdorf 示例地形"
+            self.terrain_source = {
+                "source": "tracked_sample_geotiff", "vertical_datum": "MSL"}
+            self.is_sample = True
+        if not dem_path.is_file():
+            raise RuntimeError("Canonical terrain DEM is missing: {}".format(dem_path))
         from osgeo import osr
 
         # Browser display must remain deterministic and offline. If an
         # optional high-accuracy datum grid is absent, PROJ uses its packaged
         # fallback instead of attempting a network download at runtime.
-        if hasattr(osr, "SetPROJEnableNetwork"):
-            osr.SetPROJEnableNetwork(False)
+        configure_projection_runtime()
 
         # Relocatable Conda prefixes can retain a stale PROJ search entry
         # before their valid sys.prefix/share/proj directory. Select only
@@ -65,7 +77,8 @@ class DavosdorfWorldFrame:
         if proj_paths and hasattr(osr, "SetPROJSearchPaths"):
             osr.SetPROJSearchPaths(proj_paths)
 
-        self.terrain = load_terrain(str(CANONICAL_DEM))
+        self.dem_path = dem_path.resolve()
+        self.terrain = load_terrain(str(self.dem_path))
         transform = self.terrain.geo_transform
         if abs(transform[2]) > 1.0e-12 or abs(transform[4]) > 1.0e-12:
             raise RuntimeError("rotated DEM geotransforms are not supported")
@@ -85,7 +98,17 @@ class DavosdorfWorldFrame:
         self._to_geo = osr.CoordinateTransformation(projected, geographic)
         self._to_projected = osr.CoordinateTransformation(geographic, projected)
 
-        self.canonical_dem_sha256 = _sha256(CANONICAL_DEM)
+        projected.AutoIdentifyEPSG()
+        authority_name = projected.GetAuthorityName(None)
+        authority_code = projected.GetAuthorityCode(None)
+        self.projection = (
+            "{}:{}".format(authority_name, authority_code)
+            if authority_name and authority_code else "projected-metre")
+
+        self.canonical_dem_sha256 = _sha256(self.dem_path)
+        if self.is_sample:
+            self.terrain_id = "davosdorf-sample-{}".format(
+                self.canonical_dem_sha256[:16])
         # Retain the response fields consumed by the existing frontend.  They
         # now describe a single shared file instead of comparing two copies.
         self.web_dem_sha256 = self.canonical_dem_sha256
@@ -177,8 +200,13 @@ class DavosdorfWorldFrame:
         }
 
     def validate_launch_site(self, x, y, maximum_slope_rad=0.10,
-                             maximum_relief_m=3.0):
+                             maximum_relief_m=None):
         metrics = self.launch_site_metrics(x, y)
+        if maximum_relief_m is None:
+            resolution = max(
+                abs(self.terrain.geo_transform[1]),
+                abs(self.terrain.geo_transform[5]))
+            maximum_relief_m = max(3.0, 2.0 * resolution * math.tan(maximum_slope_rad))
         if metrics["slope_rad"] > maximum_slope_rad:
             raise ValueError(
                 "launch site slope {:.3f} rad exceeds {:.3f} rad".format(
@@ -216,14 +244,24 @@ class DavosdorfWorldFrame:
         examples = []
         for index in range(int(count)):
             name = "uav{}".format(index + 1)
-            nominal_x = 600.0
-            # Preserve the three flight-verified routes. Later examples use a
-            # longer leg so their DEM endpoint elevation does not itself
-            # exceed the fixed-wing 0.15 rad climb/descent contract.
-            end_x = 1200.0 if index < 3 else 2400.0
-            nominal_y = -2000.0 + 300.0 * index
-            start_x, y, launch_site = self.nearest_launch_site(
-                nominal_x, nominal_y)
+            if self.is_sample:
+                nominal_x = 600.0
+                # Preserve the flight-verified sample routes.
+                end_x = 1200.0 if index < 3 else 2400.0
+                nominal_y = -2000.0 + 300.0 * index
+                search_radius = 300.0
+                start_x, y, launch_site = self.nearest_launch_site(
+                    nominal_x, nominal_y, search_radius_m=search_radius)
+            else:
+                nominal_x = -0.30 * self.width_m
+                end_x = 0.30 * self.width_m
+                nominal_y = (-0.35 + 0.10 * index) * self.height_m
+                # Generic packages provide naming/task templates, not hidden
+                # airfields. The operator still selects each actual start on
+                # the map and that point passes validate_launch_site().
+                start_x, y = nominal_x, nominal_y
+                launch_site = self.launch_site_metrics(start_x, y)
+                launch_site["suggested_only"] = True
             start_ground = launch_site["ground_elevation_msl_m"]
             end_ground = self.elevation_at_world(end_x, y)
             route = {
@@ -256,8 +294,12 @@ class DavosdorfWorldFrame:
         examples = self.vehicle_examples()
         defaults = [example["route"] for example in examples[:3]]
         return {
+            "terrain_id": self.terrain_id,
+            "terrain_name": self.terrain_name,
+            "terrain_source": self.terrain_source,
+            "sample_terrain": self.is_sample,
             "frame_id": "world",
-            "projection": "EPSG:21781",
+            "projection": self.projection,
             "display_projection": "EPSG:4326",
             "world_origin_projected": {
                 "easting": self.center_easting,
@@ -322,3 +364,9 @@ class DavosdorfWorldFrame:
 
     def overlay_png(self):
         return _png_bytes(self.terrain.hillshade_rgba(max_size=1600))
+
+
+# Compatibility name for existing imports and tests.  It now resolves the
+# active terrain package, falling back to the tracked Davos sample only when
+# no terrain has been activated.
+DavosdorfWorldFrame = TerrainWorldFrame

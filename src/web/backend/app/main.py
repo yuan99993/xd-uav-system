@@ -24,7 +24,7 @@ from urllib.parse import urlencode
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -33,6 +33,12 @@ from .planner import PathSegment, TerrainAStarPlanner
 from .planner3d import Plan3DParams, TerrainRRTStar3D
 from .ros_bridge import get_bridge
 from .terrain import GDAL_OK, TerrainMap, _png_bytes, load_synthetic_terrain, load_terrain
+from .terrain_mission import (
+    activate_terrain,
+    active_manifest,
+    configure_projection_runtime,
+    wgs84_wkt,
+)
 from .terrain_resource import CANONICAL_DAVOSDORF_DEM
 
 import numpy as np
@@ -94,6 +100,7 @@ class LoadGridRequest(BaseModel):
     source: str = Field("online_terrarium", description="数据来源标签")
     zoom: int = Field(0, description="DEM 瓦片层级")
     n_tiles: int = Field(0, description="瓦片张数")
+    vertical_datum: str = Field("MSL", pattern="^MSL$", description="正高基准")
 
 
 class SegmentOut(BaseModel):
@@ -189,19 +196,30 @@ def health():
 
 
 @app.post("/api/terrain/upload")
-async def upload_terrain(file: UploadFile = File(...)):
+async def upload_terrain(
+        file: UploadFile = File(...),
+        vertical_datum: str = Query(..., pattern="^MSL$")):
     """上传 GeoTIFF 文件并加载"""
     global _current_terrain, _current_terrain_name, _current_terrain_meta
-    if not file.filename.lower().endswith((".tif", ".tiff")):
+    filename = Path(file.filename or "").name
+    if not filename or filename != file.filename:
+        raise HTTPException(400, "地形文件名无效")
+    if not filename.lower().endswith((".tif", ".tiff")):
         raise HTTPException(400, "仅支持 .tif/.tiff")
-    save_path = DATA_DIR / file.filename
+    save_path = DATA_DIR / filename
     with open(save_path, "wb") as f:
         f.write(await file.read())
+    configure_projection_runtime()
     _current_terrain = load_terrain(str(save_path))
-    _current_terrain_name = file.filename
-    logger.info("地形已加载：%s (%dx%d)", file.filename,
+    _current_terrain_name = filename
+    _current_terrain_meta = {
+        "source": "uploaded_geotiff",
+        "original_filename": filename,
+        "vertical_datum": vertical_datum,
+    }
+    logger.info("地形已加载：%s (%dx%d)", filename,
                 _current_terrain.rows, _current_terrain.cols)
-    return {"status": "ok", "filename": file.filename,
+    return {"status": "ok", "filename": filename,
             "rows": _current_terrain.rows, "cols": _current_terrain.cols}
 
 
@@ -210,13 +228,17 @@ def load_sample():
     """加载内置示例地形 davosdorf.tif；GDAL 未装时退化为合成地形"""
     global _current_terrain, _current_terrain_name, _current_terrain_meta
     if GDAL_OK and SAMPLE_TIF.exists():
+        configure_projection_runtime()
         _current_terrain = load_terrain(str(SAMPLE_TIF))
         _current_terrain_name = SAMPLE_TIF.name
+        _current_terrain_meta = {
+            "source": "tracked_sample_geotiff", "vertical_datum": "MSL"}
     else:
         # 没装 GDAL → 合成地形（让用户能立刻看到规划效果）
         _current_terrain = load_synthetic_terrain()
         _current_terrain_name = "synthetic_terrain(无GDAL).tif"
-    _current_terrain_meta = {}
+        _current_terrain_meta = {
+            "source": "synthetic_preview_only", "vertical_datum": "MSL"}
     return {"status": "ok", "filename": _current_terrain_name,
             "rows": _current_terrain.rows, "cols": _current_terrain.cols}
 
@@ -230,6 +252,11 @@ def terrain_info():
     y_min = gt[3] + gt[5] * _current_terrain.rows
     x_max = gt[0] + gt[1] * _current_terrain.cols
     y_max = gt[3]
+    active = None
+    try:
+        active = active_manifest()
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        pass
     return {
         "filename": _current_terrain_name,
         "rows": _current_terrain.rows,
@@ -238,7 +265,24 @@ def terrain_info():
         "elevation_min": float(np.nanmin(_current_terrain.elevation)),
         "elevation_max": float(np.nanmax(_current_terrain.elevation)),
         "terrain_meta": _current_terrain_meta,
+        "active_terrain_id": active.get("terrain_id") if active else None,
     }
+
+
+@app.post("/api/terrain/activate")
+def activate_current_terrain():
+    """Create the formal GeoTIFF package consumed by mission control and ROS."""
+    if _current_terrain is None:
+        raise HTTPException(400, "尚未加载地形，先加载")
+    if _current_terrain_meta.get("source") == "synthetic_preview_only":
+        raise HTTPException(400, "合成预览地形不能作为 ROS/Gazebo 正式地形")
+    try:
+        manifest = activate_terrain(
+            _current_terrain, _current_terrain_name or "terrain",
+            _current_terrain_meta)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise HTTPException(400, str(error)) from error
+    return {"status": "ok", "terrain": manifest}
 
 
 @app.get("/api/terrain/overlay.png")
@@ -376,12 +420,12 @@ def load_grid(req: LoadGridRequest):
     dy = (req.y_min - req.y_max) / rows  # 负号：行 0 在最北，纬度向南递减
     gt = (float(req.x_min), float(dx), 0.0, float(req.y_max), 0.0, float(dy))
     _current_terrain = TerrainMap(
-        elevation=elev, geo_transform=gt, wkt='GEOGCS["WGS 84"]',
+        elevation=elev, geo_transform=gt, wkt=wgs84_wkt(),
         rows=rows, cols=cols,
     )
     _current_terrain_meta = {
         "source": req.source, "zoom": req.zoom, "n_tiles": req.n_tiles,
-        "online": True,
+        "online": True, "vertical_datum": req.vertical_datum,
     }
     _current_terrain_name = (
         f"在线真实地形 z{req.zoom}（{req.n_tiles} 瓦片, "

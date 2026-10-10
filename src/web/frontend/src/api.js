@@ -30,14 +30,19 @@ export function loadSampleTerrain() {
   return request(`${BASE}/terrain/load_sample`, { method: 'POST' })
 }
 
-export function uploadTerrain(file) {
+export function uploadTerrain(file, verticalDatum) {
+  if (verticalDatum !== 'MSL') throw new Error('上传 GeoTIFF 必须明确声明 MSL 高程基准')
   const fd = new FormData()
   fd.append('file', file)
-  return request(`${BASE}/terrain/upload`, { method: 'POST', body: fd })
+  return request(`${BASE}/terrain/upload?vertical_datum=MSL`, { method: 'POST', body: fd })
 }
 
 export function getTerrainInfo() {
   return request(`${BASE}/terrain/info`)
+}
+
+export function activateTerrain() {
+  return request(`${BASE}/terrain/activate`, { method: 'POST' })
 }
 
 // bounds: {x_min, y_min, x_max, y_max}；拖动蓝色矩形后回传，返回更新后的 terrain info

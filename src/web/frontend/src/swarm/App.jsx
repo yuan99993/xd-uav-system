@@ -145,7 +145,7 @@ export default function App() {
   const contractSummary = useMemo(() => health ? `${health.ros_contract.input_type} · ${health.ros_contract.frame_id}` : '接口检查中', [health])
   const runtime = capabilities?.runtime
   const runtimeLabel = runtime?.execution_available
-    ? `执行系统在线 · ${runtime.aircraft_count} 架`
+    ? runtime.terrain_match === false ? '执行系统地形不一致 · 需重启' : `执行系统在线 · ${runtime.aircraft_count} 架`
     : runtime?.rosbridge_reachable ? 'ROS 接口可连接' : 'Web 独立运行'
 
   useEffect(() => {
@@ -158,6 +158,10 @@ export default function App() {
       return
     }
     if (!draft) return
+    if (draft.terrain?.terrain_id && draft.terrain.terrain_id !== terrain.terrain_id) {
+      setNotice({ type: 'error', text: '任务草稿的地形与当前控制台不一致，请返回地图重新转交' })
+      return
+    }
     const clearance = Math.max(51, Math.min(119, Number(draft.requested_clearance_m) || PLANNING_CLEARANCE_M))
     Promise.all([
       geoToWorld(draft.start.longitude, draft.start.latitude, clearance),
@@ -171,7 +175,7 @@ export default function App() {
     }).catch((error) => {
       setNotice({
         type: 'error',
-        text: `地图草稿不能用于当前执行地形：${error.message}。旧页面仍可预览任意在线 DEM，但 ROS/Gazebo 当前只执行 Davosdorf 基准。`,
+        text: `地图草稿不能用于当前执行地形：${error.message}`,
       })
     })
   }, [terrain])
@@ -218,6 +222,10 @@ export default function App() {
   const switchMode = (nextMode) => {
     if (nextMode === 'ros' && !runtime?.rosbridge_reachable) {
       setNotice({ type: 'error', text: '执行系统尚未上线；可继续离线编辑，启动 ROS/仿真后再切换' })
+      return
+    }
+    if (nextMode === 'ros' && runtime?.terrain_match === false) {
+      setNotice({ type: 'error', text: 'Web 地形已更新，但执行系统仍在使用旧地形；请先点击“安全重启执行系统”' })
       return
     }
     setMode(nextMode)
@@ -541,7 +549,7 @@ export default function App() {
         </section>
         <div className={`notice ${notice.type}`}>{notice.text}</div>
         <div className="dispatch-row"><button className="dispatch-button" disabled={busy || routes.length < 2} onClick={handleDispatch}>{busy ? '处理中…' : mode === 'mock' ? '检查任务' : '下发并规划'}</button><button className="refresh-button" disabled={busy} onClick={async () => { try { await refreshFleetNow(); if (hasDispatched) setSnapshot(await getSwarmSnapshot(mode === 'mock')) } catch (error) { setNotice({ type: 'error', text: error.message }) } }}>刷新状态</button></div>
-        <section className="flight-actions"><NumberField label="相对起飞高度 m" value={takeoffAltitude} step={5} onChange={setTakeoffAltitude} /><button className="takeoff-button" disabled={busy || !canTakeoff} onClick={handleTakeoff}>一键解锁并起飞</button><button className="land-button" disabled={busy || !vehicles.length} onClick={handleLand}>一键安全降落</button><small>固定翼收到降落指令后会继续飞行建立进近，以“已落地、未解锁”为完成；空间交叉但错峰到达仅提示，预测同时接近仍禁止起飞。</small></section>
+        <section className="flight-actions"><NumberField label="相对起飞高度 m" value={takeoffAltitude} step={5} onChange={setTakeoffAltitude} /><button className="takeoff-button" disabled={busy || !canTakeoff} onClick={handleTakeoff}>一键解锁并起飞</button><button className="land-button" disabled={busy || !vehicles.length} onClick={handleLand}>一键返航降落</button><small>固定翼会返回该机在地图选择的起飞点建立进近，以“已落地、未解锁”为完成；空间交叉但错峰到达仅提示，预测同时接近仍禁止起飞。</small></section>
       </aside>
       <section className="visual-panel">
         <div className="map-wrap">
@@ -550,7 +558,7 @@ export default function App() {
             : <SwarmThreeD raster={terrainRaster} snapshot={snapshot} previewRoutes={previewRoutes} fleet={fleet} mode={mode} />}
           <div className="visual-toggle"><button className={visualMode === '2d' ? 'active' : ''} onClick={() => switchVisualMode('2d')}>二维地图</button><button className={visualMode === '3d' ? 'active' : ''} onClick={() => switchVisualMode('3d')}>三维实况</button></div>
           {vehicles.length > 0 && <div className="map-vehicle-legend">{vehicles.map((vehicle) => <span key={vehicle.uav_name}><i style={{ '--vehicle-color': vehicleColor(vehicle.uav_name) }} />{vehicle.uav_name}</span>)}</div>}
-          <div className="map-caption"><span>Davosdorf DEM</span><span>{visualMode === '2d' ? '规划线 + 实际飞机与尾迹' : 'world / MSL 三维实况'}</span><span className={terrain?.canonical_dem_match ? 'verified' : 'unverified'}>{terrain?.canonical_dem_match ? 'DEM 已与 ROS 核对' : 'DEM 待核对'}</span></div>
+          <div className="map-caption"><span>{terrain?.terrain_name || '任务地形'}</span><span>{visualMode === '2d' ? '规划线 + 实际飞机与尾迹' : 'world / MSL 三维实况'}</span><span className={runtime?.terrain_match || mode === 'mock' ? 'verified' : 'unverified'}>{mode === 'mock' ? '正式 DEM · 离线编排' : runtime?.terrain_match ? 'Web / ROS 地形一致' : '执行系统需重启加载地形'}</span></div>
         </div>
         <div className="telemetry-grid">
           <section className={`status-card ${statusTone}`}><div className="status-orb" /><div><span className="card-label">集群放行检查</span><strong>{!status ? '等待任务' : !status.analysis_ready ? '规划未齐' : !status.conflict_free ? `发现 ${blockingConflicts.length || conflicts.length} 个阻断冲突` : spatialWarnings.length ? `可放行 · ${spatialWarnings.length} 个空间交叉提醒` : '航迹可安全放行'}</strong><small>{status?.detail || '下发至少两架飞机的任务后生成结果'}</small></div></section>

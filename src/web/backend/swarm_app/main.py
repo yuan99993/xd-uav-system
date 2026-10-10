@@ -17,6 +17,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.main import app
+from app.terrain_mission import active_manifest
 
 from .contracts import (
     FleetOperationRequest,
@@ -27,18 +28,22 @@ from .contracts import (
     path_points,
 )
 from .gateway import get_gateway, ROS_GATEWAY
-from .terrain_frame import DavosdorfWorldFrame
+from .terrain_frame import TerrainWorldFrame
 
 
 _frame = None
+_frame_identity = None
 _frame_lock = threading.Lock()
 
 
 def terrain_frame():
-    global _frame
+    global _frame, _frame_identity
     with _frame_lock:
-        if _frame is None:
-            _frame = DavosdorfWorldFrame()
+        manifest = active_manifest()
+        identity = manifest["terrain_id"] if manifest else "davosdorf-sample"
+        if _frame is None or _frame_identity != identity:
+            _frame = TerrainWorldFrame(manifest)
+            _frame_identity = identity
         return _frame
 
 
@@ -185,11 +190,15 @@ def swarm_health():
 
 @app.get("/api/swarm/capabilities")
 def swarm_capabilities():
+    frame = _frame_or_503()
+    runtime = ROS_GATEWAY.capabilities()
+    runtime["web_terrain_id"] = frame.terrain_id
+    runtime["terrain_match"] = runtime.get("terrain_id") == frame.terrain_id
     return {
         "web": True,
         "offline_mission_editing": True,
         "mock_validation": True,
-        "runtime": ROS_GATEWAY.capabilities(),
+        "runtime": runtime,
         "safety": {
             "automatic_deferred_dispatch": False,
             "requires_explicit_redispatch_after_runtime_connect": True,
@@ -269,7 +278,10 @@ def swarm_dispatch(request: SwarmDispatchRequest):
             status_code=409,
             detail="Web and canonical ROS terrain DEM files do not match")
     try:
-        snapshot = get_gateway(request.use_mock).dispatch(request)
+        gateway = get_gateway(request.use_mock)
+        if not request.use_mock:
+            gateway.require_terrain(frame.terrain_id)
+        snapshot = gateway.dispatch(request)
     except (ConnectionError, OSError, RuntimeError, ValueError) as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     snapshot["dispatched"] = [
@@ -307,7 +319,10 @@ def swarm_fleet(use_mock: bool = Query(default=True)):
 def swarm_fleet_spawn(request: FleetSpawnRequest):
     example = _spawn_example(request)
     try:
-        result = get_gateway(request.use_mock).spawn_vehicle(example)
+        gateway = get_gateway(request.use_mock)
+        if not request.use_mock:
+            gateway.require_terrain(_frame_or_503().terrain_id)
+        result = gateway.spawn_vehicle(example)
     except (ConnectionError, OSError, RuntimeError, ValueError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {"uav_name": request.uav_name, **result}

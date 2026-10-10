@@ -11,6 +11,7 @@
        default="$(find xd_uav_planning)/worlds/davosdorf.world"/>
   <arg name="map_path"
        default="$(find terrain_navigation)/../resources/davosdorf.tif"/>
+  <arg name="terrain_manifest_path" default=""/>
   <arg name="fleet_config"
        default="$(find xd_uav_planning)/config/demo/terrain_fixedwing_fleet.yaml"/>
   <arg name="acceptance_config"
@@ -37,6 +38,7 @@
     <rosparam command="load" file="$(arg fleet_config)"/>
     <param name="auto_spawn_initial" value="$(arg auto_spawn_initial)"/>
     <param name="map_path" value="$(arg map_path)"/>
+    <param name="terrain_manifest_path" value="$(arg terrain_manifest_path)"/>
     <param name="vehicle_launch"
            value="terrain_fixedwing_swarm_vehicle.launch"/>
     <param name="status_topic" value="/terrain_swarm/fleet"/>
