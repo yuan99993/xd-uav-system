@@ -3,6 +3,7 @@
 import math
 from pathlib import Path
 import sys
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -30,13 +31,14 @@ from swarm_app.main import (
     WorldElevationCoordinate,
     _decorate_snapshot,
     _spawn_example,
+    swarm_capabilities,
     swarm_dispatch,
     swarm_health,
     swarm_snapshot,
     swarm_to_world,
     swarm_world_elevation,
 )
-from swarm_app.terrain_frame import DavosdorfWorldFrame
+from swarm_app.terrain_frame import DavosdorfWorldFrame, TerrainWorldFrame
 from swarm_app.terrain_frame import CANONICAL_DEM, WEB_DEM
 
 
@@ -167,7 +169,9 @@ class TerrainFrameTest(unittest.TestCase):
             self.assertAlmostEqual(
                 item["world_origin"]["y"], item["gazebo_spawn"]["y"])
             self.assertAlmostEqual(
-                elevation, item["gazebo_spawn"]["z"])
+                self.frame.gazebo_spawn_elevation_at_world(
+                    item["world_origin"]["x"], item["world_origin"]["y"]),
+                item["gazebo_spawn"]["z"])
             self.assertLessEqual(item["launch_site"]["slope_rad"], 0.10)
             self.assertLessEqual(item["launch_site"]["relief_3x3_m"], 3.0)
 
@@ -181,6 +185,33 @@ class TerrainFrameTest(unittest.TestCase):
                     uav_name="uav2", use_mock=True,
                     world_origin={"x": 600.0, "y": -1700.0, "z": ground}))
         self.assertEqual(409, context.exception.status_code)
+
+    def test_locally_flat_site_with_unsafe_rollout_is_rejected(self):
+        # This point passes the local slope gate, but Gazebo's eastbound
+        # landing surface rises sharply after the touchdown point.
+        x, y = 600.0, -1390.0
+        self.frame.validate_launch_site(x, y)
+        runway = self.frame.fixedwing_runway_metrics(x, y)
+        self.assertGreater(runway["rollout_relief_m"], 2.0)
+        with self.assertRaisesRegex(
+                ValueError, "Gazebo 实际地表坡度|进近方向|着陆滑跑"):
+            self.frame.validate_fixedwing_site(x, y)
+
+    def test_gazebo_cross_slope_is_rejected_even_when_source_cell_is_flat(self):
+        frame = object.__new__(TerrainWorldFrame)
+        frame.validate_launch_site = lambda _x, _y: {
+            "ground_elevation_msl_m": 100.0,
+            "slope_rad": 0.0,
+            "relief_3x3_m": 0.0,
+        }
+        # Eastbound approach/rollout is level, but the exact continuous
+        # Gazebo surface has a 0.09 north/south grade under the wings.
+        frame.gazebo_spawn_elevation_at_world = (
+            lambda _x, y: 100.0 + 0.09 * y)
+        runway = frame.fixedwing_runway_metrics(0.0, 0.0)
+        self.assertGreater(runway["local_surface_slope_rad"], 0.05)
+        with self.assertRaisesRegex(ValueError, "Gazebo 实际地表坡度"):
+            frame.validate_fixedwing_site(0.0, 0.0)
 
     def test_later_vehicle_examples_respect_endpoint_angle_budget(self):
         for item in self.frame.vehicle_examples()[3:]:
@@ -206,7 +237,7 @@ class TerrainFrameTest(unittest.TestCase):
                                sampled["ground_elevation_m"], places=5)
 
     def test_custom_spawn_origin_is_resampled_from_canonical_dem(self):
-        x, y = 600.0, -2000.0
+        x, y = 600.0, -2020.0
         ground = self.frame.elevation_at_world(x, y)
         with patch("swarm_app.main.terrain_frame", return_value=self.frame):
             example = _spawn_example(FleetSpawnRequest(
@@ -218,7 +249,9 @@ class TerrainFrameTest(unittest.TestCase):
         self.assertEqual(x, example["gazebo_spawn"]["x"])
         self.assertEqual(y, example["gazebo_spawn"]["y"])
         self.assertAlmostEqual(
-            ground, example["gazebo_spawn"]["z"])
+            self.frame.gazebo_spawn_elevation_at_world(x, y),
+            example["gazebo_spawn"]["z"])
+        self.assertNotEqual(ground, example["gazebo_spawn"]["z"])
         self.assertAlmostEqual(
             ground + 80.0, example["route"]["points"][0]["z"])
 
@@ -280,6 +313,127 @@ class MockFleetTest(unittest.TestCase):
 
 
 class RosbridgeCacheTest(unittest.TestCase):
+    def test_null_optional_sensor_does_not_break_fleet_snapshot(self):
+        gateway = RosbridgeSwarmGateway()
+        gateway._ensure_connected = lambda: None
+        gateway._fleet = {"capacity": 1, "vehicles": [{
+            "uav_name": "uav1",
+            "lifecycle": 1,
+            "connected": True,
+            "world_origin": {"x": 100.0, "y": 200.0, "z": 300.0},
+        }]}
+        gateway._control_states = {"uav1": {
+            "position_odom": {"x": 1.0, "y": 2.0, "z": 3.0},
+            "airspeed": None,
+            "groundspeed": None,
+        }}
+        gateway._control_received_at = {"uav1": time.monotonic()}
+        live = gateway.fleet_snapshot()["runtime"]["uav1"]
+        self.assertEqual(
+            {"x": 101.0, "y": 202.0, "z": 303.0},
+            live["world_position"])
+        self.assertEqual(0.0, live["airspeed_mps"])
+        self.assertEqual(0.0, live["groundspeed_mps"])
+
+    def test_disconnected_vehicle_does_not_expose_cached_position_as_live(self):
+        gateway = RosbridgeSwarmGateway()
+        gateway._ensure_connected = lambda: None
+        gateway._fleet = {"capacity": 1, "vehicles": [{
+            "uav_name": "uav1",
+            "lifecycle": 3,
+            "connected": False,
+            "world_origin": {"x": 100.0, "y": 200.0, "z": 300.0},
+        }]}
+        gateway._control_states = {"uav1": {
+            "position_odom": {"x": 1.0, "y": 2.0, "z": 3.0},
+            "state_valid": True,
+        }}
+        gateway._control_received_at = {"uav1": time.monotonic()}
+        live = gateway.fleet_snapshot()["runtime"]["uav1"]
+        self.assertFalse(live["telemetry_fresh"])
+        self.assertIsNone(live["world_position"])
+
+    def test_takeoff_precheck_rejects_stopped_clock_and_inverted_aircraft(self):
+        gateway = RosbridgeSwarmGateway()
+        now = time.monotonic()
+        gateway._clock_value = 10.0
+        gateway._clock_received_at = now
+        gateway._clock_advanced_at = now - 6.0
+        with self.assertRaisesRegex(RuntimeError, "仿真时钟"):
+            gateway._takeoff_precheck(["uav1"])
+
+        gateway._clock_advanced_at = now
+        gateway._fleet = {"vehicles": [{
+            "uav_name": "uav1", "lifecycle": 1, "connected": True,
+            "armed": False, "on_ground": True,
+        }]}
+        gateway._control_states = {"uav1": {
+            "state_valid": True,
+            "orientation_odom_body": {"x": 1.0, "y": 0.0,
+                                      "z": 0.0, "w": 0.0},
+        }}
+        gateway._control_received_at = {"uav1": now}
+        gateway._last_dispatch = {"uav1": 7201}
+        gateway._status = {
+            "analysis_ready": True,
+            "conflict_free": True,
+            "vehicles": [{
+                "uav_name": "uav1",
+                "planner_status": {"goal_id": 7201},
+            }],
+        }
+        with self.assertRaisesRegex(RuntimeError, "可能已侧翻"):
+            gateway._takeoff_precheck(["uav1"])
+
+    def test_landing_monitor_reports_completion_and_inverted_failure(self):
+        gateway = RosbridgeSwarmGateway()
+        gateway._release_generation = 3
+        gateway._fleet = {"vehicles": [{
+            "uav_name": "uav1", "lifecycle": 1, "connected": True,
+            "armed": False, "on_ground": True,
+        }]}
+        gateway._wait_for_landing(["uav1"], 3)
+        self.assertEqual("landed", gateway._takeoff_state["state"])
+
+        gateway._release_generation = 4
+        gateway._fleet["vehicles"][0].update(armed=True, on_ground=False)
+        gateway._control_states = {"uav1": {
+            "state_valid": False,
+            "orientation_odom_body": {
+                "x": 1.0, "y": 0.0, "z": 0.0, "w": 0.0},
+        }}
+        gateway._control_received_at = {"uav1": 4.0}
+        gateway._clock_value = 10.0
+        gateway._clock_received_at = 4.0
+        gateway._clock_advanced_at = 4.0
+        with patch("swarm_app.gateway.time.monotonic",
+                   side_effect=[0.0, 1.0, 1.0, 4.0, 4.0]), patch(
+                       "swarm_app.gateway.time.sleep"):
+            gateway._wait_for_landing(["uav1"], 4)
+        self.assertEqual("failed", gateway._takeoff_state["state"])
+        self.assertIn("可能已翻覆", gateway._takeoff_state["detail"])
+
+    def test_unobserved_runtime_terrain_is_not_a_mismatch(self):
+        frame = MagicMock(terrain_id="terrain-current")
+        with patch("swarm_app.main._frame_or_503", return_value=frame), patch(
+                "swarm_app.main.ROS_GATEWAY.capabilities",
+                return_value={"terrain_id": None}):
+            runtime = swarm_capabilities()["runtime"]
+        self.assertIsNone(runtime["terrain_match"])
+
+    def test_observed_runtime_terrain_is_compared(self):
+        frame = MagicMock(terrain_id="terrain-current")
+        with patch("swarm_app.main._frame_or_503", return_value=frame), patch(
+                "swarm_app.main.ROS_GATEWAY.capabilities",
+                return_value={"terrain_id": "terrain-current"}):
+            matching = swarm_capabilities()["runtime"]
+        with patch("swarm_app.main._frame_or_503", return_value=frame), patch(
+                "swarm_app.main.ROS_GATEWAY.capabilities",
+                return_value={"terrain_id": "terrain-old"}):
+            stale = swarm_capabilities()["runtime"]
+        self.assertTrue(matching["terrain_match"])
+        self.assertFalse(stale["terrain_match"])
+
     def test_capabilities_probe_does_not_connect_or_dispatch(self):
         gateway = RosbridgeSwarmGateway()
         connection = MagicMock()

@@ -49,9 +49,16 @@
     <param name="parent_frame" value="world"/>
     <param name="alignment_valid_rate_hz" value="10.0"/>
     <rosparam param="registrations" subst_value="true">
-      - {child_frame: $(arg UAV_NAME)/odom, translation_m: [$(arg world_origin_x), $(arg world_origin_y), $(arg world_origin_z)], validity_topic: /$(arg UAV_NAME)/single_tf_manager/local_alignment_valid}
+      - {child_frame: $(arg UAV_NAME)/local_origin, translation_m: [$(arg world_origin_x), $(arg world_origin_y), $(arg world_origin_z)], validity_topic: /$(arg UAV_NAME)/single_tf_manager/local_alignment_valid}
     </rosparam>
   </node>
+  <!-- MAVROS odometry is local to the selected launch point.  Keep the
+       conventional TF chain world -> local_origin -> odom so the controller
+       can transform its configured home for land_home, while world-frame
+       planning still sees the same spawn translation. -->
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="$(arg UAV_NAME)_terrain_local_odom"
+        args="0 0 0 0 0 0 1 $(arg UAV_NAME)/local_origin $(arg UAV_NAME)/odom"/>
 
   <include file="$(find xd_uav_state_estimators)/launch/odometry_adapter_manager.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>

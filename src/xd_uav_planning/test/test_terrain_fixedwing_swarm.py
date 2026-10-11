@@ -83,8 +83,10 @@ class TerrainFixedwingSwarmTest(unittest.TestCase):
             lambda: any(
                 not status.analysis_ready
                 and status.detail.startswith("not_ready:")
+                and {vehicle.uav_name for vehicle in status.vehicles}
+                == {"uav1", "uav2"}
                 for status in self.swarm_statuses),
-            detail="fail-closed pre-plan swarm status")
+            detail="complete fail-closed pre-plan swarm status")
 
         self.first_publisher.publish(self._request(self.FIRST_GOAL_ID))
         self.second_publisher.publish(self._request(self.SECOND_GOAL_ID))

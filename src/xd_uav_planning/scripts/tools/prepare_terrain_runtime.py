@@ -17,6 +17,19 @@ def _write(path, content):
     temporary.replace(path)
 
 
+def _overview_camera_pose(geometry, elevation):
+    """Return a useful local overview without changing the terrain scale."""
+    terrain_extent = max(geometry["size_x_m"], geometry["size_y_m"])
+    camera_distance = min(terrain_extent, 6000.0)
+    terrain_midpoint = (
+        elevation["prepared_min"] + elevation["prepared_max"]) / 2.0
+    return (
+        camera_distance * 0.7,
+        -camera_distance * 0.7,
+        terrain_midpoint + camera_distance * 0.55,
+    )
+
+
 def build(manifest_path, runtime_dir, samples):
     manifest_path = manifest_path.resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -65,16 +78,20 @@ def build(manifest_path, runtime_dir, samples):
 <sdf version="1.6">model.sdf</sdf>
 <description>Generated from the active xd-uav terrain package.</description></model>
 """)
-        camera_distance = max(geometry["size_x_m"], geometry["size_y_m"])
+        # Keep the complete physical terrain but choose a useful local view.
+        # Scaling the GUI camera with a 100 km DEM places it beyond the normal
+        # render distance, leaving only the blue background visible.
+        camera_x, camera_y, camera_z = _overview_camera_pose(
+            geometry, prepared["elevation_m"])
         world = """<?xml version="1.0"?>
 <sdf version="1.6"><world name="terrain_mission">
   <include><uri>model://sun</uri></include>
   <include><uri>model://active_terrain</uri></include>
   <physics name="fixedwing_sitl" type="ode"><real_time_update_rate>250</real_time_update_rate><max_step_size>0.004</max_step_size></physics>
   <scene><ambient>0.42 0.46 0.50 1</ambient><background>0.55 0.68 0.78 1</background><shadows>true</shadows></scene>
-  <gui fullscreen="0"><camera name="overview"><pose>{d} -{d} {z} 0 0.48 2.35</pose></camera></gui>
+  <gui fullscreen="0"><camera name="overview"><pose>{x} {y} {z} 0 0.48 2.35</pose></camera></gui>
 </world></sdf>
-""".format(d=camera_distance * 0.7, z=camera_distance * 0.55)
+""".format(x=camera_x, y=camera_y, z=camera_z)
         _write(staging / "terrain_mission.world", world)
         _write(staging / "terrain-package.json",
                json.dumps(manifest, ensure_ascii=False, indent=2,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import SwarmMap from './SwarmMap.jsx'
 import SwarmThreeD from './SwarmThreeD.jsx'
 import { vehicleColor } from './vehiclePalette.js'
@@ -12,6 +12,17 @@ import {
 const PLAN_STATES = ['空闲', '规划中', '执行中', '已到达', '受阻', '失败']
 const FLEET_STATES = ['启动中', '就绪', '停止中', '错误']
 const PLANNING_CLEARANCE_M = 80
+
+function plannerFailureText(detail) {
+  if (!detail) return ''
+  if (detail.includes('maximum_altitude_violation')) {
+    return '航迹超过最大离地高度：在过长航段中插入地形航点后重新下发'
+  }
+  if (detail.includes('terrain_clearance_violation')) return '航迹离地净空不足，请调整航点或高度'
+  if (detail.includes('no_exact_solution')) return '当前航点与固定翼约束下未找到精确可行航迹'
+  if (detail.includes('outside_map')) return '任务航迹超出当前 DEM 有效范围'
+  return detail
+}
 
 function cloneRoute(route) {
   return {
@@ -87,6 +98,8 @@ export default function App() {
   const [terrainRaster, setTerrainRaster] = useState(null)
   const [hasDispatched, setHasDispatched] = useState(false)
   const [notice, setNotice] = useState({ type: 'info', text: '正在加载固定地形和飞行接口…' })
+  const operationNoticeRef = useRef('')
+  const importedSpawnAppliedRef = useRef(false)
 
   useEffect(() => {
     Promise.all([getSwarmHealth(), getSwarmTerrain(), getRuntimeCapabilities()])
@@ -113,20 +126,67 @@ export default function App() {
   useEffect(() => {
     if (restarting) return undefined
     let active = true
-    const refresh = () => {
-      getFleet(mode === 'mock')
-        .then((result) => { if (active) setFleet(result) })
-        .catch((error) => { if (active) setNotice({ type: 'error', text: error.message }) })
-      if (hasDispatched) {
-        getSwarmSnapshot(mode === 'mock')
-          .then((result) => { if (active) setSnapshot(result) })
-          .catch((error) => { if (active) setNotice({ type: 'error', text: error.message }) })
+    let timer
+    const refresh = async () => {
+      try {
+        const result = await getFleet(mode === 'mock')
+        if (active) setFleet(result)
+      } catch (error) {
+        if (active) setNotice({ type: 'error', text: error.message })
+      } finally {
+        if (active) timer = window.setTimeout(refresh, 1000)
       }
     }
     refresh()
-    const timer = window.setInterval(refresh, 1500)
-    return () => { active = false; window.clearInterval(timer) }
-  }, [hasDispatched, mode, restarting])
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [mode, restarting])
+
+  const dispatchKey = routes.map((route) => `${route.uav_name}:${route.goal_id}`).join('|')
+  useEffect(() => {
+    if (restarting || !hasDispatched) return undefined
+    let active = true
+    let timer
+    const refresh = async () => {
+      try {
+        const result = await getSwarmSnapshot(mode === 'mock')
+        if (!active) return
+        setSnapshot(result)
+        const statusVehicles = result.status?.vehicles || []
+        const paths = result.display_paths || {}
+        const complete = Boolean(
+          result.status?.analysis_ready
+          && statusVehicles.length > 0
+          && statusVehicles.every((vehicle) => (
+            vehicle.path_available
+            && (paths[vehicle.uav_name]?.points?.length || 0) > 1
+          )),
+        )
+        // Planning results are immutable for one goal batch. Once complete,
+        // stop downloading and reprojecting thousands of path points; live
+        // aircraft state continues through the independent fleet poll above.
+        if (!complete) timer = window.setTimeout(refresh, 1500)
+      } catch (error) {
+        if (active) {
+          setNotice({ type: 'error', text: error.message })
+          timer = window.setTimeout(refresh, 3000)
+        }
+      }
+    }
+    refresh()
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [dispatchKey, hasDispatched, mode, restarting])
+
+  useEffect(() => {
+    const operation = fleet?.operation
+    if (!operation || !['failed', 'released', 'landed'].includes(operation.state)) return
+    const key = `${operation.generation}:${operation.state}:${operation.detail}`
+    if (operationNoticeRef.current === key) return
+    operationNoticeRef.current = key
+    setNotice({
+      type: operation.state === 'failed' ? 'error' : 'ok',
+      text: operation.detail,
+    })
+  }, [fleet?.operation])
 
   const vehicles = fleet?.vehicles || []
   const onlineNames = vehicles.map((vehicle) => vehicle.uav_name)
@@ -137,7 +197,10 @@ export default function App() {
   const statusTone = !status?.analysis_ready ? 'waiting' : !status.conflict_free ? 'danger' : spatialWarnings.length ? 'warning' : 'safe'
   const nextVehicleExample = terrain?.vehicle_examples?.find((item) => !onlineNames.includes(item.uav_name))
   const unassignedVehicle = vehicles.find((vehicle) => !routes.some((route) => route.uav_name === vehicle.uav_name))
-  const canTakeoff = Boolean(status?.analysis_ready && status?.conflict_free && routes.length >= 2)
+  const canTakeoff = Boolean(
+    status?.analysis_ready && status?.conflict_free && routes.length >= 2
+    && (mode === 'mock' || fleet?.simulation_clock?.advancing),
+  )
   const canRestart = mode === 'mock' || vehicles.every((vehicle) => (
     Number(vehicle.lifecycle) === 1 && vehicle.connected
     && !vehicle.armed && vehicle.on_ground
@@ -167,6 +230,7 @@ export default function App() {
       geoToWorld(draft.start.longitude, draft.start.latitude, clearance),
       geoToWorld(draft.goal.longitude, draft.goal.latitude, clearance),
     ]).then(([startWorld, goalWorld]) => {
+      importedSpawnAppliedRef.current = false
       setPendingMissionDraft({ draft, clearance, startWorld, goalWorld })
       setNotice({
         type: 'ok',
@@ -181,7 +245,8 @@ export default function App() {
   }, [terrain])
 
   useEffect(() => {
-    if (!pendingMissionDraft || !nextVehicleExample || spawnDraft) return
+    if (!pendingMissionDraft || !nextVehicleExample || importedSpawnAppliedRef.current) return
+    importedSpawnAppliedRef.current = true
     const world = pendingMissionDraft.startWorld
     setSpawnDraft({
       uav_name: nextVehicleExample.uav_name,
@@ -195,7 +260,7 @@ export default function App() {
         lat: pendingMissionDraft.draft.start.latitude,
       },
     })
-  }, [pendingMissionDraft, nextVehicleExample, spawnDraft])
+  }, [pendingMissionDraft, nextVehicleExample])
 
   const markEdited = () => {
     setSnapshot(null)
@@ -511,10 +576,15 @@ export default function App() {
           <div className="section-title"><span>在线飞机</span><small>{vehicles.length} / {fleet?.capacity || 8}</small></div>
           <div className="spawn-controls">
             <button disabled={busy || !nextVehicleExample} onClick={() => {
-              const next = !selectingSpawn
-              setSelectingSpawn(next)
-              if (next) setNotice({ type: 'info', text: `请在地图上点击 ${nextVehicleExample.uav_name} 的起始位置` })
-            }}>{selectingSpawn ? '取消地图选点' : nextVehicleExample ? `选择 ${nextVehicleExample.uav_name} 起点` : '已达到示例容量'}</button>
+              if (selectingSpawn) {
+                setSelectingSpawn(false)
+                setNotice({ type: 'info', text: '已取消起点选择；需重新选点后才能创建飞机' })
+                return
+              }
+              setSpawnDraft(null)
+              setSelectingSpawn(true)
+              setNotice({ type: 'info', text: `请在地图上点击 ${nextVehicleExample.uav_name} 的新起始位置` })
+            }}>{selectingSpawn ? '取消地图选点' : nextVehicleExample ? `${spawnDraft?.uav_name === nextVehicleExample.uav_name ? '重新选择' : '选择'} ${nextVehicleExample.uav_name} 起点` : '已达到示例容量'}</button>
             <button disabled={busy || !nextVehicleExample || spawnDraft?.uav_name !== nextVehicleExample.uav_name || vehicles.length >= (fleet?.capacity || 8)} onClick={handleAddVehicle}>{nextVehicleExample ? `创建 ${nextVehicleExample.uav_name}` : '无法继续创建'}</button>
             <div className="spawn-summary">{spawnDraft ? `待创建：${spawnDraft.uav_name} · X ${spawnDraft.world_origin.x.toFixed(1)} · Y ${spawnDraft.world_origin.y.toFixed(1)} · 地面 ${spawnDraft.world_origin.z.toFixed(1)} m` : '尚未选起点；不再使用默认出生位置'}</div>
           </div>
@@ -564,7 +634,8 @@ export default function App() {
           <section className={`status-card ${statusTone}`}><div className="status-orb" /><div><span className="card-label">集群放行检查</span><strong>{!status ? '等待任务' : !status.analysis_ready ? '规划未齐' : !status.conflict_free ? `发现 ${blockingConflicts.length || conflicts.length} 个阻断冲突` : spatialWarnings.length ? `可放行 · ${spatialWarnings.length} 个空间交叉提醒` : '航迹可安全放行'}</strong><small>{status?.detail || '下发至少两架飞机的任务后生成结果'}</small></div></section>
           <section className="vehicles-card"><div className="card-label">规划与飞行状态</div><div className="vehicle-list">{(status?.vehicles || []).map((vehicle) => {
             const live = fleet?.runtime?.[vehicle.uav_name] || {}
-            return <div className="vehicle-row" key={vehicle.uav_name}><span className="vehicle-name">{vehicle.uav_name}</span><span>{PLAN_STATES[vehicle.planner_status?.state] || '未知'}</span><span>{vehicle.path_points} 点</span><span>{Number(live.groundspeed_mps || 0).toFixed(1)} m/s</span></div>
+            const failure = Number(vehicle.planner_status?.state) >= 4 ? plannerFailureText(vehicle.planner_status?.detail) : ''
+            return <div className="vehicle-row" key={vehicle.uav_name}><span className="vehicle-name">{vehicle.uav_name}</span><span>{PLAN_STATES[vehicle.planner_status?.state] || '未知'}</span><span>{vehicle.path_points} 点</span><span>{mode !== 'mock' && !live.telemetry_fresh ? '遥测中断' : `${Number(live.groundspeed_mps || 0).toFixed(1)} m/s`}</span>{failure && <small style={{ gridColumn: '1 / -1', color: '#f3b36b' }}>{failure}</small>}</div>
           })}{!status?.vehicles?.length && <div className="empty-state">暂无规划结果</div>}</div></section>
           <section className="conflict-card"><div className="card-label">安全间隔与错峰提示</div><div className="conflict-list">{conflicts.map((conflict, index) => <div className="conflict-row" key={`${conflict.first_uav}-${conflict.second_uav}-${index}`}><span className={`conflict-kind type-${conflict.conflict_type}`}>{conflict.conflict_type === 2 ? '时空阻断' : '空间提醒'}</span><strong>{conflict.first_uav} ↔ {conflict.second_uav}</strong><span>{Number(conflict.separation_m).toFixed(1)} / {Number(conflict.threshold_m).toFixed(1)} m</span><span>{conflict.predicted_time_valid ? `预计 T+${Number(conflict.predicted_time_s).toFixed(1)}s 同时接近` : '预计错峰通过'}</span></div>)}{status?.analysis_ready && !conflicts.length && <div className="empty-state safe-text">当前规划筛查未发现安全间隔问题</div>}{!status?.analysis_ready && <div className="empty-state">等待全部任务生成有效航迹</div>}</div></section>
           <section className="profile-card"><div className="card-label">规划航迹高度</div><ElevationStrip snapshot={snapshot} /></section>

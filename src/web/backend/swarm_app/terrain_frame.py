@@ -20,6 +20,18 @@ WEB_ROOT = Path(__file__).resolve().parents[2]
 # part of the runtime contract.
 CANONICAL_DEM = CANONICAL_DAVOSDORF_DEM
 WEB_DEM = CANONICAL_DEM
+# The PX4 plane SDF already places its body/collision above the model origin
+# (the model pose is +0.246 m).  Adding another half metre here makes the
+# aircraft fall onto the heightmap at startup and can flip it on a slope.
+# Use the exact rendered surface as the model origin, matching PX4's normal
+# flat-world spawn at z=0.
+GAZEBO_FIXEDWING_SPAWN_CLEARANCE_M = 0.0
+GAZEBO_HEIGHTMAP_SAMPLES = 513
+FIXEDWING_APPROACH_DISTANCE_M = 400.0
+FIXEDWING_APPROACH_HEIGHT_M = 30.0
+FIXEDWING_ROLLOUT_DISTANCE_M = 200.0
+FIXEDWING_RUNWAY_SAMPLE_STEP_M = 25.0
+FIXEDWING_LOCAL_SLOPE_SAMPLE_M = 5.0
 
 
 def _sha256(path):
@@ -167,6 +179,63 @@ class TerrainWorldFrame:
             raise ValueError("DEM elevation is unavailable at this coordinate")
         return elevation
 
+    def gazebo_spawn_elevation_at_world(self, x, y):
+        """Reproduce the continuous heightmap surface used by Gazebo.
+
+        The planner intentionally consumes grid-cell elevations.  Gazebo
+        renders a 513x513 nearest-neighbour cache as a continuous heightmap.
+        Reproducing both stages keeps arbitrary map clicks above that exact
+        surface without changing the planner's grid-cell world origin.  The
+        plane SDF supplies its own physical body clearance above this origin.
+        """
+        if not all(math.isfinite(value) for value in (x, y)):
+            raise ValueError("world coordinates must be finite")
+        # Gazebo treats heightmap samples as vertices spanning both edges of
+        # <size>, not as GeoTIFF pixel centres.  A 513-sample image therefore
+        # has 512 horizontal intervals.  Using the raster geotransform here
+        # shifts the lookup by as much as half a prepared cell (about 96 m on
+        # a 100 km terrain), which can be several vertical metres on a slope.
+        intervals = GAZEBO_HEIGHTMAP_SAMPLES - 1
+        column = ((x + self.width_m / 2.0) / self.width_m) * intervals
+        row = ((self.height_m / 2.0 - y) / self.height_m) * intervals
+        column0 = int(math.floor(column))
+        row0 = int(math.floor(row))
+        if (row0 < 0 or row0 + 1 >= GAZEBO_HEIGHTMAP_SAMPLES
+                or column0 < 0
+                or column0 + 1 >= GAZEBO_HEIGHTMAP_SAMPLES):
+            raise ValueError("world coordinate is too close to the DEM boundary")
+        x_fraction = column - column0
+        y_fraction = row - row0
+        values = self.terrain.elevation
+
+        def prepared_value(target_row, target_column):
+            source_row = min(
+                self.terrain.rows - 1,
+                int(math.floor(
+                    (target_row + 0.5) * self.terrain.rows
+                    / GAZEBO_HEIGHTMAP_SAMPLES)))
+            source_column = min(
+                self.terrain.cols - 1,
+                int(math.floor(
+                    (target_column + 0.5) * self.terrain.cols
+                    / GAZEBO_HEIGHTMAP_SAMPLES)))
+            return values[source_row, source_column]
+
+        corners = np.array([
+            [prepared_value(row0, column0),
+             prepared_value(row0, column0 + 1)],
+            [prepared_value(row0 + 1, column0),
+             prepared_value(row0 + 1, column0 + 1)],
+        ])
+        if not np.isfinite(corners).all():
+            raise ValueError("DEM elevation is unavailable at this coordinate")
+        north = ((1.0 - x_fraction) * corners[0, 0]
+                 + x_fraction * corners[0, 1])
+        south = ((1.0 - x_fraction) * corners[1, 0]
+                 + x_fraction * corners[1, 1])
+        surface = (1.0 - y_fraction) * north + y_fraction * south
+        return float(surface) + GAZEBO_FIXEDWING_SPAWN_CLEARANCE_M
+
     def _grid_index_at_world(self, x, y):
         transform = self.terrain.geo_transform
         easting = self.center_easting + x
@@ -215,6 +284,101 @@ class TerrainWorldFrame:
             raise ValueError(
                 "launch site local relief {:.2f} m exceeds {:.2f} m".format(
                     metrics["relief_3x3_m"], maximum_relief_m))
+        return metrics
+
+    def fixedwing_runway_metrics(self, x, y, course_rad=0.0):
+        """Evaluate the Gazebo surface along the controller's landing line.
+
+        Local point slope alone is insufficient for a fixed wing: a hill in
+        the final approach or rollout can contact the airframe before the
+        configured touchdown point.  Sample the same continuous heightmap
+        surface that Gazebo collides with, using the controller's 400 m
+        approach and 200 m rollout geometry.
+        """
+        if not all(math.isfinite(value) for value in (x, y, course_rad)):
+            raise ValueError("fixed-wing runway coordinates must be finite")
+        direction_x = math.cos(course_rad)
+        direction_y = math.sin(course_rad)
+        ground = self.gazebo_spawn_elevation_at_world(x, y)
+        slope_step = FIXEDWING_LOCAL_SLOPE_SAMPLE_M
+        dz_dx = (
+            self.gazebo_spawn_elevation_at_world(x + slope_step, y)
+            - self.gazebo_spawn_elevation_at_world(x - slope_step, y)
+        ) / (2.0 * slope_step)
+        dz_dy = (
+            self.gazebo_spawn_elevation_at_world(x, y + slope_step)
+            - self.gazebo_spawn_elevation_at_world(x, y - slope_step)
+        ) / (2.0 * slope_step)
+
+        def relative_height(distance):
+            return self.gazebo_spawn_elevation_at_world(
+                x + distance * direction_x,
+                y + distance * direction_y) - ground
+
+        approach_distances = np.arange(
+            -FIXEDWING_APPROACH_DISTANCE_M,
+            0.5 * FIXEDWING_RUNWAY_SAMPLE_STEP_M,
+            FIXEDWING_RUNWAY_SAMPLE_STEP_M)
+        rollout_distances = np.arange(
+            0.0,
+            FIXEDWING_ROLLOUT_DISTANCE_M
+            + 0.5 * FIXEDWING_RUNWAY_SAMPLE_STEP_M,
+            FIXEDWING_RUNWAY_SAMPLE_STEP_M)
+        approach = [(float(distance), relative_height(float(distance)))
+                    for distance in approach_distances]
+        rollout = [relative_height(float(distance))
+                   for distance in rollout_distances]
+        clearance = [
+            (-distance / FIXEDWING_APPROACH_DISTANCE_M)
+            * FIXEDWING_APPROACH_HEIGHT_M - height
+            for distance, height in approach if distance < 0.0
+        ]
+        return {
+            "course_rad": float(course_rad),
+            # The canonical DEM cell slope is not sufficient after Gazebo's
+            # 513-sample resampling.  On a coarse mission DEM the continuous
+            # heightmap can be appreciably steeper at the exact aircraft
+            # footprint, causing the visual/collision geometry to cut into a
+            # wing even though the selected source cell passed its gate.
+            "local_surface_slope_rad": float(
+                math.atan(math.hypot(dz_dx, dz_dy))),
+            "minimum_approach_clearance_m": float(min(clearance)),
+            "maximum_rollout_rise_m": float(max(rollout)),
+            "rollout_relief_m": float(max(rollout) - min(rollout)),
+        }
+
+    def validate_fixedwing_site(
+            self, x, y, course_rad=0.0,
+            maximum_local_surface_slope_rad=0.05,
+            minimum_approach_clearance_m=0.5,
+            maximum_rollout_rise_m=1.0,
+            maximum_rollout_relief_m=2.0):
+        """Require both a stable spawn point and a usable landing corridor."""
+        metrics = self.validate_launch_site(x, y)
+        runway = self.fixedwing_runway_metrics(x, y, course_rad)
+        if (runway["local_surface_slope_rad"]
+                > maximum_local_surface_slope_rad):
+            raise ValueError(
+                "Gazebo 实际地表坡度 {:.3f} rad，超过固定翼起降限值 {:.3f} rad"
+                .format(runway["local_surface_slope_rad"],
+                        maximum_local_surface_slope_rad))
+        if (runway["minimum_approach_clearance_m"]
+                < minimum_approach_clearance_m):
+            raise ValueError(
+                "进近方向地形侵入下滑通道（最小余量 {:.2f} m，要求至少 {:.2f} m）"
+                .format(runway["minimum_approach_clearance_m"],
+                        minimum_approach_clearance_m))
+        if runway["maximum_rollout_rise_m"] > maximum_rollout_rise_m:
+            raise ValueError(
+                "着陆滑跑方向地形抬升 {:.2f} m，超过 {:.2f} m 安全限值"
+                .format(runway["maximum_rollout_rise_m"],
+                        maximum_rollout_rise_m))
+        if runway["rollout_relief_m"] > maximum_rollout_relief_m:
+            raise ValueError(
+                "着陆滑跑区域高差 {:.2f} m，超过 {:.2f} m 安全限值"
+                .format(runway["rollout_relief_m"],
+                        maximum_rollout_relief_m))
+        metrics["landing_corridor"] = runway
         return metrics
 
     def nearest_launch_site(self, nominal_x, nominal_y, search_radius_m=300.0):
@@ -284,7 +448,7 @@ class TerrainWorldFrame:
                 "gazebo_spawn": {
                     "x": start_x,
                     "y": y,
-                    "z": start_ground,
+                    "z": self.gazebo_spawn_elevation_at_world(start_x, y),
                 },
                 "route": route,
             })
@@ -317,6 +481,9 @@ class TerrainWorldFrame:
             "gazebo_frame": {
                 "horizontal_mapping": "gazebo_x_y_equals_world_x_y",
                 "vertical_mapping": "gazebo_z_equals_elevation_msl_m",
+                "spawn_surface_interpolation": (
+                    "gazebo_513_nearest_cache_then_bilinear"),
+                "fixedwing_spawn_clearance_m": GAZEBO_FIXEDWING_SPAWN_CLEARANCE_M,
             },
             "launch_site_policy": {
                 "maximum_slope_rad": 0.10,

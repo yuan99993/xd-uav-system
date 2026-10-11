@@ -235,10 +235,20 @@ class TerrainSwarmMonitor:
         if len(vehicles) < 2:
             output.detail = "waiting_for_task_batch"
             return output
+
+        # Always publish one summary per member of the accepted task batch.
+        # Returning while the list is still being built makes downstream
+        # consumers see a partial fleet whenever an earlier vehicle is still
+        # planning or becomes blocked.  The Web gateway deliberately rejects
+        # such partial snapshots because they cannot be used for a fleet-wide
+        # release decision.
         for vehicle in vehicles:
             name = vehicle["name"]
             output.vehicles.append(self._vehicle_summary(
                 vehicle, paths[name], statuses[name]))
+
+        for vehicle in vehicles:
+            name = vehicle["name"]
             reason = self._validate_vehicle(vehicle, paths[name], statuses[name])
             if reason is not None:
                 output.analysis_ready = False

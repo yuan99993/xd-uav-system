@@ -144,11 +144,15 @@ def _spawn_example(request):
     x = float(request.world_origin.x)
     y = float(request.world_origin.y)
     try:
-        launch_site = frame.validate_launch_site(x, y)
+        # The current fixed-wing controller returns on home yaw=0, so validate
+        # the exact eastbound Gazebo approach/rollout line as well as the
+        # point under the aircraft.  This prevents a locally flat spawn from
+        # later striking an upslope before touchdown.
+        launch_site = frame.validate_fixedwing_site(x, y, course_rad=0.0)
     except ValueError as error:
         raise HTTPException(
             status_code=409,
-            detail="所选位置不适合固定翼地面起飞：{}".format(error)) from error
+            detail="所选位置不适合固定翼起降：{}".format(error)) from error
     ground = launch_site["ground_elevation_msl_m"]
     if abs(float(request.world_origin.z) - ground) > 1.0:
         raise HTTPException(
@@ -159,7 +163,7 @@ def _spawn_example(request):
     example["gazebo_spawn"] = {
         "x": x,
         "y": y,
-        "z": ground,
+        "z": frame.gazebo_spawn_elevation_at_world(x, y),
     }
     example["route"]["points"][0] = {
         "x": x, "y": y, "z": ground + 80.0}
@@ -193,7 +197,14 @@ def swarm_capabilities():
     frame = _frame_or_503()
     runtime = ROS_GATEWAY.capabilities()
     runtime["web_terrain_id"] = frame.terrain_id
-    runtime["terrain_match"] = runtime.get("terrain_id") == frame.terrain_id
+    runtime_terrain_id = runtime.get("terrain_id")
+    # No manifest means "not observed yet", not "different".  Treating it as
+    # a mismatch deadlocks the first ROS-mode switch: that switch is what
+    # establishes the rosbridge subscriptions which receive the latched
+    # runtime manifest.
+    runtime["terrain_match"] = (
+        None if runtime_terrain_id is None
+        else runtime_terrain_id == frame.terrain_id)
     return {
         "web": True,
         "offline_mission_editing": True,

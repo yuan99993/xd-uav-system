@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import os
 from pathlib import Path
 import socket
@@ -27,6 +28,28 @@ from xd_uav_planning.terrain_swarm import (  # noqa: E402
 
 
 MINIMUM_SEPARATION_M = 133.33334
+
+
+def _finite_float(value, default=None):
+    try:
+        output = float(value)
+    except (TypeError, ValueError):
+        return default
+    return output if math.isfinite(output) else default
+
+
+def _quaternion_tilt(quaternion):
+    """Return body-up tilt from world-up, independent of heading."""
+    values = [_finite_float((quaternion or {}).get(key))
+              for key in ("x", "y", "z", "w")]
+    if any(value is None for value in values):
+        return None
+    x, y, z, w = values
+    norm_squared = x * x + y * y + z * z + w * w
+    if norm_squared <= 1.0e-12:
+        return None
+    cosine = (w * w + z * z - x * x - y * y) / norm_squared
+    return math.acos(max(-1.0, min(1.0, cosine)))
 
 
 def _header(stamp):
@@ -235,6 +258,7 @@ class RosbridgeSwarmGateway:
         self.host = os.environ.get("SWARM_ROSBRIDGE_HOST", "127.0.0.1")
         self.port = int(os.environ.get("SWARM_ROSBRIDGE_PORT", "9090"))
         self._lock = threading.Lock()
+        self._connection_lock = threading.Lock()
         self._ros = None
         self._publishers = {}
         self._subscribers = {}
@@ -243,6 +267,7 @@ class RosbridgeSwarmGateway:
         self._fleet = None
         self._terrain_manifest = None
         self._control_states = {}
+        self._control_received_at = {}
         self._path_statuses = {}
         self._trails = {}
         self._task_publisher = None
@@ -250,23 +275,60 @@ class RosbridgeSwarmGateway:
         self._last_dispatch = {}
         self._operation_lock = threading.Lock()
         self._takeoff_worker = None
+        self._landing_worker = None
+        self._takeoff_state = {
+            "generation": 0, "state": "idle", "detail": ""}
         self._release_generation = 0
+        self._clock_value = None
+        self._clock_received_at = None
+        self._clock_advanced_at = None
+
+    def _clear_disconnected_transport(self):
+        """Discard subscriptions and cached live state from an old ROS run."""
+        with self._lock:
+            self._release_generation += 1
+            self._ros = None
+            self._publishers = {}
+            self._subscribers = {}
+            self._paths = {}
+            self._status = None
+            self._fleet = None
+            self._terrain_manifest = None
+            self._control_states = {}
+            self._control_received_at = {}
+            self._path_statuses = {}
+            self._trails = {}
+            self._task_publisher = None
+            self._release_publisher = None
+            self._last_dispatch = {}
+            self._clock_value = None
+            self._clock_received_at = None
+            self._clock_advanced_at = None
+            self._takeoff_state = {
+                "generation": self._release_generation,
+                "state": "idle",
+                "detail": "ROS 执行系统已断开",
+            }
 
     def _ensure_connected(self):
-        if self._ros is not None and self._ros.is_connected:
-            return
-        try:
-            import roslibpy
-        except ImportError as error:
-            raise RuntimeError("roslibpy is unavailable in the Web environment") from error
-        ros = roslibpy.Ros(host=self.host, port=self.port)
-        ros.run(timeout=5)
-        if not ros.is_connected:
-            raise RuntimeError("rosbridge connection timed out")
-        self._ros = ros
-        self._subscribe_status()
-        self._subscribe_fleet()
-        self._subscribe_terrain_manifest()
+        with self._connection_lock:
+            if self._ros is not None and self._ros.is_connected:
+                return
+            self._clear_disconnected_transport()
+            try:
+                import roslibpy
+            except ImportError as error:
+                raise RuntimeError(
+                    "roslibpy is unavailable in the Web environment") from error
+            ros = roslibpy.Ros(host=self.host, port=self.port)
+            ros.run(timeout=5)
+            if not ros.is_connected:
+                raise RuntimeError("rosbridge connection timed out")
+            self._ros = ros
+            self._subscribe_status()
+            self._subscribe_fleet()
+            self._subscribe_terrain_manifest()
+            self._subscribe_clock()
 
     def capabilities(self):
         """Return a fast, read-only view of optional ROS execution services."""
@@ -334,6 +396,54 @@ class RosbridgeSwarmGateway:
         subscriber.subscribe(self._terrain_manifest_callback)
         self._subscribers[topic_name] = subscriber
 
+    def _subscribe_clock(self):
+        topic_name = "/clock"
+        if topic_name in self._subscribers:
+            return
+        import roslibpy
+        subscriber = roslibpy.Topic(
+            self._ros, topic_name, "rosgraph_msgs/Clock")
+        # Gazebo publishes /clock at the physics rate (currently 250 Hz).
+        # The Web safety gate only needs to know that time is advancing;
+        # forwarding every tick through JSON/rosbridge can starve vehicle
+        # telemetry and HTTP responses during a multi-aircraft flight.
+        subscriber.throttle_rate = 200
+        subscriber.queue_length = 1
+        subscriber.subscribe(self._clock_callback)
+        self._subscribers[topic_name] = subscriber
+
+    def _clock_callback(self, message):
+        stamp = message.get("clock") or {}
+        seconds = _finite_float(stamp.get("secs"))
+        nanoseconds = _finite_float(stamp.get("nsecs"))
+        if seconds is None or nanoseconds is None:
+            return
+        value = seconds + nanoseconds / 1_000_000_000.0
+        now = time.monotonic()
+        with self._lock:
+            if self._clock_value is None or value > self._clock_value + 1.0e-9:
+                self._clock_advanced_at = now
+            self._clock_value = value
+            self._clock_received_at = now
+
+    def _clock_health(self, now=None):
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            value = self._clock_value
+            received_at = self._clock_received_at
+            advanced_at = self._clock_advanced_at
+        received_age = None if received_at is None else now - received_at
+        advanced_age = None if advanced_at is None else now - advanced_at
+        advancing = bool(
+            value is not None and advanced_age is not None
+            and advanced_age <= 5.0)
+        return {
+            "advancing": advancing,
+            "sim_time_s": value,
+            "message_age_s": received_age,
+            "advance_age_s": advanced_age,
+        }
+
     def _terrain_manifest_callback(self, message):
         import json
         try:
@@ -365,14 +475,16 @@ class RosbridgeSwarmGateway:
         control_topic = "/{}/control_manager/state".format(uav_name)
         if control_topic not in self._subscribers:
             subscriber = roslibpy.Topic(
-                self._ros, control_topic, "xd_uav_controller/ControlState")
+                self._ros, control_topic, "xd_uav_controller/ControlState",
+                throttle_rate=200, queue_length=1)
             subscriber.subscribe(
                 lambda message, name=uav_name: self._control_callback(name, message))
             self._subscribers[control_topic] = subscriber
         path_topic = "/{}/controller/path_status".format(uav_name)
         if path_topic not in self._subscribers:
             subscriber = roslibpy.Topic(
-                self._ros, path_topic, "xd_uav_controller/PathStatus")
+                self._ros, path_topic, "xd_uav_controller/PathStatus",
+                throttle_rate=500, queue_length=1)
             subscriber.subscribe(
                 lambda message, name=uav_name: self._path_status_callback(name, message))
             self._subscribers[path_topic] = subscriber
@@ -412,6 +524,9 @@ class RosbridgeSwarmGateway:
             self._control_states = {
                 name: value for name, value in self._control_states.items()
                 if name in active}
+            self._control_received_at = {
+                name: value for name, value in self._control_received_at.items()
+                if name in active}
             self._path_statuses = {
                 name: value for name, value in self._path_statuses.items()
                 if name in active}
@@ -439,6 +554,7 @@ class RosbridgeSwarmGateway:
     def _control_callback(self, uav_name, message):
         with self._lock:
             self._control_states[uav_name] = copy.deepcopy(message)
+            self._control_received_at[uav_name] = time.monotonic()
             fleet = self._fleet or {}
             vehicle = next((item for item in fleet.get("vehicles", [])
                             if item.get("uav_name") == uav_name), None)
@@ -446,10 +562,16 @@ class RosbridgeSwarmGateway:
             origin = (vehicle or {}).get("world_origin", {})
             if not origin or not position:
                 return
+            origin_values = [_finite_float(origin.get(key))
+                             for key in ("x", "y", "z")]
+            position_values = [_finite_float(position.get(key))
+                               for key in ("x", "y", "z")]
+            if any(value is None
+                   for value in origin_values + position_values):
+                return
             point = {
-                "x": float(origin.get("x", 0.0)) + float(position.get("x", 0.0)),
-                "y": float(origin.get("y", 0.0)) + float(position.get("y", 0.0)),
-                "z": float(origin.get("z", 0.0)) + float(position.get("z", 0.0)),
+                key: origin_values[index] + position_values[index]
+                for index, key in enumerate(("x", "y", "z"))
             }
             trail = self._trails.setdefault(uav_name, [])
             if (not trail or sum((point[key] - trail[-1][key]) ** 2
@@ -580,34 +702,60 @@ class RosbridgeSwarmGateway:
 
     def fleet_snapshot(self):
         self._ensure_connected()
+        now = time.monotonic()
         with self._lock:
             fleet = copy.deepcopy(self._fleet) or {
                 "capacity": 0, "vehicles": []}
             controls = copy.deepcopy(self._control_states)
+            control_received_at = copy.deepcopy(self._control_received_at)
             path_statuses = copy.deepcopy(self._path_statuses)
             trails = copy.deepcopy(self._trails)
+            takeoff_state = copy.deepcopy(self._takeoff_state)
         runtime = {}
         for vehicle in fleet.get("vehicles", []):
             name = vehicle.get("uav_name")
             control = controls.get(name) or {}
+            received_at = control_received_at.get(name)
+            telemetry_age = None if received_at is None else now - received_at
+            telemetry_fresh = bool(
+                int(vehicle.get("lifecycle", 0)) == 1
+                and vehicle.get("connected")
+                and telemetry_age is not None
+                and telemetry_age <= 3.0)
             position = control.get("position_odom") or {}
             origin = vehicle.get("world_origin") or {}
             world_position = None
-            if position and origin:
-                world_position = {
-                    key: float(origin.get(key, 0.0)) + float(position.get(key, 0.0))
-                    for key in ("x", "y", "z")
-                }
+            if telemetry_fresh and position and origin:
+                origin_values = [_finite_float(origin.get(key))
+                                 for key in ("x", "y", "z")]
+                position_values = [_finite_float(position.get(key))
+                                   for key in ("x", "y", "z")]
+                if all(value is not None
+                       for value in origin_values + position_values):
+                    world_position = {
+                        key: origin_values[index] + position_values[index]
+                        for index, key in enumerate(("x", "y", "z"))
+                    }
             runtime[name] = {
                 "world_position": world_position,
                 "trail": trails.get(name, []),
+                "telemetry_fresh": telemetry_fresh,
+                "telemetry_age_s": telemetry_age,
                 "state_valid": bool(control.get("state_valid", False)),
                 "stable": bool(control.get("stable", False)),
-                "airspeed_mps": float(control.get("airspeed", 0.0)),
-                "groundspeed_mps": float(control.get("groundspeed", 0.0)),
+                # ROS NaN is JSON null over rosbridge.  Invalid optional
+                # sensors must not take down the whole fleet endpoint.
+                "airspeed_mps": _finite_float(
+                    control.get("airspeed"), 0.0),
+                "groundspeed_mps": _finite_float(
+                    control.get("groundspeed"), 0.0),
                 "path_status": path_statuses.get(name),
             }
-        return {"mode": "ros", **fleet, "runtime": runtime}
+        return {
+            "mode": "ros", **fleet, "runtime": runtime,
+            "simulation_clock": self._clock_health(now),
+            "operation": takeoff_state,
+        }
 
     def spawn_vehicle(self, example):
         self._ensure_connected()
@@ -668,10 +816,17 @@ class RosbridgeSwarmGateway:
         return {"accepted": True, "message": "安全状态已确认，准备重启"}
 
     def _takeoff_precheck(self, names):
+        clock = self._clock_health()
+        if not clock["advancing"]:
+            raise RuntimeError(
+                "Gazebo 仿真时钟未运行或已暂停；请先恢复仿真，必要时安全重启执行系统")
         with self._lock:
             fleet = copy.deepcopy(self._fleet) or {}
             status = copy.deepcopy(self._status) or {}
             dispatch = copy.deepcopy(self._last_dispatch)
+            controls = copy.deepcopy(self._control_states)
+            received_at = copy.deepcopy(self._control_received_at)
+        now = time.monotonic()
         vehicles = {
             item.get("uav_name"): item for item in fleet.get("vehicles", [])}
         problems = []
@@ -684,6 +839,20 @@ class RosbridgeSwarmGateway:
                 problems.append(name + " 尚未就绪")
             elif item.get("armed") or not item.get("on_ground"):
                 problems.append(name + " 不处于已落地且未解锁状态")
+            control = controls.get(name) or {}
+            age = (None if received_at.get(name) is None
+                   else now - received_at[name])
+            if age is None or age > 3.0:
+                problems.append(name + " 飞行状态遥测已中断")
+            elif not control.get("state_valid", False):
+                problems.append(name + " 飞行状态无效")
+            tilt = _quaternion_tilt(control.get("orientation_odom_body"))
+            if tilt is None:
+                problems.append(name + " 姿态不可用")
+            elif tilt > 0.35:
+                problems.append(
+                    "{} 姿态异常（倾斜 {:.1f}°，可能已侧翻）".format(
+                        name, math.degrees(tilt)))
         if set(names) != set(dispatch):
             problems.append("起飞机组必须与最近一次下发的任务批次完全一致")
         if not status.get("analysis_ready"):
@@ -702,15 +871,50 @@ class RosbridgeSwarmGateway:
 
     def _wait_and_release(self, names, generation):
         deadline = time.monotonic() + 150.0
+        unhealthy_since = None
         while time.monotonic() < deadline:
+            now = time.monotonic()
             with self._lock:
                 fleet = copy.deepcopy(self._fleet) or {}
                 current_generation = self._release_generation
+                controls = copy.deepcopy(self._control_states)
+                received_at = copy.deepcopy(self._control_received_at)
             if generation != current_generation:
                 return
             by_name = {
                 item.get("uav_name"): item
                 for item in fleet.get("vehicles", [])}
+            failures = []
+            if not self._clock_health(now)["advancing"]:
+                failures.append("Gazebo 仿真时钟已停止")
+            for name in names:
+                vehicle = by_name.get(name) or {}
+                if (int(vehicle.get("lifecycle", 0)) != 1
+                        or not vehicle.get("connected")):
+                    failures.append(name + " 已与 PX4 失联")
+                    continue
+                age = (None if received_at.get(name) is None
+                       else now - received_at[name])
+                control = controls.get(name) or {}
+                if age is None or age > 3.0:
+                    failures.append(name + " 飞行状态遥测已中断")
+                elif not control.get("state_valid", False):
+                    failures.append(name + " 飞行状态无效")
+            if failures:
+                unhealthy_since = unhealthy_since or now
+                if now - unhealthy_since >= 3.0:
+                    detail = "起飞流程终止：" + "；".join(failures)
+                    self._publish_release(False)
+                    with self._lock:
+                        if generation == self._release_generation:
+                            self._takeoff_state = {
+                                "generation": generation,
+                                "state": "failed",
+                                "detail": detail,
+                            }
+                    return
+            else:
+                unhealthy_since = None
             if all(
                     by_name.get(name, {}).get("armed")
                     and not by_name.get(name, {}).get("on_ground")
@@ -719,12 +923,97 @@ class RosbridgeSwarmGateway:
                     if generation != self._release_generation:
                         return
                 self._publish_release(True)
+                with self._lock:
+                    if generation == self._release_generation:
+                        self._takeoff_state = {
+                            "generation": generation,
+                            "state": "released",
+                            "detail": "全部飞机已离地，规划航迹已放行",
+                        }
                 return
             time.sleep(0.2)
-        try:
-            self.land(names)
-        except (ConnectionError, OSError, RuntimeError, ValueError):
-            pass
+        self._publish_release(False)
+        with self._lock:
+            if generation == self._release_generation:
+                self._takeoff_state = {
+                    "generation": generation,
+                    "state": "failed",
+                    "detail": "起飞流程超时：未能确认全部飞机安全离地",
+                }
+
+    def _wait_for_landing(self, names, generation):
+        deadline = time.monotonic() + 300.0
+        unhealthy_since = None
+        while time.monotonic() < deadline:
+            now = time.monotonic()
+            with self._lock:
+                if generation != self._release_generation:
+                    return
+                fleet = copy.deepcopy(self._fleet) or {}
+                controls = copy.deepcopy(self._control_states)
+                received_at = copy.deepcopy(self._control_received_at)
+            by_name = {
+                item.get("uav_name"): item
+                for item in fleet.get("vehicles", [])}
+            if all(
+                    by_name.get(name, {}).get("on_ground")
+                    and not by_name.get(name, {}).get("armed")
+                    for name in names):
+                with self._lock:
+                    if generation == self._release_generation:
+                        self._takeoff_state = {
+                            "generation": generation,
+                            "state": "landed",
+                            "detail": "全部所选飞机已落地并自动上锁",
+                        }
+                return
+
+            failures = []
+            if not self._clock_health(now)["advancing"]:
+                failures.append("Gazebo 仿真时钟已停止")
+            for name in names:
+                vehicle = by_name.get(name) or {}
+                if (vehicle.get("on_ground")
+                        and not vehicle.get("armed")):
+                    continue
+                if (int(vehicle.get("lifecycle", 0)) != 1
+                        or not vehicle.get("connected")):
+                    failures.append(name + " 已与 PX4 失联")
+                    continue
+                age = (None if received_at.get(name) is None
+                       else now - received_at[name])
+                control = controls.get(name) or {}
+                if age is None or age > 3.0:
+                    failures.append(name + " 飞行状态遥测已中断")
+                    continue
+                tilt = _quaternion_tilt(control.get("orientation_odom_body"))
+                if tilt is not None and tilt > 0.70:
+                    failures.append(
+                        "{} 姿态异常（倾斜 {:.1f}°，可能已翻覆）".format(
+                            name, math.degrees(tilt)))
+                elif not control.get("state_valid", False):
+                    failures.append(name + " 控制状态无效")
+            if failures:
+                unhealthy_since = unhealthy_since or now
+                if now - unhealthy_since >= 3.0:
+                    with self._lock:
+                        if generation == self._release_generation:
+                            self._takeoff_state = {
+                                "generation": generation,
+                                "state": "failed",
+                                "detail": "降落流程异常：" + "；".join(failures),
+                            }
+                    return
+            else:
+                unhealthy_since = None
+            time.sleep(0.2)
+        with self._lock:
+            if generation == self._release_generation:
+                self._takeoff_state = {
+                    "generation": generation,
+                    "state": "failed",
+                    "detail": "降落流程超时：未确认全部飞机落地并上锁",
+                }
 
     def takeoff(self, names, altitude):
         self._ensure_connected()
@@ -736,6 +1025,11 @@ class RosbridgeSwarmGateway:
             with self._lock:
                 self._release_generation += 1
                 generation = self._release_generation
+                self._takeoff_state = {
+                    "generation": generation,
+                    "state": "starting",
+                    "detail": "等待全部飞机完成解锁并离地",
+                }
             import roslibpy
             accepted = []
             try:
@@ -749,7 +1043,13 @@ class RosbridgeSwarmGateway:
                         raise RuntimeError("{} 起飞被拒绝：{}".format(
                             name, response.get("message", "未提供原因")))
                     accepted.append(name)
-            except Exception:
+            except Exception as error:
+                with self._lock:
+                    self._takeoff_state = {
+                        "generation": generation,
+                        "state": "failed",
+                        "detail": "起飞请求失败：{}".format(error),
+                    }
                 if accepted:
                     try:
                         self.land(accepted)
@@ -769,9 +1069,18 @@ class RosbridgeSwarmGateway:
 
     def land(self, names):
         self._ensure_connected()
+        if not self._clock_health()["advancing"]:
+            raise RuntimeError(
+                "Gazebo 仿真时钟未运行或已暂停，当前无法执行降落；"
+                "请先恢复仿真，必要时安全重启执行系统")
         import roslibpy
         with self._lock:
             self._release_generation += 1
+            self._takeoff_state = {
+                "generation": self._release_generation,
+                "state": "landing",
+                "detail": "已停止航迹放行并请求返航降落",
+            }
             fleet = copy.deepcopy(self._fleet) or {}
         self._publish_release(False)
         by_name = {
@@ -784,6 +1093,12 @@ class RosbridgeSwarmGateway:
             or not by_name[name].get("on_ground", False)
         ]
         if not targets:
+            with self._lock:
+                self._takeoff_state = {
+                    "generation": self._release_generation,
+                    "state": "idle",
+                    "detail": "所选飞机均已落地并上锁",
+                }
             return {
                 "accepted": True,
                 "message": "所选飞机均已落地并上锁，无需重复降落",
@@ -801,7 +1116,20 @@ class RosbridgeSwarmGateway:
             except Exception as error:
                 failures.append("{}：{}".format(name, error))
         if failures:
+            with self._lock:
+                self._takeoff_state = {
+                    "generation": self._release_generation,
+                    "state": "failed",
+                    "detail": "降落请求失败：" + "；".join(failures),
+                }
             raise RuntimeError("；".join(failures))
+        generation = self._release_generation
+        self._landing_worker = threading.Thread(
+            target=self._wait_for_landing,
+            args=(tuple(names), generation),
+            name="terrain-swarm-landing",
+            daemon=True)
+        self._landing_worker.start()
         return {
             "accepted": True,
             "message": (
