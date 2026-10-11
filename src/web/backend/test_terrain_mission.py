@@ -8,15 +8,20 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from osgeo import gdal
 
 
 BACKEND = Path(__file__).resolve().parent
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
+PLANNING_TOOLS = BACKEND.parents[1] / "xd_uav_planning" / "scripts" / "tools"
+if str(PLANNING_TOOLS) not in sys.path:
+    sys.path.insert(0, str(PLANNING_TOOLS))
 
 from app.terrain import TerrainMap
 from app.terrain_mission import activate_terrain, wgs84_wkt
 from swarm_app.terrain_frame import TerrainWorldFrame
+from prepare_gazebo_dem import prepare as prepare_gazebo_dem
 
 
 class TerrainMissionPackageTest(unittest.TestCase):
@@ -39,6 +44,13 @@ class TerrainMissionPackageTest(unittest.TestCase):
                 self.assertTrue(manifest["horizontal_crs"]["authority"].startswith("EPSG:326"))
                 self.assertEqual("MSL", manifest["vertical_datum"])
                 self.assertTrue(Path(manifest["canonical_dem"]).is_file())
+                gazebo_dem = root / "gazebo.tif"
+                prepare_gazebo_dem(
+                    Path(manifest["canonical_dem"]), gazebo_dem,
+                    root / "gazebo.json", 33, "MSL")
+                prepared = gdal.Open(str(gazebo_dem), gdal.GA_ReadOnly)
+                self.assertIsNone(prepared.GetRasterBand(1).GetNoDataValue())
+                self.assertTrue(np.isfinite(prepared.ReadAsArray()).all())
                 frame = TerrainWorldFrame(manifest)
                 metadata = frame.metadata()
                 self.assertEqual(manifest["terrain_id"], metadata["terrain_id"])

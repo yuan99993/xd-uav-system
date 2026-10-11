@@ -53,4 +53,8 @@ export function consumeMissionDraft() {
   return draft
 }
 
+export function clearMissionDraft() {
+  window.sessionStorage.removeItem(STORAGE_KEY)
+}
+
 export { STORAGE_KEY as MISSION_DRAFT_STORAGE_KEY }

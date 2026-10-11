@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import MapView from './MapView.jsx'
 import ThreeDView from './ThreeDView.jsx'
-import { saveMissionDraft } from './missionDraft.js'
+import { clearMissionDraft, saveMissionDraft } from './missionDraft.js'
 import {
   getHealth,
   activateTerrain,
@@ -277,24 +277,30 @@ export default function App() {
   }
 
   const handleOpenMissionConsole = async () => {
-    if (!start || !goal || !terrainInfo || !raster) {
-      setStatus({ text: '请先等待地形就绪并设置起点、终点', type: 'error' })
+    if (!terrainInfo || !raster) {
+      setStatus({ text: '请先等待地形就绪', type: 'error' })
       return
     }
     setBusy(true)
     setStatus({ text: '正在生成供 ROS 与 Gazebo 共用的正式地形包…', type: 'info' })
     try {
       const activated = await activateTerrain()
-      saveMissionDraft({
-        start,
-        goal,
-        startAlt,
-        goalAlt,
-        clearanceM: Math.max(51, Math.min(119, aglMin)),
-        terrainInfo,
-        terrainPackage: activated.terrain,
-      })
-      window.location.assign('/swarm.html?mission_draft=1')
+      if (start && goal) {
+        saveMissionDraft({
+          start,
+          goal,
+          startAlt,
+          goalAlt,
+          clearanceM: Math.max(51, Math.min(119, aglMin)),
+          terrainInfo,
+          terrainPackage: activated.terrain,
+        })
+      } else {
+        clearMissionDraft()
+      }
+      window.location.assign(start && goal
+        ? '/swarm.html?mission_draft=1'
+        : '/swarm.html')
     } catch (error) {
       setStatus({ text: `任务转交失败：${error.message}`, type: 'error' })
     } finally {
@@ -490,10 +496,12 @@ export default function App() {
           <button onClick={handleClear} disabled={busy} style={{ width: '100%' }}>清空起终点</button>
           <button
             onClick={handleOpenMissionConsole}
-            disabled={busy || !start || !goal || !terrainInfo || !raster}
+            disabled={busy || !terrainInfo || !raster}
             style={{ width: '100%' }}
-            title="生成正式地形包并转交起终点；旧页面预览路线不会直接下发飞机"
-          >转交到固定翼任务控制台</button>
+            title={start && goal
+              ? '启用正式地形，并把当前起终点作为可选任务草稿带入控制台'
+              : '启用正式地形；各架飞机的起点和任务终点在控制台内选择'}
+          >启用当前地形并进入任务控制台</button>
           {path3d && (
             <div className="hint" style={{ marginTop: 6 }}>
               {path3d.segments.length} 段 · {path3d.length.toFixed(0)}m

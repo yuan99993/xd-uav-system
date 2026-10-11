@@ -100,6 +100,11 @@ def prepare(source, output, manifest, samples, vertical_datum):
             creationOptions=["COMPRESS=DEFLATE", "PREDICTOR=3"])
         if translated is None:
             raise RuntimeError("GDAL failed to generate the Gazebo DEM")
+        # _finite_elevation() proved every source cell is usable.  Keeping a
+        # NaN NoData marker on this all-valid cache makes Gazebo Classic's
+        # client-side OGRE terrain path propagate NaN into a scene-node
+        # position even though gzserver accepts the same raster.
+        translated.GetRasterBand(1).DeleteNoDataValue()
         translated.FlushCache()
         translated = None
         prepared = gdal.Open(str(temporary), gdal.GA_ReadOnly)

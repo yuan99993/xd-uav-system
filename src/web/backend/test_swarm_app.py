@@ -87,11 +87,13 @@ class SwarmContractsTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             SwarmDispatchRequest(routes=[route(), route("uav2", 6201)])
 
-
 class TerrainFrameTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.frame = DavosdorfWorldFrame()
+        # These assertions describe the tracked Davosdorf fallback and must
+        # not silently switch to whichever arbitrary DEM happens to be active
+        # in /tmp on the developer machine.
+        cls.frame = DavosdorfWorldFrame({})
 
     def test_web_and_canonical_dems_match(self):
         self.assertTrue(self.frame.canonical_match)
@@ -173,10 +175,11 @@ class TerrainFrameTest(unittest.TestCase):
         metrics = self.frame.launch_site_metrics(600.0, -1700.0)
         self.assertGreater(metrics["slope_rad"], 0.10)
         ground = metrics["ground_elevation_msl_m"]
-        with self.assertRaises(HTTPException) as context:
-            _spawn_example(FleetSpawnRequest(
-                uav_name="uav2", use_mock=True,
-                world_origin={"x": 600.0, "y": -1700.0, "z": ground}))
+        with patch("swarm_app.main.terrain_frame", return_value=self.frame):
+            with self.assertRaises(HTTPException) as context:
+                _spawn_example(FleetSpawnRequest(
+                    uav_name="uav2", use_mock=True,
+                    world_origin={"x": 600.0, "y": -1700.0, "z": ground}))
         self.assertEqual(409, context.exception.status_code)
 
     def test_later_vehicle_examples_respect_endpoint_angle_budget(self):
@@ -189,10 +192,11 @@ class TerrainFrameTest(unittest.TestCase):
 
     def test_coordinate_selection_samples_dem_and_adds_clearance(self):
         longitude, latitude = self.frame.world_to_geo(600.0, -1100.0)
-        converted = swarm_to_world(GeoCoordinate(
-            longitude=longitude, latitude=latitude, clearance_m=80.0))
-        sampled = swarm_world_elevation(WorldElevationCoordinate(
-            x=converted["x"], y=converted["y"], clearance_m=80.0))
+        with patch("swarm_app.main.terrain_frame", return_value=self.frame):
+            converted = swarm_to_world(GeoCoordinate(
+                longitude=longitude, latitude=latitude, clearance_m=80.0))
+            sampled = swarm_world_elevation(WorldElevationCoordinate(
+                x=converted["x"], y=converted["y"], clearance_m=80.0))
         self.assertAlmostEqual(600.0, converted["x"], delta=0.002)
         self.assertAlmostEqual(-1100.0, converted["y"], delta=0.002)
         self.assertAlmostEqual(
@@ -204,9 +208,10 @@ class TerrainFrameTest(unittest.TestCase):
     def test_custom_spawn_origin_is_resampled_from_canonical_dem(self):
         x, y = 600.0, -2000.0
         ground = self.frame.elevation_at_world(x, y)
-        example = _spawn_example(FleetSpawnRequest(
-            uav_name="uav1", use_mock=True,
-            world_origin={"x": x, "y": y, "z": ground}))
+        with patch("swarm_app.main.terrain_frame", return_value=self.frame):
+            example = _spawn_example(FleetSpawnRequest(
+                uav_name="uav1", use_mock=True,
+                world_origin={"x": x, "y": y, "z": ground}))
         self.assertEqual(x, example["world_origin"]["x"])
         self.assertEqual(y, example["world_origin"]["y"])
         self.assertAlmostEqual(ground, example["world_origin"]["z"])
