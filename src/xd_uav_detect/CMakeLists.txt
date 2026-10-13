@@ -17,7 +17,20 @@ find_package(catkin REQUIRED COMPONENTS
   xd_uav_track
 )
 find_package(Eigen3 REQUIRED)
-find_package(GeographicLib REQUIRED)
+find_package(GeographicLib QUIET)
+if(NOT GeographicLib_FOUND)
+  find_path(GEOGRAPHICLIB_CMAKE_MODULE_DIR
+    NAMES FindGeographicLib.cmake
+    PATHS
+      /usr/share/cmake/geographiclib
+      /usr/local/share/cmake/geographiclib
+    NO_DEFAULT_PATH
+  )
+  if(GEOGRAPHICLIB_CMAKE_MODULE_DIR)
+    list(APPEND CMAKE_MODULE_PATH "${GEOGRAPHICLIB_CMAKE_MODULE_DIR}")
+  endif()
+  find_package(GeographicLib REQUIRED)
+endif()
 find_package(OpenCV REQUIRED)
 find_package(gazebo REQUIRED)
 

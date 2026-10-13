@@ -17,7 +17,20 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_ros
 )
 
-find_package(GeographicLib REQUIRED)
+find_package(GeographicLib QUIET)
+if(NOT GeographicLib_FOUND)
+  find_path(GEOGRAPHICLIB_CMAKE_MODULE_DIR
+    NAMES FindGeographicLib.cmake
+    PATHS
+      /usr/share/cmake/geographiclib
+      /usr/local/share/cmake/geographiclib
+    NO_DEFAULT_PATH
+  )
+  if(GEOGRAPHICLIB_CMAKE_MODULE_DIR)
+    list(APPEND CMAKE_MODULE_PATH "${GEOGRAPHICLIB_CMAKE_MODULE_DIR}")
+  endif()
+  find_package(GeographicLib REQUIRED)
+endif()
 
 catkin_package(
   CATKIN_DEPENDS
