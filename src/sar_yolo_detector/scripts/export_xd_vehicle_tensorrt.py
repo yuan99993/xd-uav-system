@@ -35,6 +35,8 @@ def main() -> int:
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--workspace", type=float, default=0.5,
                         help="TensorRT workspace in GiB")
+    parser.add_argument("--simplify", action="store_true",
+                        help="simplify the intermediate ONNX graph (requires onnxslim and an ONNX Runtime package)")
     parser.add_argument("--builder-optimization-level", type=int, choices=range(0, 6),
                         default=1, help="TensorRT tactic-search level (0 builds fastest)")
     args = parser.parse_args()
@@ -61,6 +63,7 @@ def main() -> int:
             dynamic=False,
             device=0,
             workspace=float(args.workspace),
+            simplify=bool(args.simplify),
         )
     engine_path = Path(str(exported)).expanduser().resolve()
     if not engine_path.is_file() or engine_path.suffix.lower() != ".engine":

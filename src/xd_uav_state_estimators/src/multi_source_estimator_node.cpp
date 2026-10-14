@@ -626,6 +626,8 @@ class MultiSourceEstimatorNode {
     private_nh_.param("diagnostics_rate", diagnostics_rate_, 2.0);
     private_nh_.param("max_localization_delay", max_localization_delay_,
                       0.15);
+    private_nh_.param("max_future_stamp_lead", max_future_stamp_lead_,
+                      0.05);
     private_nh_.param("max_dead_reckoning_time", max_dead_reckoning_time_,
                       1.0);
     private_nh_.param("imu_timeout", imu_timeout_, 0.3);
@@ -997,7 +999,7 @@ class MultiSourceEstimatorNode {
     }
     if (sample.stamp.isZero() ||
         (now - sample.stamp).toSec() > max_localization_delay_ ||
-        sample.stamp > now + ros::Duration(0.05)) {
+        sample.stamp > now + ros::Duration(max_future_stamp_lead_)) {
       *reason = "时间戳超出允许范围";
       return false;
     }
@@ -2938,6 +2940,7 @@ class MultiSourceEstimatorNode {
   double output_rate_{100.0};
   double diagnostics_rate_{2.0};
   double max_localization_delay_{0.15};
+  double max_future_stamp_lead_{0.05};
   double max_dead_reckoning_time_{1.0};
   double imu_timeout_{0.3};
   double yaw_process_noise_{0.02};

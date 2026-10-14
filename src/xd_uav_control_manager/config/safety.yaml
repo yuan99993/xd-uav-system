@@ -8,9 +8,8 @@ safety:
     estimator_status_timeout: 5.0
     mavros_state_timeout: 5.0
     extended_state_timeout: 5.0
-    # MAVROS的FCU时间同步与Gazebo /clock可能有毫秒级相位差；允许消息时间戳
-    # 最多略超前ROS时间50ms。超过该范围仍视为时钟异常。
-    future_stamp_tolerance: 0.5
+    # 高延迟仿真下允许消息时间戳最多超前ROS时间2秒。
+    future_stamp_tolerance: 2.0
 
     require_acceleration: true
     require_localization: false
@@ -22,8 +21,8 @@ safety:
 
   # 控制器输出超时或短暂失效时的处理。
   controller_command:
-    timeout: 3.0
-    invalid_grace_duration: 0.5
+    timeout: 5.0
+    invalid_grace_duration: 5.0
 
   # 所有必需输入连续有效达到该时长后，才允许进入OFFBOARD。
   activation:

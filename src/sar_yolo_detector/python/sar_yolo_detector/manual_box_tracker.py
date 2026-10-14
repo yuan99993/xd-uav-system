@@ -173,6 +173,30 @@ class ManualBoxTracker:
         self._active = False
         self._failures = 0
 
+    def compensate_motion(self, previous_frame, matrix):
+        """Move the previous template into the current camera plane, not onto
+        the current target. The subsequent update remains an independent test.
+        """
+        if not self.active or self._last_bbox is None:
+            return False
+        from .camera_motion import CameraMotion, transform_box
+        if not CameraMotion.validate(matrix, previous_frame.shape):
+            return False
+        box = transform_box(self._last_bbox, matrix)
+        if box is None:
+            return False
+        x, y, width, height = box
+        if x < 0 or y < 0 or x+width > previous_frame.shape[1] or y+height > previous_frame.shape[0]:
+            return False
+        if np.max(np.abs(np.asarray(box)-self._last_bbox)) < 3.:
+            return True
+        if self.tracker_type == "color_tracker":
+            self._last_bbox = box
+            return True
+        warped = cv2.warpPerspective(previous_frame, matrix,
+            (previous_frame.shape[1], previous_frame.shape[0]))
+        return self.initialize(warped, box).valid
+
     def configure_colour(self, colour_name: str = "") -> None:
         """Select global named-colour detection or ROI-learned colour tracking.
 

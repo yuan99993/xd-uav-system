@@ -415,6 +415,10 @@ class ControllerNode {
         "reference_frames/max_transform_age",
         &maximum_transform_age_, 0.50);
     loadParameterWithLegacy(
+        private_nh_, "reference_input/transform/future_stamp_tolerance",
+        "reference_frames/future_stamp_tolerance",
+        &reference_transform_future_tolerance_, 0.05);
+    loadParameterWithLegacy(
         private_nh_,
         "reference_input/transform/failure_grace_duration",
         "reference_frames/failure_grace_duration",
@@ -1013,6 +1017,8 @@ class ControllerNode {
         reference_transform_timeout_ < 0.0 ||
         !std::isfinite(maximum_transform_age_) ||
         maximum_transform_age_ <= 0.0 ||
+        !std::isfinite(reference_transform_future_tolerance_) ||
+        reference_transform_future_tolerance_ < 0.0 ||
         !std::isfinite(reference_transform_failure_grace_) ||
         reference_transform_failure_grace_ < 0.0 ||
         !std::isfinite(maximum_inertial_frame_tilt_) ||
@@ -1406,9 +1412,21 @@ class ControllerNode {
         !transform.header.stamp.isZero()) {
       const double age =
           (ros::Time::now() - transform.header.stamp).toSec();
-      if (!std::isfinite(age) || age < 0.0 ||
-          age > maximum_transform_age_) {
-        *reason = "参考坐标系TF已超时";
+      if (!std::isfinite(age)) {
+        *reason = "参考坐标系TF年龄无效";
+        return false;
+      }
+      if (age < -reference_transform_future_tolerance_) {
+        *reason =
+            "参考坐标系TF时间戳超前ROS时间: age=" +
+            std::to_string(age) + "s, tolerance=" +
+            std::to_string(reference_transform_future_tolerance_) + "s";
+        return false;
+      }
+      if (age > maximum_transform_age_) {
+        *reason =
+            "参考坐标系TF过旧: age=" + std::to_string(age) +
+            "s, max_age=" + std::to_string(maximum_transform_age_) + "s";
         return false;
       }
     }
@@ -5940,6 +5958,7 @@ class ControllerNode {
   double reference_timeout_{0.5};
   double reference_transform_timeout_{0.03};
   double maximum_transform_age_{0.5};
+  double reference_transform_future_tolerance_{0.05};
   double reference_transform_failure_grace_{0.5};
   double maximum_inertial_frame_tilt_{0.1};
   double global_alignment_timeout_{1.0};

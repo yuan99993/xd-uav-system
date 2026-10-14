@@ -15,7 +15,7 @@ runtime:
 interfaces:
   input:
     # 唯一感知输入：一个候选和多个候选使用同一种消息。
-    detections: "detect/detections"
+    detections: "track/selected_detections"
     vehicle_state: "state_estimator/main/odom"
     gimbal_state: "track/gimbal_state"
     gimbal_status: "track/gimbal_status"
@@ -91,7 +91,9 @@ tracker:
     minimum_score_margin: 0.20
   selection:
     auto_select: true              # 未手选时选择质量最高的 confirmed 轨迹
-    locked_target_release_timeout_sec: 60.0
+    # The input is SAR's single UI-selected detection; release a stale ID
+    # quickly so a newly selected detector track can be followed.
+    locked_target_release_timeout_sec: 0.5
   confidence:
     new_track: 0.50             # 低置信框只能更新已有轨迹
     update: 0.10
@@ -146,10 +148,10 @@ follower:
   # fw_velocity_vector: 固定翼前视相机，向量跟踪
   # fw_metric_pursuit: 固定翼目标跟踪
   # fw_metric_orbit: 固定翼到目标附近盘旋
-  profile: "mc_velocity_chase"
+  profile: "gm_velocity_vector"
   lateral_guidance_mode: "coordinated_turn"  # coordinated_turn | sideslip
   enable_vertical_control: true
-  distance_enable_yaw: false
+  distance_enable_yaw: true
   horizontal_deadband: 0.03
   vertical_deadband: 0.03
 
@@ -160,11 +162,11 @@ follower:
     ground_forward: {kp: 2.0, ki: 0.01, kd: 0.1, integral_limit: 0.3}
 
   limits:
-    maximum_forward_velocity: 5.0
-    maximum_reverse_velocity: 2.0
-    maximum_lateral_velocity: 2.0
-    maximum_vertical_velocity: 1.5
-    maximum_yaw_rate: 1.2
+    maximum_forward_velocity: 10.0
+    maximum_reverse_velocity: 5.0
+    maximum_lateral_velocity: 5.0
+    maximum_vertical_velocity: 10.0
+    maximum_yaw_rate: 2.0
 
   smoothing:
     velocity:
@@ -217,16 +219,15 @@ follower:
     pitch_offset: 0.0
     roll_offset: 0.0
     invert_yaw: false
-    # Typhoon adapter publishes gm_control's logical angle (+pitch points down).
-    # Its --pitch-sign only converts that logical angle to the Gazebo joint, so
-    # inverting again here would make gm_velocity_chase command an ascent.
+    # gimbal_attitude_bridge already publishes track convention:
+    # positive pitch points down. Do not invert it again here.
     invert_pitch: false
     invert_roll: false
 
   gm_velocity_chase:
     lateral_guidance_mode: "coordinated_turn"
     forward_mode: "CONSTANT"       # CONSTANT | PITCH_BASED
-    base_forward_speed: 0.0
+    base_forward_speed: 3.0
     forward_acceleration: 1.0
     pitch_velocity_scaling: 0.15
     pitch_deadzone: 0.035
@@ -235,11 +236,11 @@ follower:
 
   gm_velocity_vector:
     lateral_guidance_mode: "coordinated_turn"
-    velocity: 3.0
-    ramp_acceleration: 0.25
-    # gm_velocity_vector follows the complete gimbal optical-axis vector.
-    # With the Typhoon logical convention, +pitch points down and therefore
-    # produces negative ENU velocity.z (descent).
+    velocity: 8.0
+    ramp_acceleration: 3.0
+    # Follow the gimbal line of sight so horizontal and vertical motion keep
+    # the target's approach angle instead of using a fixed forward speed.
+    # Positive pitch points down and produces negative ENU velocity.z.
     enable_vertical_control: true
     yaw_rate_gain: 0.5
 
@@ -270,5 +271,5 @@ safety:
     blend_duration_sec: 0.50
   gimbal_fallback:
     # GM 姿态失效时：chase -> mc chase，vector -> mc distance。
-    enabled: true
+    enabled: false
   emergency_stop_at_startup: false
