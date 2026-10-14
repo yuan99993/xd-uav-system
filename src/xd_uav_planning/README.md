@@ -128,6 +128,46 @@ rostopic pub -1 /planning/no_fly_zones xd_uav_planning/NoFlyZoneArray "{header: 
 [任务层接入手册](docs/TASK_PLANNING_INTEGRATION.md)，禁飞区协议、在线换路、配置与验收记录见
 [固定翼动态禁飞区规划说明](docs/FIXEDWING_DYNAMIC_NOFLY.md)。
 
+### fixedwing / terrain-navigation（可选）
+
+地形规划是固定翼 Path 后端前的可选上游，不改变 `planning.launch` 的通用语义。单机部署入口为：
+
+```bash
+roslaunch xd_uav_planning terrain_fixedwing_planning.launch \
+  UAV_NAME:=uav1 map_path:=/absolute/path/to/canonical_dem.tif
+```
+
+输入仍是 `/<uav>/planning/task_path` 的 `nav_msgs/Path`。地形规划器按 GeoTIFF 地形、最小转弯
+半径和最大爬升角生成 Dubins-Airplane 航迹，并对输出逐段采样复核；默认要求离地
+50--120 m、最小转弯半径 66.66667 m、最大爬升角 0.15 rad。只有复核通过的
+`/<uav>/planning/terrain_path` 才进入既有固定翼 Path/禁飞区后端，最终状态仍汇总到
+`/<uav>/planning/status`。失败时发布明确 `BLOCKED` 原因，不把原始直线路径绕过安全门下发。
+
+`map_path` 必须是规划进程能够读取、带有效水平 CRS、米制并与任务 Z 使用同一垂直基准的
+规范 GeoTIFF；`terrain_elevation_offset_m` 只用于明确的基准修正，不能用来掩盖未知 datum。
+Web 的在线区域或上传 DEM 会先规范化并生成带 terrain ID、SHA-256、CRS、MSL 和 world 定义的
+manifest，规划器、Web 和 Gazebo 必须核对同一份地形身份。
+
+多机层不会把一架规划器共享给多架飞机。`terrain_fleet_manager.py` 为每架飞机启动独立的
+PX4/MAVROS/control/planning 命名空间；`terrain_swarm_monitor.py` 只对当前
+`TerrainTaskBatch` 中参与的飞机汇总路径和状态，计算空间/时空冲突；release gate 仅在任务、
+goal ID、frame、地形路径和冲突判断全部一致时发布放行。主要公共接口为：
+
+```text
+/terrain_swarm/tasks             xd_uav_planning/TerrainTaskBatch
+/terrain_swarm/status            xd_uav_planning/TerrainSwarmStatus
+/terrain_swarm/release           std_msgs/Bool
+/terrain_swarm/fleet             xd_uav_planning/TerrainFleetStatus
+/terrain_swarm/terrain_manifest  std_msgs/String
+/terrain_swarm/fleet/spawn       xd_uav_planning/SpawnTerrainVehicle
+/terrain_swarm/fleet/remove      xd_uav_planning/RemoveTerrainVehicle
+```
+
+交互式 Web、动态增删飞机、地形激活和 PX4/Gazebo 操作见
+[`src/web/使用说明.md`](../web/%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md)。该运行入口默认空机队，
+Web 可以独立编排；只有显式启动执行系统并由用户重新下发后才控制 ROS/PX4，不会把离线缓存任务
+自动发送给刚上线的仿真。
+
 ## 演示
 
 单机 EGO：
