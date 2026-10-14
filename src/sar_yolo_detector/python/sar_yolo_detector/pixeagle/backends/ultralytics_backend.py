@@ -74,6 +74,21 @@ class UltralyticsBackend(DetectionBackend):
                 "within 320..1536")
         self._inference_image_size = configured_size
         self.tracker_type_str, self.use_custom_reid = self._select_tracker_type()
+        self._tracker_config_path = str(self._config.get("SMART_TRACKER_TRACKER_CONFIG_PATH", "") or "")
+        if self._tracker_config_path:
+            import yaml
+            path = Path(self._tracker_config_path).expanduser()
+            path = path if path.is_absolute() else self._models_root / path
+            if path.suffix not in (".yaml", ".yml") or not path.is_file() or path.stat().st_size > 65536:
+                raise ValueError("Invalid BoT-SORT tracker config path/size")
+            with path.open(encoding="utf-8") as stream:
+                settings = yaml.safe_load(stream)
+            if not isinstance(settings, dict) or settings.get("tracker_type") != self.tracker_type_str:
+                raise ValueError("Tracker config type does not match TRACKER_TYPE")
+            low, high, new = (float(settings[key]) for key in ("track_low_thresh", "track_high_thresh", "new_track_thresh"))
+            if not 0 <= low <= high <= 1 or not 0 <= new <= 1:
+                raise ValueError("Invalid tracker confidence thresholds")
+            self._tracker_config_path = str(path.resolve())
         self.tracker_args = {"persist": True, "verbose": False}
 
     @property
@@ -407,13 +422,20 @@ class UltralyticsBackend(DetectionBackend):
             conf=conf,
             iou=iou,
             max_det=max_det,
-            tracker=f"{tracker_type}.yaml",
+            tracker=self._tracker_config_path or f"{tracker_type}.yaml",
             **args,
         )
         return self._normalize_results(results)
 
     def get_model_labels(self) -> Dict[int, str]:
+        """Actual checkpoint label contract."""
         return dict(getattr(self._model, "names", {}) or {}) if self._model else {}
+
+    def reset_tracking(self):
+        """Clear BoT-SORT/GMC history without changing model weights or device."""
+        predictor = getattr(self._model, "predictor", None)
+        for tracker in getattr(predictor, "trackers", ()):
+            tracker.reset()
 
     def get_model_task(self) -> str:
         return str(getattr(self._model, "task", "detect")) if self._model else "detect"

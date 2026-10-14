@@ -1,0 +1,87 @@
+<launch>
+  <!-- Formal scene/assets, experimental SAR/XD binaries. No source changes to XD. -->
+  <arg name="formal_track_package" default="/home/promise/mrs_test/src/xd_uav_track" />
+  <arg name="world" default="$(arg formal_track_package)/worlds/moving_uav_vehicle_search.world" />
+  <arg name="gui" default="true" />
+  <arg name="show_image" default="true" />
+  <arg name="show_web" default="false" />
+  <arg name="web_port" default="8787" />
+  <arg name="tracking_mode" default="FusionTracker" />
+  <arg name="python_executable" default="" />
+  <arg name="viewer_config" default="$(find sar_yolo_detector)/../../logs/fusion_viewer_config" />
+
+  <env name="GAZEBO_MODEL_PATH" value="$(arg formal_track_package)/models:$(optenv GAZEBO_MODEL_PATH /usr/share/gazebo-11/models)" />
+  <env name="GAZEBO_MODEL_DATABASE_URI" value="" />
+  <env name="QT_QPA_PLATFORM" value="xcb" />
+  <env name="QT_X11_NO_MITSHM" value="1" />
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(arg world)" />
+    <arg name="gui" value="$(arg gui)" />
+    <arg name="paused" value="false" />
+    <arg name="use_sim_time" value="true" />
+    <arg name="verbose" value="false" />
+  </include>
+
+  <node pkg="xd_uav_track" type="moving_uav_search_driver.py" name="moving_uav_search_driver" output="screen" required="true">
+    <param name="rate_hz" value="10.0" />
+    <param name="altitude_m" value="28.0" />
+    <param name="minimum_altitude_m" value="28.0" />
+    <param name="maximum_altitude_m" value="36.0" />
+    <param name="search_cruise_speed_mps" value="1.0" />
+    <param name="coverage_transit_speed_mps" value="1.2" />
+    <param name="yaw_rate_limit_radps" value="0.25" />
+    <param name="gimbal_camera_enabled" value="false" />
+    <param name="global_search_image_source" value="search_fixed" />
+  </node>
+
+  <include file="$(find sar_yolo_detector)/launch/xd_smart_tracker_fusion_integration.launch">
+    <arg name="UAV_NAME" value="moving_uav_search" />
+    <arg name="instance_name" value="fusion_fixed" />
+    <arg name="tracking_mode" value="$(arg tracking_mode)" />
+    <arg name="python_executable" value="$(arg python_executable)" />
+    <arg name="input_image_topic" value="fixed_camera/image_raw" />
+    <arg name="camera_info_topic" value="fixed_camera/camera_info" />
+    <arg name="image_width" value="640" />
+    <arg name="image_height" value="480" />
+    <arg name="output_detections_topic" value="detect/input/fixed/detections_2d" />
+    <arg name="image_source" value="search_fixed" />
+    <arg name="sensor_id" value="search_quadrotor_fixed_camera" />
+  </include>
+
+  <include file="$(find xd_uav_track)/launch/detect_instance.launch">
+    <arg name="UAV_NAME" value="moving_uav_search" />
+    <arg name="config" value="$(find xd_uav_track)/config/moving_uav_search_ground_projection.yaml" />
+    <arg name="node_name" value="fixed_camera_ground_projection" />
+    <arg name="body_frame" value="moving_uav_search/base_link" />
+    <arg name="world_frame" value="world" />
+    <arg name="camera_frame" value="moving_uav_search/fixed_camera_optical_frame" />
+    <arg name="image_source" value="search_fixed" />
+    <arg name="sensor_id" value="search_quadrotor_fixed_camera" />
+    <arg name="image_topic" value="fixed_camera/image_raw" />
+    <arg name="camera_info_topic" value="fixed_camera/camera_info" />
+    <arg name="detections_2d_topic" value="detect/input/fixed/detections_2d" />
+    <arg name="detections_3d_topic" value="track/detections" />
+  </include>
+
+  <group ns="moving_uav_search">
+    <node pkg="xd_uav_track" type="xd_uav_track_node" name="track" output="screen" clear_params="true">
+      <rosparam command="load" file="$(find xd_uav_track)/config/track.yaml" />
+      <rosparam command="load" file="$(find xd_uav_track)/config/moving_uav_search_tracker.yaml" />
+      <param name="runtime/publish_control_reference" value="false" />
+      <param name="frames/body" value="moving_uav_search/base_link" />
+      <param name="frames/body_frd" value="moving_uav_search/base_link_frd" />
+    </node>
+    <!-- Original non-fusion modes remain preview-only with their original UI contract. -->
+    <node if="$(eval arg('show_image') and arg('tracking_mode').lower().replace('_', '') != 'fusiontracker')"
+          pkg="rqt_image_view" type="rqt_image_view" name="fusion_fixed_viewer"
+          args="/moving_uav_search/sar_yolo_detector/fusion_fixed/annotated" output="screen">
+      <env name="XDG_CONFIG_HOME" value="$(arg viewer_config)" />
+    </node>
+  </group>
+  <include if="$(eval arg('show_image') and arg('tracking_mode').lower().replace('_', '') == 'fusiontracker')"
+           file="$(find sar_yolo_detector)/launch/fusion_interactive_viewer.launch" />
+  <include if="$(eval arg('show_web') and arg('tracking_mode').lower().replace('_', '') == 'fusiontracker')"
+           file="$(find sar_yolo_detector)/launch/fusion_web_preview.launch">
+    <arg name="port" value="$(arg web_port)" />
+  </include>
+</launch>

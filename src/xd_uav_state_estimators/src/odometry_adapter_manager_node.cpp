@@ -173,6 +173,8 @@ class OdometryAdapter {
         uav_name_);
     tf_timeout_ = readNumber(config, "tf_timeout", 0.03);
     max_input_delay_ = readNumber(config, "max_input_delay", 0.50);
+    max_future_stamp_lead_ =
+        readNumber(config, "max_future_stamp_lead", 0.05);
 
     if (hasMember(config, "fallback_covariance")) {
       const XmlRpc::XmlRpcValue& covariance = config["fallback_covariance"];
@@ -195,7 +197,8 @@ class OdometryAdapter {
       throw std::runtime_error("适配器'" + adapter_name_ +
                                "'的输入话题和参考坐标系不能为空");
     }
-    if (tf_timeout_ < 0.0 || max_input_delay_ <= 0.0) {
+    if (tf_timeout_ < 0.0 || max_input_delay_ <= 0.0 ||
+        max_future_stamp_lead_ < 0.0) {
       throw std::runtime_error("适配器'" + adapter_name_ +
                                "'的时间参数超出有效范围");
     }
@@ -233,7 +236,7 @@ class OdometryAdapter {
     const ros::Time stamp =
         message->header.stamp.isZero() ? now : message->header.stamp;
     if ((now - stamp).toSec() > max_input_delay_ ||
-        stamp > now + ros::Duration(0.05)) {
+        stamp > now + ros::Duration(max_future_stamp_lead_)) {
       ROS_WARN_STREAM_THROTTLE(
           2.0, "[odometry_adapter_manager/" << adapter_name_
                                              << "] 输入时间戳超出允许范围");
@@ -483,6 +486,7 @@ class OdometryAdapter {
   std::string reference_frame_;
   double tf_timeout_{0.03};
   double max_input_delay_{0.50};
+  double max_future_stamp_lead_{0.05};
   double fallback_position_variance_{0.05};
   double fallback_velocity_variance_{0.10};
   double fallback_heading_variance_{0.05};

@@ -1357,6 +1357,34 @@ class ControlManagerNode {
       response.message = "OFFBOARD已经处于持续维持状态";
       return true;
     }
+    if (failsafe_recovery_pending_) {
+      xd_uav_controller::InternalCommand reset_service;
+      reset_service.request.command =
+          xd_uav_controller::InternalCommand::Request::RESET;
+      reset_service.request.vehicle_action =
+          xd_uav_controller::InternalCommand::Request::ACTION_NONE;
+      reset_service.request.action_phase =
+          xd_uav_controller::InternalCommand::Request::PHASE_RESET;
+      reset_service.request.action_generation = action_generation_ + 1U;
+      if (!controller_internal_command_client_.call(reset_service)) {
+        response.success = false;
+        response.message =
+            "FAILSAFE恢复时无法连接控制器，未请求OFFBOARD";
+        return true;
+      }
+      if (!reset_service.response.success) {
+        response.success = false;
+        response.message =
+            "FAILSAFE恢复时无法重新捕获当前位置悬停点: " +
+            reset_service.response.message;
+        return true;
+      }
+      action_generation_ = reset_service.request.action_generation;
+      have_last_safe_target_ = false;
+      have_local_setpoint_ = false;
+      invalid_since_ = ros::Time();
+      failsafe_recovery_pending_ = false;
+    }
     offboard_requested_ = true;
     arm_requested_ = false;
     transition(State::kWaitState,
@@ -1981,6 +2009,7 @@ class ControlManagerNode {
       return true;
     }
     enterStandby("FAILSAFE已复位，等待服务请求");
+    failsafe_recovery_pending_ = true;
     response.success = true;
     response.message = "FAILSAFE已复位";
     return true;
@@ -2723,6 +2752,7 @@ class ControlManagerNode {
   bool normal_disarm_attempted_{false};
   bool force_disarm_requested_{false};
   bool last_mode_request_accepted_{false};
+  bool failsafe_recovery_pending_{false};
   uint32_t mode_request_attempts_{0};
   State state_machine_state_{State::kStandby};
   std::string state_reason_;

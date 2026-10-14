@@ -1,0 +1,17 @@
+<launch>
+  <arg name="UAV_NAME" default="moving_uav_search" />
+  <arg name="instance_name" default="fusion_fixed" />
+  <arg name="image_topic" default="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/annotated" />
+  <arg name="tracker_node" default="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)" />
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="sar_yolo_detector" type="fusion_interactive_viewer.py" name="fusion_interactive_viewer" output="screen">
+      <env name="QT_QPA_PLATFORM" value="xcb" />
+      <env name="QT_X11_NO_MITSHM" value="1" />
+      <param name="image_topic" value="$(arg image_topic)" />
+      <param name="evidence_topic" value="$(arg tracker_node)/fusion_evidence" />
+      <param name="select_roi_service" value="$(arg tracker_node)/select_fusion_roi" />
+      <param name="select_pixel_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/select_pixel" />
+      <param name="selection_max_age_sec" value="0.75" />
+    </node>
+  </group>
+</launch>

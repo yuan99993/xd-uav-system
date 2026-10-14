@@ -7,6 +7,7 @@
 
 #include <ros/ros.h>
 #include <sar_yolo_detector/TrackedDetection2DArray.h>
+#include <sar_yolo_detector/FusionDetection2DArray.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <std_msgs/Header.h>
 #include <vision_msgs/Detection2DArray.h>
@@ -49,8 +50,12 @@ public:
       subscriber_ = node_.subscribe(
           input_topic_, 5, &VisionToXdBridge::trackedDetectionsCallback, this,
           ros::TransportHints().tcpNoDelay());
+    } else if (input_type_ == "fusion") {
+      subscriber_ = node_.subscribe(input_topic_, 1,
+          &VisionToXdBridge::fusionDetectionsCallback, this,
+          ros::TransportHints().tcpNoDelay());
     } else {
-      throw std::invalid_argument("input_type must be 'vision' or 'tracked'");
+      throw std::invalid_argument("input_type must be 'vision', 'tracked' or 'fusion'");
     }
     if (!camera_info_topic_.empty()) {
       camera_info_subscriber_ = node_.subscribe(
@@ -197,6 +202,36 @@ private:
     publisher_.publish(output);
   }
 
+  void fusionDetectionsCallback(
+      const sar_yolo_detector::FusionDetection2DArray::ConstPtr &message) {
+    // This additive path uses the capture's actual size, not a stale CameraInfo.
+    if (message->image_width == 0 || message->image_height == 0)
+      return;
+    image_width_ = message->image_width;
+    image_height_ = message->image_height;
+    xd_uav_track::DetectionArray output = outputFor(message->header);
+    if (!message->provenance.sensor_id.empty())
+      output.sensor_id = message->provenance.sensor_id;
+    if (!message->provenance.model_version.empty())
+      output.model_version = message->provenance.model_version;
+    std::size_t rejected = 0;
+    for (const auto &entry : message->detections) {
+      if ((entry.measurement_source != "detector" && entry.measurement_source != "visual_tracker") ||
+          (entry.measurement_source == "visual_tracker" && entry.last_detector_stamp > message->header.stamp)) {
+        ++rejected;
+        continue;
+      }
+      const auto &tracked = entry.target;
+      if (!appendDetection(tracked.detection, tracked.track_id,
+                           tracked.track_id_is_stable, &output)) {
+        ++rejected;
+        continue;
+      }
+      output.candidates.back().measurement_source = entry.measurement_source;
+    }
+    warnRejected(rejected);
+    publisher_.publish(output);
+  }
   ros::NodeHandle node_;
   ros::NodeHandle private_node_;
   ros::Publisher publisher_;

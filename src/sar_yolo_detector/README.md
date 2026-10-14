@@ -1,11 +1,27 @@
 # sar_yolo_detector
 
+## 当前正式方案：PixEagle/PT 四模式（2026-10-09 确认）
+
+用户于2026-10-09确定本目录的 `sar_yolo_detector` 与同级 `xd_uav_track` 为后续正式开发、接口适配和部署基线。
+路径继续保留 `/home/promise/mrs_test/sar_fusion_experiment.wlpAs3/src`；目录名中的experiment是历史命名，不再表示选型未定。
+两包基于 feature/xd-uav-construction 的 `3db09b0`，只有 SAR 修改；XD 保持上游原样，旧 `/home/promise/mrs_test/src` 下两包未被覆盖。
+保留三种 PixEagle 模式，新增可选 FusionTracker，使用原 train7.pt / CUDA + 选中目标 KCF，不走共享 TensorRT。
+新入口：`xd_smart_tracker_fusion_integration.launch`；旧归档入口仍支持原三模式。
+原消息/服务 MD5 不改，新增平行融合来源消息和原帧 ROI 服务。具体使用见
+[四模式融合指南](docs/fusion_experiment_guide.md)、[验证记录](docs/fusion_validation_20261009.md)和[需求交接](docs/fusion_requirements_and_handoff.md)。
+后续网页与新主机部署请使用本方案对应的[网页接口适配指南](docs/web_frontend_integration_guide.md)
+和[接口绑定 JSON](docs/web_frontend_interface_manifest.json)，不要直接套用下方旧三模式网页合同。
+正式方案确认不等于现场上线认证：UE/实拍验收、新四模式网页、跨相机等未完成项仍以指南为准。
+确认方案不自动改变模式默认值、不搬目录、不推送仓库，也不重新启用旧共享TensorRT链路。
+
+## 历史方案兼容说明（非当前正式默认）
+
 车辆共享检测与 `xd_uav_track` 三模式的完整启动、接口、网页接入和跨主机部署说明见
 [感知使用与部署指南](../xd_uav_track/docs/perception_user_deployment_guide.md)与[网页视频/交互接口](../xd_uav_track/docs/perception_web_video_interface.md)。旧 SmartTracker
-接口与当前正式 `perception/*` 合同不同，不要混用。
+接口与旧 `perception/*` 合同不同，不要混用；上述两个XD文档描述旧三模式网页，不是本方案网页合同。
 
-当前车辆识别的正式入口由 `xd_uav_track/launch/vision_tracking_stack.launch`
-统一编排。默认 train7 TensorRT FP16；固定相机和云台共享一份 YOLO，
+旧共享方案入口由 `xd_uav_track/launch/vision_tracking_stack.launch`
+统一编排。该历史方案默认 train7 TensorRT FP16；固定相机和云台共享一份 YOLO，
 目标身份、遮挡重捕获和锁定由 `xd_uav_track` 负责。
 将统一入口加入无人机 bringup 后，任一路相机上线都会自动处理；仅启动一个
 外部相机驱动不会反向启动 ROS launch，因此不要分别为两路重复运行检测入口。

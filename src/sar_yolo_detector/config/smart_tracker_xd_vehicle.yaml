@@ -15,10 +15,16 @@ SmartTracker:
   # the downstream tracker can associate them over time.
   SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.10
   SMART_TRACKER_MAX_DETECTIONS: 30
+  # All four labels belong to the vehicle parent class. Suppress duplicate
+  # tank/m142/etc. boxes BEFORE BoT-SORT allocates identities. A conservative
+  # overlap threshold preserves nearby vehicles better than agnostic IoU=0.30.
+  SMART_TRACKER_AGNOSTIC_NMS: true
+  SMART_TRACKER_IOU_THRESHOLD: 0.60
 
-  # ByteTrack is sufficient for the fixed overhead camera and lighter than
-  # BoT-SORT on the 2 GB deployment GPU.
+  # Preserve the upstream PixEagle association backend.
   TRACKER_TYPE: BoT-SORT
+  SMART_TRACKER_TRACKER_CONFIG_PATH: config/vehicle_botsort.yaml
+  SMART_TRACKER_INFERENCE_IMAGE_SIZE: 512
 
 ManualBoxTracker:
   enabled: true
