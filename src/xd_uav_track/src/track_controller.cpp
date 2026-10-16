@@ -1624,6 +1624,12 @@ TrackVelocity TrackController::compute(const double now) {
         input.gimbal_zoom_ratio = gimbal_state_.zoom_ratio;
       }
       TargetGuidanceOutput guidance = target_guidance_->update(input);
+      // Keep the profile-independent image-alignment error available to
+      // TrackStatus consumers (including the phase image overlay). Metric
+      // guidance uses world-relative state for control but still follows the
+      // same visual target, so these fields must not remain zero by default.
+      output.error_x = clamp(input.image_error_x, -2.0, 2.0);
+      output.error_y = clamp(input.image_error_y, -2.0, 2.0);
       if (gimbal_state_.status_valid && input.source_is_gimbal &&
           (!gimbal_state_.healthy || !gimbal_state_.tracking_active ||
            !gimbal_state_.control_authority_available)) {

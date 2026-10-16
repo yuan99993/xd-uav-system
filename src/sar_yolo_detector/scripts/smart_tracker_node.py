@@ -1288,6 +1288,8 @@ class SmartTrackerNode:
         # Manual modes have no concurrent YOLO correction for this capture.
         if hasattr(self, "_observation_publisher"):
             self._publish_observation_array(image, detections)
+        # FeatureTracker is a single-target ROI tracker: its valid ROI result
+        # is already the selected target and must not wait for a pixel click.
         self._publish_selected_detections(image, detections[0] if detections else None)
         self._publish_manual_state(image, result, measurement_valid)
         manual_tracker = self._current_manual_tracker()
