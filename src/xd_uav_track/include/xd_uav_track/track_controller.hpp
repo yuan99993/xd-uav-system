@@ -17,6 +17,7 @@ enum class FollowerProfile {
   kGimbalVelocityChase,
   kGimbalVelocityVector,
   kFixedWingVelocityVector,
+  kGimbalFixedWingVelocityVector,
   // Fixed-wing metric profiles consume an inertial/world-frame target and
   // use TargetGuidance for pursuit or standoff orbit generation.
   kFixedWingMetricPursuit,
@@ -126,6 +127,15 @@ struct TrackControllerConfig {
   double fw_commanded_airspeed{15.0};
   double fw_maximum_course_offset{0.70};
   double fw_maximum_climb_rate{3.0};
+  PidConfig gmfw_course_pid{1.2, 0.05, 0.10, 0.35};
+  PidConfig gmfw_climb_rate_pid{2.0, 0.05, 0.10, 0.8};
+  double gmfw_commanded_airspeed{15.0};
+  double gmfw_maximum_course_offset{0.70};
+  double gmfw_maximum_climb_rate{3.0};
+  // Fallback FOV for angle-only gimbal publishers; live GimbalStatus wins.
+  double gmfw_horizontal_fov_rad{1.0};
+  double gmfw_vertical_fov_rad{0.75};
+  double gmfw_image_alignment_rad{0.35};
 
   // Track-quality safety. Kalman covariance is expressed in normalized image
   // coordinates, so these limits are independent of camera resolution.
@@ -336,7 +346,7 @@ class TrackController {
                            double maximum_delta);
   double smoothYaw(double raw_yaw, double dt, double forward_speed);
   bool filteredGimbalAngles(double now, double* yaw, double* pitch,
-                            double* roll);
+                            double* roll, bool require_tracking = true);
   void gimbalToBodyVector(double yaw, double pitch, double roll,
                           double* forward, double* right, double* down) const;
   void resetFollowerState();
@@ -407,6 +417,8 @@ class TrackController {
   Pid ground_forward_pid_;
   Pid fw_course_pid_;
   Pid fw_climb_rate_pid_;
+  Pid gmfw_course_pid_;
+  Pid gmfw_climb_rate_pid_;
 
   bool have_measurement_{false};
   bool ever_acquired_{false};

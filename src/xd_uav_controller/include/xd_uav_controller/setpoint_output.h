@@ -18,34 +18,54 @@ enum class SetpointOutputType : uint8_t {
   kRawLocal = 1,
 };
 
+struct ReferenceOutputTypes {
+  std::string position_target{"raw_attitude"};
+  std::string path{"raw_attitude"};
+  std::string trajectory{"raw_attitude"};
+  std::string internal{"raw_attitude"};
+};
+
+inline SetpointOutputType setpointOutputTypeForReference(
+    const ReferenceType type,
+    const ReferenceOutputTypes& output_types) {
+  const std::string* configured_type = nullptr;
+  switch (type) {
+    case ReferenceType::kPositionTarget:
+    case ReferenceType::kSimpleGoal:
+      configured_type = &output_types.position_target;
+      break;
+    case ReferenceType::kPath:
+      configured_type = &output_types.path;
+      break;
+    case ReferenceType::kTrajectory:
+      configured_type = &output_types.trajectory;
+      break;
+    case ReferenceType::kUnknown:
+      return SetpointOutputType::kRawAttitude;
+    case ReferenceType::kInternal:
+    case ReferenceType::kIdle:
+      configured_type = &output_types.internal;
+      break;
+  }
+  return configured_type != nullptr && *configured_type == "raw_local"
+             ? SetpointOutputType::kRawLocal
+             : SetpointOutputType::kRawAttitude;
+}
+
+// Keep the flat overload for callers and launch configurations that have not
+// migrated to the per-airframe output settings yet.
 inline SetpointOutputType setpointOutputTypeForReference(
     const ReferenceType type,
     const std::string& position_target_type,
     const std::string& path_type,
     const std::string& trajectory_type,
     const std::string& internal_type = "raw_attitude") {
-  const std::string* configured_type = nullptr;
-  switch (type) {
-    case ReferenceType::kPositionTarget:
-    case ReferenceType::kSimpleGoal:
-      configured_type = &position_target_type;
-      break;
-    case ReferenceType::kPath:
-      configured_type = &path_type;
-      break;
-    case ReferenceType::kTrajectory:
-      configured_type = &trajectory_type;
-      break;
-    case ReferenceType::kUnknown:
-      return SetpointOutputType::kRawAttitude;
-    case ReferenceType::kInternal:
-    case ReferenceType::kIdle:
-      configured_type = &internal_type;
-      break;
-  }
-  return configured_type != nullptr && *configured_type == "raw_local"
-             ? SetpointOutputType::kRawLocal
-             : SetpointOutputType::kRawAttitude;
+  ReferenceOutputTypes output_types;
+  output_types.position_target = position_target_type;
+  output_types.path = path_type;
+  output_types.trajectory = trajectory_type;
+  output_types.internal = internal_type;
+  return setpointOutputTypeForReference(type, output_types);
 }
 
 inline uint8_t setpointOutputTypeValue(const SetpointOutputType type) {

@@ -3,7 +3,13 @@
 offboard:
   output:
     reference_types:
-      position_target: raw_attitude
-      path: raw_attitude
-      trajectory: raw_attitude
-      internal: raw_attitude
+      multirotor:
+        position_target: raw_attitude
+        path: raw_attitude
+        trajectory: raw_attitude
+        internal: raw_attitude
+      fixedwing:
+        position_target: raw_attitude
+        path: raw_attitude
+        trajectory: raw_attitude
+        internal: raw_attitude

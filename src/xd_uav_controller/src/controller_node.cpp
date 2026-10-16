@@ -378,25 +378,60 @@ class ControllerNode {
     }
     private_nh_.param("control_rate", control_rate_,
                       load_multirotor_ ? 100.0 : 50.0);
+    xd_uav_controller::ReferenceOutputTypes legacy_output_types;
     private_nh_.param(
         "offboard/output/reference_types/position_target",
-        position_target_output_type_, std::string("raw_attitude"));
+        legacy_output_types.position_target, std::string("raw_attitude"));
     private_nh_.param(
         "offboard/output/reference_types/path",
-        path_output_type_, std::string("raw_attitude"));
+        legacy_output_types.path, std::string("raw_attitude"));
     private_nh_.param(
         "offboard/output/reference_types/trajectory",
-        trajectory_output_type_, std::string("raw_attitude"));
+        legacy_output_types.trajectory, std::string("raw_attitude"));
     private_nh_.param(
         "offboard/output/reference_types/internal",
-        internal_output_type_, std::string("raw_attitude"));
+        legacy_output_types.internal, std::string("raw_attitude"));
+    multirotor_output_types_ = legacy_output_types;
+    fixedwing_output_types_ = legacy_output_types;
+    private_nh_.param(
+        "offboard/output/reference_types/multirotor/position_target",
+        multirotor_output_types_.position_target,
+        legacy_output_types.position_target);
+    private_nh_.param(
+        "offboard/output/reference_types/multirotor/path",
+        multirotor_output_types_.path, legacy_output_types.path);
+    private_nh_.param(
+        "offboard/output/reference_types/multirotor/trajectory",
+        multirotor_output_types_.trajectory,
+        legacy_output_types.trajectory);
+    private_nh_.param(
+        "offboard/output/reference_types/multirotor/internal",
+        multirotor_output_types_.internal, legacy_output_types.internal);
+    private_nh_.param(
+        "offboard/output/reference_types/fixedwing/position_target",
+        fixedwing_output_types_.position_target,
+        legacy_output_types.position_target);
+    private_nh_.param(
+        "offboard/output/reference_types/fixedwing/path",
+        fixedwing_output_types_.path, legacy_output_types.path);
+    private_nh_.param(
+        "offboard/output/reference_types/fixedwing/trajectory",
+        fixedwing_output_types_.trajectory,
+        legacy_output_types.trajectory);
+    private_nh_.param(
+        "offboard/output/reference_types/fixedwing/internal",
+        fixedwing_output_types_.internal, legacy_output_types.internal);
     const auto valid_output_type = [](const std::string& value) {
       return value == "raw_attitude" || value == "raw_local";
     };
-    if (!valid_output_type(position_target_output_type_) ||
-        !valid_output_type(path_output_type_) ||
-        !valid_output_type(trajectory_output_type_) ||
-        !valid_output_type(internal_output_type_)) {
+    const auto valid_output_types = [&](const auto& output_types) {
+      return valid_output_type(output_types.position_target) &&
+             valid_output_type(output_types.path) &&
+             valid_output_type(output_types.trajectory) &&
+             valid_output_type(output_types.internal);
+    };
+    if (!valid_output_types(multirotor_output_types_) ||
+        !valid_output_types(fixedwing_output_types_)) {
       throw std::runtime_error(
           "offboard/output/reference_types仅支持raw_attitude或raw_local");
     }
@@ -1756,6 +1791,8 @@ class ControllerNode {
         activeBackend();
     if (selected_backend != xd_uav_controller::BackendId::kNone &&
         selected_backend != active_backend_) {
+      const xd_uav_controller::BackendId previous_backend =
+          active_backend_;
       if (auto* previous = backendById(active_backend_)) {
         previous->onDeactivate();
       }
@@ -1774,6 +1811,18 @@ class ControllerNode {
                    ? "multirotor"
                    : "fixedwing",
                state_.regime_generation);
+      if (xd_uav_controller::isVtolAirframe(airframe_type_) &&
+          previous_backend ==
+              xd_uav_controller::BackendId::kMultirotor &&
+          selected_backend ==
+              xd_uav_controller::BackendId::kFixedWing &&
+          state_.state_valid && !have_reference_ &&
+          !internal_reference_active_ && !landing_active_ &&
+          !fixedwing_loiter_active_) {
+        startFixedwingLoiter(
+            state_.position_odom.z,
+            "VTOL切入固定翼且当前没有活动外部参考");
+      }
     }
     if (isMultirotorBackendActive() &&
         (!state_.state_valid ||
@@ -5569,9 +5618,18 @@ class ControllerNode {
 
   xd_uav_controller::SetpointOutputType outputTypeForReference(
       const xd_uav_controller::ReferenceType type) const {
+    return outputTypeForReference(type, activeBackend());
+  }
+
+  xd_uav_controller::SetpointOutputType outputTypeForReference(
+      const xd_uav_controller::ReferenceType type,
+      const xd_uav_controller::BackendId backend) const {
+    const auto& output_types =
+        backend == xd_uav_controller::BackendId::kFixedWing
+            ? fixedwing_output_types_
+            : multirotor_output_types_;
     return xd_uav_controller::setpointOutputTypeForReference(
-        type, position_target_output_type_, path_output_type_,
-        trajectory_output_type_, internal_output_type_);
+        type, output_types);
   }
 
   void timerCallback(const ros::TimerEvent&) {
@@ -5762,7 +5820,7 @@ class ControllerNode {
       return;
     }
     const bool raw_local_selected =
-        outputTypeForReference(reference.type) ==
+        outputTypeForReference(reference.type, backend) ==
         xd_uav_controller::SetpointOutputType::kRawLocal;
     if (raw_local_selected) {
       std::string local_reason;
@@ -5947,10 +6005,8 @@ class ControllerNode {
   xd_uav_controller::BackendId active_backend_{
       xd_uav_controller::BackendId::kNone};
   std::string vtol_transition_policy_{"source_backend"};
-  std::string position_target_output_type_{"raw_attitude"};
-  std::string path_output_type_{"raw_attitude"};
-  std::string trajectory_output_type_{"raw_attitude"};
-  std::string internal_output_type_{"raw_attitude"};
+  xd_uav_controller::ReferenceOutputTypes multirotor_output_types_;
+  xd_uav_controller::ReferenceOutputTypes fixedwing_output_types_;
   uint8_t vehicle_type_id_{
       xd_uav_controller::ControlState::VEHICLE_MULTIROTOR};
   double control_rate_{100.0};

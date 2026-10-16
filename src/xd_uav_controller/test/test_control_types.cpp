@@ -249,6 +249,28 @@ TEST(SetpointOutput, SelectsOutputIndependentlyByReferenceType) {
                 "raw_local"));
 }
 
+TEST(SetpointOutput, SelectsPerBackendReferenceSettings) {
+  control::ReferenceOutputTypes multirotor;
+  multirotor.position_target = "raw_local";
+  multirotor.path = "raw_attitude";
+  multirotor.trajectory = "raw_attitude";
+  multirotor.internal = "raw_local";
+  control::ReferenceOutputTypes fixedwing;
+
+  EXPECT_EQ(control::SetpointOutputType::kRawLocal,
+            control::setpointOutputTypeForReference(
+                control::ReferenceType::kPositionTarget, multirotor));
+  EXPECT_EQ(control::SetpointOutputType::kRawLocal,
+            control::setpointOutputTypeForReference(
+                control::ReferenceType::kInternal, multirotor));
+  EXPECT_EQ(control::SetpointOutputType::kRawAttitude,
+            control::setpointOutputTypeForReference(
+                control::ReferenceType::kPositionTarget, fixedwing));
+  EXPECT_EQ(control::SetpointOutputType::kRawAttitude,
+            control::setpointOutputTypeForReference(
+                control::ReferenceType::kPath, fixedwing));
+}
+
 TEST(ControllerBackendContract, MapsReferenceTypesToWireValues) {
   EXPECT_EQ(1U, control::referenceTypeValue(
                     control::ReferenceType::kPositionTarget));
