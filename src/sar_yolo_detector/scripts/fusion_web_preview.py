@@ -17,7 +17,7 @@ from cv_bridge import CvBridge
 import rospkg
 import rospy
 from geometry_msgs.msg import PointStamped
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, RegionOfInterest
 from std_msgs.msg import String
 from sar_yolo_detector.interactive_view import FramePair
 from sar_yolo_detector.msg import TrackedDetection2DArray
@@ -39,6 +39,7 @@ class Preview:
         self.max_age = float(rospy.get_param('~selection_max_age_sec', .75))
         self.labels = rospy.get_param('~class_names', ['car', 'ar-car', 'tank', 'm142'])
         self.click = rospy.Publisher(rospy.get_param('~select_pixel_topic'), PointStamped, queue_size=1)
+        self.manual_roi = rospy.Publisher(rospy.get_param('~manual_roi_topic'), RegionOfInterest, queue_size=1)
         self.roi = rospy.ServiceProxy(rospy.get_param('~select_roi_service'), SelectFusionROI)
         self.subscribers = [
             rospy.Subscriber(rospy.get_param('~image_topic'), Image, self.image, queue_size=1, buff_size=4*1024*1024),
@@ -99,9 +100,11 @@ class Preview:
                     png=base64.b64encode(png).decode('ascii'), image_mime='image/png',
                     selected_id=evidence.get('selected_id', -1), source=evidence.get('source'),
                     reason=evidence.get('reason'), mode=evidence.get('mode'),
+                    color_source=evidence.get('color_source'), color_name=evidence.get('color_name'),
                     objects=self.targets.get(image.header.stamp.to_nsec(), []),
                     stamp=image.header.stamp.to_sec(), received_wall=time.monotonic())
-                self.history[token] = copy.deepcopy(evidence['capture_header']), image.width, image.height
+                self.history[token] = (copy.deepcopy(evidence['capture_header']), image.width,
+                    image.height, evidence.get('mode', 'fusion_tracker'))
                 while len(self.history) > 24:
                     self.history.popitem(last=False)
         except Exception as exc:
@@ -122,13 +125,19 @@ class Preview:
             return 409, dict(success=False, message='BUSY: previous command is still running')
         try:
             action = body.get('action')
+            if action not in ('click', 'roi', 'clear'):
+                raise ValueError('Unknown command')
+            with self.lock:
+                current_mode = self.current.get('mode', 'fusion_tracker') if self.current else None
             request = SelectFusionROIRequest(clear_selection=action == 'clear')
             if action != 'clear':
                 with self.lock:
                     original = self.history.get(str(body.get('frame_token')))
                 if original is None:
                     raise ValueError('Displayed frame is no longer cached; refresh and retry')
-                h, width, height = original
+                h, width, height, frame_mode = original
+                if frame_mode != current_mode:
+                    raise ValueError('Tracking mode changed; select on a new frame')
                 request.header.seq = h['seq']
                 request.header.frame_id = h['frame_id']
                 request.header.stamp = rospy.Time(h['stamp']['secs'], h['stamp']['nsecs'])
@@ -149,14 +158,30 @@ class Preview:
                     message = PointStamped(header=request.header)
                     message.point.x, message.point.y = x, y
                     self.click.publish(message)
-                    return 202, dict(success=True, sent=True, message='Click sent; verify actual selected ID')
-                if action != 'roi':
-                    raise ValueError('Unknown command')
+                    return 202, dict(success=True, sent=True,
+                        message='Click sent; verify the selected colour box' if frame_mode == 'color_tracker'
+                        else 'Click sent; verify actual selected ID')
                 w, h = values[2:]
                 if w < 4 or h < 4 or x+w > width or y+h > height:
                     raise ValueError('ROI must be inside the image and at least 4x4 pixels')
+                if frame_mode in ('feature_tracker', 'color_tracker'):
+                    if not self.manual_roi.get_num_connections():
+                        raise ValueError('Manual ROI subscriber is not connected')
+                    self.manual_roi.publish(RegionOfInterest(x_offset=int(x), y_offset=int(y),
+                        width=int(w), height=int(h)))
+                    return 202, dict(success=True, sent=True,
+                        message='Selected colour region queued for the next frame')
+                if frame_mode != 'fusion_tracker':
+                    raise ValueError('Selection is unavailable in this mode')
                 request.roi.x_offset, request.roi.y_offset = int(x), int(y)
                 request.roi.width, request.roi.height = int(w), int(h)
+            elif current_mode in ('feature_tracker', 'color_tracker'):
+                if not self.manual_roi.get_num_connections():
+                    raise ValueError('Manual ROI subscriber is not connected')
+                self.manual_roi.publish(RegionOfInterest())
+                return 202, dict(success=True, sent=True, message='Manual target cleared')
+            elif current_mode != 'fusion_tracker':
+                raise ValueError('Selection is unavailable in this mode')
             self.roi.wait_for_service(timeout=2.)
             result = self.roi(request)
             return (200 if result.success else 409), dict(success=result.success,

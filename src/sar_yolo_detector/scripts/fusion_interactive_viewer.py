@@ -9,7 +9,7 @@ import threading
 import rospy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, RegionOfInterest
 from std_msgs.msg import Header, String
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -99,7 +99,7 @@ class Viewer(QtWidgets.QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('SAR Fusion — click / drag to select')
+        self.setWindowTitle('SAR Tracker — click / drag to select')
         self.resize(850, 700)
         self.frames = FramePair()
         self.bridge = CvBridge()
@@ -121,6 +121,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.canvas.selected.connect(self.select)
         self.canvas.cancel.connect(self.clear)
         self.click = rospy.Publisher(rospy.get_param('~select_pixel_topic'), PointStamped, queue_size=1)
+        self.manual_roi = rospy.Publisher(rospy.get_param('~manual_roi_topic'), RegionOfInterest, queue_size=1)
         self.roi = rospy.ServiceProxy(rospy.get_param('~select_roi_service'), SelectFusionROI)
         self.image_sub = rospy.Subscriber(rospy.get_param('~image_topic'), Image,
                                           self.on_image, queue_size=1, buff_size=4*1024*1024)
@@ -159,11 +160,14 @@ class Viewer(QtWidgets.QMainWindow):
             original = evidence['capture_header']
             header = Header(seq=int(original['seq']), frame_id=original['frame_id'],
                             stamp=rospy.Time(int(original['stamp']['secs']), int(original['stamp']['nsecs'])))
-            self.canvas.set_frame(image, header)
+            if self.canvas.origin is None:
+                self.canvas.set_frame(image, header)
+                self.displayed_mode = evidence.get('mode', 'fusion_tracker')
             self.last_frame_wall = QtCore.QDateTime.currentMSecsSinceEpoch()
             identity = int(evidence.get('selected_id', -1))
             status = evidence.get('reason', '')
-            self.state.setText('  {}×{} | ID {} | {}'.format(image.width(), image.height(), identity, status))
+            self.state.setText('  {} | {}×{} | ID {} | {}'.format(
+                self.displayed_mode, image.width(), image.height(), identity, status))
         except Exception as exc:
             rospy.logwarn_throttle(5., 'Viewer image conversion failed: %s', exc)
 
@@ -179,12 +183,24 @@ class Viewer(QtWidgets.QMainWindow):
             message = PointStamped(header=header)
             message.point.x, message.point.y = end
             self.click.publish(message)
-            self.statusBar().showMessage('点击已发送（原图 {:.0f}, {:.0f}）；请以顶部 ID 和绿色框确认选中结果。'.format(*end))
+            detail = '请确认颜色跟踪框。' if self.displayed_mode == 'color_tracker' else '请查看跟踪框确认选择。'
+            self.statusBar().showMessage('点击已发送（原图 {:.0f}, {:.0f}）；{}'.format(*end, detail))
             return
         x, y = int(min(start[0], end[0])), int(min(start[1], end[1]))
         right, bottom = int(max(start[0], end[0])), int(max(start[1], end[1]))
         if right-x < 4 or bottom-y < 4:
             self.statusBar().showMessage('框选区域不得小于 4×4 原图像素')
+            return
+        if self.displayed_mode in ('feature_tracker', 'color_tracker'):
+            if not self.manual_roi.get_num_connections():
+                self.statusBar().showMessage('手动 ROI 订阅者未连接')
+                return
+            self.manual_roi.publish(RegionOfInterest(x_offset=x, y_offset=y,
+                width=right-x, height=bottom-y))
+            self.statusBar().showMessage('颜色区域已提交；下一帧会锁定框内匹配颜色的目标。')
+            return
+        if self.displayed_mode != 'fusion_tracker':
+            self.statusBar().showMessage('当前模式不支持此预览中的选择')
             return
         request = SelectFusionROIRequest(header=header)
         request.roi.x_offset, request.roi.y_offset = x, y
@@ -194,7 +210,14 @@ class Viewer(QtWidgets.QMainWindow):
     def clear(self):
         self.canvas.cancel_gesture()
         if not self.busy:
-            self.submit(SelectFusionROIRequest(clear_selection=True))
+            if self.displayed_mode in ('feature_tracker', 'color_tracker'):
+                if self.manual_roi.get_num_connections():
+                    self.manual_roi.publish(RegionOfInterest())
+                    self.statusBar().showMessage('手动目标已清除')
+                else:
+                    self.statusBar().showMessage('手动 ROI 订阅者未连接')
+            else:
+                self.submit(SelectFusionROIRequest(clear_selection=True))
         else:
             self.statusBar().showMessage('BUSY：请待上一条命令完成后取消')
 
@@ -222,6 +245,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.image_sub.unregister()
         self.evidence_sub.unregister()
         self.click.unregister()
+        self.manual_roi.unregister()
         rospy.signal_shutdown('Interactive viewer closed')
         event.accept()
 

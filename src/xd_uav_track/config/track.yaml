@@ -95,7 +95,7 @@ tracker:
     # quickly so a newly selected detector track can be followed.
     locked_target_release_timeout_sec: 0.5
   confidence:
-    new_track: 0.50             # 低置信框只能更新已有轨迹
+    new_track: 0.001             # 低置信框只能更新已有轨迹
     update: 0.10
   lifecycle:
     confirmation_hits: 2
@@ -158,7 +158,7 @@ follower:
 
   pid:
     lateral:       {kp: 3.0, ki: 0.02, kd: 0.02, integral_limit: 0.3}
-    vertical:      {kp: 20.0, ki: 0.02, kd: 0.02, integral_limit: 0.3}
+    vertical:      {kp: 25.0, ki: 0.04, kd: 0.02, integral_limit: 0.3}
     yaw:           {kp: 3.0, ki: 0.01, kd: 0.01, integral_limit: 0.2}
     ground_forward: {kp: 2.0, ki: 0.01, kd: 0.1, integral_limit: 0.3}
 

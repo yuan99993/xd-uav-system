@@ -11,6 +11,7 @@
       <param name="evidence_topic" value="$(arg tracker_node)/fusion_evidence" />
       <param name="select_roi_service" value="$(arg tracker_node)/select_fusion_roi" />
       <param name="select_pixel_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/select_pixel" />
+      <param name="manual_roi_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/manual/initial_roi" />
       <param name="selection_max_age_sec" value="0.75" />
     </node>
   </group>

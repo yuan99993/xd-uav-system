@@ -108,7 +108,6 @@ roslaunch sar_yolo_detector xd_smart_tracker_fusion_integration.launch \
   camera_info_topic:=front_camera/camera_info \
   image_width:=1280 image_height:=720 \
   image_source:=front_rgb sensor_id:=front_camera \
-  output_detections_topic:=detect/input/front/detections_2d \
   python_executable:=/opt/uav/fusion_ws/.venv-fusion/bin/python
 ```
 
@@ -173,17 +172,18 @@ ROS 1 没有为每个话题分配固定网页端口。网页一般连接一个 W
 | 输出 | `T/annotated` | `sensor_msgs/Image` | 原尺寸同帧叠框；有订阅者且开启发布才发布 |
 | 输出 | `T/tracked_detections` | `sar_yolo_detector/TrackedDetection2DArray` | 所有最终观测框；兼容旧消费者，无来源字段 |
 | 输出 | `T/tracked_detections/fusion` | `sar_yolo_detector/FusionDetection2DArray` | 新网页首选数值接口：原尺寸、来源、最近检测时间 |
-| 输出 | `T/selected_tracked_detections` | `sar_yolo_detector/TrackedDetection2DArray` | smart/fusion 的单选观测；无可信选中框为空 |
+| 输出 | `T/selected_tracked_detections` | `sar_yolo_detector/TrackedDetection2DArray` | smart/fusion 和配置颜色模式的单选观测；无选中框为空 |
 | 输出 | `T/state` | `sar_yolo_detector/SmartTrackerState` | 选中状态、有效性、实际算法/设备/模型/耗时 |
-| 输出 | `S/fusion_evidence` | `std_msgs/String` | 仅 fusion 分支逐帧输出 JSON 证据 |
+| 输出 | `S/fusion_evidence` | `std_msgs/String` | fusion 和手动追踪分支逐帧输出配对画面所需的 JSON 证据 |
 | 输出 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 汇总诊断；按 hardware_id、节点名和 active_source 过滤 |
-| 输出 | `/{uav}/detect/input/detections_2d` | `xd_uav_track/DetectionArray` | 原下游检测合同，必须另接定位才能得到 3D |
+| 桥接输出 | `/{uav}/track/selected_detections` | `xd_uav_track/DetectionArray` | 默认只转发 UI 选中框，供 `track/start_tracker` 跟踪 |
+| 可选桥接输出 | `/{uav}/detect/input/detections_2d` | `xd_uav_track/DetectionArray` | 通过 launch 参数改接全候选检测/定位链 |
 | 网页发布 | `T/select_pixel` | `geometry_msgs/PointStamped` | fusion 可原帧绑定点击；无服务式回执 |
-| 网页发布 | `/{uav}/sar_yolo_detector/manual/initial_roi` | `sensor_msgs/RegionOfInterest` | 独立 feature/color 初始化；没有原帧时间戳 |
+| 网页发布 | `/{uav}/sar_yolo_detector/manual/initial_roi` | `sensor_msgs/RegionOfInterest` | feature/color 初始化；配置颜色模式用它选择与框相交的候选框 |
 
 除诊断的实现行为外，不应假定这些输出锁存；重连后须等待新图像、新状态。
-`selected_tracked_detections` 不应当作所有模式通用的单目标输出：独立 feature/color 当前会发布空的 selected 流，
-其有效结果在全量 detections 和 manual state 中，云台消费端不能忽略此差异。
+配置颜色模式会在 `tracked_detections` 发布所有红色候选框，UI 点击后将选中目标单独持续发布到
+`selected_tracked_detections`。feature 模式和 ROI 学习颜色模式仍输出单个人工目标。
 
 ## 5. 数值框、类别、位置与身份
 
@@ -284,7 +284,7 @@ SAR 数值框的 `results[].pose` 默认值不是定位结果；`coordinate_cont
 |---|---|---|---|
 | `smart_tracker` | 全图 YOLO + BoT-SORT | 使用原 PixEagle 选择与状态管理 | 多目标检测/跟踪；不是检测无身份模式 |
 | `feature_tracker` | 当前帧不运行 YOLO 分支；模型仍在内存 | 人工 ROI，KCF/CSRT 等由配置决定 | 单人工目标，等待 ROI 或有效/失联状态 |
-| `color_tracker` | 当前帧不运行 YOLO 分支；模型仍在内存 | 空 color_name 学习 ROI；非空按预设色全图找一个区域 | 颜色视觉目标，不宣称已识别车辆 |
+| `color_tracker` | 当前帧不运行 YOLO 分支；模型仍在内存 | 空 color_name 学习 ROI；非空按预设色发布多个候选，UI 点击/拖框选一个 | 多个颜色候选框；选中框单独进入 selected 流 |
 | `fusion_tracker` | 持续全图 YOLO + BoT-SORT | 对一个选中目标运行 KCF/CSRT 并门控融合 | 选中目标融合框 + 其他目标 YOLO 框 |
 
 融合是单选目标局部跟踪，不是每个目标独立 KCF，也不是两个框取并集。
@@ -423,7 +423,7 @@ SmartTracker 内核 state 可能不同步；不能把 fusion 的安全性推广�
 
 该请求在下一张处理图像上初始化，**没有 header/原帧保证，也没有服务回执**。
 大延迟网页不可宣称“准确锁住所框原帧目标”；可限制为低延迟本地调试，正式远端优先使用 fusion 原帧 ROI。
-零宽/高会清除手动跟踪，指定颜色全图模式不接受 ROI 初始化。
+零宽/高会清除手动选择；指定颜色全图模式的非零 ROI 会在候选颜色框中选择相交目标。
 manual ROI 的默认话题没有 instance 后缀，双相机必须在部署配置中分别覆盖
 `ManualBoxTracker/initial_roi_topic`，否则一个 ROI 可能同时初始化两路相机。
 
@@ -1177,7 +1177,7 @@ ROS节点不会自动读取/替换它。独立附件保留供机器读取；变�
     "service_root": "/{uav_name}/sar_yolo_smart_tracker_{instance_name}",
     "manual_roi_topic": "/{uav_name}/sar_yolo_detector/manual/initial_roi",
     "manual_roi_requires_per_instance_override": true,
-    "bridge_output_default": "/{uav_name}/detect/input/detections_2d"
+    "bridge_output_default": "/{uav_name}/track/selected_detections"
   },
   "current_gazebo_example": {
     "uav_name": "moving_uav_search",
@@ -1225,11 +1225,12 @@ ROS节点不会自动读取/替换它。独立附件保留供机器读取；变�
       "type": "sar_yolo_detector/FusionDetection2DArray", "direction": "subscribe",
       "intended_consumer": "existing XD bridge; ordered capture-domain measurements, not presentation corrections",
       "original_yolo_capture_stamp_preserved": true,
-      "default_bridge_input": true
+      "default_bridge_input": false
     },
     "selected_target": {
       "name": "{topic_root}/selected_tracked_detections", "type": "sar_yolo_detector/TrackedDetection2DArray", "direction": "subscribe",
       "supported_consumption_modes": ["smart_tracker", "feature_tracker", "color_tracker", "fusion_tracker"],
+      "default_bridge_input": true,
       "manual_modes_currently_publish_empty_selected_array": false
     },
     "state": {
