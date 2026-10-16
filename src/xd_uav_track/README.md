@@ -187,7 +187,33 @@ rosservice call /uav1/track/set_profile \
 /uavX/track/velocity_body              geometry_msgs/TwistStamped
 /uavX/track/command                    xd_uav_track/FollowerCommand
 /uavX/track/status                     xd_uav_track/TrackStatus
+/uavX/track/phase_annotated             sensor_msgs/Image
 /uavX/control/reference/setpoint       mavros_msgs/PositionTarget
+```
+
+`track.launch` 默认订阅 `/uavX/sar_yolo_detector/smart/annotated`，在原图上叠加
+`UNIDENTIFICATION`、`LOCKING`、`TRACKING` 或 `ATTACKING` 后发布到
+`track/phase_annotated`。没有收到有效选中框时显示 `UNIDENTIFICATION`；收到选中框而
+`StartTracker` 尚未启动时显示 `LOCKING`。启动后至少保持
+`attacking_min_tracking_duration_sec` 秒的 `TRACKING`。目标可见且控制命令有效后，普通图像控制模式
+按归一化中心误差 `max(abs(error_x), abs(error_y))` 进入 `ATTACKING`；
+`gm_velocity_chase`、`gm_velocity_vector` 和 `gmfw_velocity_vector` 改按机体与云台的相对航向角
+`GimbalState.yaw_rad` 判断，不用图像框中心误差。云台状态无效或过期时保持 `TRACKING`。
+云台角度会按跟踪器相同的反向、偏置、滤波和死区配置校正。进入和退出阈值分别可独立调整，
+退出阈值较大时可减少标签抖动。
+阶段判断独立于 `mc_velocity_ground`、`mc_velocity_position`、`mc_velocity_distance`、
+`mc_velocity_chase`、`gm_velocity_chase`、`gm_velocity_vector`、`fw_velocity_vector`、
+`gmfw_velocity_vector`、`fw_metric_pursuit` 和 `fw_metric_orbit`；米制引导模式也会在
+`TrackStatus.error_x/error_y` 中报告图像对齐误差。
+
+话题、阶段误差阈值、消息超时和开关统一配置在
+`config/track.yaml` 的 `phase_overlay` 段。设 `enabled: false` 可停用阶段图像发布；
+图像模式用 `attacking_error_threshold` / `attacking_error_exit_threshold`；云台模式用
+`attacking_gimbal_yaw_threshold_rad` / `attacking_gimbal_yaw_exit_threshold_rad`。目前云台阈值为
+进入 `0.08 rad`、退出 `0.18 rad`，最短跟踪时间为 `1.0 s`。
+
+```bash
+roslaunch xd_uav_track track.launch UAV_NAME:=uav1
 ```
 
 `command` 是所有 7 个速度模式统一、带有效性的权威输出。`velocity_body`

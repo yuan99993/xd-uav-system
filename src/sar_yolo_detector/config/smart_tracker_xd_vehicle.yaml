@@ -31,7 +31,8 @@ ManualBoxTracker:
   initial_roi_topic: sar_yolo_detector/manual/initial_roi
 
   # FeatureTracker and ColorTracker are independent modes selected through the
-  # switch service. Both modes wait for exactly one initial ROI after switching.
+  # switch service. FeatureTracker publishes its valid ROI box directly as the
+  # selected target; it does not require a separate select_pixel click.
   class_id: 2                  # class attached to the manual Detection2D
   track_id: 900000000          # stable ID, kept inside signed int32 range
   minimum_confidence: 0.0

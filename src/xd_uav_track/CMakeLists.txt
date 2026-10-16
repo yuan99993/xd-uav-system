@@ -141,6 +141,7 @@ catkin_install_python(PROGRAMS
   scripts/tracking_benchmark_driver.py
   scripts/check_tracking_benchmark_baseline.py
   scripts/tracking_overlay_node.py
+  scripts/tracking_phase_overlay_node.py
   scripts/combined_tracking_view_node.py
   scripts/video_replay_node.py
   scripts/video_tracking_record_node.py

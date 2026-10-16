@@ -14,5 +14,9 @@
       <param name="frames/body" value="$(arg body_frame)"/>
       <param name="frames/body_frd" value="$(arg body_frd_frame)"/>
     </node>
+
+    <node pkg="xd_uav_track" type="tracking_phase_overlay_node.py"
+          name="tracking_phase_overlay" output="screen">
+    </node>
   </group>
 </launch>

@@ -30,6 +30,26 @@ interfaces:
     tracks: "track/tracks"
     status: "track/status"
 
+# 2.1 跟踪阶段图像叠加 -------------------------------------------------------
+# 话题使用相对名称，自动解析到 UAV_NAME 命名空间。
+phase_overlay:
+  enabled: true
+  input_image_topic: "sar_yolo_detector/smart/annotated"
+  input_detections_topic: "track/selected_detections"
+  status_topic: "track/status"
+  gimbal_state_topic: "track/gimbal_state"
+  output_image_topic: "track/phase_annotated"
+  detection_timeout_sec: 0.5
+  status_timeout_sec: 0.5
+  gimbal_state_timeout_sec: 0.5
+  attacking_min_tracking_duration_sec: 1.0
+  attacking_error_threshold: 0.05
+  attacking_error_exit_threshold: 0.40
+  # Gimbal profiles use body-relative gimbal yaw instead of image-box error.
+  # Enter ATTACKING near aircraft/gimbal heading alignment; exit with hysteresis.
+  attacking_gimbal_yaw_threshold_rad: 0.08
+  attacking_gimbal_yaw_exit_threshold_rad: 0.18
+
 # 3. Tracker：检测框 -> 稳定目标状态 -----------------------------------------
 tracker:
   # false 时必须调用 ~start_tracker，避免检测器一启动飞机立即跟随。

@@ -504,6 +504,12 @@ class FusionAdapterTest(unittest.TestCase):
             self.assertEqual(len(self.node._fusion_snapshots), 0)
 
     def test_manual_modes_are_visual_and_publish_same_selected_box(self):
+        # The publish path only needs these tracker identity fields; the frame
+        # loop owns initialization and updates the actual OpenCV trackers.
+        self.node._manual_trackers = {
+            "feature_tracker": SimpleNamespace(colour_source="", colour_name=""),
+            "color_tracker": SimpleNamespace(colour_source="configured", colour_name="red"),
+        }
         for mode in ("feature_tracker", "color_tracker"):
             self.node._tracking_mode = mode
             self.node._manual_active = True
