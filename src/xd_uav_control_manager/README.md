@@ -144,10 +144,14 @@ rates来自IMU；固定翼空速来自`mavros/vfr_hud`。
 
 ## 配置
 
-- `config/offboard.yaml`按职责分为四组：`offboard/output/reference_types/*`分别选择
-  PositionTarget、Path、Trajectory及起飞/悬停/降落等`internal`参考使用`raw_attitude`还是`raw_local`；`offboard/stream/*`
+- `config/offboard.yaml`按职责分组。`offboard/output/reference_types/multirotor/*`
+  和`fixedwing/*`分别为旋翼与固定翼设置PositionTarget、Path、Trajectory及
+  起飞/悬停/降落等`internal`参考的`raw_attitude`或`raw_local`输出；VTOL按当前活动后端
+  选择配置，转换阶段沿用转换发起时的后端。`offboard/stream/*`
   负责setpoint发送和预发送，`offboard/mode_request/*`负责PX4请求重试与超时，
   `offboard/exit/*`负责主动退出后的接管模式。
+- 原有扁平路径`offboard/output/reference_types/{position_target,path,trajectory,internal}`
+  仍可作为新配置缺项时的兼容默认值；新配置请使用`multirotor`和`fixedwing`子项。
 - 当上述四类都设为`raw_local`时，起飞、悬停、降落和外部参考均通过
   `/mavros/setpoint_raw/local`输出，不发布raw-attitude setpoint；控制器内部仍会生成
   起降/悬停位置参考，但不会计算角速度和推力/油门控制输出。

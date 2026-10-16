@@ -26,8 +26,9 @@
 ```
 
 `xd_uav_control_manager/config/offboard.yaml`中的
-`offboard/output/reference_types`可分别设置
-`position_target`、`path`、`trajectory`和`internal`为`raw_attitude`或`raw_local`。
+`offboard/output/reference_types/multirotor`与`fixedwing`可分别为旋翼和固定翼设置
+`position_target`、`path`、`trajectory`和`internal`为`raw_attitude`或`raw_local`；
+VTOL按当前活动后端选择配置，转换阶段沿用转换发起时的后端。
 简单目标按`position_target`配置；`internal`统一控制起飞、悬停、降落和等待保持参考。
 `raw_local`会把经坐标变换及路径/轨迹采样后的局部位置、速度、加速度与偏航目标交给PX4，
 由PX4执行位置/速度闭环。该分支不调用机架backend的`update()`，因此不会运行姿态、角速度
@@ -197,6 +198,7 @@ rosrun xd_uav_controller publish_fixedwing_trajectory.py \
 没有外部参考或起飞请求时，控制器会自动捕获当前状态：四旋翼保持当前位置和yaw，
 固定翼保持当前高度、course和空速。这样系统可以先预发送控制量并在未解锁时进入
 OFFBOARD。固定翼完成起飞后会在切入点建立与当前航向相切的等待圆，持续定高盘旋；
+VTOL从旋翼切入固定翼时，若没有活动外部参考或起降动作，也会从当前位置建立等待圆；
 新的单点或轨迹参考会退出等待盘旋。固定翼流式PositionTarget参考超时后不会中断控制输出，
 而会在当前位置重新建立相切等待圆；四旋翼流式PositionTarget超时后转为当前位置
 悬停。simple goal属于一次性锁存目标，不受该超时影响。

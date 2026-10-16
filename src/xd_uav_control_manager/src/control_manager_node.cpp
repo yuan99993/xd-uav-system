@@ -397,25 +397,60 @@ class ControlManagerNode {
         private_nh_, "offboard/exit/cancel_mode",
         "offboard/cancel_mode", &cancel_mode_,
         std::string("POSCTL"));
+    xd_uav_controller::ReferenceOutputTypes legacy_output_types;
     private_nh_.param(
         "offboard/output/reference_types/position_target",
-        position_target_output_type_, std::string("raw_attitude"));
+        legacy_output_types.position_target, std::string("raw_attitude"));
     private_nh_.param(
         "offboard/output/reference_types/path",
-        path_output_type_, std::string("raw_attitude"));
+        legacy_output_types.path, std::string("raw_attitude"));
     private_nh_.param(
         "offboard/output/reference_types/trajectory",
-        trajectory_output_type_, std::string("raw_attitude"));
+        legacy_output_types.trajectory, std::string("raw_attitude"));
     private_nh_.param(
         "offboard/output/reference_types/internal",
-        internal_output_type_, std::string("raw_attitude"));
+        legacy_output_types.internal, std::string("raw_attitude"));
+    multirotor_output_types_ = legacy_output_types;
+    fixedwing_output_types_ = legacy_output_types;
+    private_nh_.param(
+        "offboard/output/reference_types/multirotor/position_target",
+        multirotor_output_types_.position_target,
+        legacy_output_types.position_target);
+    private_nh_.param(
+        "offboard/output/reference_types/multirotor/path",
+        multirotor_output_types_.path, legacy_output_types.path);
+    private_nh_.param(
+        "offboard/output/reference_types/multirotor/trajectory",
+        multirotor_output_types_.trajectory,
+        legacy_output_types.trajectory);
+    private_nh_.param(
+        "offboard/output/reference_types/multirotor/internal",
+        multirotor_output_types_.internal, legacy_output_types.internal);
+    private_nh_.param(
+        "offboard/output/reference_types/fixedwing/position_target",
+        fixedwing_output_types_.position_target,
+        legacy_output_types.position_target);
+    private_nh_.param(
+        "offboard/output/reference_types/fixedwing/path",
+        fixedwing_output_types_.path, legacy_output_types.path);
+    private_nh_.param(
+        "offboard/output/reference_types/fixedwing/trajectory",
+        fixedwing_output_types_.trajectory,
+        legacy_output_types.trajectory);
+    private_nh_.param(
+        "offboard/output/reference_types/fixedwing/internal",
+        fixedwing_output_types_.internal, legacy_output_types.internal);
     const auto valid_output_type = [](const std::string& value) {
       return value == "raw_attitude" || value == "raw_local";
     };
-    if (!valid_output_type(position_target_output_type_) ||
-        !valid_output_type(path_output_type_) ||
-        !valid_output_type(trajectory_output_type_) ||
-        !valid_output_type(internal_output_type_)) {
+    const auto valid_output_types = [&](const auto& output_types) {
+      return valid_output_type(output_types.position_target) &&
+             valid_output_type(output_types.path) &&
+             valid_output_type(output_types.trajectory) &&
+             valid_output_type(output_types.internal);
+    };
+    if (!valid_output_types(multirotor_output_types_) ||
+        !valid_output_types(fixedwing_output_types_)) {
       throw std::runtime_error(
           "offboard/output/reference_types仅支持raw_attitude或raw_local");
     }
@@ -949,7 +984,7 @@ class ControlManagerNode {
       *reason = "控制器动作失败: " + command_.action_detail;
       return false;
     }
-    if (outputTypeForReference(command_.reference_type) ==
+    if (outputTypeForReference(command_.reference_type, expected_backend) ==
         xd_uav_controller::SetpointOutputType::kRawLocal) {
       if (!have_local_setpoint_) {
         *reason = "尚未收到控制器raw_local目标";
@@ -1021,10 +1056,41 @@ class ControlManagerNode {
 
   xd_uav_controller::SetpointOutputType outputTypeForReference(
       const uint8_t reference_type) const {
+    return outputTypeForReference(reference_type, activeOutputBackend());
+  }
+
+  xd_uav_controller::BackendId activeOutputBackend() const {
+    const auto resolution = xd_uav_controller::resolveBackend(
+        airframe_type_,
+        static_cast<xd_uav_controller::FlightRegime>(
+            current_control_state_.flight_regime),
+        last_active_backend_);
+    if (resolution.valid) {
+      return resolution.backend;
+    }
+    if (last_active_backend_ !=
+        xd_uav_controller::BackendId::kNone) {
+      return last_active_backend_;
+    }
+    return airframe_type_ == xd_uav_controller::AirframeType::kFixedWing
+               ? xd_uav_controller::BackendId::kFixedWing
+               : xd_uav_controller::BackendId::kMultirotor;
+  }
+
+  xd_uav_controller::SetpointOutputType outputTypeForReference(
+      const uint8_t reference_type,
+      const xd_uav_controller::BackendId backend) const {
+    const auto selected_backend =
+        backend == xd_uav_controller::BackendId::kNone
+            ? activeOutputBackend()
+            : backend;
+    const auto& output_types =
+        selected_backend == xd_uav_controller::BackendId::kFixedWing
+            ? fixedwing_output_types_
+            : multirotor_output_types_;
     return xd_uav_controller::setpointOutputTypeForReference(
         static_cast<xd_uav_controller::ReferenceType>(reference_type),
-        position_target_output_type_, path_output_type_,
-        trajectory_output_type_, internal_output_type_);
+        output_types);
   }
 
   bool makeForwardPreparationTarget(
@@ -2781,10 +2847,8 @@ class ControlManagerNode {
   double request_timeout_{10.0};
   std::string offboard_mode_{"OFFBOARD"};
   std::string cancel_mode_{"POSCTL"};
-  std::string position_target_output_type_{"raw_attitude"};
-  std::string path_output_type_{"raw_attitude"};
-  std::string trajectory_output_type_{"raw_attitude"};
-  std::string internal_output_type_{"raw_attitude"};
+  xd_uav_controller::ReferenceOutputTypes multirotor_output_types_;
+  xd_uav_controller::ReferenceOutputTypes fixedwing_output_types_;
   std::string vtol_transition_service_{"mavros/cmd/vtol_transition"};
   double transition_timeout_{10.0};
   bool vtol_require_offboard_{true};

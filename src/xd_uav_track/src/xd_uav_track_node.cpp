@@ -519,6 +519,28 @@ class XdUavTrackNode {
     private_nh_.param("follower/fw_velocity_vector/maximum_climb_rate",
                       config.fw_maximum_climb_rate,
                       config.fw_maximum_climb_rate);
+    loadPid(private_nh_, "follower/gmfw_velocity_vector/pid/course",
+            &config.gmfw_course_pid);
+    loadPid(private_nh_, "follower/gmfw_velocity_vector/pid/climb_rate",
+            &config.gmfw_climb_rate_pid);
+    private_nh_.param("follower/gmfw_velocity_vector/airspeed",
+                      config.gmfw_commanded_airspeed,
+                      config.gmfw_commanded_airspeed);
+    private_nh_.param("follower/gmfw_velocity_vector/maximum_course_offset",
+                      config.gmfw_maximum_course_offset,
+                      config.gmfw_maximum_course_offset);
+    private_nh_.param("follower/gmfw_velocity_vector/maximum_climb_rate",
+                      config.gmfw_maximum_climb_rate,
+                      config.gmfw_maximum_climb_rate);
+    private_nh_.param("follower/gmfw_velocity_vector/gimbal_horizontal_fov_rad",
+                      config.gmfw_horizontal_fov_rad,
+                      config.gmfw_horizontal_fov_rad);
+    private_nh_.param("follower/gmfw_velocity_vector/gimbal_vertical_fov_rad",
+                      config.gmfw_vertical_fov_rad,
+                      config.gmfw_vertical_fov_rad);
+    private_nh_.param("follower/gmfw_velocity_vector/gimbal_image_alignment_rad",
+                      config.gmfw_image_alignment_rad,
+                      config.gmfw_image_alignment_rad);
     // Allow the registered metric profiles to carry their own fixed-wing
     // limits while retaining fw_velocity_vector as the common fallback.
     if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
@@ -2554,6 +2576,7 @@ class XdUavTrackNode {
       response.message = "supported profiles: mc_velocity_ground, "
           "mc_velocity_position, mc_velocity_distance, mc_velocity_chase, "
           "gm_velocity_chase, gm_velocity_vector, fw_velocity_vector, "
+          "gmfw_velocity_vector, "
           "fw_metric_pursuit, fw_metric_orbit";
       return true;
     }

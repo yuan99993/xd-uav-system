@@ -54,7 +54,7 @@ ManualBoxTracker:
     # Empty: wait for an ROI and learn its colour. Non-empty: detect that colour
     # directly in the complete image without requiring an initial ROI. A service
     # request color_name overrides this startup value each time the mode switches.
-    color: ""                  # "" / red / green / blue / white / black / custom
+    color: "red"                  # "" / red / green / blue / white / black / custom
     min_area_px: 80.0
     min_width_px: 4.0
     min_height_px: 4.0

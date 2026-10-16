@@ -7,6 +7,7 @@ validation, and the learned colour model.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -145,6 +146,7 @@ class ManualBoxTracker:
         self._last_bbox: Optional[PixelBox] = None
         self._active = False
         self._failures = 0
+        self._configured_selection_roi: Optional[PixelBox] = None
 
     @property
     def active(self) -> bool:
@@ -169,6 +171,7 @@ class ManualBoxTracker:
         self._opencv_tracker = None
         self._template = None
         self._colour_histogram = None
+        self._configured_selection_roi = None
         self._last_bbox = None
         self._active = False
         self._failures = 0
@@ -270,6 +273,7 @@ class ManualBoxTracker:
         self._last_bbox = bbox
         if self.tracker_type == "color_tracker":
             if self.colour_source == "configured":
+                self._configured_selection_roi = bbox
                 return self._update_configured_colour(frame)
             if not self._initialize_colour(frame, bbox):
                 self.reset()
@@ -492,8 +496,7 @@ class ManualBoxTracker:
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         contours = contours_info[0] if len(contours_info) == 2 else contours_info[1]
-        best_bbox = None
-        best_area = 0.0
+        candidates = []
         for contour in contours:
             area = float(cv2.contourArea(contour))
             if area < self.minimum_colour_area:
@@ -504,12 +507,40 @@ class ManualBoxTracker:
                 or height < self.minimum_colour_height
             ):
                 continue
-            if area > best_area:
-                best_area = area
-                best_bbox = (float(x), float(y), float(width), float(height))
+            candidates.append(((float(x), float(y), float(width), float(height)), area))
+
+        best_bbox = None
+        best_area = 0.0
+        anchor = self._last_bbox if self._configured_selection_roi is not None else None
+        if anchor is None and self._configured_selection_roi is not None:
+            anchor = self._configured_selection_roi
+        if anchor is None:
+            if candidates:
+                best_bbox, best_area = max(candidates, key=lambda item: item[1])
+        else:
+            ax, ay, aw, ah = anchor
+            acx, acy = ax + aw * .5, ay + ah * .5
+            max_jump = max(24.0, self.max_center_jump_norm * math.hypot(frame.shape[1], frame.shape[0]))
+            ranked = []
+            for bbox, area in candidates:
+                x, y, width, height = bbox
+                cx, cy = x + width * .5, y + height * .5
+                distance = math.hypot(cx - acx, cy - acy)
+                overlap_x = max(0.0, min(ax + aw, x + width) - max(ax, x))
+                overlap_y = max(0.0, min(ay + ah, y + height) - max(ay, y))
+                overlap = overlap_x * overlap_y
+                if self._last_bbox is None and overlap <= 0.0:
+                    continue
+                if self._last_bbox is not None and distance > max_jump:
+                    continue
+                ranked.append((distance, -overlap, -area, bbox, area))
+            if ranked:
+                _, _, _, best_bbox, best_area = min(ranked)
 
         self._tracker_name = "color_%s_detector" % self.colour_name
         if best_bbox is None:
+            if self._configured_selection_roi is not None:
+                return self._configured_colour_failure("selected_colour_not_found")
             return self._configured_colour_failure("configured_colour_not_found")
         image_area = float(frame.shape[0] * frame.shape[1])
         confidence = min(1.0, best_area / max(1.0, image_area * 0.02))
@@ -520,7 +551,8 @@ class ManualBoxTracker:
 
     def _configured_colour_failure(self, reason: str) -> ManualTrackResult:
         self._failures += 1
-        self._last_bbox = None
+        if self._configured_selection_roi is None:
+            self._last_bbox = None
         self._active = False
         return self._result(None, 0.0, False, reason)
 

@@ -37,6 +37,8 @@ xd_uav_track::TrackControllerConfig deterministicConfig() {
   config.ground_forward_pid.ki = config.ground_forward_pid.kd = 0.0;
   config.fw_course_pid.ki = config.fw_course_pid.kd = 0.0;
   config.fw_climb_rate_pid.ki = config.fw_climb_rate_pid.kd = 0.0;
+  config.gmfw_course_pid.ki = config.gmfw_course_pid.kd = 0.0;
+  config.gmfw_climb_rate_pid.ki = config.gmfw_climb_rate_pid.kd = 0.0;
   return config;
 }
 
@@ -236,6 +238,118 @@ TEST(TrackController, FixedWingProfileProducesOnlyOneVelocityVector) {
   EXPECT_FALSE(output.use_yaw_rate);
 }
 
+TEST(TrackController, FixedWingFrontCameraDoesNotRequireGimbal) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kFixedWingVelocityVector;
+  xd_uav_track::TrackController controller(config);
+  ASSERT_TRUE(controller.updateMeasurement(box(280, 200, 360, 280)));
+  const auto centered = controller.compute(10.01);
+  EXPECT_TRUE(centered.valid);
+  EXPECT_NEAR(centered.left, 0.0, 1e-9);
+  EXPECT_EQ(centered.profile, "fw_velocity_vector");
+  EXPECT_TRUE(controller.setProfile(
+      xd_uav_track::FollowerProfile::kGimbalFixedWingVelocityVector));
+  const auto gimbal_missing = controller.compute(10.02);
+  EXPECT_FALSE(gimbal_missing.valid);
+  EXPECT_EQ(gimbal_missing.profile, "gmfw_velocity_vector");
+  EXPECT_TRUE(controller.setProfile(
+      xd_uav_track::FollowerProfile::kFixedWingVelocityVector));
+  EXPECT_TRUE(controller.compute(10.03).valid);
+}
+
+TEST(TrackController, FixedWingGimbalCombinesAngleAndImageError) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kGimbalFixedWingVelocityVector;
+  config.gimbal_angle_filter_previous_weight = 0.0;
+  config.horizontal_deadband = 0.0;
+  config.vertical_deadband = 0.0;
+  config.gmfw_commanded_airspeed = 12.0;
+  xd_uav_track::TrackController controller(config);
+  ASSERT_TRUE(controller.updateMeasurement(box(280, 200, 360, 280)));
+  auto state = gimbalState(0.1, 0.2);
+  state.status_valid = true;
+  controller.setGimbalState(state);
+  const auto centered = controller.compute(10.01);
+  EXPECT_TRUE(centered.valid);
+  EXPECT_EQ(centered.profile, "gmfw_velocity_vector");
+  EXPECT_LT(centered.left, 0.0);
+  EXPECT_LT(centered.up, 0.0);
+  EXPECT_NEAR(std::hypot(centered.forward, centered.left),
+              config.gmfw_commanded_airspeed, 1e-9);
+  EXPECT_FALSE(centered.use_yaw_rate);
+
+  // An image target left of centre counteracts a right-facing gimbal.
+  ASSERT_TRUE(controller.updateMeasurement(box(120, 200, 200, 280,
+                                               1.0, 10.02)));
+  const auto left_image = controller.compute(10.03);
+  EXPECT_TRUE(left_image.valid);
+  EXPECT_GT(left_image.left, centered.left);
+}
+
+TEST(TrackController, FixedWingGimbalTurnsFirstThenUsesImageError) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kGimbalFixedWingVelocityVector;
+  config.horizontal_deadband = 0.0;
+  config.gmfw_course_pid.kp = 1.0;
+  config.gimbal_angle_filter_previous_weight = 0.0;
+  xd_uav_track::TrackController controller(config);
+  ASSERT_TRUE(controller.updateMeasurement(box(120, 200, 200, 280)));
+  auto state = gimbalState(0.6, 0.0);
+  controller.setGimbalState(state);
+  const auto turning = controller.compute(10.01);
+  EXPECT_TRUE(turning.valid);
+  EXPECT_LT(turning.left, 0.0);  // Camera sees left, gimbal points right.
+
+  state = gimbalState(0.0, 0.0, 0.0, 10.02);
+  controller.setGimbalState(state);
+  const auto aligned = controller.compute(10.03);
+  EXPECT_TRUE(aligned.valid);
+  EXPECT_GT(aligned.left, 0.0);  // Image error takes over near alignment.
+}
+
+TEST(TrackController, FixedWingGimbalRequiresFreshAnglesNotTrackingFlag) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kGimbalFixedWingVelocityVector;
+  xd_uav_track::TrackController controller(config);
+  ASSERT_TRUE(controller.updateMeasurement(box(280, 200, 360, 280)));
+  EXPECT_FALSE(controller.compute(10.01).valid);
+  auto state = gimbalState(0.2, 0.0);
+  state.status_valid = true;
+  state.tracking_active = false;
+  controller.setGimbalState(state);
+  EXPECT_TRUE(controller.compute(10.02).valid);
+  state.tracking_active = true;
+  controller.setGimbalState(state);
+  EXPECT_TRUE(controller.compute(10.03).valid);
+  const auto stale = controller.compute(10.21);
+  EXPECT_FALSE(stale.valid);
+  EXPECT_EQ(stale.tracking_state, "waiting_for_gimbal_state");
+  EXPECT_TRUE(stale.release_reference_on_invalid);
+}
+
+TEST(TrackController, FixedWingGimbalUsesLiveFieldOfView) {
+  auto config = deterministicConfig();
+  config.profile = xd_uav_track::FollowerProfile::kGimbalFixedWingVelocityVector;
+  config.position_filter_alpha = 1.0;
+  config.horizontal_deadband = 0.0;
+  config.gmfw_course_pid.kp = 1.0;
+  auto measurement = box(380, 200, 460, 280);
+  xd_uav_track::TrackController controller(config);
+  ASSERT_TRUE(controller.updateMeasurement(measurement));
+  auto state = gimbalState(0.0, 0.0);
+  state.status_valid = true;
+  state.horizontal_fov_rad = 0.4;
+  state.vertical_fov_rad = 0.3;
+  controller.setGimbalState(state);
+  const auto narrow = controller.compute(10.01);
+  state.horizontal_fov_rad = 1.2;
+  controller.setGimbalState(state);
+  const auto wide = controller.compute(10.02);
+  EXPECT_TRUE(narrow.valid);
+  EXPECT_TRUE(wide.valid);
+  EXPECT_LT(wide.left, narrow.left);
+}
+
 TEST(TrackController, FixedWingTargetLossReleasesVelocityReference) {
   auto config = deterministicConfig();
   config.profile =
@@ -259,7 +373,8 @@ TEST(TrackController, SupportsAllRegisteredFollowerProfiles) {
       "mc_velocity_ground", "mc_velocity_position",
       "mc_velocity_distance", "mc_velocity_chase",
       "gm_velocity_chase", "gm_velocity_vector",
-      "fw_velocity_vector", "fw_metric_pursuit", "fw_metric_orbit"};
+      "fw_velocity_vector", "gmfw_velocity_vector",
+      "fw_metric_pursuit", "fw_metric_orbit"};
   for (const char* name : names) {
     xd_uav_track::FollowerProfile profile;
     ASSERT_TRUE(xd_uav_track::parseFollowerProfile(name, &profile));
