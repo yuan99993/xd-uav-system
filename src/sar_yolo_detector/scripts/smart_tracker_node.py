@@ -271,6 +271,9 @@ class SmartTrackerNode:
             raise RuntimeError("A manual Default_Tracker requires ManualBoxTracker/enabled")
         self._manual_active = False
         self._manual_pending_roi = None
+        self._manual_color_candidates = ()
+        self._manual_color_selected_bbox = None
+        self._manual_color_misses = 0
         self._manual_class_id = int(manual_config.get("class_id", 2))
         self._manual_track_id = int(manual_config.get("track_id", 900000000))
         self._manual_min_confidence = max(
@@ -516,22 +519,50 @@ class SmartTrackerNode:
                     self._tracking_mode,
                 )
                 return
-            if not manual_tracker.requires_initial_roi:
+            configured_colour = (
+                self._tracking_mode == "color_tracker"
+                and manual_tracker.colour_source == "configured"
+            )
+            if not manual_tracker.requires_initial_roi and not configured_colour:
                 rospy.logwarn_throttle(
                     2.0,
-                    "Initial ROI ignored: %s detects configured colour '%s' in the full image",
+                    "Initial ROI ignored: %s does not accept a manual ROI in its current configuration",
                     self._tracking_mode,
-                    manual_tracker.colour_name,
                 )
                 return
             if int(message.width) == 0 or int(message.height) == 0:
                 manual_tracker.reset()
                 self._manual_pending_roi = None
                 self._manual_active = False
+                if configured_colour:
+                    self._manual_color_selected_bbox = None
+                    self._manual_color_misses = 0
+                    self._publish_empty_selected_detections()
                 rospy.loginfo(
                     "%s target cleared; waiting for a new initial ROI",
                     self._tracking_mode,
                 )
+                return
+            if configured_colour:
+                x, y, width, height = (float(message.x_offset), float(message.y_offset),
+                                       float(message.width), float(message.height))
+                roi_area = width * height
+                matches = []
+                for detection in self._manual_color_candidates:
+                    bx1, by1, bx2, by2 = detection.aabb_xyxy
+                    overlap = max(0., min(x+width, bx2)-max(x, bx1)) * max(0., min(y+height, by2)-max(y, by1))
+                    if overlap > 0:
+                        box_area = max(1., (bx2-bx1)*(by2-by1))
+                        matches.append((overlap / max(1., min(roi_area, box_area)), overlap, detection))
+                if not matches:
+                    rospy.logwarn("Colour ROI did not overlap any detected colour box")
+                    return
+                _, _, selected = max(matches, key=lambda item: (item[0], item[1]))
+                self._manual_color_selected_bbox = tuple(selected.aabb_xyxy)
+                self._manual_color_misses = 0
+                self._manual_active = True
+                rospy.loginfo("UI selected colour box by ROI: track_id=%d bbox=%s",
+                              selected.track_id, tuple(int(v) for v in selected.aabb_xyxy))
                 return
             self._manual_pending_roi = (
                 float(message.x_offset),
@@ -753,6 +784,56 @@ class SmartTrackerNode:
                     self._publish_detector_observations(packet)
                 overlay = self._overlay_payload
                 manual_handled = True
+            elif (manual_tracker is not None and self._tracking_mode == "color_tracker"
+                  and manual_tracker.colour_source == "configured"):
+                raw_candidates = manual_tracker.configured_colour_candidates(frame)
+                # Keep output bounded while retaining the largest useful red regions.
+                raw_candidates = sorted(raw_candidates, key=lambda item: item[2], reverse=True)[:30]
+                raw_candidates.sort(key=lambda item: (item[0][0], item[0][1]))
+                candidates = []
+                for index, (bbox, confidence, _area) in enumerate(raw_candidates):
+                    x, y, width, height = bbox
+                    candidates.append(SimpleNamespace(
+                        aabb_xyxy=(x, y, x+width, y+height),
+                        class_id=self._manual_class_id,
+                        confidence=confidence,
+                        track_id=self._manual_track_id + index + 1,
+                        track_id_is_stable=False,
+                        rotation_deg=0.0,
+                        measurement_source="visual_tracker",
+                        last_detector_stamp=rospy.Time(0),
+                    ))
+                self._manual_color_candidates = tuple(candidates)
+                selected_source = self._select_manual_color_candidate(candidates, frame.shape)
+                selected = None
+                detections = []
+                for candidate in candidates:
+                    is_selected = candidate is selected_source
+                    item = SimpleNamespace(**vars(candidate))
+                    if is_selected:
+                        item.track_id = self._manual_track_id
+                        item.track_id_is_stable = True
+                        selected = item
+                    detections.append(item)
+                self._manual_color_candidates = tuple(detections)
+                self._manual_active = selected is not None
+                manual_handled = True
+                annotated = frame
+                if selected is not None:
+                    x1, y1, x2, y2 = selected.aabb_xyxy
+                    result = ManualTrackResult(
+                        (x1, y1, x2-x1, y2-y1), selected.confidence, True,
+                        "selected_colour_target", "color_%s_components" % manual_tracker.colour_name, 0)
+                else:
+                    reason = "waiting_for_ui_selection" if candidates and self._manual_color_selected_bbox is None else "selected_colour_not_found"
+                    result = ManualTrackResult(None, 0.0, False, reason,
+                        "color_%s_components" % manual_tracker.colour_name, self._manual_color_misses)
+                self._publish_configured_colour_result(message, detections, selected, result)
+                overlay = ("boxes", tuple(detections),
+                    {self._manual_class_id: manual_tracker.colour_name},
+                    self._manual_track_id if selected is not None else -1, "")
+                self._last_processing_ms = (time.perf_counter()-started)*1000.
+                self._last_error = "" if result.valid or result.reason == "waiting_for_ui_selection" else result.reason
             elif manual_tracker is not None:
                 if motion_matrix is not None and previous_frame is not None:
                     manual_tracker.compensate_motion(previous_frame, motion_matrix)
@@ -1131,6 +1212,55 @@ class SmartTrackerNode:
         return response
 
 
+    def _select_manual_color_candidate(self, candidates, frame_shape):
+        """Follow the UI-selected red component by its nearest current box."""
+        anchor = self._manual_color_selected_bbox
+        if anchor is None:
+            return None
+        if not candidates:
+            self._manual_color_misses += 1
+            return None
+        ax1, ay1, ax2, ay2 = anchor
+        acx, acy = (ax1+ax2)*.5, (ay1+ay2)*.5
+        height, width = frame_shape[:2]
+        frame_jump = .35 * math.hypot(width, height)
+        target_jump = max(48.0, 4.0 * math.hypot(ax2-ax1, ay2-ay1))
+        max_jump = min(frame_jump, target_jump)
+        selected = min(candidates, key=lambda item: (
+            (item.aabb_xyxy[0]+item.aabb_xyxy[2])*.5-acx
+        )**2 + (
+            (item.aabb_xyxy[1]+item.aabb_xyxy[3])*.5-acy
+        )**2)
+        cx, cy = (selected.aabb_xyxy[0]+selected.aabb_xyxy[2])*.5, (selected.aabb_xyxy[1]+selected.aabb_xyxy[3])*.5
+        if math.hypot(cx-acx, cy-acy) > max_jump:
+            self._manual_color_misses += 1
+            return None
+        self._manual_color_selected_bbox = tuple(selected.aabb_xyxy)
+        self._manual_color_misses = 0
+        return selected
+
+    def _publish_configured_colour_result(self, image, detections, selected, result):
+        self._publish_detections(image, detections)
+        if hasattr(self, "_observation_publisher"):
+            self._publish_observation_array(image, detections)
+        self._publish_selected_detections(image, selected)
+        self._publish_manual_state(image, result, selected is not None,
+                                   detection_count=len(detections))
+        tracker = self._current_manual_tracker()
+        evidence = dict(
+            capture_header=dict(seq=image.header.seq, frame_id=image.header.frame_id,
+                stamp=dict(secs=image.header.stamp.secs, nsecs=image.header.stamp.nsecs)),
+            mode=self._tracking_mode,
+            selected_id=int(selected.track_id) if selected is not None else -1,
+            source="configured_colour", reason=result.reason,
+            color_source=tracker.colour_source, color_name=tracker.colour_name,
+            detection_count=len(detections),
+            pipeline_epoch=getattr(self, "_epoch", 0),
+            capture_segment=getattr(getattr(self, "_capture_clock", None), "segment", 0),
+        )
+        if hasattr(self, "_fusion_evidence_publisher"):
+            self._emit(self._fusion_evidence_publisher, String(data=json.dumps(evidence, allow_nan=False)))
+
     def _publish_manual_result(
         self, image: Image, result: ManualTrackResult
     ) -> None:
@@ -1160,6 +1290,20 @@ class SmartTrackerNode:
             self._publish_observation_array(image, detections)
         self._publish_selected_detections(image, detections[0] if detections else None)
         self._publish_manual_state(image, result, measurement_valid)
+        manual_tracker = self._current_manual_tracker()
+        evidence = dict(
+            capture_header=dict(seq=image.header.seq, frame_id=image.header.frame_id,
+                stamp=dict(secs=image.header.stamp.secs, nsecs=image.header.stamp.nsecs)),
+            mode=self._tracking_mode,
+            selected_id=self._manual_track_id if measurement_valid else -1,
+            source="manual", reason=result.reason,
+            color_source=manual_tracker.colour_source if self._tracking_mode == "color_tracker" else "",
+            color_name=manual_tracker.colour_name if self._tracking_mode == "color_tracker" else "",
+            pipeline_epoch=getattr(self, "_epoch", 0),
+            capture_segment=getattr(getattr(self, "_capture_clock", None), "segment", 0),
+        )
+        if hasattr(self, "_fusion_evidence_publisher"):
+            self._emit(self._fusion_evidence_publisher, String(data=json.dumps(evidence, allow_nan=False)))
         return detections
 
     def _publish_manual_state(
@@ -1167,6 +1311,7 @@ class SmartTrackerNode:
         image: Image,
         result: ManualTrackResult,
         measurement_valid: bool,
+        detection_count=None,
     ) -> None:
         state = SmartTrackerState()
         state.header = copy.copy(image.header)
@@ -1197,7 +1342,7 @@ class SmartTrackerNode:
         state.backend = "opencv"
         state.device = "cpu"
         state.model_path = ""
-        state.detection_count = 1 if measurement_valid else 0
+        state.detection_count = (1 if measurement_valid else 0) if detection_count is None else int(detection_count)
         state.frame_processing_ms = _finite(self._last_processing_ms)
         self._emit(self._state_publisher, state)
 
@@ -1390,6 +1535,48 @@ class SmartTrackerNode:
                 rospy.loginfo("UI selected nearest Fusion box: pixel=(%.1f, %.1f) local_id=%d selected_id=%d",
                               x, y, candidate.local_id, result.public_id)
                 return
+            manual_tracker = self._current_manual_tracker()
+            if manual_tracker is not None:
+                frame = getattr(self._controller, "current_frame", None)
+                if frame is None or frame.ndim < 2:
+                    rospy.logwarn("Ignoring manual target click: no current image")
+                    return
+                height, width = frame.shape[:2]
+                if x >= width or y >= height:
+                    rospy.logwarn("Ignoring manual target pixel outside current image: (%.1f, %.1f) in %dx%d",
+                                  x, y, width, height)
+                    return
+                if (self._tracking_mode == "color_tracker"
+                        and manual_tracker.colour_source == "configured"):
+                    candidates = tuple(self._manual_color_candidates)
+                    if not candidates:
+                        self._manual_color_selected_bbox = None
+                        self._manual_color_misses = 0
+                        self._manual_active = False
+                        self._publish_empty_selected_detections()
+                        rospy.logwarn("Ignoring colour target click: no matching colour boxes")
+                        return
+                    def rank_colour(detection):
+                        distance = self._point_to_box_distance_squared(x, y, detection)
+                        cx = (detection.aabb_xyxy[0] + detection.aabb_xyxy[2]) * .5
+                        cy = (detection.aabb_xyxy[1] + detection.aabb_xyxy[3]) * .5
+                        center_distance = (cx-x)**2 + (cy-y)**2
+                        return distance, center_distance, -_finite(detection.confidence)
+                    selected = min(candidates, key=rank_colour)
+                    self._manual_color_selected_bbox = tuple(selected.aabb_xyxy)
+                    self._manual_color_misses = 0
+                    self._manual_active = True
+                    rospy.loginfo("UI selected colour box: pixel=(%.1f, %.1f) bbox=%s",
+                                  x, y, tuple(int(v) for v in selected.aabb_xyxy))
+                    return
+                side = min(20, width, height)
+                x0 = max(0, min(width-side, int(round(x))-side//2))
+                y0 = max(0, min(height-side, int(round(y))-side//2))
+                self._manual_pending_roi = (float(x0), float(y0), float(side), float(side))
+                rospy.loginfo("UI selected manual colour region: pixel=(%.1f, %.1f) ROI=(%d,%d,%d,%d) colour=%s",
+                              x, y, x0, y0, side, side,
+                              getattr(manual_tracker, "colour_name", ""))
+                return
             width = int(self._controller.video_handler.width)
             height = int(self._controller.video_handler.height)
             if x >= width or y >= height:
@@ -1397,9 +1584,6 @@ class SmartTrackerNode:
                     "Ignoring target pixel click outside current image: (%.1f, %.1f) in %dx%d",
                     x, y, width, height,
                 )
-                return
-            if self._current_manual_tracker() is not None:
-                rospy.logwarn("Ignoring target pixel click while manual tracking is active")
                 return
             detections = tuple(self._tracker.last_detections or ())
             if not detections:
@@ -1436,6 +1620,9 @@ class SmartTrackerNode:
         self._selected_track_id_is_stable = False
         self._selected_class_id = None
         self._selected_last_bbox = None
+        if hasattr(self, "_manual_color_selected_bbox"):
+            self._manual_color_selected_bbox = None
+            self._manual_color_misses = 0
 
     def _publish_empty_selected_detections(self) -> None:
         output = TrackedDetection2DArray()
@@ -1752,6 +1939,9 @@ class SmartTrackerNode:
                 tracker.reset()
             self._manual_pending_roi = None
             self._manual_active = False
+            self._manual_color_candidates = ()
+            self._manual_color_selected_bbox = None
+            self._manual_color_misses = 0
             self._tracking_mode = requested_mode
             self._invalidate_pipeline()
             self._fusion.reset()

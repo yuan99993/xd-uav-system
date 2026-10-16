@@ -77,7 +77,10 @@ roslaunch sar_yolo_detector xd_smart_tracker_fusion_integration.launch \
 包须解析到实验副本。旧入口位于 archive/launch，原样保留；新增唯一命名入口避免同名 launch 冲突。
 只有新融合入口显式启用 enable_fusion_mode；旧归档入口仍运行原三模式，拒绝切入融合，避免旧 tracked 桥接把视觉辅助误当 YOLO。
 按 UE 相机实际宽高、话题、frame 和时间配置；使用 /clock 时同步 use_sim_time。
-入口只启动 SAR 和桥接，不启动飞行、定位、XD tracker 或云台设备控制器。
+入口只启动 SAR 和桥接，不启动飞行、定位、XD tracker 或云台设备控制器。默认把 UI 选中的单框转成
+`/uav1/track/selected_detections`，供单目标跟踪使用；需要让 XD 感知链处理全部融合候选时，覆盖
+`bridge_input_topic:=sar_yolo_detector/smart/tracked_detections/observations bridge_input_type:=fusion`
+并把 `output_detections_topic` 指向对应的 `detect/input/.../detections_2d`。
 双相机分别设 instance_name、输入、输出、image_source、sensor_id；每个实例加载一份模型，不是共享推理。
 
 ## 接口
@@ -120,7 +123,8 @@ SAR 选择只选择图像融合目标，不自动改变 XD 的飞行跟随目标
 | sar_yolo_detector/smart/annotated | sensor_msgs/Image，同帧原像素叠框 |
 | sar_yolo_detector/smart/state | 原 SmartTrackerState，选择、有效性、模型/设备/耗时 |
 | sar_yolo_detector/smart/select_pixel | 原 PointStamped，像素点击；负坐标取消 |
-| detect/input/detections_2d | 原 xd_uav_track/DetectionArray，供现有定位链 |
+| track/selected_detections | xd_uav_track/DetectionArray，默认桥接 UI 选中的单框，供 StartTracker 使用 |
+| detect/input/detections_2d | xd_uav_track/DetectionArray，可选的全候选定位链输入 |
 | sar_yolo_smart_tracker_smart/fusion_evidence | String JSON：公开/局部 ID、来源、原因、最近 YOLO 时间、耗时 |
 | sar_yolo_detector/manual/initial_roi | 原 RegionOfInterest，仅独立 feature/color 模式 |
 

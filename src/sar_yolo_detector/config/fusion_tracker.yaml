@@ -28,12 +28,12 @@ FusionTracker:
   # Refresh KCF from an independently gated, current YOLO observation only.
   local_template_refresh_sec: 0.75
   class_groups: [[0, 1, 2, 3]]
-  selection_max_age_sec: 3.0
+  selection_max_age_sec: 10.0
   selection_max_frames: 24
   selection_max_bytes: 25165824
   # Late detections require validated frame-to-frame LK alignment, never a
   # raw old-frame box relabelled with a new timestamp. All caches are bounded.
-  async_max_result_age_sec: 0.75
+  async_max_result_age_sec: 2.0
   camera_motion:
     enabled: true
     max_gap_sec: 0.75

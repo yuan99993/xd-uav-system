@@ -36,11 +36,11 @@
        idle until a UI click produces one selected detection. -->
   <arg name="gimbal_detection_topic" default="$(arg selected_detections_topic)" />
   <arg name="output_detections_topic"
-       default="detect/input/detections_2d" />
-  <!-- By default bridge every fusion observation. For single-target following,
-       point this at selected_detections_topic and use input_type=tracked. -->
-  <arg name="bridge_input_topic" default="$(arg fusion_observations_topic)" />
-  <arg name="bridge_input_type" default="fusion" />
+       default="track/selected_detections" />
+  <!-- Feed the UI's one selected box to the track controller. Override these
+       three args to bridge all fusion observations into the detection pipeline. -->
+  <arg name="bridge_input_topic" default="$(arg selected_detections_topic)" />
+  <arg name="bridge_input_type" default="tracked" />
   <arg name="publish_annotated_image" default="true" />
   <arg name="image_source" default="fixed_rgb" />
   <arg name="sensor_id" default="fixed_camera" />

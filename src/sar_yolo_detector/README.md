@@ -702,15 +702,16 @@ rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
   "{mode: 'color_tracker', color_name: 'red'}"
 ```
 
-指定颜色后会直接在整幅图像中分割该颜色并输出面积最大的有效区域，不需要初始框；
+指定颜色后会在整幅图像中分割该颜色，并把所有达到面积/尺寸阈值的区域作为候选框发布；
+UI 点击或拖框选择其中一个后，`selected_tracked_detections` 持续只发布被选目标。该模式不需要初始框。
 `color_name` 留空时才等待画框并从框内学习颜色。自定义 HSV 范围通过
 `ManualBoxTracker/color_tracker/custom_hsv_ranges` 配置。两种手动算法分别为：
 
 - `feature_tracker`：按 `tracker_algorithm` 使用 CSRT、KCF、MIL 或模板匹配；
-- `color_tracker`：未指定颜色时用 ROI 学习的 HSV 直方图和 CamShift；指定颜色时做全图颜色检测。
+- `color_tracker`：未指定颜色时用 ROI 学习的 HSV 直方图和 CamShift；指定颜色时全图发布多个颜色候选框并允许 UI 单选。
 
-两种模式都只接受一个初始框，并沿用同一个 `coco/state`、标注图和 bridge 输出。
-连续失败达到 `max_fail_frames` 后会停止当前目标并等待新 ROI，不会自动切回 YOLO。
+特征模式与 ROI 学习颜色模式各跟踪一个手动目标；配置颜色模式会发布多个候选框，并允许 UI 选中一个持续输出。
+特征/ROI 学习目标连续失败达到 `max_fail_frames` 后会等待新 ROI，不会自动切回 YOLO。
 
 旧的 `xd_detector_integration.launch` 保留给兼容 OpenCV/TensorRT 的 ONNX/engine
 模型；当前 Ubuntu 20.04 自带 OpenCV 4.2 无法加载包内新式 Ultralytics ONNX，
