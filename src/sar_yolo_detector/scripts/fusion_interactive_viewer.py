@@ -14,11 +14,16 @@ from std_msgs.msg import Header, String
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from sar_yolo_detector.interactive_view import FramePair, image_point
-from sar_yolo_detector.srv import SelectFusionROI, SelectFusionROIRequest
+from sar_yolo_detector.srv import (
+    SelectFusionROI,
+    SelectFusionROIRequest,
+    SelectFusionPoint,
+    SelectFusionPointRequest,
+)
 
 
 class Canvas(QtWidgets.QWidget):
-    selected = QtCore.pyqtSignal(object, object, object)
+    selected = QtCore.pyqtSignal(object, object, object, bool)
     cancel = QtCore.pyqtSignal()
 
     def __init__(self):
@@ -29,6 +34,7 @@ class Canvas(QtWidgets.QWidget):
         self.origin = None
         self.end = None
         self.frozen_header = None
+        self.manual_seed = False
 
     def set_frame(self, image, header):
         if self.origin is None:
@@ -74,6 +80,7 @@ class Canvas(QtWidgets.QWidget):
             if point is not None:
                 self.origin = self.end = point
                 self.frozen_header = copy.deepcopy(self.header)
+                self.manual_seed = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
 
     def mouseMoveEvent(self, event):
         if self.origin is not None:
@@ -86,11 +93,12 @@ class Canvas(QtWidgets.QWidget):
         if event.button() == QtCore.Qt.LeftButton and self.origin is not None:
             end = self.map_point(event.pos())
             if end is not None:
-                self.selected.emit(self.frozen_header, self.origin, end)
+                self.selected.emit(self.frozen_header, self.origin, end, self.manual_seed)
             self.cancel_gesture()
 
     def cancel_gesture(self):
         self.origin = self.end = self.frozen_header = None
+        self.manual_seed = False
         self.update()
 
 
@@ -115,7 +123,7 @@ class Viewer(QtWidgets.QMainWindow):
         cancel.setShortcut(QtGui.QKeySequence('Esc'))
         self.state = QtWidgets.QLabel('  等待画面 / Waiting for video')
         self.toolbar.addWidget(self.state)
-        self.statusBar().showMessage('左键点击目标；拖框选择区域；右键或 Esc 取消。拖框时仅冻结显示，不暂停算法。')
+        self.statusBar().showMessage('左键点击 YOLO 目标；拖框沿用 YOLO 优先初始化；Shift+拖框强制以手框初始化 KCF；右键或 Esc 取消。')
         self.response.connect(self.statusBar().showMessage)
         self.response.connect(self.command_finished)
         self.canvas.selected.connect(self.select)
@@ -123,6 +131,10 @@ class Viewer(QtWidgets.QMainWindow):
         self.click = rospy.Publisher(rospy.get_param('~select_pixel_topic'), PointStamped, queue_size=1)
         self.manual_roi = rospy.Publisher(rospy.get_param('~manual_roi_topic'), RegionOfInterest, queue_size=1)
         self.roi = rospy.ServiceProxy(rospy.get_param('~select_roi_service'), SelectFusionROI)
+        self.manual_seed_roi = rospy.ServiceProxy(
+            rospy.get_param('~select_manual_roi_service'), SelectFusionROI)
+        self.point_selection = rospy.ServiceProxy(
+            rospy.get_param('~select_point_service'), SelectFusionPoint)
         self.image_sub = rospy.Subscriber(rospy.get_param('~image_topic'), Image,
                                           self.on_image, queue_size=1, buff_size=4*1024*1024)
         self.evidence_sub = rospy.Subscriber(rospy.get_param('~evidence_topic'), String,
@@ -171,7 +183,7 @@ class Viewer(QtWidgets.QMainWindow):
         except Exception as exc:
             rospy.logwarn_throttle(5., 'Viewer image conversion failed: %s', exc)
 
-    def select(self, header, start, end):
+    def select(self, header, start, end, manual_seed=False):
         if self.busy:
             self.statusBar().showMessage('BUSY：等待上一条框选命令完成')
             return
@@ -180,6 +192,9 @@ class Viewer(QtWidgets.QMainWindow):
             self.statusBar().showMessage('画面已过期：请在实时画面快速点击或拖框；未替换为其他帧。')
             return
         if math.hypot(end[0]-start[0], end[1]-start[1]) < 4:
+            if self.displayed_mode == 'fusion_tracker':
+                self.submit_point(header, end)
+                return
             message = PointStamped(header=header)
             message.point.x, message.point.y = end
             self.click.publish(message)
@@ -205,7 +220,30 @@ class Viewer(QtWidgets.QMainWindow):
         request = SelectFusionROIRequest(header=header)
         request.roi.x_offset, request.roi.y_offset = x, y
         request.roi.width, request.roi.height = right-x, bottom-y
-        self.submit(request)
+        self.submit(request, manual_seed=manual_seed)
+
+    def submit_point(self, header, point):
+        if self.busy:
+            self.statusBar().showMessage('BUSY：等待上一条选择命令完成')
+            return
+        request = SelectFusionPointRequest(header=header)
+        request.point.x, request.point.y = point
+        self.busy = True
+        self.statusBar().showMessage('正在按 YOLO 检测框执行点选…')
+        def run():
+            try:
+                self.point_selection.wait_for_service(timeout=2.)
+                result = self.point_selection(request)
+                text = '{} | ID {} | {}'.format(
+                    '成功' if result.success else '拒绝',
+                    result.selected_target_id,
+                    result.message,
+                )
+            except (rospy.ROSException, rospy.ServiceException) as exc:
+                text = 'YOLO 点选接口不可用：{}'.format(exc)
+            self.response.emit(text)
+        self.worker = threading.Thread(target=run, daemon=True)
+        self.worker.start()
 
     def clear(self):
         self.canvas.cancel_gesture()
@@ -221,13 +259,15 @@ class Viewer(QtWidgets.QMainWindow):
         else:
             self.statusBar().showMessage('BUSY：请待上一条命令完成后取消')
 
-    def submit(self, request):
+    def submit(self, request, manual_seed=False):
         self.busy = True
-        self.statusBar().showMessage('正在提交取消/框选命令…')
+        self.statusBar().showMessage(
+            '正在提交手动 KCF 初始化…' if manual_seed else '正在提交取消/框选命令…')
+        service = self.manual_seed_roi if manual_seed else self.roi
         def run():
             try:
-                self.roi.wait_for_service(timeout=2.)
-                result = self.roi(request)
+                service.wait_for_service(timeout=2.)
+                result = service(request)
                 text = '{} | ID {} | {}'.format('成功' if result.success else '拒绝', result.selected_target_id, result.message)
             except (rospy.ROSException, rospy.ServiceException) as exc:
                 text = '选择接口不可用：{}'.format(exc)

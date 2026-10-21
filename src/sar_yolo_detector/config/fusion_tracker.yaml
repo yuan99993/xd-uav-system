@@ -2,6 +2,9 @@
 FusionTracker:
   allow_template_fallback: false
   visual_hold_sec: 1.5
+  # A manually seeded KCF track may publish valid per-frame KCF boxes while
+  # waiting for YOLO; after confirmation, visual_hold_sec applies.
+  manual_seed_visual_without_yolo: true
   prediction_hold_sec: 0.35
   reacquire_hold_sec: 8.0
   # Short tracking ends at 8 s; one selected identity remains recoverable up

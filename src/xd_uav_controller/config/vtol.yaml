@@ -64,8 +64,8 @@ fixedwing:
 
   energy_control:
     cruise_airspeed: 20.0
-    minimum_airspeed: 11.0
-    maximum_airspeed: 24.0
+    minimum_airspeed: 10.0
+    maximum_airspeed: 40.0
     trim_throttle: 0.25
     airspeed_throttle_gain: 0.08
     # 爬升时同步补油以维持空速。

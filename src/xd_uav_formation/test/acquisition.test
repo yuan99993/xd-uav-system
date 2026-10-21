@@ -1,0 +1,62 @@
+<launch>
+  <arg name="airframe" default="multirotor"/>
+  <arg name="spacing" default="10.0"/>
+  <arg name="cruise_speed" default="3.0"/>
+  <node pkg="xd_uav_formation" type="formation_manager.py"
+        name="formation_manager" output="screen"/>
+  <group ns="uav1">
+    <node pkg="xd_uav_formation" type="formation_follower.py"
+          name="formation_consensus" output="screen">
+      <param name="mode" value="consensus"/>
+      <param name="team_id" value="acquire_test"/>
+      <rosparam param="members">[uav1, uav2, uav3]</rosparam>
+      <rosparam param="waypoints">[[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]]</rosparam>
+      <param name="loop_path" value="false"/>
+      <param name="shape" value="rectangle_compact"/>
+      <param name="spacing" value="$(arg spacing)"/>
+      <param name="cruise_speed" value="$(arg cruise_speed)"/>
+      <param name="lookahead_distance" value="3.0"/>
+      <param name="acquire_tolerance" value="1.0"/>
+      <param name="acquire_vertical_spacing" value="5.0"/>
+      <param name="state_timeout" value="1.0"/>
+    </node>
+  </group>
+  <group ns="uav2">
+    <node pkg="xd_uav_formation" type="formation_follower.py"
+          name="formation_consensus" output="screen">
+      <param name="mode" value="consensus"/>
+      <param name="team_id" value="acquire_test"/>
+      <rosparam param="members">[uav1, uav2, uav3]</rosparam>
+      <rosparam param="waypoints">[[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]]</rosparam>
+      <param name="loop_path" value="false"/>
+      <param name="shape" value="rectangle_compact"/>
+      <param name="spacing" value="$(arg spacing)"/>
+      <param name="cruise_speed" value="$(arg cruise_speed)"/>
+      <param name="lookahead_distance" value="3.0"/>
+      <param name="acquire_tolerance" value="1.0"/>
+      <param name="acquire_vertical_spacing" value="5.0"/>
+      <param name="state_timeout" value="1.0"/>
+    </node>
+  </group>
+  <group ns="uav3">
+    <node pkg="xd_uav_formation" type="formation_follower.py"
+          name="formation_consensus" output="screen">
+      <param name="mode" value="consensus"/>
+      <param name="team_id" value="acquire_test"/>
+      <rosparam param="members">[uav1, uav2, uav3]</rosparam>
+      <rosparam param="waypoints">[[0.0, 0.0, 20.0], [100.0, 0.0, 20.0]]</rosparam>
+      <param name="loop_path" value="false"/>
+      <param name="shape" value="rectangle_compact"/>
+      <param name="spacing" value="$(arg spacing)"/>
+      <param name="cruise_speed" value="$(arg cruise_speed)"/>
+      <param name="lookahead_distance" value="3.0"/>
+      <param name="acquire_tolerance" value="1.0"/>
+      <param name="acquire_vertical_spacing" value="5.0"/>
+      <param name="state_timeout" value="1.0"/>
+    </node>
+  </group>
+  <test test-name="formation_acquisition" pkg="xd_uav_formation"
+        type="test_acquisition_ros.py" time-limit="40">
+    <param name="airframe" value="$(arg airframe)"/>
+  </test>
+</launch>

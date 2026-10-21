@@ -1,0 +1,18 @@
+# Three-aircraft, low-speed multirotor example. Register uav3 in world TF first.
+mode: consensus
+team_id: team1
+members: [uav1, uav2, uav3]
+common_frame: world
+shape: circle
+spacing: 10.0
+waypoints:
+  - [0.0, 0.0, 20.0]
+  - [60.0, 0.0, 20.0]
+  - [60.0, 60.0, 20.0]
+  - [0.0, 60.0, 20.0]
+loop_path: true
+cruise_speed: 3.0
+lookahead_distance: 10.0
+consensus_gain: 0.1
+convergence_time: 500.0
+max_consensus_velocity: 4.0

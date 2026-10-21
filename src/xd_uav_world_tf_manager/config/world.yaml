@@ -4,9 +4,9 @@ world:
 
   # 世界ENU切平面的WGS84基准点。
   datum:
-    latitude: 47.397800
-    longitude: 8.545594
-    altitude: 47.325902413
+    latitude: -37.71775430000001
+    longitude: 144.8345184
+    altitude: -6.409311559051275
     # latitude: 47.3977421
     # longitude: 8.5455934
     # altitude: 535.3249164945362
@@ -17,30 +17,30 @@ world:
 
 # 在此增删飞机名称，控制哪些飞机接入world。
 # vehicles: [uav1, uav2, uav3, uav4]
-vehicles: [uav1, uav2]
+vehicles: [uav1, uav2, uav3]
 
 vehicle_configs:
-#   uav1:
-#     enabled: true
-#     mode: gps_origin
-#     origin_topic: /uav1/mavros/global_position/gp_origin #这个话题提供的local_origin的经纬度位置
-#     local_origin_frame: uav1/local_origin
-#     position_offset: [0.0, 0.0, 0.0]
-#     yaw_offset: 0.0
-#   uav2:
-#     enabled: true
-#     mode: gps_origin
-#     origin_topic: /uav2/mavros/global_position/gp_origin #这个话题提供的local_origin的经纬度位置
-#     local_origin_frame: uav2/local_origin
-#     position_offset: [0.0, 0.0, 0.0]
-#     yaw_offset: 0.0
-#   uav3:
-#     enabled: true
-#     mode: gps_origin
-#     origin_topic: /uav3/mavros/global_position/gp_origin #这个话题提供的local_origin的经纬度位置
-#     local_origin_frame: uav3/local_origin
-#     position_offset: [0.0, 0.0, 0.0]
-#     yaw_offset: 0.0
+  uav1:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav1/mavros/global_position/gp_origin_lla #这个话题提供的local_origin的经纬度位置
+    local_origin_frame: uav1/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav2:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav2/mavros/global_position/gp_origin_lla #这个话题提供的local_origin的经纬度位置
+    local_origin_frame: uav2/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav3:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav3/mavros/global_position/gp_origin_lla #这个话题提供的local_origin的经纬度位置
+    local_origin_frame: uav3/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
 #   uav4:
 #     enabled: true
 #     mode: gps_origin
@@ -50,18 +50,24 @@ vehicle_configs:
 #     yaw_offset: 0.0
 
   # # 不使用实时GPS原点话题时的固定位置示例，自定义指定飞机在world坐标系中的位置和航向。
-  uav1:
-    enabled: true
-    mode: fixed
-    local_origin_frame: uav1/local_origin
-    fixed_position: [0.0, 0.0, 0.0]
-    fixed_yaw: 0.0
-  uav2:
-    enabled: true
-    mode: fixed
-    local_origin_frame: uav2/local_origin
-    fixed_position: [15.0, 0.0, 0.0]
-    fixed_yaw: 0.0
+  # uav1:
+  #   enabled: true
+  #   mode: fixed
+  #   local_origin_frame: uav1/local_origin
+  #   fixed_position: [0.0, 0.0, 0.0]
+  #   fixed_yaw: 0.0
+  # uav2:
+  #   enabled: true
+  #   mode: fixed
+  #   local_origin_frame: uav2/local_origin
+  #   fixed_position: [45.0, 0.0, 0.0]
+  #   fixed_yaw: 0.0
+  # uav3:
+  #   enabled: true
+  #   mode: fixed
+  #   local_origin_frame: uav3/local_origin
+  #   fixed_position: [0.0, 45.0, 0.0]
+  #   fixed_yaw: 0.0
   # uav3:
   #   enabled: true
   #   mode: fixed

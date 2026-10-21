@@ -1,0 +1,23 @@
+# Three VTOLs after all have completed transition to hover.
+mode: consensus
+team_id: three_vtol_hover
+members: [uav1, uav2, uav3]
+common_frame: world
+shape: circle
+spacing: 12.0
+acquire_tolerance: 2.0
+acquire_height_tolerance: 0.75
+acquire_vertical_spacing: 8.0
+acquire_timeout: 180.0
+waypoints:
+  - [-50.0, 0.0, 40.0]
+  - [70.0, 0.0, 40.0]
+  - [70.0, 120.0, 40.0]
+  - [-50.0, 120.0, 40.0]
+loop_path: true
+corner_radius: 30.0
+cruise_speed: 2.0
+lookahead_distance: 3.0
+consensus_gain: 0.1
+convergence_time: 500.0
+max_consensus_velocity: 2.0

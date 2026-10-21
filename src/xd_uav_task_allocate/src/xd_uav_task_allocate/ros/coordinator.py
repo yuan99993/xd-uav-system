@@ -3500,12 +3500,18 @@ class TaskAllocateCoordinator:
     def _path_status_callback(self, vehicle: str, message: PathStatus) -> None:
         """Translate controller path progress into the existing planner contract."""
         with self._lock:
-            if vehicle not in self.active_controller_paths:
-                return
             active = self.active_goals.get(vehicle)
             if active is None or int(message.path_id) != int(active[0]):
                 return
             state = int(message.state)
+            # A direct hold can clear this bookkeeping flag while the route
+            # goal remains active. The controller's terminal status is still
+            # authoritative when its path ID matches that active goal.
+            if (
+                vehicle not in self.active_controller_paths
+                and state != PathStatus.COMPLETED
+            ):
+                return
             if state in (
                 PathStatus.ACCEPTED,
                 PathStatus.ACTIVE,

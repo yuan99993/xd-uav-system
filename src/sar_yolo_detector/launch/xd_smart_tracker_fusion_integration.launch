@@ -38,10 +38,16 @@
   <arg name="gimbal_detection_topic" default="$(arg selected_detections_topic)" />
   <arg name="output_detections_topic"
        default="track/selected_detections" />
-  <!-- Feed the UI's one selected box to the track controller. Override these
-       three args to bridge all fusion observations into the detection pipeline. -->
+  <!-- By default, bridge the UI's one selected box to the track controller.
+       The optional detect bridge mirrors this input; change both bridge args
+       only when intentionally forwarding all fusion observations. -->
   <arg name="bridge_input_topic" default="$(arg selected_detections_topic)" />
   <arg name="bridge_input_type" default="tracked" />
+  <!-- Optionally route the same selected box through a second bridge into
+       xd_uav_detect, while preserving the selected-box track-controller path. -->
+  <arg name="detect_bridge_enabled" default="false" />
+  <arg name="detect_output_detections_topic"
+       default="detect/input/detections_2d" />
   <arg name="publish_annotated_image" default="true" />
   <arg name="image_source" default="fixed_rgb" />
   <arg name="sensor_id" default="fixed_camera" />
@@ -105,4 +111,22 @@
     <arg name="detector_name" value="sar_yolo_smart_tracker" />
     <arg name="model_version" value="xd_vehicle_train7_best" />
   </include>
+
+  <group if="$(arg detect_bridge_enabled)">
+    <include file="$(find sar_yolo_detector)/archive/launch/xd_detection_bridge.launch">
+      <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+      <arg name="node_name" value="vision_to_xd_detect_bridge_$(arg instance_name)" />
+      <arg name="input_detections_topic" value="$(arg bridge_input_topic)" />
+      <arg name="input_type" value="$(arg bridge_input_type)" />
+      <arg name="output_detections_topic"
+           value="$(arg detect_output_detections_topic)" />
+      <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+      <arg name="image_width" value="$(arg image_width)" />
+      <arg name="image_height" value="$(arg image_height)" />
+      <arg name="image_source" value="$(arg image_source)" />
+      <arg name="sensor_id" value="$(arg sensor_id)" />
+      <arg name="detector_name" value="sar_yolo_smart_tracker" />
+      <arg name="model_version" value="xd_vehicle_train7_best" />
+    </include>
+  </group>
 </launch>

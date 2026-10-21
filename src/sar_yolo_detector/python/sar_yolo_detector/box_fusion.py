@@ -145,6 +145,8 @@ class BoxFusion:
         self.min_detector_conf = self._unit("minimum_detector_confidence", .50)
         self.min_maintenance_conf = self._unit("minimum_maintenance_confidence", .10)
         self.local_refresh_sec = self._positive("local_template_refresh_sec", .75)
+        self.manual_seed_visual_without_yolo = bool(
+            self.config.get("manual_seed_visual_without_yolo", True))
         if self.min_maintenance_conf > self.min_detector_conf:
             raise ValueError("Maintenance confidence must not exceed identity confidence")
         self.class_groups = self.config.get("class_groups", [[0, 1, 2, 3]])
@@ -193,13 +195,17 @@ class BoxFusion:
         self.identity_archive = None
         self._motion_continuous = True
         self._long_recovery = False
+        self.manual_seed_without_yolo = False
+        self.manual_seed_region = None
         self.diagnostics = {}
         self.result = FusionResult(None, -1, -1, 0., "idle", "no_selection", 0., -1)
 
-    def initialize(self, frame, box, stamp, public_id, candidate=None):
+    def initialize(self, frame, box, stamp, public_id, candidate=None, manual_seed=False):
         if not math.isfinite(stamp) or stamp <= 0 or public_id < 0 or not valid_box(box, frame.shape):
             raise ValueError("Invalid original-frame selection")
         self.reset()
+        self.manual_seed_without_yolo = bool(manual_seed and candidate is None)
+        self.manual_seed_region = tuple(float(v) for v in box) if self.manual_seed_without_yolo else None
         self.public_id = int(public_id)
         self.box = tuple(float(v) for v in box)
         self.stamp = self.last_observation_stamp = float(stamp)
@@ -327,6 +333,14 @@ class BoxFusion:
         visual_quality = self._visual_quality if correction else 0.
         if correction:
             pass
+        elif (self.manual_seed_without_yolo and local is not None and local.valid
+                and valid_box(visual_box, frame.shape)):
+            # Before YOLO has associated the manually selected target, expose
+            # KCF's own per-frame box. ManualBoxTracker already applies bounds,
+            # size and jump safety checks; fusion appearance gates must not
+            # freeze the operator's KCF-only box while waiting for YOLO.
+            _, visual_quality = appearance(frame, visual_box)
+            self.diagnostics['local_tracker'] = 'manual_seed_kcf'
         elif local is not None and local.valid and valid_box(visual_box, frame.shape) and self._compatible(visual_box, predicted):
             feature, visual_quality = appearance(frame, visual_box)
             similarity = float(np.dot(feature, self.anchor)) if self.anchor is not None else 0.
@@ -397,10 +411,29 @@ class BoxFusion:
             if not valid_box(candidate.box, frame.shape):
                 rejected['box_bounds'] += 1
                 continue
+            # For a manual KCF seed, limit the first YOLO association to the
+            # operator's ROI. Once the detector identity is confirmed, discard
+            # this ROI and use the normal fusion association gates.
+            if self.manual_seed_without_yolo:
+                region = self.manual_seed_region
+                cx, cy = center(candidate.box)
+                inside_region = (region is not None and (
+                    region[0] <= cx <= region[0] + region[2]
+                    and region[1] <= cy <= region[1] + region[3]
+                    or iou(candidate.box, region) >= .15))
+                # Once a candidate inside the ROI starts identity confirmation,
+                # let that same YOLO ID finish confirming if its box moves out
+                # of the seed ROI during the confirmation frames.
+                continuing_seed_identity = (self.pending_count > 0
+                    and candidate.local_id == self.pending_id)
+                inside_region = inside_region or continuing_seed_identity
+                if not inside_region:
+                    rejected['outside_manual_seed_region'] += 1
+                    continue
             if not self._class_compatible(candidate.class_id):
                 rejected['class'] += 1
                 continue
-            if not self._compatible(candidate.box, predicted):
+            if not self.manual_seed_without_yolo and not self._compatible(candidate.box, predicted):
                 rejected['position_or_size'] += 1
                 continue
             feature, quality = appearance(frame, candidate.box)
@@ -476,10 +509,13 @@ class BoxFusion:
                 # even when the displayed track's last YOLO stamp is older.
                 # Do not refresh detector time or appearance, or extend this
                 # fixed hold again on each frame.
-                if (visual_box is not None
-                        and stamp - visual_reference_stamp <= self.visual_hold
-                        and iou(visual_box, match.box) >= .30
-                        and self._compatible(visual_box, match.box)):
+                manual_visual_hold = (self.manual_seed_without_yolo
+                    and self.manual_seed_visual_without_yolo)
+                agrees_with_pending = (visual_box is not None
+                    and stamp - visual_reference_stamp <= self.visual_hold
+                    and iou(visual_box, match.box) >= .30
+                    and self._compatible(visual_box, match.box))
+                if visual_box is not None and (manual_visual_hold or agrees_with_pending):
                     return self._commit_observation(
                         visual_box, stamp, "visual", "reacquisition_confirmation_visual_hold",
                         min(.65, visual_quality, self.last_confidence))
@@ -489,6 +525,11 @@ class BoxFusion:
             self.pending_count = 0
 
         if match is not None:
+            # The manual-only visual exception ends once YOLO has associated
+            # a detection with the selected target. From here, the normal
+            # detector-backed visual hold applies.
+            self.manual_seed_without_yolo = False
+            self.manual_seed_region = None
             # Two witnesses must agree before coordinates are blended.
             agree = visual_box is not None and iou(visual_box, match.box) >= .30 and self._compatible(visual_box, match.box)
             if agree:
@@ -535,7 +576,9 @@ class BoxFusion:
             confidence = match.confidence
             self.pending_count = 0
             self.pending_id = None
-        elif visual_box is not None and stamp - visual_reference_stamp <= self.visual_hold:
+        elif visual_box is not None and (
+                self.manual_seed_without_yolo and self.manual_seed_visual_without_yolo
+                or stamp - visual_reference_stamp <= self.visual_hold):
             fused, source = visual_box, "visual"
             confidence = min(.65, visual_quality, self.last_confidence)
         else:

@@ -177,9 +177,9 @@ follower:
   vertical_deadband: 0.01
 
   pid:
-    lateral:       {kp: 3.0, ki: 0.02, kd: 0.02, integral_limit: 0.3}
+    lateral:       {kp: 5.0, ki: 0.02, kd: 0.5, integral_limit: 0.3}
     vertical:      {kp: 25.0, ki: 0.04, kd: 0.02, integral_limit: 0.3}
-    yaw:           {kp: 3.0, ki: 0.01, kd: 0.01, integral_limit: 0.2}
+    yaw:           {kp: 5.0, ki: 0.01, kd: 1.0, integral_limit: 0.2}
     ground_forward: {kp: 2.0, ki: 0.01, kd: 0.1, integral_limit: 0.3}
 
   limits:

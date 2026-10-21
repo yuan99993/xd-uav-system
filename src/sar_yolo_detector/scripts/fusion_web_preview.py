@@ -21,7 +21,12 @@ from sensor_msgs.msg import Image, RegionOfInterest
 from std_msgs.msg import String
 from sar_yolo_detector.interactive_view import FramePair
 from sar_yolo_detector.msg import TrackedDetection2DArray
-from sar_yolo_detector.srv import SelectFusionROI, SelectFusionROIRequest
+from sar_yolo_detector.srv import (
+    SelectFusionROI,
+    SelectFusionROIRequest,
+    SelectFusionPoint,
+    SelectFusionPointRequest,
+)
 
 
 class Preview:
@@ -41,6 +46,10 @@ class Preview:
         self.click = rospy.Publisher(rospy.get_param('~select_pixel_topic'), PointStamped, queue_size=1)
         self.manual_roi = rospy.Publisher(rospy.get_param('~manual_roi_topic'), RegionOfInterest, queue_size=1)
         self.roi = rospy.ServiceProxy(rospy.get_param('~select_roi_service'), SelectFusionROI)
+        self.manual_seed_roi = rospy.ServiceProxy(
+            rospy.get_param('~select_manual_roi_service'), SelectFusionROI)
+        self.point_selection = rospy.ServiceProxy(
+            rospy.get_param('~select_point_service'), SelectFusionPoint)
         self.subscribers = [
             rospy.Subscriber(rospy.get_param('~image_topic'), Image, self.image, queue_size=1, buff_size=4*1024*1024),
             rospy.Subscriber(rospy.get_param('~evidence_topic'), String, self.evidence, queue_size=1),
@@ -125,7 +134,7 @@ class Preview:
             return 409, dict(success=False, message='BUSY: previous command is still running')
         try:
             action = body.get('action')
-            if action not in ('click', 'roi', 'clear'):
+            if action not in ('click', 'roi', 'manual_roi', 'clear'):
                 raise ValueError('Unknown command')
             with self.lock:
                 current_mode = self.current.get('mode', 'fusion_tracker') if self.current else None
@@ -153,6 +162,16 @@ class Preview:
                 if not 0 <= x < width or not 0 <= y < height:
                     raise ValueError('Point outside original image')
                 if action == 'click':
+                    if frame_mode == 'fusion_tracker':
+                        point_request = SelectFusionPointRequest(header=request.header)
+                        point_request.point.x, point_request.point.y = x, y
+                        self.point_selection.wait_for_service(timeout=2.)
+                        result = self.point_selection(point_request)
+                        return (200 if result.success else 409), dict(
+                            success=result.success,
+                            selected_id=result.selected_target_id,
+                            message=result.message,
+                        )
                     if not self.click.get_num_connections():
                         raise ValueError('Click subscriber is not connected')
                     message = PointStamped(header=request.header)
@@ -182,8 +201,9 @@ class Preview:
                 return 202, dict(success=True, sent=True, message='Manual target cleared')
             elif current_mode != 'fusion_tracker':
                 raise ValueError('Selection is unavailable in this mode')
-            self.roi.wait_for_service(timeout=2.)
-            result = self.roi(request)
+            service = self.manual_seed_roi if action == 'manual_roi' else self.roi
+            service.wait_for_service(timeout=2.)
+            result = service(request)
             return (200 if result.success else 409), dict(success=result.success,
                 selected_id=result.selected_target_id, message=result.message)
         except (ValueError, TypeError, KeyError, rospy.ROSException, rospy.ServiceException) as exc:

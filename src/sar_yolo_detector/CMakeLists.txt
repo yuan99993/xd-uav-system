@@ -99,6 +99,7 @@ add_service_files(
   SwitchSmartTrackerModel.srv
   SwitchTrackingMode.srv
   SelectFusionROI.srv
+  SelectFusionPoint.srv
   ListDetectorModels.srv
 )
 
