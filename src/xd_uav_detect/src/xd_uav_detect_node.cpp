@@ -409,7 +409,10 @@ class XdUavDetectNode {
   }
 
   void cameraInfoCallback(const sensor_msgs::CameraInfo::ConstPtr& message) {
-    const bool projection_valid = message->P[0] > 0.0 && message->P[5] > 0.0;
+    // Some simulation camera drivers publish an identity P matrix even when
+    // K contains calibrated intrinsics. A unit focal length is not a usable
+    // pixel projection for real image dimensions, so fall back to K.
+    const bool projection_valid = message->P[0] > 1.0 && message->P[5] > 1.0;
     const double fx = projection_valid ? message->P[0] : message->K[0];
     const double fy = projection_valid ? message->P[5] : message->K[4];
     const double cx = projection_valid ? message->P[2] : message->K[2];

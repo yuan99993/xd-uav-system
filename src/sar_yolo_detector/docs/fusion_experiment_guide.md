@@ -126,13 +126,14 @@ SAR 选择只选择图像融合目标，不自动改变 XD 的飞行跟随目标
 | track/selected_detections | xd_uav_track/DetectionArray，默认桥接 UI 选中的单框，供 StartTracker 使用 |
 | detect/input/detections_2d | xd_uav_track/DetectionArray，可选的全候选定位链输入 |
 | sar_yolo_smart_tracker_smart/fusion_evidence | String JSON：公开/局部 ID、来源、原因、最近 YOLO 时间、耗时 |
-| sar_yolo_detector/manual/initial_roi | 原 RegionOfInterest，仅独立 feature/color 模式 |
+| sar_yolo_detector/manual/initial_roi | 原 RegionOfInterest；feature/color 初始化手动跟踪器；fusion_tracker 中按最新缓存帧手动初始化 KCF |
 
 | 私有服务 | 类型/用途 |
 |---|---|
 | switch_tracking_mode | 原 SwitchTrackingMode，新增支持 fusion_tracker |
 | select | 原 SelectSmartTrack，当前帧 ID/点击/归一化 ROI/取消 |
-| select_fusion_roi | 新 SelectFusionROI，原帧 header + 像素 ROI |
+| select_fusion_roi | 新 SelectFusionROI，原帧 header + 像素 ROI；唯一 YOLO 框可作为 KCF 初始框 |
+| select_fusion_manual_roi | 同一 SelectFusionROI 请求；始终用手画框初始化 KCF，后续再由附近 YOLO 检测校正 |
 | switch_model | 原 SwitchSmartTrackerModel；切换后清空融合选择 |
 
 ```bash
@@ -142,10 +143,16 @@ rosservice call /uav1/sar_yolo_smart_tracker_smart/select "{clear_selection: tru
 ```
 
 旧 select 和 stamp=0 点击是最新帧接口，不适用于延迟网页。延迟点击须带显示原图完整 stamp/seq/frame_id。
-延迟框选用 select_fusion_roi，先查原帧再匹配目标。最多24帧/24 MiB，最大年龄0.75秒，三项限制同时生效。
+延迟框选用 select_fusion_roi，先查原帧再匹配目标；它保留现有 YOLO 优先初始化行为。新增
+select_fusion_manual_roi 使用完全相同的原帧请求合同，但跳过 YOLO 初始框吸附，直接用手画 ROI 启动 KCF。
+后续 YOLO 仍在全图推理。手选 KCF 尚未绑定 YOLO 时，候选框中心落在本次手选 ROI 内（或与 ROI 的 IoU 不低于 0.15）才可开始首次关联；已在 ROI 内开始确认的同一 YOLO ID 可继续完成确认，即使检测框随后移出 ROI。首次 YOLO 身份确认后，清除该 ROI 限制，后续按位置、尺度、外观、类别和歧义门控融合。
+每次新的手动画框都会重置启动门控并记录新的 ROI；此前选框的区域不会限制新选目标，也不会在进入融合后继续限制当前目标。
+最多24帧/24 MiB，最大年龄0.75秒，三项限制同时生效。
 请求header取与显示画面按stamp/frame_id配对的 fusion_evidence.capture_header，不能用不同发布者重写的seq。
-过期、未来、错帧、越界、多目标均拒绝。
-大 ROI 含唯一检测目标时使用紧框；无检测时可初始化未知类别 -1，不默认伪称 tank。
+过期、未来、错帧和越界请求均拒绝；select_fusion_roi 对多检测 ROI 拒绝，select_fusion_manual_roi 则按手画框启动，但后续歧义候选不会绑定为目标。
+select_fusion_roi 的大 ROI 含唯一检测目标时使用紧框；无检测时可初始化未知类别 -1。
+select_fusion_manual_roi 始终使用原始手画框作为 KCF 初始框，即使框内已有一个或多个 YOLO 候选；此时初始类别和检测身份未知，后续由区域内通过门控的 YOLO 结果确认，不默认伪称 tank。
+第三方 UI 若只能发布 `sensor_msgs/RegionOfInterest`，也可向 `sar_yolo_detector/manual/initial_roi` 发布框：在 `fusion_tracker` 模式下后端以最新且未过期的缓存原帧为 KCF seed，YOLO 仍继续校正。该旧消息不带 header，因此不能保证与延迟显示帧精确对应；需要帧绑定时应调用 `select_fusion_manual_roi`。
 中心在 detection.bbox.center.x/y（新消息为 target.detection），原图左上角为原点，x 右、y 下。
 叠框与数值共用最终框、原始宽高/header，不缩图或独立修框。桥接 bbox 是 xmin/ymin/xmax/ymax，floor/ceil 取整最多一像素差。
 不同 ROS1 发布者会独立计数 header.seq，输入与输出序号不保证相同；严格框选回传所显示叠框的 header，不猜测其他话题的序号。
@@ -154,10 +161,10 @@ rosservice call /uav1/sar_yolo_smart_tracker_smart/select "{clear_selection: tru
 
 - 按采集时间差预测；检查运动、尺度、车辆父组、HSV 相似度与纹理质量，局部 ID 相同也不绕过门控。
 - 最佳/次佳过近、两条不同局部轨迹同时可见时拒绝拼接；一致才加权，不取框并集。
-- 可信唯一 YOLO 纠正局部漂移；局部 ID 重建需同一候选连续三帧确认，公开锁定 ID 保持。
+- 手选 KCF 等待首次 YOLO 关联时，候选须落在本次手选 ROI；同一 YOLO ID 可完成连续确认后解除 ROI 限制。之后使用常规身份、位置、尺度、外观和歧义门控，局部 ID 重建需同一候选连续三帧确认，公开锁定 ID 保持。
 - 0.10～0.50 弱框仅维持当前已绑定且局部框一致的可信身份，不能恢复新 ID 或更新外观锚点。
 - 车辆父组类别跳变不换 ID；选中类别暂保持，不是完整类别时域滤波。
-- YOLO漏检视觉辅助限1.5秒、预测限0.35秒、短时重获窗口8秒；之后选中身份最多保留至最后可信观测后60秒，仍检查新检测，但不推进旧局部跟踪。长时重获须连续相机补偿、严格外观/运动/歧义门控和3帧确认；未知ROI不能自行无限续期。详见网页指南第19节。
+- 手选且尚无 YOLO 关联时，持续输出通过 KCF 自身边界/跳变安全检查的逐帧框，不再让融合外观门控冻结 KCF；KCF 连续失败后仅预测0.35秒，之后 selected 流为空。YOLO 关联后，漏检时视觉辅助仍限1.5秒；短时重获窗口8秒，身份记忆最多60秒，长时重获须严格门控和3帧确认。详见网页指南第19节。
 - prediction/lost/ambiguous 不输出有效检测或实线框，selected 流为空。
 - yolo/fused 对应 detector，visual 对应 visual_tracker；辅助不刷新最近 YOLO 时间。
 - measurement_current 仅当前 YOLO 为真；合格 visual 可短时 control_measurement_ready=true，其余 false。

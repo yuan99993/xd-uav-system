@@ -97,12 +97,14 @@
     },
     "click": {
       "name": "{topic_root}/select_pixel", "type": "geometry_msgs/PointStamped", "direction": "publish",
-      "frame_bound_in_modes": ["fusion_tracker"], "has_command_ack": false
+      "frame_bound_in_modes": [], "has_command_ack": false,
+      "compatibility_only_for_fusion_tracker": true,
+      "applies_to": ["feature_tracker", "color_tracker"]
     },
     "manual_roi": {
       "name": "{manual_roi_topic}", "type": "sensor_msgs/RegionOfInterest", "direction": "publish",
       "frame_bound": false, "has_command_ack": false,
-      "applies_to": ["feature_tracker", "color_tracker with empty color_name"]
+      "applies_to": ["feature_tracker", "color_tracker with empty color_name", "fusion_tracker using latest cached frame"]
     },
     "bridge_output": {
       "name": "{bridge_output_default}", "type": "xd_uav_track/DetectionArray", "direction": "subscribe",
@@ -128,6 +130,22 @@
       "response_fields": ["success", "message", "selected_target_id"],
       "required_mode": "fusion_tracker", "frame_bound": true,
       "header_origin": "capture_header paired with the displayed annotated image by exact stamp/frame_id"
+    },
+    "select_original_frame_manual_roi": {
+      "name": "{service_root}/select_fusion_manual_roi", "type": "sar_yolo_detector/SelectFusionROI",
+      "request_fields": ["header", "roi", "clear_selection"],
+      "response_fields": ["success", "message", "selected_target_id"],
+      "required_mode": "fusion_tracker", "frame_bound": true,
+      "seed": "always initialize KCF from the original user ROI, even when YOLO detections overlap it",
+      "follow_up": "full-frame YOLO detections are associated near the current KCF track and may confirm identity and correct/reinitialize its box"
+    },
+    "select_original_frame_point": {
+      "name": "{service_root}/select_fusion_point", "type": "sar_yolo_detector/SelectFusionPoint",
+      "request_fields": ["header", "point"],
+      "response_fields": ["success", "message", "selected_target_id"],
+      "required_mode": "fusion_tracker", "frame_bound": true,
+      "point_must_identify": "exactly one YOLO detection in the displayed source frame",
+      "seed": "reinitialize KCF from the selected YOLO box and clear manual-seed ROI gating"
     },
     "switch_trusted_model": {
       "name": "{service_root}/switch_model", "type": "sar_yolo_detector/SwitchSmartTrackerModel",

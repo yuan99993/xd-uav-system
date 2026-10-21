@@ -148,7 +148,7 @@ ROS 1 没有为每个话题分配固定网页端口。网页一般连接一个 W
     <param name="address" value="127.0.0.1"/>
     <param name="port" value="9091"/>
     <param name="topics_glob" value="[/uav1/sar_yolo_detector/smart/annotated,/uav1/sar_yolo_detector/smart/tracked_detections/fusion,/uav1/sar_yolo_detector/smart/selected_tracked_detections,/uav1/sar_yolo_detector/smart/state,/uav1/sar_yolo_detector/smart/select_pixel,/uav1/sar_yolo_detector/manual/initial_roi,/uav1/sar_yolo_smart_tracker_smart/fusion_evidence,/diagnostics]"/>
-    <param name="services_glob" value="[/uav1/sar_yolo_smart_tracker_smart/switch_tracking_mode,/uav1/sar_yolo_smart_tracker_smart/select,/uav1/sar_yolo_smart_tracker_smart/select_fusion_roi]"/>
+    <param name="services_glob" value="[/uav1/sar_yolo_smart_tracker_smart/switch_tracking_mode,/uav1/sar_yolo_smart_tracker_smart/select,/uav1/sar_yolo_smart_tracker_smart/select_fusion_roi,/uav1/sar_yolo_smart_tracker_smart/select_fusion_manual_roi,/uav1/sar_yolo_smart_tracker_smart/select_fusion_point]"/>
     <param name="params_glob" value="[]"/>
     <param name="max_message_size" value="33554432"/>
   </node>
@@ -178,8 +178,9 @@ ROS 1 没有为每个话题分配固定网页端口。网页一般连接一个 W
 | 输出 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 汇总诊断；按 hardware_id、节点名和 active_source 过滤 |
 | 桥接输出 | `/{uav}/track/selected_detections` | `xd_uav_track/DetectionArray` | 默认只转发 UI 选中框，供 `track/start_tracker` 跟踪 |
 | 可选桥接输出 | `/{uav}/detect/input/detections_2d` | `xd_uav_track/DetectionArray` | 通过 launch 参数改接全候选检测/定位链 |
-| 网页发布 | `T/select_pixel` | `geometry_msgs/PointStamped` | fusion 可原帧绑定点击；无服务式回执 |
-| 网页发布 | `/{uav}/sar_yolo_detector/manual/initial_roi` | `sensor_msgs/RegionOfInterest` | feature/color 初始化；配置颜色模式用它选择与框相交的候选框 |
+| 网页/外部 UI 调用 | `S/select_fusion_point` | `sar_yolo_detector/SelectFusionPoint` | fusion 点选 YOLO 框；带原帧 header 与服务回执 |
+| 兼容发布 | `T/select_pixel` | `geometry_msgs/PointStamped` | 保留给 feature/color 和旧 fusion UI；无服务式回执 |
+| 网页/外部 UI 发布 | `/{uav}/sar_yolo_detector/manual/initial_roi` | `sensor_msgs/RegionOfInterest` | feature/color 初始化；fusion_tracker 中用最新缓存帧手动初始化 KCF |
 
 除诊断的实现行为外，不应假定这些输出锁存；重连后须等待新图像、新状态。
 配置颜色模式会在 `tracked_detections` 发布所有红色候选框，UI 点击后将选中目标单独持续发布到
@@ -380,6 +381,17 @@ selected_target_id: int64
 上面的 stamp/seq 是格式示例，不是可直接选择的真实帧。必须在 fusion 模式，ROI 至少 4×4、位于原图内。
 服务器先匹配缓存原帧再寻找目标；包含唯一检测时吸附到紧框，包含多个目标拒绝，无检测时可初始化未知类别。
 
+若要保留手画框作为 KCF 初始框（无论该 ROI 当前是否已有 YOLO 检测），调用
+`S/select_fusion_manual_roi`，请求和响应类型完全相同。它跳过初始检测框吸附；之后全图 YOLO 仍持续运行，
+仅通过当前 KCF 位置附近的尺度、外观和歧义门控的检测才能确认身份并校正/重置 KCF。新 YOLO 身份需连续三帧确认。
+该接口不改变原 `select_fusion_roi` 的 YOLO 优先初始化语义。
+
+若先用手选框初始化、之后要改用点选 YOLO 目标，调用独立服务
+`S/select_fusion_point`（`sar_yolo_detector/SelectFusionPoint`）：请求包含显示原帧的 `header` 和原图像素 `point`，
+点必须落在唯一 YOLO 框内。成功后 FusionTracker 会从该 YOLO 框重置 KCF，并清除手选初始化的区域限制；
+此后继续按正常 YOLO/KCF 融合更新。没有检测或点落入多个检测框时返回拒绝，不会悄悄沿用点选失败的结果。
+旧 `T/select_pixel` 话题仍可供第三方兼容调用，但没有服务回执；新 UI 推荐使用 `select_fusion_point`。
+
 当前缓存最多 24 帧、24 MiB，最大年龄 0.75 秒，未来容忍 0.02 秒，三种上限同时生效。
 高分辨率图像仍可能先达到字节上限；年龄合格不代表帧仍缓存。三项限制均有配置，不能无限放大缓存。
 冻结浏览器不会冻结相机或服务器。长时间拖拽、网络延迟超出缓存时应提示刷新重试，
@@ -390,9 +402,22 @@ selected_target_id: int64
 先按 stamp/frame_id 将证据与实际显示的 annotated 配对，不能直接假定 annotated 的发布序号就是原相机序号。
 PNG/视频网关应连同画面传递该 capture_header；不能用网关或视频发布者新生成的 seq 替代原帧序号。
 
-### 7.3 融合模式原帧点击：有时间绑定，无请求回执
+### 7.3 融合模式原帧点选 YOLO 检测框
 
-发布至 `T/select_pixel`，类型 `geometry_msgs/PointStamped`：
+推荐网页调用 `S/select_fusion_point`（`sar_yolo_detector/SelectFusionPoint`），获得实际选中 ID 和失败原因：
+
+```yaml
+header: # 从当前显示图像对应的 capture_header 复制
+  seq: 123
+  stamp: {secs: 100, nsecs: 250000000}
+  frame_id: uav1/front_camera_optical_frame
+point: {x: 170.0, y: 110.0, z: 0.0} # 原图像素坐标，需落在唯一 YOLO 框内
+```
+
+此服务与手选框初始化完全分开。先调用 `select_fusion_manual_roi` 后调用此服务，成功时会重新以所点 YOLO 框初始化 KCF，
+从手选 KCF 起步切换到 YOLO 身份关联与常规融合；之后可由持续检测校正框。
+
+兼容第三方 UI 也可发布至 `T/select_pixel`，类型 `geometry_msgs/PointStamped`：
 
 ```json
 {
@@ -405,14 +430,14 @@ PNG/视频网关应连同画面传递该 capture_header；不能用网关或视�
 注意：ROS TCPROS会重写话题与服务请求的顶层`header.seq`，因此点击/框选以精确`stamp+frame_id`
 匹配缓存原帧，并保留新鲜度门禁；不会用点击话题的发布序号去匹配相机序号。
 原始seq保留用于前端审计，不能作为传输后相机帧身份的硬门限；输入时序管理仍拒绝非法/重复采集时间。
-失败通过 ROS 日志告警，没有对应 command_result；网页需看后续 fusion state/selected ID 确认生效，
-并区分“已发送”与“已生效”。需要可靠服务回执时，网页框选使用 7.2 的服务。
+兼容 topic 使用最新缓存帧，只有 ROS 日志告警，没有对应 command_result；第三方 UI 若需要准确帧匹配及回执，
+应调用 `select_fusion_point` 服务。
 
 stamp=0 是旧的最新帧路径，不适合延迟网页；负 x/y 会取消选择。
 smart 模式的像素话题仍按当前框距离选择，不执行相同原帧校验，且其单目标流选择与
 SmartTracker 内核 state 可能不同步；不能把 fusion 的安全性推广到旧 smart 点击。
 
-### 7.4 独立特征/颜色 ROI：保留旧合同，明确时序限制
+### 7.4 手动 ROI 话题：feature/color 初始化与 FusionTracker 兼容入口
 
 先切 `feature_tracker` 或 ROI 颜色模式，然后发布 `sensor_msgs/RegionOfInterest` 到
 `/{uav}/sar_yolo_detector/manual/initial_roi`：
@@ -424,6 +449,8 @@ SmartTracker 内核 state 可能不同步；不能把 fusion 的安全性推广�
 该请求在下一张处理图像上初始化，**没有 header/原帧保证，也没有服务回执**。
 大延迟网页不可宣称“准确锁住所框原帧目标”；可限制为低延迟本地调试，正式远端优先使用 fusion 原帧 ROI。
 零宽/高会清除手动选择；指定颜色全图模式的非零 ROI 会在候选颜色框中选择相交目标。
+在 `fusion_tracker` 模式下，同一话题会将手画框作为 KCF 初始框，后续 YOLO 继续更新；它使用最新缓存原帧且没有帧级应答，
+所以第三方 UI 如果保留了所选画面的 header，应改调 `select_fusion_manual_roi` 以避免延迟画面坐标错配。
 manual ROI 的默认话题没有 instance 后缀，双相机必须在部署配置中分别覆盖
 `ManualBoxTracker/initial_roi_topic`，否则一个 ROI 可能同时初始化两路相机。
 
@@ -933,7 +960,8 @@ YAML同一层不能重复键；配置文件中的类名空间须严格区分Smar
 | SmartTracker/SMART_TRACKER_AGNOSTIC_NMS | true | 当前全部为车辆；加入其他父类后须重新评估 |
 | SmartTracker/SMART_TRACKER_IOU_THRESHOLD | 0.60 | YOLO NMS门限，不是最终身份拼接门限 |
 | SmartTracker/TRACKER_TYPE | BoT-SORT | 算法内部关联，和四业务mode不同 |
-| FusionTracker/visual_hold_sec | 1.5秒 | 最近YOLO缺测时合格视觉辅助上限；越长漂移风险越大 |
+| FusionTracker/visual_hold_sec | 1.5秒 | YOLO确认过目标后，漏检期间合格视觉辅助上限；手选后尚无YOLO确认时由下一项控制 |
+| FusionTracker/manual_seed_visual_without_yolo | true | 手选框尚未被YOLO关联时，逐帧KCF质量/外观门控通过就持续输出；视觉质量失效仍停止输出 |
 | FusionTracker/prediction_hold_sec | 0.35秒 | 无可信观测的内部预测上限，不作为有效检测框 |
 | FusionTracker/reacquire_hold_sec | 8秒 | 短时局部跟踪窗口；结束后仍检查可信新检测，不永久退出恢复 |
 | FusionTracker/identity_memory_ttl_sec | 60秒 | 每实例最多保留1个选中身份；从最后可信观测计时，不被失败候选刷新；必须大于8秒且不超过300秒 |
@@ -1255,12 +1283,14 @@ ROS节点不会自动读取/替换它。独立附件保留供机器读取；变�
     },
     "click": {
       "name": "{topic_root}/select_pixel", "type": "geometry_msgs/PointStamped", "direction": "publish",
-      "frame_bound_in_modes": ["fusion_tracker"], "has_command_ack": false
+      "frame_bound_in_modes": [], "has_command_ack": false,
+      "compatibility_only_for_fusion_tracker": true,
+      "applies_to": ["feature_tracker", "color_tracker"]
     },
     "manual_roi": {
       "name": "{manual_roi_topic}", "type": "sensor_msgs/RegionOfInterest", "direction": "publish",
       "frame_bound": false, "has_command_ack": false,
-      "applies_to": ["feature_tracker", "color_tracker with empty color_name"]
+      "applies_to": ["feature_tracker", "color_tracker with empty color_name", "fusion_tracker using latest cached frame"]
     },
     "bridge_output": {
       "name": "{bridge_output_default}", "type": "xd_uav_track/DetectionArray", "direction": "subscribe",
@@ -1286,6 +1316,22 @@ ROS节点不会自动读取/替换它。独立附件保留供机器读取；变�
       "response_fields": ["success", "message", "selected_target_id"],
       "required_mode": "fusion_tracker", "frame_bound": true,
       "header_origin": "capture_header paired with the displayed annotated image by exact stamp/frame_id"
+    },
+    "select_original_frame_manual_roi": {
+      "name": "{service_root}/select_fusion_manual_roi", "type": "sar_yolo_detector/SelectFusionROI",
+      "request_fields": ["header", "roi", "clear_selection"],
+      "response_fields": ["success", "message", "selected_target_id"],
+      "required_mode": "fusion_tracker", "frame_bound": true,
+      "seed": "always initialize KCF from the original user ROI, even when YOLO detections overlap it",
+      "follow_up": "full-frame YOLO detections are associated near the current KCF track and may confirm identity and correct/reinitialize its box"
+    },
+    "select_original_frame_point": {
+      "name": "{service_root}/select_fusion_point", "type": "sar_yolo_detector/SelectFusionPoint",
+      "request_fields": ["header", "point"],
+      "response_fields": ["success", "message", "selected_target_id"],
+      "required_mode": "fusion_tracker", "frame_bound": true,
+      "point_must_identify": "exactly one YOLO detection in the displayed source frame",
+      "seed": "reinitialize KCF from the selected YOLO box and clear manual-seed ROI gating"
     },
     "switch_trusted_model": {
       "name": "{service_root}/switch_model", "type": "sar_yolo_detector/SwitchSmartTrackerModel",
@@ -1426,12 +1472,21 @@ rosrun sar_yolo_detector validate_formal_gazebo_fusion.py \
 普通`rqt_image_view`不是本方案的交互选择前端。正式Gazebo融合入口的
 `show_image:=true`现在启动`SAR Fusion — click / drag to select`窗口：
 
-- 左键单击已检测目标：发送绑定原始帧的`geometry_msgs/PointStamped`到`{topic_root}/select_pixel`。
+- 左键单击已检测目标：调用`{service_root}/select_fusion_point`，按原帧 YOLO 框初始化或重置 KCF，并返回选中ID。
 - 左键快速拖框：调用`{service_root}/select_fusion_roi`。唯一候选存在时使用紧致检测框；
   无候选时初始化未知类别的局部目标；包含多个候选则拒绝，不会强行合并。
+- 按住Shift左键快速拖框：调用`{service_root}/select_fusion_manual_roi`，直接用手选框初始化KCF；
+  后续YOLO仍持续检测，并在目标附近匹配成功后校正KCF框。普通拖框原有YOLO优先行为不变。
 - 右键、Esc或顶部取消按钮：清除选中目标，继续全局检测。
 - 顶部显示原图尺寸、实际选中ID和后端原因；底部显示提交或拒绝结果。
   点击话题没有请求应答，显示“已发送”不代表成功；必须以顶部实际ID与绿色框为准。
+
+手选框和点选分别调用`select_fusion_manual_roi`和`select_fusion_point`；先手选、再点选时，成功点选会切换到 YOLO 框初始化并清除手选限制。选中结果仍发布到原来的`selected_tracked_detections`，
+融合集成 launch 的 bridge 输出仍是`track/selected_detections`，因此这一步不需要改 track 的订阅话题。
+第三方 UI 若能调用 service，手选框使用带原图 header 的`select_fusion_manual_roi`，点选使用带原图 header 的`select_fusion_point`；若只能发布`manual/initial_roi`，FusionTracker 会用最新且未过期的缓存帧初始化手框。兼容点选话题`select_pixel`仍保留，但无请求回执。
+该话题没有 header，延迟画面不能保证坐标对应关系。无论入口是哪一种，FusionTracker 后续仍运行 YOLO 来更新 KCF 框。
+当前 bridge 默认以`input_type:=tracked`读取旧消息，该消息不包含`measurement_source`，所以进入 XD track 后，
+KCF视觉测量会失去与 YOLO detector 测量的来源区别；若下游要按来源分别门控，需要另加带来源字段的单目标 Fusion 消息通道。
 
 现有Gazebo与算法已经运行时，只启动前端，**不要重复启动模型**：
 
@@ -1473,7 +1528,7 @@ roslaunch sar_yolo_detector fusion_web_preview.launch \
 
 浏览器优先打开`http://127.0.0.1:8787/`。本机Windows侧验证IPv4返回HTTP 200，
 而`localhost`曾超时；遇到此情况不要改成公网绑定，先使用IPv4地址。
-支持点击、快速框选、右键/Esc/按钮取消，显示实际选中ID、
+支持点击、快速框选、Shift+快速框选手动初始化KCF、右键/Esc/按钮取消，显示实际选中ID、
 当前来源/原因、原图尺寸/序号/年龄、当前帧各目标类别/ID/中心像素。网页只服务当前融合实例，
 **不新增算法模式或模型切换功能，不发送飞行/云台控制命令**。当前类别显示合同是train7的四类；
 更换类别合同后须同步配置网页桥接节点的`~class_names`，不能把这一列表当模型运行时发现。
@@ -1493,12 +1548,14 @@ roslaunch sar_yolo_detector fusion_web_preview.launch \
 | --- | --- |
 | `GET /` | 静态测试网页，不依赖CDN |
 | `GET /api/frame` | JSON：同帧`png`(base64)、`image_mime:"image/png"`、width/height、原始capture_header、frame_token、selected_id、source/reason、objects、age_ms、video_stale |
-| `POST /api/command` | JSON：`action:click` + `frame_token` + `point:[x,y]`；`action:roi` + token + `roi:[x,y,w,h]`；或`action:clear` |
+| `POST /api/command` | JSON：`action:click` + `frame_token` + `point:[x,y]`；`action:roi` + token + `roi:[x,y,w,h]`；`action:manual_roi` + token + ROI；或`action:clear` |
 
 `frame_token`仅在当前网页桥接进程有效，与后端实体ID无关。服务端最多缓存24个已显示帧的header，
 以token找到精确原帧后才转发ROS命令；未知token、过期帧、非法坐标拒绝，不回退选最新帧。
-点击202表示已发到原有`select_pixel`话题，**不是后端成功回执**；网页继续观察实际选中ID。
-框选/取消直接调用原有`select_fusion_roi`服务，200成功、409拒绝/BUSY，页面显示原因。
+Fusion模式点击调用新增的`select_fusion_point`服务并返回实际 ID；feature/color 模式点击仍发布`select_pixel`话题。
+普通框选调用`select_fusion_roi`服务；Shift+框选调用`select_fusion_manual_roi`服务；取消仍调用原有清除请求。
+三种 Fusion 选择都使用已显示原帧的header和像素坐标。选中目标仍发布到原来的`selected_tracked_detections`话题。
+服务成功返回200，拒绝/BUSY返回409，页面显示原因。
 HTTP客户端超时后不得自动重试选择命令，避免重复初始化。
 
 预览默认5FPS、**PNG无损传输、原尺寸显示**，不缩放编码图像。PNG采用压缩等级1以限制CPU开销，

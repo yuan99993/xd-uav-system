@@ -15,21 +15,21 @@ interfaces:
     debug_image: "detect/debug/image"
 
 frames:
-  camera: ""
+  camera: "uav1/down_camera_optical_frame"
 
 ground_projection:
   ground_plane_z_m: 0.0
   minimum_range_m: 1.0
   maximum_range_m: 500.0
   minimum_ray_plane_angle_deg: 5.0
-  box_anchor_y_ratio: 0.5
+  box_anchor_y_ratio: 1.0
   pixel_stddev_px: 2.0
   ground_height_stddev_m: 1.0
   position_stddev_m: 0.25
   tf_timeout_sec: 0.05
   tf_use_latest_on_failure: false
   require_detection_timestamp: true
-  require_matching_camera_frame: true
+  require_matching_camera_frame: false
 
 visualization:
   enabled: true

@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- VTOLs must already be in hover; uav1 keeps its own navigation input. -->
+  <arg name="leader_name" default="uav1"/>
+  <arg name="team_id" default="three_vtol_hover_follow"/>
+  <arg name="start_manager" default="true"/>
+
+  <include if="$(arg start_manager)"
+           file="$(find xd_uav_formation)/launch/formation_manager.launch"/>
+
+  <include file="$(find xd_uav_formation)/launch/follower.launch">
+    <arg name="leader_name" value="$(arg leader_name)"/>
+    <arg name="team_id" value="$(arg team_id)"/>
+    <arg name="follower_name" value="uav2"/>
+    <arg name="forward" value="-20.0"/>
+    <arg name="left" value="10.0"/>
+  </include>
+  <include file="$(find xd_uav_formation)/launch/follower.launch">
+    <arg name="leader_name" value="$(arg leader_name)"/>
+    <arg name="team_id" value="$(arg team_id)"/>
+    <arg name="follower_name" value="uav3"/>
+    <arg name="forward" value="-20.0"/>
+    <arg name="left" value="-10.0"/>
+  </include>
+</launch>

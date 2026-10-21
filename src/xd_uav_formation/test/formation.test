@@ -1,0 +1,13 @@
+<launch>
+  <group ns="uav2">
+    <node pkg="xd_uav_formation" type="formation_follower.py"
+          name="formation_follower" output="screen">
+      <param name="leader_name" value="uav1"/>
+      <param name="state_timeout" value="1.0"/>
+      <param name="rate" value="20.0"/>
+      <param name="external_quiet_time" value="0.2"/>
+    </node>
+  </group>
+  <test test-name="formation_preemption" pkg="xd_uav_formation"
+        type="test_formation_ros.py" time-limit="35"/>
+</launch>

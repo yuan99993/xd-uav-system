@@ -13,6 +13,8 @@
       <param name="select_pixel_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/select_pixel" />
       <param name="manual_roi_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/manual/initial_roi" />
       <param name="select_roi_service" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/select_fusion_roi" />
+      <param name="select_manual_roi_service" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/select_fusion_manual_roi" />
+      <param name="select_point_service" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/select_fusion_point" />
       <param name="fps" value="5.0" />
     </node>
   </group>

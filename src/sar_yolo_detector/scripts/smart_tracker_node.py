@@ -55,6 +55,8 @@ from sar_yolo_detector.srv import (
     SwitchTrackingModeResponse,
     SelectFusionROI,
     SelectFusionROIResponse,
+    SelectFusionPoint,
+    SelectFusionPointResponse,
 )
 
 
@@ -384,6 +386,14 @@ class SmartTrackerNode:
             "~switch_tracking_mode", SwitchTrackingMode, self._switch_tracking_mode
         )
         self._fusion_roi_service = rospy.Service("~select_fusion_roi", SelectFusionROI, self._select_fusion_roi)
+        # Preserve the detector-first ROI service and expose an additive
+        # manual-seed path that always initializes KCF from the user's box.
+        self._fusion_manual_roi_service = rospy.Service(
+            "~select_fusion_manual_roi", SelectFusionROI, self._select_fusion_manual_roi
+        )
+        self._fusion_point_service = rospy.Service(
+            "~select_fusion_point", SelectFusionPoint, self._select_fusion_point
+        )
         self._subscriber = rospy.Subscriber(
             self._input_topic,
             Image,
@@ -503,13 +513,40 @@ class SmartTrackerNode:
             return None
 
     def _manual_roi_callback(self, message: RegionOfInterest) -> None:
-        """Initialize the already-selected manual mode, or clear its target."""
+        """Initialize the active manual tracker, or seed FusionTracker from the latest frame."""
         with self._lock:
             if getattr(self, "_model_busy", False):
                 rospy.logwarn_throttle(2., "Manual ROI ignored during model switch")
                 return
             if self._tracking_mode == "fusion_tracker":
-                rospy.logwarn_throttle(2., "Fusion ROI requires ~select_fusion_roi with the displayed image header")
+                if int(message.width) == 0 or int(message.height) == 0:
+                    self._fusion.reset()
+                    self._publish_empty_selected_detections()
+                    rospy.loginfo("Fusion selection cleared from manual ROI topic")
+                    return
+                if not self._fusion_snapshots:
+                    rospy.logwarn_throttle(2., "Fusion manual ROI ignored: no cached image frame")
+                    return
+                snapshot = self._fusion_snapshots[-1]
+                stamp = snapshot[0].stamp
+                age = (rospy.Time.now() - stamp).to_sec()
+                if (stamp.is_zero() or age > self._fusion_snapshot_max_age
+                        or age < -self._future_tolerance):
+                    rospy.logwarn_throttle(2., "Fusion manual ROI ignored: latest cached frame is stale or in the future")
+                    return
+                try:
+                    result = self._initialize_fusion_selection(
+                        snapshot,
+                        (message.x_offset, message.y_offset, message.width, message.height),
+                        use_detection_seed=False,
+                    )
+                except ValueError as exc:
+                    rospy.logwarn("Fusion manual ROI rejected: %s", exc)
+                    return
+                rospy.loginfo(
+                    "Fusion KCF initialized from manual ROI topic on latest cached frame: selected_target_id=%d",
+                    result.public_id,
+                )
                 return
             manual_tracker = self._current_manual_tracker()
             if manual_tracker is None:
@@ -1103,29 +1140,112 @@ class SmartTrackerNode:
             self._fusion_snapshots.popleft()
 
 
-    def _initialize_fusion_selection(self, snapshot, box):
+    def _initialize_fusion_selection(
+        self, snapshot, box, use_detection_seed=True, selected_candidate=None
+    ):
         header, frame, candidates = snapshot
         if not valid_box(box, frame.shape):
             raise ValueError("ROI must lie inside the original image and be at least 4x4 pixels")
-        # Do not initialize a large background ROI if it contains a unique YOLO box.
-        matches = [c for c in candidates if iou(c.box, box) >= .15 or
-                   (box[0] <= c.box[0] + c.box[2] / 2 <= box[0] + box[2] and
-                    box[1] <= c.box[1] + c.box[3] / 2 <= box[1] + box[3])]
-        if len(matches) > 1:
-            raise ValueError("ROI contains multiple targets; select a tighter ROI")
-        candidate = matches[0] if matches else None
+        matches = []
+        if selected_candidate is not None:
+            candidate = selected_candidate
+            box = candidate.box
+        elif use_detection_seed:
+            # The original endpoint keeps its detector-first behavior: snap
+            # to a unique YOLO target when the requested ROI contains one.
+            matches = [c for c in candidates if iou(c.box, box) >= .15 or
+                       (box[0] <= c.box[0] + c.box[2] / 2 <= box[0] + box[2] and
+                        box[1] <= c.box[1] + c.box[3] / 2 <= box[1] + box[3])]
+            if len(matches) > 1:
+                raise ValueError("ROI contains multiple targets; select a tighter ROI")
+            candidate = matches[0] if matches else None
+        else:
+            candidate = None
         if candidate is not None:
             box = candidate.box
         if self._fusion_next_id > 2147483647:
             raise ValueError("Fusion identity range exhausted; restart with a new session")
         public_id = candidate.local_id if candidate is not None and candidate.stable and candidate.local_id >= 0 else self._fusion_next_id
-        result = self._fusion.initialize(frame, box, header.stamp.to_sec(), public_id, candidate)
+        result = self._fusion.initialize(
+            frame, box, header.stamp.to_sec(), public_id, candidate,
+            manual_seed=not use_detection_seed,
+        )
         if public_id == self._fusion_next_id:
             self._fusion_next_id += 1
         return result
 
 
     def _select_fusion_roi(self, request):
+        return self._select_fusion_roi_impl(request, use_detection_seed=True)
+
+
+    def _select_fusion_manual_roi(self, request):
+        """Initialize the selected KCF track from the original manual ROI."""
+        return self._select_fusion_roi_impl(request, use_detection_seed=False)
+
+
+    def _select_fusion_point(self, request):
+        """YOLO-first point selection, separate from manual KCF ROI seeding."""
+        response = SelectFusionPointResponse()
+        response.selected_target_id = -1
+        with self._lock:
+            if getattr(self, "_model_busy", False):
+                response.message = "BUSY: model switch in progress"
+                return response
+            if self._tracking_mode != "fusion_tracker":
+                response.message = "Switch to fusion_tracker before selecting a YOLO point"
+                return response
+            if request.header.stamp.is_zero():
+                response.message = "Point selection requires the displayed source-frame header"
+                return response
+            snapshot = next((s for s in self._fusion_snapshots
+                             if s[0].stamp == request.header.stamp
+                             and s[0].frame_id == request.header.frame_id), None)
+            if snapshot is None:
+                response.message = "Original image frame is not cached; refresh the displayed image"
+                return response
+            age = (rospy.Time.now() - request.header.stamp).to_sec()
+            if age > self._fusion_snapshot_max_age or age < -self._future_tolerance:
+                response.message = "Original image frame is stale or in the future"
+                return response
+            x, y = _finite(request.point.x, float("nan")), _finite(request.point.y, float("nan"))
+            if not math.isfinite(x) or not math.isfinite(y):
+                response.message = "Point coordinates must be finite source-image pixels"
+                return response
+            header, frame, candidates = snapshot
+            height, width = frame.shape[:2]
+            if x < 0 or y < 0 or x >= width or y >= height:
+                response.message = "Point lies outside the original image"
+                return response
+            matches = [candidate for candidate in candidates
+                       if candidate.box[0] <= x <= candidate.box[0] + candidate.box[2]
+                       and candidate.box[1] <= y <= candidate.box[1] + candidate.box[3]]
+            if len(matches) != 1:
+                response.message = (
+                    "Point must identify exactly one YOLO detection"
+                    if not matches else
+                    "Point overlaps multiple YOLO detections; choose an unambiguous point"
+                )
+                return response
+            candidate = matches[0]
+            try:
+                # Passing the exact selected detection avoids re-matching its
+                # box against overlapping detections. initialize() resets any
+                # previous manual-only KCF seed and its ROI gate.
+                result = self._initialize_fusion_selection(
+                    snapshot, candidate.box, use_detection_seed=True,
+                    selected_candidate=candidate,
+                )
+            except ValueError as exc:
+                response.message = str(exc)
+                return response
+            response.success = True
+            response.selected_target_id = result.public_id
+            response.message = "Fusion reinitialized from the selected YOLO detection"
+            return response
+
+
+    def _select_fusion_roi_impl(self, request, use_detection_seed):
         response = SelectFusionROIResponse()
         with self._lock:
             if getattr(self, "_model_busy", False):
@@ -1154,10 +1274,18 @@ class SmartTrackerNode:
                 return response
             try:
                 roi = request.roi
-                result = self._initialize_fusion_selection(snapshot, (roi.x_offset, roi.y_offset, roi.width, roi.height))
+                result = self._initialize_fusion_selection(
+                    snapshot,
+                    (roi.x_offset, roi.y_offset, roi.width, roi.height),
+                    use_detection_seed=use_detection_seed,
+                )
                 response.success = True
                 response.selected_target_id = result.public_id
-                response.message = "Fusion initialized from the requested original frame"
+                response.message = (
+                    "KCF initialized from the requested manual ROI; YOLO will validate and correct nearby matches"
+                    if not use_detection_seed else
+                    "Fusion initialized from the requested original frame"
+                )
             except ValueError as exc:
                 response.message = str(exc)
             return response
@@ -1174,6 +1302,7 @@ class SmartTrackerNode:
             response.message = "Latest selection image is stale"
             return response
         try:
+            selected_candidate = None
             if request.use_target_id:
                 matches = [c for c in candidates if c.local_id == request.target_id]
                 if request.target_id == self._fusion.public_id and self._fusion.result.observed:
@@ -1185,7 +1314,8 @@ class SmartTrackerNode:
                     return response
                 if len(matches) != 1:
                     raise ValueError("Target ID is not unique in the current detector frame")
-                box = matches[0].box
+                selected_candidate = matches[0]
+                box = selected_candidate.box
             elif request.use_normalized_roi:
                 x, y, w, h = request.normalized_roi
                 roi = tracking_roi_to_pixels(x=x, y=y, width=w, height=h,
@@ -1200,8 +1330,11 @@ class SmartTrackerNode:
                            and c.box[1] <= point[1] <= c.box[1] + c.box[3]]
                 if len(matches) != 1:
                     raise ValueError("Click does not identify exactly one detected target")
-                box = matches[0].box
-            result = self._initialize_fusion_selection(snapshot, box)
+                selected_candidate = matches[0]
+                box = selected_candidate.box
+            result = self._initialize_fusion_selection(
+                snapshot, box, selected_candidate=selected_candidate
+            )
             response.success = True
             response.tracking_active = True
             response.selected_target_id = result.public_id
@@ -1530,7 +1663,9 @@ class SmartTrackerNode:
 
                 candidate = min(candidates, key=rank)
                 try:
-                    result = self._initialize_fusion_selection(snapshot, candidate.box)
+                    result = self._initialize_fusion_selection(
+                        snapshot, candidate.box, selected_candidate=candidate
+                    )
                 except ValueError as exc:
                     rospy.logwarn("Fusion pixel selection rejected: %s", exc)
                     return

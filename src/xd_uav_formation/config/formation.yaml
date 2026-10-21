@@ -1,0 +1,24 @@
+# One follower node runs in each follower UAV namespace.
+rate: 20.0
+state_timeout: 5.0
+mavros_timeout: 5.0
+tf_max_age: 10.0
+external_quiet_time: 3.0
+minimum_slot_distance: 2.0
+fixedwing_minimum_slot_distance: 30.0
+fixedwing_min_speed: 10.0
+fixedwing_max_speed: 40.0
+multirotor_max_speed: 5.0
+catchup_gain: 0.25
+max_catchup_speed: 3.0
+max_turn_rate: 0.15
+# Consensus gathering scales its XY and height tolerances with spacing by
+# default; a consensus config may override either tolerance.
+acquire_vertical_spacing: 8.0
+acquire_timeout: 180.0
+# manual: explicit offset; circle/rectangle_compact: generate from team size.
+shape: manual
+follower_count: 1
+slot_index: 1
+spacing: 20.0
+yaw_offset: 0.0

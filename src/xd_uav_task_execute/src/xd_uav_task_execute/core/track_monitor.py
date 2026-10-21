@@ -146,8 +146,12 @@ class TrackMonitor:
         expected_track_id = int(self.policy.required_track_id)
         if expected_track_id < 0 and self.locked_track_id is not None:
             expected_track_id = int(self.locked_track_id)
-        track_valid = int(track_id) >= 0 and (
-            expected_track_id < 0 or int(track_id) == expected_track_id
+        # Metric fixed-wing profiles follow the world-frame MetricTarget and
+        # do not carry a local vision track ID. Keep ID matching for visual
+        # follower profiles only.
+        track_valid = metric_profile or (
+            int(track_id) >= 0
+            and (expected_track_id < 0 or int(track_id) == expected_track_id)
         )
         gimbal_required = expected_profile.startswith("gm_velocity_")
         gimbal_valid = bool(
@@ -173,7 +177,7 @@ class TrackMonitor:
             and reference_valid
         )
         if valid:
-            if self.locked_track_id is None:
+            if self.locked_track_id is None and not metric_profile:
                 self.locked_track_id = int(track_id)
             if self.valid_started_at is None:
                 self.valid_started_at = stamp
