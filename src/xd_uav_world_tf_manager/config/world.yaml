@@ -17,7 +17,7 @@ world:
 
 # 在此增删飞机名称，控制哪些飞机接入world。
 # vehicles: [uav1, uav2, uav3, uav4]
-vehicles: [uav1, uav2, uav3]
+vehicles: [uav1, uav2, uav3, uav4]
 
 vehicle_configs:
   uav1:
@@ -41,13 +41,13 @@ vehicle_configs:
     local_origin_frame: uav3/local_origin
     position_offset: [0.0, 0.0, 0.0]
     yaw_offset: 0.0
-#   uav4:
-#     enabled: true
-#     mode: gps_origin
-#     origin_topic: /uav4/mavros/global_position/gp_origin #这个话题提供的local_origin的经纬度位置
-#     local_origin_frame: uav4/local_origin
-#     position_offset: [0.0, 0.0, 0.0]
-#     yaw_offset: 0.0
+  uav4:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav4/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav4/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
 
   # # 不使用实时GPS原点话题时的固定位置示例，自定义指定飞机在world坐标系中的位置和航向。
   # uav1:

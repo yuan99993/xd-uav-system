@@ -16,8 +16,10 @@
   <depend>mavros_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>target_geolocation</depend>
   <depend>tf2_ros</depend>
   <depend>visualization_msgs</depend>
   <depend>xd_uav_controller</depend>

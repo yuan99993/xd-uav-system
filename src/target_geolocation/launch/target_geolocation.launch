@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+<!--
+  目标 GPS 定位节点。
+
+  方式 A：直接对接本仿真（uav1 有真实云台 + AirSim 前置测距）
+      roslaunch target_geolocation target_geolocation.launch gimbal:=true
+
+      使用的话题（均已实测确认在线）：
+        距离  /Sim/SceneBasicDrone/robots/Drone1/sensors/FrontDistance/distance_sensor
+        云台  /uav1/gimbal/attitude        std_msgs/Float64MultiArray [yaw,pitch,roll] deg
+        飞机  /uav1/mavros/global_position/global
+        航向  /uav1/mavros/global_position/compass_hdg
+
+  方式 B：用飞控自己上报的 #285 GIMBAL_DEVICE_ATTITUDE_STATUS（实机更常见）
+      roslaunch target_geolocation target_geolocation.launch
+
+  方式 C：只用合成传感器验证算法
+      roslaunch target_geolocation target_geolocation.launch sim:=true
+
+  多机：每个实例使用唯一 node_name，并指定对应 AirSim 飞机
+      roslaunch target_geolocation target_geolocation.launch gimbal:=true uav_ns:=/uav1 airsim_drone:=Drone1 node_name:=target_geolocation_uav1
+      roslaunch target_geolocation target_geolocation.launch gimbal:=true uav_ns:=/uav2 airsim_drone:=Drone2 node_name:=target_geolocation_uav2
+-->
+<launch>
+  <arg name="uav_ns" default="/uav1"/>
+  <arg name="gimbal" default="false"
+       doc="true=用 /uav1/gimbal/attitude 欧拉角 + AirSim 前置测距（本仿真推荐）"/>
+  <arg name="sim" default="false" doc="true=用仿真合成传感器话题(/sim/range, /sim/gimbal/attitude)"/>
+  <arg name="rviz" default="false"/>
+  <arg name="airsim_scene" default="SceneBasicDrone"/>
+  <arg name="airsim_drone" default="Drone1"/>
+  <!-- A unique default lets separate per-UAV roslaunch processes coexist. -->
+  <arg name="node_name" default="$(anon target_geolocation)"/>
+  <arg name="det_topic" default="$(arg uav_ns)/sar_yolo_detector/smart/selected_tracked_detections"/>
+  <arg name="det_msg_type" default="TrackedDetection2DArray"/>
+  <arg name="det_class_id" default="-1"/>
+  <arg name="det_sensor_id" default="gimbal_camera"/>
+  <arg name="use_img_offset" default="true"/>
+
+  <node pkg="target_geolocation" type="target_geolocation_node.py"
+        name="$(arg node_name)" output="screen" respawn="false">
+    <rosparam command="load" file="$(find target_geolocation)/config/params.yaml"/>
+    <param name="uav_ns" value="$(arg uav_ns)"/>
+    <param name="det_topic" value="$(arg det_topic)"/>
+    <param name="det_msg_type" value="$(arg det_msg_type)"/>
+    <param name="det_class_id" value="$(arg det_class_id)"/>
+    <param name="det_sensor_id" value="$(arg det_sensor_id)"/>
+    <param name="use_img_offset" value="$(arg use_img_offset)"/>
+
+    <!-- ⚠️ 不要把条件参数写成 <group if>：roslaunch 会静默忽略嵌在 <node> 里的
+         <group>，参数根本不会下发（2026-11-04 在 noetic 上实测：
+         node 内的 <group> 无效，node 内的 <param if> 有效）。
+         以前只在 Windows 直接跑脚本、没走过 roslaunch，所以这个坑一直没暴露。 -->
+
+    <!-- 本仿真：云台欧拉角 + 云台固连的前置测距 -->
+    <param if="$(arg gimbal)" name="range_topic"
+           value="/Sim/$(arg airsim_scene)/robots/$(arg airsim_drone)/sensors/FrontDistance/distance_sensor"/>
+    <param if="$(arg gimbal)" name="gimbal_att_topic" value="$(arg uav_ns)/gimbal/attitude"/>
+    <param if="$(arg gimbal)" name="att_msg_type" value="Float64MultiArray"/>
+    <param if="$(arg gimbal)" name="gimbal_yaw_is_body" value="true"/>
+    <param if="$(arg gimbal)" name="gimbal_pitch_up_positive" value="true"/>
+    <param if="$(arg sim)" name="range_topic" value="/sim/range"/>
+    <param if="$(arg sim)" name="gimbal_att_topic" value="/sim/gimbal/attitude"/>
+    <param if="$(arg sim)" name="att_msg_type" value="QuaternionStamped"/>
+    <param if="$(arg sim)" name="det_topic" value=""/>
+    <param if="$(arg sim)" name="use_img_offset" value="false"/>
+  </node>
+
+  <node if="$(arg sim)" pkg="target_geolocation" type="sim_target_sensor.py"
+        name="sim_target_sensor" output="screen">
+    <param name="uav_ns" value="$(arg uav_ns)"/>
+  </node>
+
+  <node if="$(arg sim)" pkg="target_geolocation" type="check_accuracy.py"
+        name="target_geolocation_accuracy" output="screen"/>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="target_geolocation_rviz"
+        args="-f map" output="screen"/>
+</launch>

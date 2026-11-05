@@ -5,6 +5,9 @@
 - 将多个搜索多边形生成覆盖航线，并按预计飞行时间分给侦察机；四旋翼使用相邻折返，固定翼
   使用跨区跳行并在区域外插入满足最小转弯半径的 Dubins 连接；
 - 直接读取 `xd_uav_detect` 的 `/uavX/track/detections`，无需启动 tracker 节点；
+- 也可读取云台定位包输出的 `target_geolocation/GeolocatedTarget`（其中包含 NavSatFix 和
+  对应检测框的类别/置信度/跟踪 ID），按 `mission/georeference` 转到共享 `world` 坐标后复用
+  同一套目标确认、目标去重和任务分配逻辑；
 - 使用检测时间戳对应的 `world Odometry` 位姿，把 body FRD 目标转换到共享世界坐标；
 - 对同机多帧和跨侦察机重复观测进行聚类，生成由本包维护的全局目标 ID；
 - 自动侦察流程：纯四旋翼分配原始搜索区域；固定翼与四旋翼混合时，固定翼粗定位一旦形成
@@ -83,6 +86,65 @@ scouts:
 - `config/scouts.yaml`：侦察机成员、world Odometry、健康状态、检测和规划话题；
 - `config/workers.yaml`：作业机成员、world Odometry、健康状态和规划话题；
 - `config/task_execution.yaml`：工作机到达后的完成方式和 TaskExecute 参数。
+
+## 云台测距定位到 GM TRACK
+
+`scouts_two_fixed.yaml` 为 uav1 配置了 `/uav1/target/geolocated` 输入，消息类型为
+`target_geolocation/GeolocatedTarget`。它携带地理坐标解算结果和产生这个解算的检测框类别、
+置信度、跟踪 ID。协调器将经纬高转换到共享 `world` 坐标并作为目标观测送入原有 registry。
+连续有效定位达到 `target_registry` 的确认条件后，才会发布 `RescueTask` 并分配给工作机。
+框类别随消息传递；它不参与坐标反算，但用于同类目标去重、优先级和工作机相机交接匹配。
+
+云台定位节点从当前 gimbal 控制器使用的
+`/uav1/sar_yolo_detector/smart/selected_tracked_detections` 读取跟踪框，并自动携带框的类别和跟踪 ID。
+只有当检测图像与云台/测距光轴对齐时，才用最高置信度框的中心修正光轴角度；随后结合云台姿态和激光斜距计算目标经纬高。定位节点输出带框元信息的 `GeolocatedTarget`，
+任务分配器直接消费它：
+
+```text
+/uav1/sar_yolo_detector/smart/selected_tracked_detections
+       (TrackedDetection2DArray from gimbal control perception)
+       └─ 云台姿态 + 斜距（相机对齐时再叠加 bbox 中心偏角）
+          target_geolocation
+       └─ /uav1/target/geolocated (GeolocatedTarget: NavSatFix + box metadata)
+          xd_uav_task_allocate
+       └─ /task_allocate/global_targets → /task_allocate/rescue_tasks
+          uav3/uav4 到达目标并看到匹配类别
+       └─ task_execute(task_type=track, follower_profile=gm_velocity_chase)
+          xd_uav_track → gm_control 云台跟踪
+```
+
+`mission/georeference` 的基准点、world 平移和 yaw 必须与
+`xd_uav_world_tf_manager/config/world.yaml` 一致。当前 `workers.yaml` 配置 uav3/uav4 为
+Typhoon GM 工作机，并订阅各自的 `/detect/detections` 以完成到位后的视觉交接。
+
+启动云台定位（本仿真前置测距 + uav1 云台）：
+
+```bash
+roslaunch target_geolocation target_geolocation.launch gimbal:=true \
+  det_topic:=/uav1/sar_yolo_detector/smart/selected_tracked_detections \
+  det_msg_type:=TrackedDetection2DArray \
+  use_img_offset:=false
+```
+
+当前 `session_one_multi_nvidia.yml` 的 tracker 源是 AirSim `DownCamera`，该会话以
+`use_img_offset:=false` 启动，避免把未确认与云台对齐的图像偏角套到测距光轴上。若改用云台相机的
+检测框话题，再设 `use_img_offset:=true`，由框中心补偿目标相对光轴的偏角。
+
+`session_two_fixed_two_gm_px4` 中的 allocator 配置使用 `scouts_two_fixed.yaml`、`workers.yaml`
+及 `task_execution_two_fixed_two_gm.yaml`。加载搜索区域并调用 `/task_allocate/start` 后，
+云台定位目标会进入确认流程；无效定位、零时间戳和低于配置置信度的观测不会建立任务。
+
+### 固定翼 uav1 搜索、uav2 云台跟踪
+
+当前 NVIDIA 会话配置为 uav1 单机搜索、uav2 固定翼工作机。`workers_two_fixed.yaml` 中的
+uav2 使用 `/uav2/detect/detections`；`task_execution_uav1_uav2_gm_fixedwing.yaml` 要求 uav2
+进入目标 40 m 范围并检测到相同类别后，才启动 `track`，配置的固定翼云台 profile 是
+`gmfw_velocity_vector`。任务类别由 uav1 的检测框自动带入，无需在配置里填写 class ID。
+
+uav2 的 `track_fixedwing_sitl.launch` 和 `task_execute.launch` 已加入
+`session_one_multi_nvidia.yml`。运行前还需要让 uav2 发布 `/uav2/detect/detections` 和
+`/uav2/track/gimbal_state`：前者供分配器和 tracker 识别本地目标，后者供 `gmfw_velocity_vector`
+控制固定翼云台跟踪。当前会话文件没有声明 uav2 相机及云台驱动的具体输入话题，需要按实际设备启动对应感知和 GM bridge。
 
 本包不配置或判断飞机类型，只用 `mobility_profile` 描述生成搜索路径和判断到达所需的运动语义：
 
