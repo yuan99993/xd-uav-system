@@ -50,13 +50,19 @@ ManualBoxTracker:
       max_fail_frames: 3
 
   color_tracker:
-    # Empty: wait for an ROI and learn its colour. Non-empty: detect that colour
-    # directly in the complete image without requiring an initial ROI. A service
-    # request color_name overrides this startup value each time the mode switches.
-    color: ""                  # "" / red / green / blue / white / black / custom
+    # auto: find a vehicle-shaped color patch contrasting with a broad background.
+    # roi: learn a manually selected patch. Named colors search the whole image,
+    # then maintain the same local object with shape and motion gates.
+    color: "auto"              # auto / roi / red / green / blue / white / black / custom
     min_area_px: 80.0
     min_width_px: 4.0
     min_height_px: 4.0
+    target_shape: vehicle      # vehicle / drone / compact / any
+    minimum_shape_solidity: 0.45
+    minimum_shape_extent: 0.16
+    minimum_local_colour_contrast: 0.12
+    maximum_background_colour_ratio: 0.35
+    maximum_target_frame_ratio: 0.25
     # Each custom entry is [h_min, s_min, v_min, h_max, s_max, v_max]. Red often
     # needs two ranges because HSV hue wraps at 0/180.
     custom_hsv_ranges:

@@ -20,6 +20,7 @@
   <arg name="use_gpu" default="true" />
   <arg name="fallback_to_cpu" default="true" />
   <arg name="publish_annotated_image" default="true" />
+  <arg name="maximum_capture_age_sec" default="0.5" />
   <!-- Leave empty to auto-discover .venv-sar-gpu in this catkin workspace. -->
   <arg name="python_executable" default="" />
   <arg name="mission_id" default="mission_unset" />
@@ -51,6 +52,7 @@
     <param name="selected_detections_topic" value="$(arg selected_detections_topic)" />
     <param name="select_pixel_topic" value="$(arg select_pixel_topic)" />
     <param name="publish_annotated_image" value="$(arg publish_annotated_image)" />
+    <param name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
     <param name="mission_id" value="$(arg mission_id)" />
     <param name="uav_id" value="$(arg uav_id)" />
     <param name="session_uuid" value="$(arg session_uuid)" />

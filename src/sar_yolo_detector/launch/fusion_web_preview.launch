@@ -3,15 +3,24 @@
   <arg name="instance_name" default="fusion_fixed" />
   <arg name="bind_address" default="127.0.0.1" />
   <arg name="port" default="8787" />
+  <arg name="class_names" default="car,ar-car,tank,m142" />
   <group ns="$(arg UAV_NAME)">
     <node pkg="sar_yolo_detector" type="fusion_web_preview.py" name="fusion_web_preview" output="screen">
       <param name="bind_address" value="$(arg bind_address)" />
       <param name="port" value="$(arg port)" />
       <param name="image_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/annotated" />
-      <param name="evidence_topic" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/fusion_evidence" />
+      <param name="state_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/state" />
+      <param name="mission_topic" value="/$(arg UAV_NAME)/mission_status" />
       <param name="targets_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/tracked_detections" />
+      <param name="classification_topic" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/classification_evidence" />
       <param name="select_pixel_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/select_pixel" />
+      <param name="manual_roi_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/manual/initial_roi" />
       <param name="select_roi_service" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/select_fusion_roi" />
+      <param name="select_manual_roi_service" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/select_manual_roi" />
+      <param name="select_service" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/select" />
+      <param name="mode_service" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/switch_tracking_mode" />
+      <param name="initial_mode" value="smart_tracker" />
+      <param name="class_names" value="$(arg class_names)" />
       <param name="fps" value="5.0" />
     </node>
   </group>

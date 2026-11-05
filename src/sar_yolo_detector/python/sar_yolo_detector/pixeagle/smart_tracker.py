@@ -219,7 +219,7 @@ class SmartTracker:
 
         # === Appearance Model (for custom re-identification after long occlusions)
         # Only used when TRACKER_TYPE = "custom_reid"
-        if self.use_custom_reid:
+        if self.use_custom_reid or self.config.get('SMART_TRACKER_SELECTED_APPEARANCE_ENABLED', False):
             appearance_enabled = self.config.get('ENABLE_APPEARANCE_MODEL', True)
             self.appearance_model = AppearanceModel(
                 config=self.config
@@ -657,7 +657,8 @@ class SmartTracker:
                 pt2 = (int(ex1 + dx * t1), int(ey1 + dy * t1))
                 cv2.line(frame, pt1, pt2, color, thickness, cv2.LINE_AA)
 
-    def select_object_by_click(self, x, y):
+    def select_object_by_click(self, x, y, *, snapshot_detections=None,
+                               snapshot_age_seconds=0., snapshot_shape=None):
         """
         User selects an object by clicking on it.
         Initializes tracking_manager with the selected object.
@@ -666,9 +667,14 @@ class SmartTracker:
             bool: True only when this click selected a detection. A miss keeps
             the existing target but must not be reported as a new selection.
         """
-        selection_detections, selection_source, selection_age = (
-            self._get_selection_candidates()
-        )
+        if snapshot_detections is None:
+            selection_detections, selection_source, selection_age = self._get_selection_candidates()
+        else:
+            # A ROS/UI click belongs to its displayed capture. Reuse the same
+            # selection and state-manager initialization as the desktop UI,
+            # rather than merely remembering an external BoT-SORT ID.
+            selection_detections = tuple(snapshot_detections)
+            selection_source, selection_age = 'operator_capture', float(snapshot_age_seconds)
         self._last_selection_source = selection_source
         self._last_selection_age_seconds = selection_age
         if not selection_detections:
@@ -723,7 +729,7 @@ class SmartTracker:
             _, det = min(exact_matches, key=lambda item: item[0])
             match_kind = "exact"
         else:
-            frame_shape = self._last_frame_shape
+            frame_shape = snapshot_shape or self._last_frame_shape
             if frame_shape is None:
                 current_frame = getattr(self.app_controller, "current_frame", None)
                 if current_frame is not None and hasattr(current_frame, "shape"):
@@ -972,6 +978,9 @@ class SmartTracker:
             self.compute_iou,
             frame  # Pass frame for appearance matching
         )
+        # A probe at the actual call boundary distinguishes a manager update
+        # from merely forwarding a detector packet through the ROS adapter.
+        self._tracking_manager_update_calls = getattr(self, '_tracking_manager_update_calls', 0) + 1
 
         # Bridge TrackingStateManager result schema to local drawing logic safely.
         # Some manager states (e.g., terminal loss reports) intentionally omit track_id.

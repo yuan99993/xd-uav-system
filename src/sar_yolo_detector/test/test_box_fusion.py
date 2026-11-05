@@ -83,6 +83,19 @@ class BoxFusionTest(unittest.TestCase):
         self.assertTrue(result.observed)
         self.assertEqual(self.local.initializations, 1)
 
+    def test_fresh_upstream_consensus_can_correct_class_without_rebinding(self):
+        self.fusion.config['follow_upstream_class_consensus']=True
+        revised=Candidate(self.candidate.box,3,.9,5,True,10.1)
+        result=self.fusion.step(self.frame,10.1,[revised])
+        self.assertEqual(result.class_id,3)
+        self.assertEqual(result.public_id,900000001)
+        self.assertEqual(result.local_id,5)
+
+    def test_visual_hold_does_not_change_consensus_class(self):
+        self.fusion.config['follow_upstream_class_consensus']=True
+        result=self.fusion.step(self.frame,10.1,[])
+        self.assertEqual(result.class_id,2)
+
     def test_strong_detector_not_pulled_back_by_valid_local_lag(self):
         candidate = Candidate((62, 60, 40, 40), 2, .9, 5)
         result = self.fusion.step(image(candidate.box), 10.1, [candidate])
@@ -154,6 +167,26 @@ class BoxFusionTest(unittest.TestCase):
         self.assertEqual(result.source, 'visual')
         self.assertEqual(result.box, cue.box)
         self.assertEqual(result.last_detection_stamp, 10.)
+
+    def test_roi_colour_is_used_as_a_bounded_visual_witness(self):
+        detector = Candidate((62, 60, 40, 40), 2, .75, 5)
+        color = Candidate((62, 60, 40, 40), 2, .8, 5, True, None)
+        result = self.fusion.step(image(detector.box), 10.1, [detector],
+            color_observation=color, color_quality=.8)
+        self.assertTrue(result.observed)
+        self.assertEqual(result.source, "fused")
+        self.assertTrue(self.fusion.diagnostics["color_selected_observation"])
+        self.assertEqual(self.fusion.diagnostics["color_support"], "local_visual_agreement")
+
+    def test_roi_colour_cannot_rebind_identity_or_renew_detector_time(self):
+        self.local.valid = False
+        impostor = Candidate((62, 60, 40, 40), 2, .9, 17, True, None)
+        result = self.fusion.step(image(impostor.box), 10.1, [], detector_updated=False,
+            color_observation=impostor, color_quality=.9)
+        self.assertFalse(result.observed)
+        self.assertEqual(result.local_id, 5)
+        self.assertEqual(result.last_detection_stamp, 10.)
+        self.assertFalse(self.fusion.diagnostics["color_selected_observation"])
 
     def test_flow_cannot_rebind_or_bypass_quality_expiry_or_bounds(self):
         self.local.valid = False

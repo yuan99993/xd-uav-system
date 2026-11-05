@@ -23,6 +23,7 @@ from sar_yolo_detector.async_pipeline import LatestMailbox, FlowDetections, Infe
 from sar_yolo_detector.camera_motion import CameraMotion
 from sar_yolo_detector.capture_clock import CaptureClock
 from sar_yolo_detector.manual_box_tracker import ManualTrackResult
+from sar_yolo_detector.manual_box_tracker import ManualBoxTracker
 from sar_yolo_detector.pixeagle.detection_adapter import NormalizedDetection
 
 SPEC = importlib.util.spec_from_file_location("fusion_node", str(Path(__file__).resolve().parents[1] / "scripts/smart_tracker_node.py"))
@@ -39,6 +40,18 @@ class Publisher:
 
     def get_num_connections(self):
         return 0
+
+
+class RoiColourTracker:
+    active = True
+
+    def __init__(self, bbox):
+        self.bbox = bbox
+        self.updates = 0
+
+    def update(self, _frame):
+        self.updates += 1
+        return ManualTrackResult(self.bbox, .8, True, "ok", "color_tracker", 0)
 
 
 class FusionAdapterTest(unittest.TestCase):
@@ -76,6 +89,8 @@ class FusionAdapterTest(unittest.TestCase):
             clear_selection=lambda: None)
         node._fusion = BoxFusion(manual_config={"feature_tracker": {"tracker_algorithm": "kcf"}})
         node._fusion_snapshots = deque(maxlen=2)
+        node._manual_snapshots = deque()
+        node._fusion_snapshot_max_frames = 24
         node._fusion_snapshot_max_bytes = 25165824
         node._fusion_snapshot_max_age = .75
         node._fusion_input_shape = None
@@ -102,6 +117,7 @@ class FusionAdapterTest(unittest.TestCase):
         node._manual_class_id = 2
         node._manual_track_id = 900000000
         node._last_processing_ms = 0.
+        node._inference_ms = 0.
         node._manual_trackers = {}
         node._manual_pending_roi = None
         node._manual_active = False
@@ -172,6 +188,45 @@ class FusionAdapterTest(unittest.TestCase):
         self.assertEqual(self.node._state_publisher.messages[-1].selected_track_id, 5)
         self.assertTrue(self.node._state_publisher.messages[-1].control_measurement_ready)
         self.assertEqual(len(self.node._selected_detections_publisher.messages[-1].detections), 1)
+
+    def test_fusion_runs_smart_manager_and_roi_colour_before_final_arbitration(self):
+        self.process()
+        self.select()
+        tracker = self.node._tracker
+        tracker.selected_object_id = 5
+        tracker._last_measurement_current = True
+        tracker._tracking_manager_update_calls = 0
+
+        def manager_update(_frame, *, detections, draw):
+            self.assertFalse(draw)
+            tracker._tracking_manager_update_calls += 1
+            tracker.last_detections = list(detections)
+
+        tracker.track_and_draw = manager_update
+        color = RoiColourTracker((50., 50., 40., 40.))
+        self.node._manual_trackers["color_tracker"] = color
+        self.process(.1)
+        evidence = json.loads(self.node._fusion_evidence_publisher.messages[-1].data)
+        self.assertEqual(tracker._tracking_manager_update_calls, 1)
+        self.assertEqual(color.updates, 1)
+        self.assertTrue(evidence["diagnostics"]["color_selected_observation"])
+        self.assertEqual(evidence["diagnostics"]["color_support"], "local_visual_agreement")
+
+    def test_fusion_selection_seeds_smart_manager_and_roi_colour_from_same_frame(self):
+        self.process()
+        tracker = self.node._tracker
+        tracker._selection_seed = None
+        tracker.select_object_by_click = lambda x, y, **kwargs: (
+            setattr(tracker, "_selection_seed", (x, y, kwargs)) or True)
+        color = ManualBoxTracker({"tracker_type": "color_tracker"})
+        self.node._manual_trackers["color_tracker"] = color
+        snapshot = self.node._fusion_snapshots[-1]
+        selected = self.node._initialize_fusion_selection(snapshot, self.node._fusion_snapshots[-1][2][0].box)
+        self.assertEqual(selected.local_id, 5)
+        self.assertIsNotNone(tracker._selection_seed)
+        self.assertEqual(tracker._selection_seed[2]["snapshot_shape"], self.frame.shape[:2])
+        self.assertTrue(color.active)
+        self.assertIsNotNone(color._colour_histogram)
 
     def test_no_selection_keeps_all_yolo_targets(self):
         output_image = self.process()
@@ -403,6 +458,30 @@ class FusionAdapterTest(unittest.TestCase):
         self.assertEqual(self.node._fusion.box, (50., 50., 40., 40.))
         self.assertEqual(response.selected_target_id, 5)
 
+    def test_exact_detector_roi_selects_one_of_two_partly_overlapping_boxes(self):
+        self.detections.append(NormalizedDetection(6, 2, .8, (60, 55, 100, 95), (80, 75)))
+        self.process()
+        request = SelectFusionROIRequest(header=self.image.header,
+            roi=RegionOfInterest(x_offset=50, y_offset=50, width=40, height=40))
+        response = self.node._select_fusion_roi(request)
+        self.assertTrue(response.success, response.message)
+        self.assertEqual(response.selected_target_id, 5)
+
+    def test_broad_roi_with_two_similar_targets_remains_ambiguous(self):
+        self.detections.append(NormalizedDetection(6, 2, .8, (60, 55, 100, 95), (80, 75)))
+        self.process()
+        request = SelectFusionROIRequest(header=self.image.header,
+            roi=RegionOfInterest(x_offset=40, y_offset=40, width=70, height=65))
+        response = self.node._select_fusion_roi(request)
+        self.assertFalse(response.success)
+        self.assertIn('multiple targets',response.message)
+
+    def test_click_center_prefers_the_matching_box_when_boxes_overlap(self):
+        first = Candidate((50, 50, 40, 40), 2, .9, 5)
+        second = Candidate((60, 55, 40, 40), 2, .8, 6)
+        chosen = self.node._fusion_clicked_candidate([first, second], 70, 70)
+        self.assertEqual(chosen.local_id, 5)
+
     def test_unknown_roi_stays_unknown(self):
         self.detections = []
         self.process()
@@ -567,13 +646,19 @@ class FusionAdapterTest(unittest.TestCase):
         node._tracker.backend.reset_tracking = lambda: None
         node._tracker.close = lambda: None
         calls = []
+        inference_entered = threading.Event()
+        release_inference = threading.Event()
+        release_inference.set()  # prime the selection before holding the worker
         def slow(frame, **kwargs):
             calls.append(time.monotonic())
-            time.sleep(.09)
+            inference_entered.set()
+            release_inference.wait(2.)
             return None, tuple(self.detections)
         node._tracker.backend.detect_and_track = slow
         self.process()
         self.select()
+        inference_entered.clear()
+        release_inference.clear()
         node._workers = [threading.Thread(target=node._frame_loop), threading.Thread(target=node._inference_loop)]
         for worker in node._workers:
             worker.start()
@@ -589,11 +674,22 @@ class FusionAdapterTest(unittest.TestCase):
                 time.sleep(.025)
             time.sleep(.12)
             self.assertLess(max(times), .02)
-            self.assertGreater(node._processed_frames, len(calls)*2)
+            self.assertTrue(inference_entered.is_set())
+            self.assertFalse(release_inference.is_set())
+            # Several current local frames must complete while the detector
+            # remains blocked. This proves concurrency directly, without a
+            # scheduler-dependent ratio between two worker throughputs.
+            self.assertGreater(node._processed_frames, 2)
             self.assertGreater(node._inference_mailbox.replaced, 0)
             self.assertFalse(node._last_error)
-            self.assertTrue(node._selected_detections_publisher.messages[-1].detections)
+            # Slow, delayed detector packets are not mislabeled as current
+            # selected-target measurements; output still advances on the
+            # latest camera capture and any lock must come from current visual
+            # evidence rather than a stale detector box.
+            selected_output = node._selected_detections_publisher.messages[-1]
+            self.assertEqual(selected_output.header.stamp, node._last_header.stamp)
         finally:
+            release_inference.set()
             node.close()
         self.assertFalse(any(worker.is_alive() for worker in node._workers))
 

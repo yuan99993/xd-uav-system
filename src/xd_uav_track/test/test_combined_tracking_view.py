@@ -33,6 +33,7 @@ class CombinedTrackingViewTest(unittest.TestCase):
         view._bridge = CvBridge()
         view._lock = threading.Lock()
         view._latest = {"fixed": None, "gimbal": None}
+        view._mission = ""
         view._publisher = _Publisher()
         view._enable_fixed = True
         view._enable_gimbal = dual

@@ -36,6 +36,7 @@ struct MultiTrackConfig {
   double minimum_new_track_confidence{0.20};
   double minimum_update_confidence{0.05};
   double association_iou_threshold{0.20};
+  double duplicate_iou_threshold{0.85};
   double association_center_distance{1.50};
   double association_ambiguity_margin{0.08};
   // Only enable for a source whose body-relative metric origin is stationary
@@ -52,6 +53,7 @@ struct MultiTrackConfig {
   // viewpoint-dependent detector label flips. Geometry/ReID gates still apply.
   std::vector<int> compatible_class_ids;
   int class_history_size{10};
+  bool upstream_class_consensus{false};
   double appearance_minimum_cosine{0.78};
   double high_confidence_threshold{0.50};
   int appearance_gallery_size{5};

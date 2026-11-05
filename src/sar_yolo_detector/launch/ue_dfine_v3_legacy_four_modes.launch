@@ -1,0 +1,55 @@
+<launch>
+  <arg name="UAV_NAME" default="ue_test" />
+  <arg name="instance_name" default="dfine_v3" />
+  <arg name="web_port" default="8787" />
+  <arg name="enable_xd_tracking" default="true" />
+  <arg name="class_consensus_enabled" default="true" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/../../experiments/dfine_s_candidates_v3_16e/best/manifest.json" />
+  <arg name="model_sha256" default="af6a95b0efdf0f5bcb8358187b8fedc3e3babbd603e07040d9ff3dd9d88a8774" />
+  <arg name="python_executable" default="$(find sar_yolo_detector)/../../.venv-dfine/bin/python" />
+
+  <include file="$(find sar_yolo_detector)/launch/xd_smart_tracker_fusion_integration.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="instance_name" value="$(arg instance_name)" />
+    <arg name="tracking_mode" value="smart_tracker" />
+    <arg name="config" value="$(find sar_yolo_detector)/../../config/airground_legacy_dfine.yaml" />
+    <arg name="vehicle_config" value="" />
+    <arg name="fusion_config" value="$(find sar_yolo_detector)/config/fusion_tracker.yaml" />
+    <arg name="model_path" value="$(arg model_path)" />
+    <arg name="model_sha256" value="$(arg model_sha256)" />
+    <arg name="python_executable" value="$(arg python_executable)" />
+    <arg name="use_gpu" value="true" />
+    <!-- UE render/decode delivery can add 0.5–0.7 s before D-FINE starts. -->
+    <arg name="maximum_capture_age_sec" value="1.0" />
+    <arg name="input_image_topic" value="/$(arg UAV_NAME)/fixed_camera/image_raw" />
+    <arg name="camera_info_topic" value="/$(arg UAV_NAME)/fixed_camera/camera_info" />
+    <arg name="camera_motion_fixed_frame" value="ue_render_ned" />
+    <arg name="image_width" value="960" />
+    <arg name="image_height" value="540" />
+    <arg name="sensor_id" value="ue_fixed_camera" />
+    <arg name="profile" value="dfine_s_v3_legacy_fourmode" />
+    <arg name="model_version" value="dfine_s_v3_16e" />
+  </include>
+
+  <!-- D-FINE uses car/tank/drone; airborne IDs cannot rebind to vehicles. -->
+  <rosparam param="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/FusionTracker/class_groups">[[0, 1], [2]]</rosparam>
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/SmartTracker/SMART_TRACKER_CLASS_CONSENSUS_ENABLED" value="$(arg class_consensus_enabled)" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/FusionTracker/follow_upstream_class_consensus" value="$(arg class_consensus_enabled)" />
+  <rosparam param="/$(arg UAV_NAME)/vision_to_xd_bridge_$(arg instance_name)/class_names">[car, tank, drone]</rosparam>
+  <param name="/$(arg UAV_NAME)/vision_to_xd_bridge_$(arg instance_name)/model_epoch" value="1" />
+  <group ns="$(arg UAV_NAME)" if="$(arg enable_xd_tracking)">
+    <node pkg="xd_uav_track" type="xd_uav_track_node" name="track" output="screen" required="true" clear_params="true">
+      <rosparam command="load" file="$(find xd_uav_track)/config/track.yaml" />
+      <rosparam command="load" file="$(find xd_uav_track)/config/ue_legacy_fourmode.yaml" />
+      <param name="tracker/classification/upstream_consensus" value="$(arg class_consensus_enabled)" />
+    </node>
+  </group>
+
+  <include file="$(find sar_yolo_detector)/launch/fusion_web_preview.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="instance_name" value="$(arg instance_name)" />
+    <arg name="bind_address" value="127.0.0.1" />
+    <arg name="port" value="$(arg web_port)" />
+    <arg name="class_names" value="car,tank,drone" />
+  </include>
+</launch>

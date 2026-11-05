@@ -252,7 +252,8 @@ class BoxFusion:
 
     def step(self, frame, stamp, detections, *, detector_updated=True, same_frame_correction=False,
              camera_transform=None, camera_motion_reliable=None,
-             visual_observation=None, visual_quality=0., visual_scale_ratio=None):
+             visual_observation=None, visual_quality=0., visual_scale_ratio=None,
+             color_observation=None, color_quality=0.):
         self.diagnostics = dict(detector_updated=bool(detector_updated), candidates=len(detections),
             rejected={}, local_tracker="not_run", camera_motion_available=False,
             frame_gap_sec=max(0., stamp-self.stamp) if math.isfinite(stamp) else None)
@@ -371,6 +372,46 @@ class BoxFusion:
                     else:
                         visual_box, visual_quality = flow.box, min(flow_quality, quality)
         self.diagnostics['lk_selected_observation'] = bool(flow_valid)
+
+        # ROI-learned colour is an independent cue from KCF/CSRT and LK. It
+        # may corroborate their location, or maintain the same bounded track
+        # briefly when both feature cues fail. It cannot change the target ID,
+        # class, detector timestamp, or bypass the appearance/position gates.
+        color_valid = False
+        color_box = None
+        if color_observation is not None:
+            color_box = color_observation.box
+            color_valid = (not self._long_recovery and dt <= self.max_gap
+                and color_observation.local_id == self.local_id and self.local_id >= 0
+                and color_observation.stable and self._class_compatible(color_observation.class_id)
+                and math.isfinite(color_quality) and color_quality >= .05
+                and valid_box(color_box, frame.shape) and self._compatible(color_box, predicted))
+            if color_valid:
+                feature, quality = appearance(frame, color_box)
+                similarity = float(np.dot(feature, self.anchor)) if self.anchor is not None else 0.
+                color_valid = quality >= self.quality_gate and similarity >= max(.55, self.appearance_gate - .10)
+                self.diagnostics['color_appearance'] = similarity
+                self.diagnostics['color_quality'] = quality
+        # Fuse color only when it spatially corroborates a different witness.
+        # If KCF and LK are unavailable, require a close match to the bounded
+        # prediction and strong appearance before accepting color as visual.
+        if color_valid:
+            if visual_box is not None and iou(color_box, visual_box) >= .15:
+                visual_box = tuple(.80*np.asarray(visual_box) + .20*np.asarray(color_box))
+                visual_quality = max(visual_quality, min(.65, color_quality))
+                self.diagnostics['color_selected_observation'] = True
+                self.diagnostics['color_support'] = 'local_visual_agreement'
+            elif visual_box is None and iou(color_box, predicted) >= .30:
+                visual_box = color_box
+                visual_quality = min(.65, max(.35, color_quality))
+                self.diagnostics['color_selected_observation'] = True
+                self.diagnostics['color_support'] = 'bounded_prediction_agreement'
+            else:
+                self.diagnostics['color_selected_observation'] = False
+                self.diagnostics['color_support'] = 'conflict_or_low_overlap'
+        else:
+            self.diagnostics['color_selected_observation'] = False
+            self.diagnostics['color_support'] = 'invalid_or_appearance_rejected'
         self._visual_box, self._visual_quality = visual_box, visual_quality
 
         ranked = []
@@ -486,14 +527,20 @@ class BoxFusion:
 
         if match is not None:
             # Two witnesses must agree before coordinates are blended.
-            agree = visual_box is not None and iou(visual_box, match.box) >= .30 and self._compatible(visual_box, match.box)
+            visual_agrees = (visual_box is not None and iou(visual_box, match.box) >= .30
+                             and self._compatible(visual_box, match.box))
+            color_agrees = (color_valid and iou(color_box, match.box) >= .30
+                            and self._compatible(color_box, match.box))
+            agree = visual_agrees or color_agrees
             if agree:
-                weight = max(.5, self.detector_weight * match.confidence / max(.01, self.detector_weight * match.confidence + (1. - self.detector_weight) * visual_quality))
+                evidence_quality = visual_quality if visual_agrees else min(.65, color_quality)
+                evidence_box = visual_box if visual_agrees else color_box
+                weight = max(.5, self.detector_weight * match.confidence / max(.01, self.detector_weight * match.confidence + (1. - self.detector_weight) * evidence_quality))
                 # Do not pull a strong, independently validated detector box
                 # backwards by KCF's small temporal lag. Fusion is evidence
                 # arbitration, not an obligation to average every coordinate.
                 fused = match.box if match.confidence >= self.detector_authority else tuple(
-                    weight * np.asarray(match.box) + (1. - weight) * np.asarray(visual_box))
+                    weight * np.asarray(match.box) + (1. - weight) * np.asarray(evidence_box))
                 source = "fused"
             else:
                 fused, source = match.box, "yolo"
@@ -517,7 +564,8 @@ class BoxFusion:
                 self.diagnostics.update(identity_rebound=True, previous_local_id=self.local_id,
                                         rebound_box=tuple(match.box))
             self.local_id = match.local_id
-            if self.class_id < 0:
+            if self.class_id < 0 or (self.config.get('follow_upstream_class_consensus',False)
+                    and match.detector_stamp == stamp):
                 self.class_id = match.class_id
             feature, quality = appearance(frame, match.box)
             measured = stamp if match.detector_stamp is None else match.detector_stamp

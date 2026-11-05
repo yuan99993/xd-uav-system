@@ -38,8 +38,11 @@
   <arg name="output_detections_topic"
        default="detect/input/detections_2d" />
   <arg name="publish_annotated_image" default="true" />
+  <arg name="maximum_capture_age_sec" default="0.5" />
   <arg name="image_source" default="fixed_rgb" />
   <arg name="sensor_id" default="fixed_camera" />
+  <arg name="profile" default="xd_vehicle_car_ar_car_tank" />
+  <arg name="model_version" default="xd_vehicle_train7_best" />
 
   <group ns="$(arg UAV_NAME)">
     <include file="$(find sar_yolo_detector)/launch/smart_tracker_fusion.launch">
@@ -69,10 +72,11 @@
       <arg name="python_executable" value="$(arg python_executable)" />
       <arg name="publish_annotated_image"
            value="$(arg publish_annotated_image)" />
+      <arg name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
       <arg name="uav_id" value="$(arg UAV_NAME)" />
       <arg name="sensor_id" value="$(arg sensor_id)" />
-      <arg name="profile" value="xd_vehicle_car_ar_car_tank" />
-      <arg name="model_version" value="xd_vehicle_train7_best" />
+      <arg name="profile" value="$(arg profile)" />
+      <arg name="model_version" value="$(arg model_version)" />
     </include>
   </group>
 
@@ -98,6 +102,6 @@
     <arg name="image_source" value="$(arg image_source)" />
     <arg name="sensor_id" value="$(arg sensor_id)" />
     <arg name="detector_name" value="sar_yolo_smart_tracker" />
-    <arg name="model_version" value="xd_vehicle_train7_best" />
+    <arg name="model_version" value="$(arg model_version)" />
   </include>
 </launch>

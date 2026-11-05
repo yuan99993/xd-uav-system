@@ -24,3 +24,4 @@ string device
 string model_path
 uint32 detection_count
 float32 frame_processing_ms
+float32 inference_ms

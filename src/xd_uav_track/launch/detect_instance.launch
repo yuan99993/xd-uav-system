@@ -6,6 +6,8 @@
   <arg name="node_name" default="detect"/>
   <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
   <arg name="world_frame" default="$(arg UAV_NAME)/local_origin"/>
+  <arg name="camera_frame" default=""/>
+  <arg name="require_matching_camera_frame" default="true"/>
   <arg name="image_source" default=""/>
   <arg name="sensor_id" default=""/>
   <arg name="detector_name" default=""/>
@@ -24,6 +26,9 @@
       <rosparam command="load" file="$(arg config)"/>
       <param name="frames/body" value="$(arg body_frame)"/>
       <param name="frames/world" value="$(arg world_frame)"/>
+      <param name="frames/camera" value="$(arg camera_frame)"/>
+      <param name="ground_projection/require_matching_camera_frame"
+             value="$(arg require_matching_camera_frame)"/>
       <param if="$(eval arg('image_source') != '')"
              name="metadata/image_source" value="$(arg image_source)"/>
       <param if="$(eval arg('sensor_id') != '')"

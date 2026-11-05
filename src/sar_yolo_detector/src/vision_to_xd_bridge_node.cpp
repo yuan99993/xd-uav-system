@@ -4,6 +4,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <ros/ros.h>
 #include <sar_yolo_detector/TrackedDetection2DArray.h>
@@ -39,9 +40,13 @@ public:
                         std::string("sar_yolo_detector"));
     private_node_.param("model_version", model_version_,
                         std::string("unknown"));
+    private_node_.getParam("class_names", class_names_);
+    int model_epoch = 0;
+    private_node_.param("model_epoch", model_epoch, 0);
+    model_epoch_ = static_cast<unsigned int>(std::max(0, model_epoch));
 
     publisher_ =
-        node_.advertise<xd_uav_track::DetectionArray>(output_topic_, 5);
+        node_.advertise<xd_uav_track::DetectionArray>(output_topic_, 1);
     if (input_type_ == "vision") {
       subscriber_ = node_.subscribe(
           input_topic_, 5, &VisionToXdBridge::detectionsCallback, this,
@@ -99,6 +104,8 @@ private:
     output.sensor_id = sensor_id_;
     output.detector_name = detector_name_;
     output.model_version = model_version_;
+    output.class_names = class_names_;
+    output.model_epoch = model_epoch_;
     return output;
   }
 
@@ -242,6 +249,8 @@ private:
   std::string output_topic_;
   std::string camera_info_topic_;
   std::string image_source_;
+  std::vector<std::string> class_names_;
+  unsigned int model_epoch_{0};
   std::string sensor_id_;
   std::string detector_name_;
   std::string model_version_;

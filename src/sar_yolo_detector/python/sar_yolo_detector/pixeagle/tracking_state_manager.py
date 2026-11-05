@@ -100,6 +100,14 @@ class TrackingStateManager:
         self.class_match_flexible = config.get('CLASS_MATCH_FLEXIBLE', True)
         self.class_history_size = config.get('CLASS_HISTORY_SIZE', 10)
         self.class_history: deque = deque(maxlen=self.class_history_size)
+        # Optional model-specific groups.  The legacy profile has no groups,
+        # preserving its original class matching; UE D-FINE separates the
+        # airborne class from ground vehicles during ID recovery.
+        groups = config.get('CLASS_COMPATIBILITY_GROUPS')
+        self.class_compatibility_groups = (
+            tuple(frozenset(map(int, group)) for group in groups)
+            if isinstance(groups, (list, tuple)) else None
+        )
 
         # ── Search expansion ─────────────────────────────────────────────
         self.search_expansion_rate = config.get('SEARCH_EXPANSION_RATE', 0.2)
@@ -381,7 +389,25 @@ class TrackingStateManager:
                 and track_id_is_stable
                 and track_id == self.selected_track_id
             ):
-                if self.class_match_flexible or class_id == self.selected_class_id:
+                if self._same_class_group(class_id) and (
+                    self.class_match_flexible or class_id == self.selected_class_id
+                ):
+                    # Tracker IDs can be recycled or swapped at crossings.
+                    # An ID alone cannot teleport the selected target or
+                    # replace it with a frame-sized false detection.
+                    reference = self._get_reference_bbox()
+                    if reference is not None:
+                        rx1,ry1,rx2,ry2 = reference
+                        x1,y1,x2,y2 = map(float,detection[:4])
+                        rw,rh = max(1.,rx2-rx1),max(1.,ry2-ry1)
+                        scale = max((x2-x1)/rw,(y2-y1)/rh,
+                                    rw/max(1.,x2-x1),rh/max(1.,y2-y1))
+                        expansion = 1.+min(self.search_expansion_cap,
+                                          self.frames_since_detection*self.search_expansion_rate)
+                        distance = math.hypot((x1+x2-rx1-rx2)/2.,(y1+y2-ry1-ry2)/2.)
+                        if (scale > self.max_size_change_ratio or
+                                distance > math.hypot(rw,rh)*self.appearance_distance_gate*expansion):
+                            continue
                     return self._parse_detection(detection)
 
         return None
@@ -469,6 +495,8 @@ class TrackingStateManager:
                 continue
 
             class_id = int(detection[6])
+            if not self._same_class_group(class_id):
+                continue
             if not self._is_class_compatible(class_id):
                 continue
 
@@ -519,6 +547,8 @@ class TrackingStateManager:
             x1, y1, x2, y2 = map(int, detection[:4])
             track_id = int(detection[4])
             class_id = int(detection[6])
+            if not self._same_class_group(class_id):
+                continue
 
             if max_gate_distance is not None and reference_center is not None:
                 det_cx = (x1 + x2) / 2
@@ -888,6 +918,13 @@ class TrackingStateManager:
 
     def _on_detection_found(self, detection: Dict, frame: np.ndarray = None):
         """Update state when a detection match is confirmed."""
+        # The upstream causal classifier may correct the leaf type of this
+        # already identity-verified target. Preserve that type in subsequent
+        # prediction-only output, without learning from predictions/visual cues.
+        if (self.config.get('SMART_TRACKER_CLASS_CONSENSUS_ENABLED', False) and
+                detection.get('track_id_is_stable', False) and
+                self._same_class_group(detection.get('class_id', -1))):
+            self.selected_class_id = detection['class_id']
         old_id = self.selected_track_id
         was_lost_frames = self.frames_since_detection
 
@@ -1228,6 +1265,8 @@ class TrackingStateManager:
         distance/appearance fallbacks retain their normal identity gates.
         """
         expanded_iou = compute_iou_func(detection_bbox, reference_bbox)
+        if not self._same_class_group(class_id):
+            return None
         if self._is_class_compatible(class_id):
             if expanded_iou >= self.spatial_iou_threshold:
                 return expanded_iou, False
@@ -1254,9 +1293,23 @@ class TrackingStateManager:
         """
         if class_id == self.selected_class_id:
             return True
+        if not self._same_class_group(class_id):
+            return False
+        if self.class_match_flexible and self.class_compatibility_groups is not None:
+            return True
         if self.class_match_flexible and len(self.class_history) > 0:
             return class_id in self.class_history
         return False
+
+    def _same_class_group(self, class_id: int) -> bool:
+        """Keep recovery within the selected model's semantic family."""
+        if class_id == self.selected_class_id:
+            return True
+        groups = self.class_compatibility_groups
+        if groups is None:
+            return True
+        return any(self.selected_class_id in group and class_id in group
+                   for group in groups)
 
     def _get_reference_bbox(self) -> Optional[Tuple[int, int, int, int]]:
         """Get best reference bbox (Kalman-predicted or last known)."""

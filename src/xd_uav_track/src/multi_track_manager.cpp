@@ -370,6 +370,7 @@ struct MultiTrackManager::Impl {
     time_based_lifecycle = config.occlusion_timeout_sec > 0.0 ||
         config.removal_timeout_sec > 0.0;
     config.confirmation_hits = std::max(1, config.confirmation_hits);
+    config.duplicate_iou_threshold = clampValue(config.duplicate_iou_threshold, 0.5, 1.0);
     config.occlusion_frames = std::max(0, config.occlusion_frames);
     config.removal_frames = std::max(config.occlusion_frames + 1,
                                      config.removal_frames);
@@ -532,6 +533,32 @@ ManagedDetectionFrame MultiTrackManager::update(
     item.original_index = index;
     prepared.push_back(std::move(item));
   }
+
+  // Defend the identity allocator against duplicate boxes from an external
+  // detector/bridge. Only near-identical detector observations in the same
+  // configured class family compete; visual witnesses and adjacent vehicles
+  // remain independent observations.
+  std::stable_sort(prepared.begin(), prepared.end(),
+      [](const PreparedDetection& a, const PreparedDetection& b) {
+        return a.message.confidence > b.message.confidence;
+      });
+  std::vector<PreparedDetection> unique;
+  unique.reserve(prepared.size());
+  for (auto& item : prepared) {
+    const bool duplicate = item.message.measurement_source != "visual_tracker" &&
+        std::any_of(unique.begin(), unique.end(), [&](const PreparedDetection& other) {
+          return other.message.measurement_source != "visual_tracker" &&
+              compatibleClass(item.message.class_id, other.message.class_id,
+                              impl_->config.compatible_class_ids) &&
+              intersectionOverUnion(item.box, other.box) > impl_->config.duplicate_iou_threshold;
+        });
+    if (duplicate) {
+      ++impl_->stats.rejected_detections;
+      continue;
+    }
+    unique.push_back(std::move(item));
+  }
+  prepared = std::move(unique);
 
   std::set<int> tracks_missing_before_frame;
   for (auto iterator = impl_->tracks.begin(); iterator != impl_->tracks.end();) {
@@ -864,6 +891,16 @@ ManagedDetectionFrame MultiTrackManager::update(
         track.class_locked = true;
         track.class_evidence.clear();
       }
+    }
+    // Opt-in contract: the single upstream detector has already applied a
+    // causal stable-ID class consensus. Do not freeze its early mistake
+    // forever or run an independent conflicting vote over the same evidence.
+    if (impl_->config.upstream_class_consensus && detector_measurement &&
+        prepared[index].message.track_id_is_stable &&
+        prepared[index].message.class_id >= 0 &&
+        compatibleClass(track.class_id, prepared[index].message.class_id,
+                        impl_->config.compatible_class_ids)) {
+      track.class_id = prepared[index].message.class_id;
     }
     if (detector_measurement && prepared[index].message.class_id >= 0 &&
         (track.class_history.empty() || track.class_history.back() !=

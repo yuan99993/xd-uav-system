@@ -1,64 +1,56 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SAR · 融合跟踪测试</title><style>
-:root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#101722;color:#e5edf7}*{box-sizing:border-box}body{margin:0}header{padding:20px 28px;border-bottom:1px solid #304056;display:flex;justify-content:space-between;align-items:center}h1{font-size:20px;margin:0}small{color:#9cafc6}.badge{background:#194c44;padding:6px 12px;border-radius:20px;font-size:13px}main{padding:24px;display:grid;grid-template-columns:minmax(400px,1fr) 310px;gap:22px;max-width:1440px;margin:auto}.card{background:#182333;border:1px solid #304056;border-radius:12px;padding:18px}canvas{display:block;width:100%;height:auto;background:#05080c;touch-action:none;cursor:crosshair;border-radius:6px}.row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}button{padding:10px 15px;border:1px solid #507299;border-radius:7px;background:#294360;color:#fff;cursor:pointer}button:disabled{opacity:.5;cursor:wait}h2{font-size:15px;margin:0 0 16px}.metric{margin:16px 0;border-bottom:1px solid #304056;padding-bottom:14px}.metric span{display:block;color:#9cafc6;font-size:12px;margin-bottom:6px}.metric strong{font-size:20px;overflow-wrap:anywhere}.hint{font-size:13px;line-height:1.8;color:#b4c5da}#message{margin-top:14px;padding:12px;background:#101722;min-height:60px;font-size:13px;overflow-wrap:anywhere}table{width:100%;font-size:12px;border-collapse:collapse}td,th{text-align:left;padding:8px 4px;border-bottom:1px solid #304056}.error{color:#ffb1a8}.ok{color:#8fe0c2}@media(max-width:850px){main{grid-template-columns:1fr;padding:12px}header{padding:15px}}
-.card{min-width:0}.video-viewport{max-width:100%;overflow:auto;background:#05080c;border-radius:6px}canvas{width:var(--native-width,640px);max-width:none;height:auto}.video-viewport.fit canvas{width:100%}.view-controls{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-size:13px}.view-controls label{cursor:pointer}
-</style></head><body><header><div><h1>SAR · 融合跟踪测试</h1><small>本机实时画面 / PNG 无损 / 原帧选择 / train7</small></div><span class="badge" id="connection">连接中</span></header>
-<main><section class="card"><div class="row"><h2>固定相机 · FusionTracker</h2><button id="clear">取消选择 · Esc</button></div><div class="view-controls"><label><input type="checkbox" id="fit"> 适应窗口</label><span id="display-mode">PNG 无损 · 原尺寸显示</span></div><div class="video-viewport" id="viewport"><canvas id="video" width="640" height="480"></canvas></div><div class="hint">默认原尺寸显示；空间不足可滚动查看。左键点击目标，拖框选择区域；右键或 Esc 取消。绿色为选中目标，蓝色为其他目标。拖框时画面暂时冻结，算法继续运行。</div><div id="message" role="status">等待实时画面。此页面只选择感知目标，不控制无人机飞行。</div></section>
-<aside class="card"><h2>后端实际状态</h2><div class="metric"><span>选中实体 ID</span><strong id="identity">—</strong></div><div class="metric"><span>观测状态 / 原因</span><strong id="reason">—</strong></div><div class="metric"><span>原图尺寸 / 帧序号 / 画面年龄</span><div id="frame">—</div></div><h2>当前帧目标 · 原图中心像素</h2><table><thead><tr><th>ID / 类别</th><th>(x, y)</th></tr></thead><tbody id="targets"></tbody></table><p class="hint">像素原点为左上角，x 向右、y 向下。过期画面、多目标歧义会拒绝选择，不自动换选其他目标。</p></aside></main>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SAR · UE 四模式识别与跟踪</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#101722;color:#e5edf7}*{box-sizing:border-box}body{margin:0}header{padding:18px 26px;border-bottom:1px solid #304056;display:flex;justify-content:space-between;align-items:center;gap:16px}h1{font-size:20px;margin:0 0 4px}small{color:#9cafc6}.badge{background:#194c44;padding:6px 12px;border-radius:20px;font-size:13px;white-space:nowrap}main{padding:20px;display:grid;grid-template-columns:minmax(400px,1fr) 340px;gap:20px;max-width:1540px;margin:auto}.card{min-width:0;background:#182333;border:1px solid #304056;border-radius:12px;padding:17px}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}.toolbar-left{display:flex;align-items:center;gap:9px;flex-wrap:wrap}h2{font-size:15px;margin:0 0 12px}button,select{padding:9px 12px;border:1px solid #507299;border-radius:7px;background:#294360;color:#fff}button{cursor:pointer}button:disabled,select:disabled{opacity:.5;cursor:wait}label{font-size:13px;color:#b8c8dc}.video-viewport{max-width:100%;overflow:auto;background:#05080c;border-radius:6px}canvas{display:block;width:var(--native-width,640px);max-width:none;height:auto;touch-action:none;cursor:crosshair}.video-viewport.fit canvas{width:100%}.view-controls{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin:0 0 10px;font-size:13px}.mission{display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin:0 0 12px;padding:10px 12px;background:#101722;border-radius:7px;font-size:13px}.mission strong{color:#8fe0c2}.hint{font-size:13px;line-height:1.75;color:#b4c5da;margin:12px 0 0}#message{margin-top:12px;padding:11px;background:#101722;min-height:48px;font-size:13px;overflow-wrap:anywhere}.metric{margin:12px 0;border-bottom:1px solid #304056;padding-bottom:11px}.metric span{display:block;color:#9cafc6;font-size:12px;margin-bottom:5px}.metric strong{font-size:18px;overflow-wrap:anywhere}table{width:100%;font-size:12px;border-collapse:collapse}td,th{text-align:left;padding:7px 4px;border-bottom:1px solid #304056}.error{color:#ffb1a8}.ok{color:#8fe0c2}.muted{color:#9cafc6;font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr;padding:12px}header{padding:14px}}
+</style></head>
+<body>
+<header><div><h1>SAR · UE 四模式识别与跟踪</h1><small>D-FINE-S V3 · PX4 SITL 航线 → UE5.5 相机 → ROS · BoT-SORT / KCF / 颜色 / 融合</small></div><span class="badge" id="connection">连接中</span></header>
+<main>
+<section class="card">
+  <div class="toolbar"><div class="toolbar-left"><label for="mode">算法模式</label><select id="mode"><option value="smart_tracker">SmartTracker · D-FINE + BoT-SORT</option><option value="feature_tracker">FeatureTracker · KCF/CSRT</option><option value="color_tracker">ColorTracker · 显著色块 + ROI 学习</option><option value="fusion_tracker">FusionTracker · D-FINE + 特征融合</option></select><label for="color">颜色</label><select id="color"><option value="auto">自动找色并学习 ROI</option><option value="roi">手动 ROI 学习</option><option value="red">红色并学习 ROI</option><option value="green">绿色并学习 ROI</option><option value="blue">蓝色并学习 ROI</option><option value="white">白色并学习 ROI</option><option value="black">黑色并学习 ROI</option></select></div><button id="clear">取消锁定 · Esc</button></div>
+  <div class="mission"><span>航线阶段：<strong id="stage">等待航线</strong></span><span>无人机 NED：<strong id="position">—</strong></span><span>航向：<strong id="yaw">—</strong></span></div>
+  <div class="view-controls"><label><input type="checkbox" id="fit"> 适应窗口</label><span id="display-mode">PNG 无损 · 原尺寸</span><span>下视相机 · UE 实时画面</span></div>
+  <div class="video-viewport" id="viewport"><canvas id="video" width="640" height="480"></canvas></div>
+  <p class="hint">SmartTracker / FusionTracker：点击检测框锁定，拖框初始化融合特征；ColorTracker：自动/指定颜色会先找与背景反差明显且形状合理的色块，再自动学习该 ROI 的颜色特征并连续跟踪；“手动 ROI 学习”可拖框指定目标。绿色框表示已锁定目标。画面在拖选时暂时冻结，算法仍持续运行。取消锁定或按 Esc 清除当前目标。</p>
+  <div id="message" role="status">等待 UE 相机、D-FINE 检测和跟踪状态。</div>
+</section>
+<aside class="card">
+  <h2>实时锁定状态</h2>
+  <div class="metric"><span>锁定实体 ID / 类别</span><strong id="identity">—</strong></div>
+  <div class="metric"><span>锁框连续观测 / 相邻帧中心位移 P95</span><strong id="stability">—</strong></div>
+  <div class="metric"><span>跟踪来源 / 状态原因</span><strong id="reason">—</strong></div>
+  <div class="metric"><span>模式 / 后端 / 设备 / 推理时间 · 节点处理</span><div id="runtime">—</div></div>
+  <div class="metric"><span>画面尺寸 / 帧序号 / 画面年龄</span><div id="frame-info">—</div></div>
+  <h2>当前帧目标 · 原图像素</h2>
+  <table><thead><tr><th>ID / 类别</th><th title="当前检测候选分数；稳定类别来自连续帧，分数不等同于稳定类别概率">检测分数</th><th>中心 (x,y)</th></tr></thead><tbody id="targets"></tbody></table>
+  <p class="hint">框中心位移受无人机和目标运动影响，作为连续性观察值，不单独代表跟踪误差。坐标原点在原图左上角。画面超时后会拒绝选择。</p>
+</aside>
+</main>
 <script>
 'use strict';
-const canvas=document.querySelector('#video'),ctx=canvas.getContext('2d'),message=document.querySelector('#message'),clear=document.querySelector('#clear');
-const fit=document.querySelector('#fit'),viewport=document.querySelector('#viewport');
+const canvas=document.querySelector('#video'),ctx=canvas.getContext('2d'),message=document.querySelector('#message');
+const fit=document.querySelector('#fit'),viewport=document.querySelector('#viewport'),modeSelect=document.querySelector('#mode'),colorSelect=document.querySelector('#color');
+let displayed=null,bitmap=null,drag=null,busy=false,pendingClick=null,lastToken=null,lockId=null,lastCenter=null,lockHits=0,lockMisses=0,centerSteps=[];
 fit.checked=false;
-let displayed=null,bitmap=null,drag=null,busy=false,pendingClick=null;
 function tell(text,ok=true){message.textContent=text;message.className=ok?'ok':'error';}
 function point(e){const r=canvas.getBoundingClientRect();return [(e.clientX-r.left)*canvas.width/r.width,(e.clientY-r.top)*canvas.height/r.height];}
 function paint(){if(bitmap)ctx.drawImage(bitmap,0,0);if(drag){ctx.strokeStyle='#ffd34e';ctx.lineWidth=2;ctx.setLineDash([6,4]);ctx.strokeRect(drag.start[0],drag.start[1],drag.end[0]-drag.start[0],drag.end[1]-drag.start[1]);ctx.setLineDash([]);}}
-fit.addEventListener('change',()=>{drag=null;viewport.classList.toggle('fit',fit.checked);document.querySelector('#display-mode').textContent=fit.checked?'PNG 无损 · 适应窗口（显示缩放）':'PNG 无损 · 原尺寸显示';paint();});
-async function command(body){
- if(busy){tell('BUSY：上一条命令尚未完成',false);return;}
- busy=true;clear.disabled=true;
- const frame=displayed,controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),6000);
- const hit=body.point?frame?.objects.filter(o=>body.point[0]>=o.box[0]&&body.point[0]<=o.box[0]+o.box[2]&&body.point[1]>=o.box[1]&&body.point[1]<=o.box[1]+o.box[3]):[];
- try{
-  const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:controller.signal}),v=await r.json();
-  tell((v.success?'已提交：':'拒绝：')+v.message,v.success);
-  if(v.sent)pendingClick={until:performance.now()+1800,previous:frame?.selected_id,expected:hit?.length===1?hit[0].id:null};
- }catch(e){tell('接口请求失败或超时：请查看实际 ID；不要自动重发命令。'+e.message,false);}
- finally{clearTimeout(timeout);busy=false;clear.disabled=false;}
-}
+fit.addEventListener('change',()=>{drag=null;viewport.classList.toggle('fit',fit.checked);document.querySelector('#display-mode').textContent=fit.checked?'PNG 无损 · 适应窗口':'PNG 无损 · 原尺寸';paint();});
+async function post(body){const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),6000);try{const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:controller.signal});return await r.json();}finally{clearTimeout(timeout);}}
+async function changeMode(){if(busy)return;busy=true;modeSelect.disabled=true;colorSelect.disabled=true;try{const v=await post({action:'mode',mode:modeSelect.value,color_name:colorSelect.value});tell((v.success?'已切换：':'切换失败：')+v.message,v.success);if(v.success){modeSelect.value=v.active_mode;lastCenter=null;centerSteps=[];lockHits=0;lockMisses=0;}}catch(e){tell('模式服务请求失败：'+e.message,false);}finally{busy=false;modeSelect.disabled=false;colorSelect.disabled=false;}}
+modeSelect.addEventListener('change',changeMode);colorSelect.addEventListener('change',()=>{if(modeSelect.value==='color_tracker')changeMode();});
+async function select(body){if(busy){tell('上一条命令尚未完成',false);return;}if(!displayed)return;busy=true;const token=displayed.frame_token;document.querySelector('#clear').disabled=true;const hit=body.point?displayed.objects.filter(o=>body.point[0]>=o.box[0]&&body.point[0]<=o.box[0]+o.box[2]&&body.point[1]>=o.box[1]&&body.point[1]<=o.box[1]+o.box[3]):[];try{const v=await post(Object.assign({frame_token:token},body));tell((v.success?'已提交：':'拒绝：')+v.message,v.success);if(v.sent)pendingClick={until:performance.now()+1800,previous:displayed.selected_id,expected:hit.length===1?hit[0].id:null};}catch(e){tell('选择请求失败或超时：'+e.message,false);}finally{busy=false;document.querySelector('#clear').disabled=false;}}
 canvas.addEventListener('pointerdown',e=>{if(e.button!==0||!displayed||busy)return;if(displayed.video_stale){tell('视频已中断，禁止选择旧画面',false);return;}canvas.setPointerCapture(e.pointerId);drag={start:point(e),end:point(e),token:displayed.frame_token};});
 canvas.addEventListener('pointermove',e=>{if(drag){drag.end=point(e);paint();}});
-canvas.addEventListener('pointerup',e=>{if(!drag||e.button!==0)return;const d=drag;d.end=point(e);drag=null;paint();const [x,y]=d.start,[u,v]=d.end;if(Math.hypot(u-x,v-y)<4)command({action:'click',frame_token:d.token,point:[u,v]});else command({action:'roi',frame_token:d.token,roi:[Math.floor(Math.min(x,u)),Math.floor(Math.min(y,v)),Math.floor(Math.abs(u-x)),Math.floor(Math.abs(v-y))]});});
+canvas.addEventListener('pointerup',e=>{if(!drag||e.button!==0)return;const d=drag;d.end=point(e);drag=null;paint();const x=d.start[0],y=d.start[1],u=d.end[0],v=d.end[1];if(Math.hypot(u-x,v-y)<4){if(modeSelect.value==='feature_tracker')tell('该模式需要拖框选择目标区域。',false);else if(modeSelect.value==='color_tracker'&&colorSelect.value!=='roi')tell('颜色模式会自动搜索色块并学习其 ROI 特征。',true);else if(modeSelect.value==='color_tracker')tell('手动 ROI 学习模式需要拖框选择目标区域。',false);else select({action:'click',frame_token:d.token,point:[u,v]});}else if(modeSelect.value==='color_tracker'&&colorSelect.value!=='roi')tell('自动模式当前会全图搜索并学习 ROI；若要手动指定，请选择“手动 ROI 学习”。',false);else select({action:'roi',frame_token:d.token,roi:[Math.floor(Math.min(x,u)),Math.floor(Math.min(y,v)),Math.floor(Math.abs(u-x)),Math.floor(Math.abs(v-y))]});});
 canvas.addEventListener('pointercancel',()=>{drag=null;paint();});
-function cancel(){drag=null;pendingClick=null;paint();command({action:'clear'});}
-canvas.addEventListener('contextmenu',e=>{e.preventDefault();cancel();});clear.onclick=cancel;document.addEventListener('keydown',e=>{if(e.key==='Escape')cancel();});
-async function poll(){
- const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),3000);
- try{
-  if(drag)return;
-  const r=await fetch('/api/frame',{cache:'no-store',signal:controller.signal}),p=await r.json();
-  if(!p.ready){document.querySelector('#connection').textContent='等待相机与算法';return;}
-  if(drag)return;
-  if(p.frame_token!==displayed?.frame_token){
-   const image=new Image();image.src=p.png?'data:image/png;base64,'+p.png:'data:image/jpeg;base64,'+p.jpeg;await image.decode();
-   if(drag)return;
-   if(image.naturalWidth!==p.width||image.naturalHeight!==p.height)throw new Error('图像尺寸与原帧元数据不一致，拒绝显示及选择');
-   bitmap=image;canvas.width=p.width;canvas.height=p.height;canvas.style.setProperty('--native-width',p.width+'px');displayed=p;paint();
-  }else{displayed=p;}
-  document.querySelector('#connection').textContent=p.video_stale?'视频中断':'实时连接';
-  document.querySelector('#identity').textContent=p.selected_id>=0?p.selected_id:'未选择';
-  document.querySelector('#reason').textContent=p.source+' / '+p.reason;
-  document.querySelector('#frame').textContent=`${p.width} × ${p.height} · seq ${p.capture_header.seq} · ${Math.round(p.age_ms)} ms`;
-  const rows=document.querySelector('#targets');rows.replaceChildren();
-  for(const o of p.objects){const row=document.createElement('tr');for(const text of [`${o.id} / ${o.name}`,o.center.map(Math.round).join(', ')]){const cell=document.createElement('td');cell.textContent=text;row.append(cell);}rows.append(row);}
-  if(pendingClick){
-   if(p.selected_id>=0&&(p.selected_id!==pendingClick.previous||p.selected_id===pendingClick.expected)){tell('当前已选中实体 ID '+p.selected_id);pendingClick=null;}
-   else if(performance.now()>pendingClick.until){tell('未确认新的选择；请看实际 ID，或对目标快速拖框以获取服务回执。',false);pendingClick=null;}
-  }
- }catch(e){document.querySelector('#connection').textContent='连接失败';tell(e.message,false);}
- finally{clearTimeout(timeout);setTimeout(poll,200);}
-}
+async function clearSelection(){drag=null;pendingClick=null;paint();await select({action:'clear'});}
+canvas.addEventListener('contextmenu',e=>{e.preventDefault();clearSelection();});document.querySelector('#clear').onclick=clearSelection;document.addEventListener('keydown',e=>{if(e.key==='Escape')clearSelection();});
+function updateStability(p){const id=p.selected_id;if(id<0){lockId=null;lastCenter=null;lockHits=0;lockMisses=0;centerSteps=[];document.querySelector('#stability').textContent='未锁定';return;}if(id!==lockId){lockId=id;lastCenter=null;lockHits=0;lockMisses=0;centerSteps=[];}const selected=p.objects.find(o=>o.id===id);if(!selected){lockMisses++;if(lockMisses>1)lastCenter=null;document.querySelector('#stability').textContent='ID '+id+' · 连续命中 '+lockHits+' · 当前漏检 '+lockMisses;return;}if(lastCenter){centerSteps.push(Math.hypot(selected.center[0]-lastCenter[0],selected.center[1]-lastCenter[1]));if(centerSteps.length>30)centerSteps.shift();}lastCenter=selected.center;lockHits++;lockMisses=0;const sorted=centerSteps.slice().sort((a,b)=>a-b),p95=sorted.length?sorted[Math.min(sorted.length-1,Math.ceil(sorted.length*.95)-1)].toFixed(1):'—';document.querySelector('#stability').textContent='ID '+id+' · 连续命中 '+lockHits+' · 漏检 '+lockMisses+' · 中心位移 P95 '+p95+' px';}
+async function poll(){const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),3000);try{if(drag)return;const r=await fetch('/api/frame',{cache:'no-store',signal:controller.signal}),p=await r.json();if(!p.ready){document.querySelector('#connection').textContent='等待相机与算法';return;}if(drag)return;if(p.frame_token!==lastToken){const image=new Image();image.src='data:image/png;base64,'+p.png;await image.decode();if(drag)return;if(image.naturalWidth!==p.width||image.naturalHeight!==p.height)throw new Error('原图尺寸与帧元数据不一致');bitmap=image;canvas.width=p.width;canvas.height=p.height;canvas.style.setProperty('--native-width',p.width+'px');displayed=p;lastToken=p.frame_token;paint();updateStability(p);}else displayed=p;
+document.querySelector('#connection').textContent=p.video_stale?'视频中断':'实时连接';if(p.mode&&modeSelect.value!==p.mode)modeSelect.value=p.mode;document.querySelector('#identity').textContent=p.selected_id>=0?String(p.selected_id):'未锁定';document.querySelector('#reason').textContent=(p.source||'—')+' / '+(p.reason||'—');document.querySelector('#runtime').textContent=[p.mode||'—',p.backend||'D-FINE-S V3',p.device||'—',Number(p.inference_ms||0).toFixed(1)+' / '+Number(p.processing_ms||0).toFixed(1)+' ms'].join(' · ');const h=p.capture_header||{};document.querySelector('#frame-info').textContent=p.width+' × '+p.height+' · seq '+h.seq+' · '+Math.round(p.age_ms)+' ms';const flight=p.flight||{};document.querySelector('#stage').textContent=flight.stage||'等待航线';document.querySelector('#position').textContent=flight.observer_ned_m?flight.observer_ned_m.map(x=>Number(x).toFixed(1)).join(', '):'—';document.querySelector('#yaw').textContent=flight.yaw_deg===undefined?'—':Number(flight.yaw_deg).toFixed(1)+'°';const rows=document.querySelector('#targets');rows.replaceChildren();for(const o of p.objects||[]){const row=document.createElement('tr');for(const text of [o.id+' / '+o.name+(o.raw_name&&o.raw_name!==o.name?'（原始 '+o.raw_name+'）':''),(100*o.confidence).toFixed(0)+'%',o.center.map(Math.round).join(', ')]){const cell=document.createElement('td');cell.textContent=text;row.append(cell);}rows.append(row);}if(pendingClick){if(p.selected_id>=0&&(p.selected_id!==pendingClick.previous||p.selected_id===pendingClick.expected)){tell('已确认锁定 ID '+p.selected_id);pendingClick=null;}else if(performance.now()>pendingClick.until){tell('未确认新锁定；检查 ID 或对目标拖框。',false);pendingClick=null;}}}catch(e){document.querySelector('#connection').textContent='连接失败';tell(e.message,false);}finally{clearTimeout(timeout);setTimeout(poll,200);}}
 poll();
 </script></body></html>

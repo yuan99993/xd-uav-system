@@ -587,8 +587,13 @@ class XdUavTrackNode {
     requested_profile_ = config.profile;
 
     xd_uav_track::MultiTrackConfig multi_config;
+    private_nh_.param("tracker/classification/upstream_consensus",
+                     multi_config.upstream_class_consensus, false);
+    upstream_class_consensus_ = multi_config.upstream_class_consensus;
     private_nh_.getParam("tracker/association/compatible_class_ids",
                          multi_config.compatible_class_ids);
+    private_nh_.param("tracker/association/duplicate_iou_threshold",
+                      multi_config.duplicate_iou_threshold, multi_config.duplicate_iou_threshold);
     tracklet_stitch_config_.compatible_class_ids =
         multi_config.compatible_class_ids;
     private_nh_.param("tracker/selection/auto_select", auto_select_track_, true);
@@ -1609,6 +1614,14 @@ class XdUavTrackNode {
     return true;
   }
 
+  bool classCompatible(const int first, const int second) const {
+    if (first == second) return true;
+    const auto& family = tracklet_stitch_config_.compatible_class_ids;
+    return first >= 0 && second >= 0 &&
+        std::find(family.begin(), family.end(), first) != family.end() &&
+        std::find(family.begin(), family.end(), second) != family.end();
+  }
+
   void assignGlobalIds(xd_uav_track::ManagedDetectionFrame* frame,
                        const std::string& source) {
     pruneVisualIdentities();
@@ -1628,6 +1641,11 @@ class XdUavTrackNode {
                                    const std::vector<float>* appearance) {
       if (entity == nullptr) return;
       if (entity->class_id < 0 && track.lifecycle_state == "confirmed")
+        entity->class_id = track.class_id;
+      if (upstream_class_consensus_ && track.detected && !track.predicted &&
+          track.detector_id_stable && track.lifecycle_state == "confirmed" &&
+          entity->source == source && entity->local_track_id == local_id &&
+          track.class_id >= 0 && classCompatible(entity->class_id, track.class_id))
         entity->class_id = track.class_id;
       if (track.detected && !track.predicted) {
         // Entity observation provenance is intentionally separate from
@@ -3120,6 +3138,7 @@ class XdUavTrackNode {
   std::mutex mutex_;
   bool publish_control_reference_{true};
   bool perception_only_{false};
+  bool upstream_class_consensus_{false};
   std::vector<std::string> allowed_image_sources_;
   int maximum_sources_{8};
   double source_idle_ttl_sec_{30.0};

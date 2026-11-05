@@ -53,6 +53,31 @@ TEST(MultiTrackManager, PreservesStableDetectorIdsAndConfirmsTracks) {
   EXPECT_TRUE(second.tracks.tracks[0].control_measurement_ready);
 }
 
+TEST(MultiTrackManager, DuplicateSubclassBoxesCannotCreateTwoIdentities) {
+  xd_uav_track::MultiTrackConfig config;
+  config.compatible_class_ids = {0, 1};
+  xd_uav_track::MultiTrackManager manager(config);
+  auto car = candidate(41, true, .4F, .9F);
+  car.class_id = 0;
+  auto duplicate = candidate(42, true, .401F, .7F);
+  duplicate.class_id = 1;
+  auto result = manager.update(frame(1., {duplicate, car}), 640, 480);
+  ASSERT_EQ(1U, result.tracks.tracks.size());
+  EXPECT_EQ(41, result.tracks.tracks.front().detector_track_id);
+  EXPECT_EQ(1U, manager.statistics().rejected_detections);
+}
+
+TEST(MultiTrackManager, DeduplicationPreservesAdjacentTargetsAndAirborneClass) {
+  xd_uav_track::MultiTrackConfig config;
+  config.compatible_class_ids = {0, 1};
+  xd_uav_track::MultiTrackManager manager(config);
+  auto car = candidate(41, true, .4F, .9F); car.class_id = 0;
+  auto nearby = candidate(42, true, .5F, .8F); nearby.class_id = 0;
+  auto airborne = candidate(43, true, .4F, .85F); airborne.class_id = 2;
+  auto result = manager.update(frame(1., {car, nearby, airborne}), 640, 480);
+  EXPECT_EQ(3U, result.tracks.tracks.size());
+}
+
 TEST(MultiTrackManager, VisualAssistancePreservesIdentityNotDetectorFreshness) {
   xd_uav_track::MultiTrackConfig config;
   config.compatible_class_ids = {0, 1, 2, 3};
@@ -541,6 +566,46 @@ TEST(MultiTrackManager, ChoosesClassAtConfirmationAndKeepsItThroughLaterFlips) {
   EXPECT_EQ(identity, later.tracks.tracks.front().track_id);
   EXPECT_EQ(0, later.tracks.tracks.front().class_id);
   EXPECT_EQ(0, later.candidates.candidates.front().class_id);
+}
+
+TEST(MultiTrackManager, TrustedUpstreamClassCorrectionKeepsIdentityAndIgnoresVisualClass) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.compatible_class_ids = {0, 1};
+  config.upstream_class_consensus = true;
+  xd_uav_track::MultiTrackManager manager(config);
+  auto observation = candidate(41, true, .4F, .9F);
+  observation.class_id = 0;
+  auto first = manager.update(frame(1., {observation}), 640, 480);
+  ASSERT_EQ(1U, first.tracks.tracks.size());
+  const auto identity = first.tracks.tracks.front().track_id;
+  observation.class_id = 1;
+  auto corrected = manager.update(frame(1.2, {observation}), 640, 480);
+  ASSERT_EQ(1U, corrected.tracks.tracks.size());
+  EXPECT_EQ(identity, corrected.tracks.tracks.front().track_id);
+  EXPECT_EQ(1, corrected.tracks.tracks.front().class_id);
+  EXPECT_EQ(1, corrected.candidates.candidates.front().class_id);
+  observation.measurement_source = "visual_tracker";
+  observation.class_id = 0;
+  auto visual = manager.update(frame(1.4, {observation}), 640, 480);
+  ASSERT_EQ(1U, visual.tracks.tracks.size());
+  EXPECT_EQ(1, visual.tracks.tracks.front().class_id);
+  EXPECT_EQ(identity, visual.tracks.tracks.front().track_id);
+}
+
+TEST(MultiTrackManager, UnstableIdsCannotOverrideConfirmedClassContract) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.compatible_class_ids = {0, 1};
+  config.upstream_class_consensus = true;
+  xd_uav_track::MultiTrackManager manager(config);
+  auto observation = candidate(-1, false, .4F, .9F);
+  observation.class_id = 0;
+  manager.update(frame(1., {observation}), 640, 480);
+  observation.class_id = 1;
+  auto result = manager.update(frame(1.2, {observation}), 640, 480);
+  ASSERT_EQ(1U, result.tracks.tracks.size());
+  EXPECT_EQ(0, result.tracks.tracks.front().class_id);
 }
 
 TEST(MultiTrackManager, ClassFlipDoesNotResetReacquisitionConfirmation) {

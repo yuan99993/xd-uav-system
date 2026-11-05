@@ -56,6 +56,12 @@ class TrackingOverlay:
         self._pixel_lock_max_unanchored_sec = max(0.2, min(3.0, float(
             rospy.get_param("~pixel_lock_max_unanchored_sec", 2.00))))
 
+        self._exact_pairing=bool(rospy.get_param('~synchronize_exact_frames',False))
+        self._render_lock=threading.Lock();self._last_rendered_stamp=-1
+        if self._exact_pairing:
+            from xd_uav_track.frame_pairing import FramePairer
+            self._pairer=FramePairer(wait=float(rospy.get_param('~pair_wait_sec',.3)),capacity=8)
+            self._pair_timer=rospy.Timer(rospy.Duration(.02),self._flush_pending)
         self._publisher = rospy.Publisher(self._output_topic, Image, queue_size=1)
         # Queue size one deliberately drops superseded frames instead of making
         # the display render an increasingly old backlog under CPU contention.
@@ -86,6 +92,8 @@ class TrackingOverlay:
                     message.header.stamp <= previous.header.stamp):
                 return
             self._latest_tracks = message
+            pair=self._pairer.tracks(message.header.stamp.to_nsec(),message) if self._exact_pairing else None
+        if pair is not None:self._publish_pair(pair)
 
     def _status_callback(self, message: TrackStatus) -> None:
         with self._lock:
@@ -301,16 +309,32 @@ class TrackingOverlay:
         self._pixel_predicted_ids = predicted_ids
         return boxes
 
-    def _image_callback(self, message: Image) -> None:
+    def _publish_pair(self,pair):
+        stamp,image,tracks=pair
+        with self._render_lock:
+            if stamp<=self._last_rendered_stamp:return
+            self._render_image(image,paired_tracks=tracks,force=True)
+            self._last_rendered_stamp=stamp
+
+    def _flush_pending(self,_event):
+        with self._lock:pair=self._pairer.expire(time.monotonic())
+        if pair is not None:self._publish_pair(pair)
+
+    def _image_callback(self,message: Image) -> None:
+        if not self._exact_pairing:return self._render_image(message)
+        with self._lock:pair=self._pairer.image(message.header.stamp.to_nsec(),message,time.monotonic())
+        if pair is not None:self._publish_pair(pair)
+
+    def _render_image(self, message: Image,paired_tracks=None,force=False) -> None:
         if self._publisher.get_num_connections() == 0:
             return
         now = time.monotonic()
         with self._lock:
             period = 1.0 / self._display_rate_hz
-            if now - self._last_publish_monotonic < period:
+            if not force and now - self._last_publish_monotonic < period:
                 return
             self._last_publish_monotonic = now
-            tracks = self._latest_tracks
+            tracks = paired_tracks if force else self._latest_tracks
             status = self._status
 
         fresh_tracks = None

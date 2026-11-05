@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import threading
+import json
 
 import cv2
 import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
+from std_msgs.msg import String
 
 
 class CombinedTrackingView:
@@ -39,6 +41,10 @@ class CombinedTrackingView:
         self._publisher = rospy.Publisher(
             self._output_topic, Image, queue_size=1, tcp_nodelay=True)
         self._subscribers = []
+        self._mission = None
+        mission_topic = str(rospy.get_param('~mission_status_topic', ''))
+        if mission_topic:
+            self._subscribers.append(rospy.Subscriber(mission_topic, String, self._mission_callback, queue_size=1))
         for enabled, topic, source in (
                 (self._enable_fixed, self._left_topic, "fixed"),
                 (self._enable_gimbal, self._right_topic, "gimbal")):
@@ -53,6 +59,17 @@ class CombinedTrackingView:
             "combined tracking view ready: fixed=%s gimbal=%s output=%s rate=%.1fHz",
             self._left_topic, self._right_topic, self._output_topic,
             self._rate_hz)
+
+    def _mission_callback(self, message):
+        try:
+            status = json.loads(message.data)
+            position = status['observer_ned_m']
+            text = '{}  {:.0f}%  N {:.1f} E {:.1f} Alt {:.1f}m'.format(
+                status['stage'], 100*status['progress'], position[0], position[1], -position[2])
+        except (ValueError, KeyError, TypeError, IndexError):
+            return
+        with self._lock:
+            self._mission = text
 
     def _image_callback(self, message: Image, source: str) -> None:
         with self._lock:
@@ -126,6 +143,14 @@ class CombinedTrackingView:
                 composite[:panel_height, x_offset:x_offset + panel_width] = panel
                 x_offset += panel_width
 
+        with self._lock:
+            mission = self._mission
+        if mission:
+            # Display-only footer; detector images and their pixel coordinates stay intact.
+            footer = np.full((36, composite.shape[1], 3), 25, dtype=np.uint8)
+            cv2.putText(footer, mission, (12, 25), cv2.FONT_HERSHEY_SIMPLEX,
+                        .65, (220, 240, 220), 1, cv2.LINE_AA)
+            composite = np.vstack((composite, footer))
         output = self._bridge.cv2_to_imgmsg(composite, encoding="bgr8")
         output.header.stamp = now
         output.header.frame_id = "tracking_visualization"

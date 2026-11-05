@@ -13,6 +13,7 @@ import numpy as np
 from cv_bridge import CvBridge
 from std_msgs.msg import Header
 from sar_yolo_detector.interactive_view import FramePair
+from sar_yolo_detector.msg import SmartTrackerState
 
 SPEC = importlib.util.spec_from_file_location('fusion_web', str(Path(__file__).resolve().parents[1]/'scripts/fusion_web_preview.py'))
 WEB = importlib.util.module_from_spec(SPEC)
@@ -42,6 +43,10 @@ class WebCommandTest(unittest.TestCase):
         self.preview.history = {'session:1': (self.header, 640, 480)}
         self.preview.max_age = .75
         self.preview.roi = Proxy()
+        self.preview.manual_select = Proxy()
+        self.preview.active_mode = 'fusion_tracker'
+        self.preview.mode_epoch = 0
+        self.preview.flight = {}
         self.messages = []
         self.preview.click = SimpleNamespace(get_num_connections=lambda: 1, publish=self.messages.append)
 
@@ -52,12 +57,65 @@ class WebCommandTest(unittest.TestCase):
         self.assertEqual(self.messages[0].header.frame_id, 'fixed_camera')
         self.assertEqual(self.messages[0].header.seq, 123)
 
+    def test_raw_and_stable_class_join_only_the_same_capture(self):
+        from std_msgs.msg import String
+        self.preview.labels=['car','tank','drone']
+        self.preview.classification=OrderedDict()
+        key=self.header['stamp']['secs']*1000000000+self.header['stamp']['nsecs']
+        self.preview.targets=OrderedDict({key:[dict(id=5,name='car',class_id=0)]})
+        self.preview.current=None
+        import json
+        payload=dict(schema_version=1,stamp=self.header['stamp'],objects=[dict(id=5,raw_class_id=1,
+                     stable_class_id=0,label_source='temporal_consensus')])
+        self.preview.classification_evidence(String(data=json.dumps(payload)))
+        self.assertEqual(self.preview.targets[key][0]['raw_name'],'tank')
+        self.assertEqual(self.preview.targets[key][0]['name'],'car')
+        other=self.preview._attach_classification(key+1,[dict(id=5,name='car',class_id=0)])
+        self.assertNotIn('raw_name',other[0])
+
+    def test_fusion_click_on_a_displayed_box_gets_synchronous_selection_result(self):
+        stamp = rospy.Time(self.header['stamp']['secs'], self.header['stamp']['nsecs']).to_nsec()
+        self.preview.targets = {stamp: [dict(id=5, kind='detector_track',
+                                           box=[30.,40.,40.,40.], confidence=.9)]}
+        status, result = self.preview.command(dict(action='click',frame_token='session:1',point=[50,60]))
+        self.assertEqual(status,200)
+        self.assertTrue(result['success'])
+        self.assertEqual(self.preview.roi.requests[0].header.stamp.to_nsec(),stamp)
+        self.assertEqual(self.preview.roi.requests[0].roi.width,40)
+        self.assertFalse(self.messages)
+
     def test_roi_and_clear_use_existing_service(self):
         status, result = self.preview.command(dict(action='roi', frame_token='session:1', roi=[40, 50, 20, 30]))
         self.assertEqual(status, 200)
         self.assertEqual(self.preview.roi.requests[0].roi.width, 20)
         self.assertEqual(self.preview.command(dict(action='clear'))[0], 200)
         self.assertTrue(self.preview.roi.requests[-1].clear_selection)
+
+    def test_manual_roi_binds_the_displayed_frame(self):
+        self.preview.active_mode = 'feature_tracker'
+        status, result = self.preview.command(dict(action='roi', frame_token='session:1', roi=[40, 50, 20, 30]))
+        self.assertEqual(status, 200)
+        self.assertTrue(result['success'])
+        request = self.preview.manual_select.requests[0]
+        self.assertEqual(request.header.frame_id, 'fixed_camera')
+        self.assertEqual(request.header.stamp.secs, self.header['stamp']['secs'])
+        self.assertEqual(request.roi.width, 20)
+
+    def test_frame_evidence_distinguishes_observed_and_predicted_lock(self):
+        self.preview.frames = FramePair()
+        state = SmartTrackerState()
+        state.header.frame_id = self.header['frame_id']
+        state.header.stamp = rospy.Time(self.header['stamp']['secs'], self.header['stamp']['nsecs'])
+        state.has_selection = True
+        state.tracking_active = True
+        state.prediction_only = True
+        state.measurement_current = False
+        state.control_measurement_ready = False
+        self.preview.state(state)
+        evidence = next(iter(self.preview.frames.metadata.values()))
+        self.assertTrue(evidence['tracking_active'])
+        self.assertFalse(evidence['measurement_current'])
+        self.assertFalse(evidence['control_target_valid'])
 
     def test_old_session_token_rejected(self):
         self.assertEqual(self.preview.command(dict(action='click', frame_token='old_session:1', point=[40, 50]))[0], 409)

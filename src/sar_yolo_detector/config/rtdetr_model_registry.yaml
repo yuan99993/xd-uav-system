@@ -1,0 +1,4 @@
+schema_version: 1
+# RT-DETR manifests are pinned at startup. Existing web hot-swap registry
+# accepts YOLO engines only; the new backend explicitly rejects hot swaps.
+models: {}

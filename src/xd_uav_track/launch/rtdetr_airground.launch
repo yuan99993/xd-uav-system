@@ -1,0 +1,74 @@
+<launch>
+  <arg name="UAV_NAME" default="ue_test"/>
+  <arg name="model_path"/>
+  <arg name="model_sha256"/>
+  <arg name="detector_config"/>
+  <arg name="tracker_config"/>
+  <arg name="use_gpu" default="true"/>
+  <arg name="inference_backend" default="rtdetr_v2"/>
+  <arg name="model_version" default="rtdetr_v2_airground_experiment"/>
+  <arg name="class_names" default="[car, tank, drone]"/>
+  <param name="/use_sim_time" value="false"/>
+  <include file="$(find sar_yolo_detector)/launch/xd_yolo_multi_source_detection_integration.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="config" value="$(arg detector_config)"/>
+    <arg name="overlay_config" value=""/>
+    <arg name="model_path" value="$(arg model_path)"/>
+    <arg name="model_sha256" value="$(arg model_sha256)"/>
+    <arg name="model_version" value="$(arg model_version)"/>
+    <arg name="model_registry" value="$(find sar_yolo_detector)/config/rtdetr_model_registry.yaml"/>
+    <arg name="inference_backend" value="$(arg inference_backend)"/>
+    <arg name="engine_path" value=""/>
+    <arg name="auto_export_engine" value="false"/>
+    <arg name="use_gpu" value="$(arg use_gpu)"/>
+    <arg name="maximum_batch_size" value="1"/>
+    <arg name="reid_enabled" value="false"/>
+    <arg name="pixel_assist_enabled" value="false"/>
+    <arg name="pause_without_subscribers" value="false"/>
+    <arg name="fixed_image_source" value="ue_down"/>
+    <arg name="gimbal_image_source" value="ue_front"/>
+    <arg name="fixed_output_topic" value="track/detections"/>
+    <arg name="gimbal_output_topic" value="track/detections"/>
+    <arg name="discovery_max_fps" value="5.0"/>
+    <arg name="priority_max_fps" value="5.0"/>
+    <arg name="standby_max_fps" value="5.0"/>
+  </include>
+  <group ns="$(arg UAV_NAME)">
+    <!-- Image-space identities only. No ground projection, depth truth,
+         odometry or follower is connected in the air/ground test. -->
+    <node pkg="xd_uav_track" type="xd_uav_track_node" name="track" output="screen" clear_params="true">
+      <rosparam command="load" file="$(find xd_uav_track)/config/track.yaml"/>
+      <rosparam command="load" file="$(arg tracker_config)"/>
+    </node>
+    <node pkg="xd_uav_track" type="tracking_overlay_node.py" name="down_overlay" output="screen">
+      <param name="image_source" value="ue_down"/>
+      <param name="synchronize_exact_frames" value="true"/>
+      <param name="pair_wait_sec" value="0.3"/>
+      <param name="display_rate_hz" value="10.0"/>
+      <rosparam param="class_names" subst_value="true">$(arg class_names)</rosparam>
+      <param name="input_image_topic" value="fixed_camera/image_raw"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="status_topic" value="track/status"/>
+      <param name="output_image_topic" value="fixed_camera/tracking_overlay"/>
+    </node>
+    <node pkg="xd_uav_track" type="tracking_overlay_node.py" name="front_overlay" output="screen">
+      <param name="image_source" value="ue_front"/>
+      <param name="synchronize_exact_frames" value="true"/>
+      <param name="pair_wait_sec" value="0.3"/>
+      <param name="display_rate_hz" value="10.0"/>
+      <rosparam param="class_names" subst_value="true">$(arg class_names)</rosparam>
+      <param name="input_image_topic" value="gimbal_camera/image_raw"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <param name="status_topic" value="track/status"/>
+      <param name="output_image_topic" value="gimbal_camera/tracking_overlay"/>
+    </node>
+    <node pkg="xd_uav_track" type="combined_tracking_view_node.py" name="tracking_view" output="screen">
+      <param name="publish_rate_hz" value="10.0"/>
+      <param name="enable_fixed" value="true"/><param name="enable_gimbal" value="true"/>
+      <param name="fixed_overlay_topic" value="fixed_camera/tracking_overlay"/>
+      <param name="gimbal_overlay_topic" value="gimbal_camera/tracking_overlay"/>
+      <param name="output_image_topic" value="tracking_visualization"/>
+      <param name="mission_status_topic" value="mission_status"/>
+    </node>
+  </group>
+</launch>

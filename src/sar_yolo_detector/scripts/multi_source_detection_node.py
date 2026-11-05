@@ -252,6 +252,8 @@ class MultiSourceDetectionNode:
         config["TRACKER_TYPE"] = "detection_only"
         inference_backend = str(rospy.get_param(
             "~inference_backend", "tensorrt_fp16") or "tensorrt_fp16").strip().lower()
+        backend_name = inference_backend if inference_backend in {"rtdetr_v2", "dfine", "deim_dfine"} else "ultralytics"
+        self._backend_name = backend_name
         model_path = str(rospy.get_param(
             "~model_path", config.get("SMART_TRACKER_GPU_MODEL_PATH", "")) or "").strip()
         self._configured_model_path = model_path
@@ -339,9 +341,9 @@ class MultiSourceDetectionNode:
             self._source_model_sha256 = sha256_file(Path(model_path).expanduser())
         if not requested_model:
             raise RuntimeError("~model_path or SmartTracker GPU model path is required")
-        self._backend = create_backend("ultralytics", config=config)
+        self._backend = create_backend(backend_name, config=config)
         if not self._backend.is_available:
-            raise RuntimeError("Ultralytics backend is unavailable on this host")
+            raise RuntimeError("Detection backend is unavailable: " + backend_name)
         device_preference = (
             DevicePreference.CUDA if bool(rospy.get_param("~use_gpu", True))
             else DevicePreference.CPU
@@ -389,6 +391,9 @@ class MultiSourceDetectionNode:
         self._backend_config = deepcopy(config)
         self._class_names = self._model_registry.get(self._active_model_id, {}).get(
             "class_names", [])
+        if not self._class_names:
+            labels = self._backend.get_model_labels()
+            self._class_names = [labels[i] for i in sorted(labels)]
         self._model_snapshot = (self._runtime, self._active_model_id,
             self._source_model_sha256, self._model_epoch, self._class_names,
             self._configured_model_path)
@@ -1451,6 +1456,9 @@ class MultiSourceDetectionNode:
         # Public session/version/TTL validation belongs to the mode manager.
         # Refuse internal commands not associated with its current live session.
         state = self._perception_state
+        if getattr(self, "_backend_name", "ultralytics") != "ultralytics":
+            self._switch_failed(command, "UNSUPPORTED_BACKEND", "RT-DETRv2 model changes require a detector restart")
+            return
         if not self._startup_ready:
             self._switch_failed(command, "BUSY", "startup warmup is not complete")
             return

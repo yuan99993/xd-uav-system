@@ -7,6 +7,12 @@ from .detection_backend import DetectionBackend, DevicePreference
 
 
 AVAILABLE_BACKENDS = {
+    "dfine": ("sar_yolo_detector.pixeagle.backends.dfine_backend", "DFineBackend"),
+    "deim_dfine": ("sar_yolo_detector.pixeagle.backends.dfine_backend", "DFineBackend"),
+    "rtdetr_v2": (
+        "sar_yolo_detector.pixeagle.backends.rtdetr_backend",
+        "RTDetrBackend",
+    ),
     "ultralytics": (
         "sar_yolo_detector.pixeagle.backends.ultralytics_backend",
         "UltralyticsBackend",

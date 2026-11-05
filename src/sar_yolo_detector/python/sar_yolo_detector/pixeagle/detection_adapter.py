@@ -31,6 +31,10 @@ class NormalizedDetection:
     # ``predict`` results (notably OBB) may not have a persistent identity.
     # Synthetic list-position ids must never be treated as stable IDs.
     track_id_is_stable: bool = True
+    # Capture-local raw classifier evidence remains available after a temporal
+    # label correction; confidence continues to mean current proposal score.
+    raw_class_id: Optional[int] = None
+    class_label_source: str = 'detector'
 
 
 def to_tracking_state_rows(detections: Sequence[NormalizedDetection]) -> List[List[float]]:

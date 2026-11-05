@@ -11,8 +11,8 @@ if [[ ! -f "$node_script" ]]; then
 fi
 
 python_executable="${SAR_YOLO_SMART_PYTHON:-}"
+workspace_dir="$(cd "$package_dir/../.." 2>/dev/null && pwd || true)"
 if [[ -z "$python_executable" ]]; then
-  workspace_dir="$(cd "$package_dir/../.." 2>/dev/null && pwd || true)"
   if [[ -x "$workspace_dir/.venv-fusion/bin/python" ]]; then
     # The isolated PT experiment needs CUDA and actual contrib KCF/CSRT.
     # An explicit interpreter remains the highest-priority deployment choice.
@@ -22,6 +22,13 @@ if [[ -z "$python_executable" ]]; then
   else
     python_executable="python3"
   fi
+fi
+
+# D-FINE's interpreter currently has OpenCV without KCF/CSRT.  The approved
+# fusion environment supplies contrib OpenCV for the preserved manual modes.
+fusion_site="$workspace_dir/.venv-fusion/lib/python3.10/site-packages"
+if [[ "$python_executable" == "$workspace_dir/.venv-dfine/bin/python" && -d "$fusion_site" ]]; then
+  export PYTHONPATH="$fusion_site${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
 ros_distro="${ROS_DISTRO:-noetic}"

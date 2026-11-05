@@ -1,0 +1,32 @@
+# Consume the existing SAR observation stream; no second inference process.
+runtime:
+  perception_only: true
+  publish_control_reference: false
+  publish_rate_hz: 5.0
+interfaces:
+  input:
+    detections: detect/input/detections_2d
+tracker:
+  enabled_at_startup: false
+  input_timeout_sec: 1.0
+  selection:
+    auto_select: false
+  sources:
+    allowed: [fixed_rgb]
+    maximum_count: 1
+    idle_ttl_sec: 30.0
+  confidence:
+    new_track: 0.25
+    update: 0.10
+  association:
+    high_confidence_threshold: 0.25
+    compatible_class_ids: [0, 1]
+    duplicate_iou_threshold: 0.85
+  lifecycle:
+    confirmation_hits: 2
+    reference_fps: 5.0
+    occlusion_timeout_sec: 0.6
+    reacquisition_after_sec: 0.6
+    removal_timeout_sec: 5.0
+  global_identity:
+    cross_source_metric_enabled: false
