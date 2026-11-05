@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>target_geolocation</name>
+  <version>1.0.0</version>
+  <description>
+    由飞机 GPS + 云台姿态 + 测距仪斜距解算地面目标的 GPS 坐标（ROS1 / MAVROS）。
+  </description>
+  <maintainer email="dev@example.com">uav team</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>message_generation</build_depend>
+
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>sar_yolo_detector</depend>
+  <depend>xd_uav_track</depend>
+  <exec_depend>message_runtime</exec_depend>
+  <!-- 可选：仅在启用 ~det_topic 图像偏角修正时需要 -->
+  <exec_depend>vision_msgs</exec_depend>
+
+  <export/>
+</package>

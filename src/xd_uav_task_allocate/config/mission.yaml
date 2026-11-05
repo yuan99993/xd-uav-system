@@ -7,11 +7,21 @@ mission:
   # xd_uav_world_tf_manager owns this frame. The configured main republished
   # Odometry for every aircraft must already use this header.frame_id.
   shared_frame: world
+  # Must match xd_uav_world_tf_manager/config/world.yaml. NavSatFix target
+  # inputs are projected into this same WGS84 ENU tangent plane before task
+  # confirmation and allocation.
+  georeference:
+    datum:
+      latitude: -37.71775430000001
+      longitude: 144.8345184
+      altitude: -6.409311559051275
+    position: [0.0, 0.0, 0.0]
+    enu_to_world_yaw: 0.0
 
 # ControlState is retained only as an availability/health gate. Its position and
 # orientation fields are deliberately not read by this package.
 vehicle_health:
-  timeout_sec: 0.50
+  timeout_sec: 5.0
   require_state_valid: true
   require_localization_valid: true
   require_odometry_fresh: true

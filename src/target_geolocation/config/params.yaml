@@ -1,0 +1,68 @@
+# target_geolocation 参数表（全部可用 rosparam / launch 覆盖）
+# 加载方式见 launch/target_geolocation.launch
+
+# ---------------- 命名空间与话题（多机时改 uav_ns 即可） ----------------
+uav_ns: "/uav1"
+# 各话题留空则按 uav_ns 自动拼接，例如 /uav1/mavros/global_position/global
+gps_topic: ""              # NavSatFix  飞机 GPS（基准点）
+heading_topic: ""          # Float64    罗盘航向 compass_hdg（#285 未锁 yaw 时必需）
+mavlink_topic: ""          # Mavlink    原始 MAVLink 帧，用于解析 #285 云台姿态
+range_topic: ""            # Range      测距仪斜距，默认 /uav1/mavros/distance_sensor/laser_1d
+local_pose_topic: ""       # PoseStamped 仅用于把结果画到 RViz
+gimbal_att_topic: ""       # 非空则改用它当姿态源（仿真/其他飞控）
+# att_msg_type 可选值：
+#   QuaternionStamped  世界系(或已锁 yaw)四元数
+#   Imu                sensor_msgs/Imu 的 orientation，当机体固连光轴用
+#   Float64MultiArray  [yaw, pitch, roll] deg，如 /uav1/gimbal/attitude（推荐用于本仿真）
+att_msg_type: "QuaternionStamped"
+# 欧拉角来源专用：该 yaw 是否相对机头(机体系)。
+#   /uav1/gimbal/attitude 实测为机体系：world_yaw = yaw + compass_hdg
+gimbal_yaw_is_body: true
+# pitch 符号：true = 抬头为正(上正)；false = 下俯为正
+gimbal_pitch_up_positive: true
+det_topic: ""              # 检测框来源，用于目标框中心偏角修正
+det_msg_type: "TrackedDetection2DArray" # TrackedDetection2DArray / DetectionArray / BoundingBox2D
+det_class_id: -1            # 参与云台定位的类别；-1 表示不筛选
+det_sensor_id: "gimbal_camera"
+output_prefix: ""          # 留空 = /<uav_ns>/target
+
+# ---------------- 安装偏差（光轴相对云台基准的固定偏差，标定后填这里） ----------------
+boresight_roll_deg: 0.0
+boresight_pitch_deg: 0.0
+boresight_yaw_deg: 0.0
+sensor_axis: "x"           # 光轴对应的机体系轴：x(默认,镜头朝外) / y / z
+
+# ---------------- 有效性门限 ----------------
+publish_rate: 10.0         # 解算输出频率 [Hz]
+max_input_age: 0.5         # 任一输入超过该时长未更新则不出解 [s]
+max_skew: 0.20             # 三路输入时间戳最大允许偏差 [s]，飞机在动时很关键
+min_range: 0.5             # 测距下限 [m]
+max_range: 3000.0          # 测距上限 [m]
+# 测距零偏补偿 [m]。激光的读数是"到第一个表面的距离"，靶标有体积时必然偏短。
+# 本仿真以 uav2 为靶实测：射线在 47.9 m 处被机体外壳挡住，而它中心在 49.5 m，
+# 即径向偏短 1.28~1.63 m ≈ 机体半径。想报"靶标中心"而不是"表面"时才填这个值
+# （uav2 填 +1.5）；目标是地面点时保持 0。这是靶标尺寸补偿，不是传感器标定。
+range_bias: 0.0
+require_downward: true     # 光轴指向地平线以上时丢弃（不是地面目标）
+max_ground_range: 5000.0   # 水平距离上限 [m]
+smooth_alpha: 0.4          # 输出 EMA 平滑系数，0=关闭
+
+# ---------------- 图像偏角修正（可选，需 det_topic） ----------------
+use_img_offset: true
+fov_x_deg: 45.0            # 与云台控制节点 fov_x_deg 保持一致
+image_width: 1280
+image_height: 720
+max_img_offset_deg: 20.0   # 目标离光轴超过该角度则不修正（测距点可能不是目标）
+det_timeout: 0.3           # 检测框过期时间 [s]
+
+# ---------------- 输出 ----------------
+marker_frame: "map"        # 与 mavros local_position 的坐标系一致
+marker_scale: 3.0
+range_msg_type: "Range"    # 或 "Float32"（测距用 std_msgs/Float32 发布时）
+# 输入没有新数据时是否跳过发布（版本号比对，不做任何解算）。
+# 默认 true：静止悬停时解算线程基本零占用（实测空转 tick 0.03 µs）。
+# 若下游依赖"固定频率一定有消息"，设为 false 保持恒定频率输出。
+publish_only_on_change: true
+# 是否发布 RViz Marker。只想拿坐标、不要可视化时设 false，省掉每个周期的
+# Marker 组装与序列化（多机同时跑时收益更明显）。
+enable_marker: true
