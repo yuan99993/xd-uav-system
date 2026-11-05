@@ -1,0 +1,20 @@
+# Runtime used by the packaged D-FINE-S V3 four-mode entry (Python 3.10).
+# Install torch/torchvision first using the setup script's CPU/CUDA wheel index.
+torch==2.6.0
+torchvision==0.21.0
+numpy==2.2.6
+opencv-python==4.10.0.84
+opencv-contrib-python==4.10.0.84
+ultralytics==8.4.118
+safetensors==0.8.0
+faster-coco-eval==1.8.0
+lap==0.5.13
+PyYAML>=6,<7
+Pillow>=10,<13
+scipy>=1.10,<2
+rospkg>=1.5,<2
+catkin-pkg>=1,<2
+loguru==0.7.3
+calflops==0.3.2
+transformers>=4.57,<5
+tensorboard>=2.14,<3

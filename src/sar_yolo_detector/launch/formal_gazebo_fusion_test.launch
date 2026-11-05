@@ -1,6 +1,6 @@
 <launch>
   <!-- Formal scene/assets, experimental SAR/XD binaries. No source changes to XD. -->
-  <arg name="formal_track_package" default="/home/promise/mrs_test/src/xd_uav_track" />
+  <arg name="formal_track_package" default="$(find xd_uav_track)" />
   <arg name="world" default="$(arg formal_track_package)/worlds/moving_uav_vehicle_search.world" />
   <arg name="gui" default="true" />
   <arg name="show_image" default="true" />
@@ -8,7 +8,7 @@
   <arg name="web_port" default="8787" />
   <arg name="tracking_mode" default="FusionTracker" />
   <arg name="python_executable" default="" />
-  <arg name="viewer_config" default="$(find sar_yolo_detector)/../../logs/fusion_viewer_config" />
+  <arg name="viewer_config" default="$(env HOME)/.ros/sar_yolo_detector/fusion_viewer_config" />
 
   <env name="GAZEBO_MODEL_PATH" value="$(arg formal_track_package)/models:$(optenv GAZEBO_MODEL_PATH /usr/share/gazebo-11/models)" />
   <env name="GAZEBO_MODEL_DATABASE_URI" value="" />

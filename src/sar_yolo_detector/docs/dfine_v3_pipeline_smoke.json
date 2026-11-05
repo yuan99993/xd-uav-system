@@ -1,0 +1,107 @@
+{
+  "passed": true,
+  "test": "ROS/Web four-mode smoke; no flight or accuracy claim",
+  "modes": {
+    "smart_tracker": {
+      "selected_via_web": true,
+      "valid_lock_web_updates": 36,
+      "web_updates": 38
+    },
+    "feature_tracker": {
+      "selected_via_web": true,
+      "valid_lock_web_updates": 36,
+      "web_updates": 37
+    },
+    "color_tracker": {
+      "selected_via_web": true,
+      "valid_lock_web_updates": 36,
+      "web_updates": 38
+    },
+    "fusion_tracker": {
+      "selected_via_web": true,
+      "valid_lock_web_updates": 35,
+      "web_updates": 39
+    }
+  },
+  "stage_counts_by_mode": {
+    "smart_tracker": {
+      "backend_call": 44,
+      "smart_manager_update": 43,
+      "tracked_output": 43,
+      "xd_observation_output": 43,
+      "selected_output": 43
+    },
+    "feature_tracker": {
+      "backend_call": 1,
+      "camera_motion_update": 39,
+      "manual_feature_update": 39,
+      "tracked_output": 39,
+      "xd_observation_output": 39,
+      "selected_output": 39
+    },
+    "color_tracker": {
+      "camera_motion_update": 40,
+      "manual_colour_update": 40,
+      "tracked_output": 40,
+      "xd_observation_output": 40,
+      "selected_output": 40
+    },
+    "fusion_tracker": {
+      "camera_motion_update": 44,
+      "visual_flow_update": 87,
+      "fusion_candidate_filter": 87,
+      "fusion_output_deduplication": 87,
+      "tracked_output": 87,
+      "selected_output": 87,
+      "backend_call": 43,
+      "fusion_smart_manager_update": 43,
+      "xd_observation_output": 43,
+      "fusion_smart_manager_seed": 1,
+      "fusion_roi_color_seed": 1,
+      "fusion_roi_color_update": 40,
+      "fusion_arbiter_step": 79,
+      "fusion_feature_update": 40
+    }
+  },
+  "backend_counts": {
+    "dfine_infer": 88,
+    "configured_nms": 88,
+    "external_tracker_update": 88,
+    "temporal_class_consensus": 88
+  },
+  "xd": {
+    "counts": {
+      "input_frames": 169,
+      "input_candidates": 345,
+      "output_frames": 169,
+      "output_tracks": 318,
+      "classification_matches": 243
+    },
+    "candidate_sources": {
+      "detector": 270,
+      "visual_tracker": 75
+    },
+    "lifecycle_observations": {
+      "tentative": 6,
+      "confirmed": 243,
+      "occluded": 3,
+      "lost": 66
+    },
+    "bridge_to_xd": {
+      "p50_ms": 0.27725400013878243,
+      "p95_ms": 0.4984560000593774
+    },
+    "capture_to_xd": {
+      "p50_ms": 59.561253,
+      "p95_ms": 116.14036499999999
+    },
+    "matched_latency_samples": 169,
+    "notes": "Passive topic arrival timings; lifecycle counts are observations, not unique IDs. Standalone manual visual ROIs do not create detector identities in XD."
+  },
+  "smart_manager": {
+    "update_calls": 86,
+    "selected_id": 1,
+    "kalman_active": true,
+    "appearance_active": true
+  }
+}

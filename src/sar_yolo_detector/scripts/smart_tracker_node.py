@@ -1103,6 +1103,10 @@ class SmartTrackerNode:
             self._record_stage('fusion_arbiter_step', source=result.source,
                 observed=bool(result.observed), detector_updated=bool(capture_is_current),
                 selected_id=result.public_id)
+            if self._fusion.diagnostics.get('local_tracker_executed'):
+                self._record_stage('fusion_feature_update',
+                    algorithm=getattr(self._fusion.tracker, 'algorithm', 'unknown'),
+                    result=self._fusion.diagnostics.get('local_tracker', 'unknown'))
             if self._fusion.diagnostics.get('identity_rebound'):
                 self._fusion.diagnostics['lk_reseeded'] = self._flow.reseed_identity(
                     frame, stamp, self._fusion.diagnostics['previous_local_id'], result.local_id,

@@ -1,0 +1,27 @@
+<launch>
+  <!-- Complete image-space perception chain; camera/flight controller external. -->
+  <arg name="UAV_NAME" default="uav1" />
+  <arg name="instance_name" default="dfine_v3" />
+  <arg name="input_image_topic" default="/$(arg UAV_NAME)/fixed_camera/image_raw" />
+  <arg name="camera_info_topic" default="/$(arg UAV_NAME)/fixed_camera/camera_info" />
+  <arg name="camera_motion_fixed_frame" default="world" />
+  <arg name="image_width" default="960" />
+  <arg name="image_height" default="540" />
+  <arg name="web_port" default="8787" />
+  <arg name="bind_address" default="127.0.0.1" />
+  <arg name="use_gpu" default="true" />
+  <arg name="python_executable" default="" />
+  <include file="$(find sar_yolo_detector)/launch/ue_dfine_v3_legacy_four_modes.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="instance_name" value="$(arg instance_name)" />
+    <arg name="input_image_topic" value="$(arg input_image_topic)" />
+    <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+    <arg name="camera_motion_fixed_frame" value="$(arg camera_motion_fixed_frame)" />
+    <arg name="image_width" value="$(arg image_width)" />
+    <arg name="image_height" value="$(arg image_height)" />
+    <arg name="web_port" value="$(arg web_port)" />
+    <arg name="bind_address" value="$(arg bind_address)" />
+    <arg name="use_gpu" value="$(arg use_gpu)" />
+    <arg name="python_executable" value="$(arg python_executable)" />
+  </include>
+</launch>

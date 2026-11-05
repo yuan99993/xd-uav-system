@@ -129,6 +129,7 @@ install(FILES requirements-reid-onnx-cuda12.txt
 )
 
 catkin_install_python(PROGRAMS
+  scripts/px4_mission.py
   scripts/configure_px4_sitl.py
   scripts/record_tracking_decisions.py
   scripts/render_plane_catapult_sdf.py
@@ -172,6 +173,7 @@ if(CATKIN_ENABLE_TESTING)
   add_rostest(test/perception_visual_identity.test)
   add_rostest(test/perception_storage.test)
   catkin_add_nosetests(test/test_pixel_lock_overlay.py)
+  catkin_add_nosetests(test/test_airground_mission.py)
   catkin_add_nosetests(test/test_combined_tracking_view.py)
   catkin_add_nosetests(test/test_sot_tracker.py)
   catkin_add_nosetests(test/test_perception_modes.py)

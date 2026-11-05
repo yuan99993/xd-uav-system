@@ -4,3 +4,8 @@ __pycache__/
 .coverage
 htmlcov/
 runs/
+
+# D-FINE data/transforms are runtime Python modules, not local datasets.
+!third_party/D-FINE/src/data/
+!third_party/D-FINE/src/data/**/
+!third_party/D-FINE/src/data/**/*.py

@@ -305,20 +305,30 @@ install(TARGETS sar_yolo_postprocessor sar_yolo_inference_backend sar_model_inte
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
-install(DIRECTORY config launch training models docs web
+install(DIRECTORY config launch training models docs web third_party tools
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
 )
 install(DIRECTORY archive/launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/archive
 )
+install(DIRECTORY test/fixtures
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/test
+)
 install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md
-  requirements-smart-tracker.txt requirements-tensorrt-cu12.txt
+  requirements-smart-tracker.txt requirements-tensorrt-cu12.txt requirements-dfine-v3.txt
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/LICENSES
 )
 install(PROGRAMS
+  scripts/setup_dfine_v3.sh
+  scripts/check_dfine_v3.py
+  scripts/verify_dfine_pipeline.py
+  scripts/ue_camera_bridge
+  scripts/install_ue_capture.py
   scripts/sar_yolo_smart_tracker
   scripts/sar_yolo_multi_source_detection
   scripts/smart_tracker_node.py
@@ -370,6 +380,8 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_fusion_adapter.py)
   catkin_add_nosetests(test/test_pipeline_integrity.py)
   catkin_add_nosetests(test/test_dfine_postprocess.py)
+  catkin_add_nosetests(test/test_dfine_deployment.py)
+  catkin_add_nosetests(test/test_ue_capture_install.py)
   catkin_add_nosetests(test/test_temporal_detection_evidence.py)
   catkin_add_nosetests(test/test_roi_background_verifier.py)
   catkin_add_nosetests(test/test_shared_detector_outputs.py)

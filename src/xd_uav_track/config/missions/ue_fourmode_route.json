@@ -1,0 +1,41 @@
+{
+  "mission": {
+    "home_ned_m": [
+      -55,
+      -35,
+      -0.7
+    ],
+    "cruise_altitude_m": 30,
+    "vertical_speed_mps": 3,
+    "speed_mps": 5,
+    "hover_sec": 5,
+    "waypoints_ned_m": [
+      [
+        -25,
+        -20,
+        -30
+      ],
+      [
+        30,
+        -20,
+        -30
+      ],
+      [
+        30,
+        25,
+        -35
+      ],
+      [
+        -25,
+        25,
+        -35
+      ]
+    ],
+    "hover_seconds_by_waypoint": [
+      5,
+      5,
+      45,
+      5
+    ]
+  }
+}

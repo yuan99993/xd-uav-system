@@ -1,0 +1,287 @@
+{
+  "name": "AirGroundRangeUE55",
+  "units": "meters_NED",
+  "duration_sec": 180,
+  "observer": {
+    "name": "Observer",
+    "speed_mps": 5,
+    "route": [
+      [
+        -55,
+        -35,
+        -30
+      ],
+      [
+        55,
+        -35,
+        -30
+      ],
+      [
+        55,
+        40,
+        -40
+      ],
+      [
+        -55,
+        40,
+        -40
+      ],
+      [
+        -55,
+        -35,
+        -30
+      ]
+    ]
+  },
+  "entities": [
+    {
+      "id": "AG_car_01",
+      "class": "car",
+      "position": [
+        -30,
+        -15,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.8,
+        1.6
+      ],
+      "velocity": [
+        0.6,
+        0,
+        0
+      ],
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV"
+    },
+    {
+      "id": "AG_car_02",
+      "class": "car",
+      "position": [
+        10,
+        20,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.8,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_Hatchback.SM_Hatchback"
+    },
+    {
+      "id": "AG_tank_02",
+      "class": "tank",
+      "position": [
+        -15,
+        15,
+        -2.1833214176387967
+      ],
+      "size": [
+        3.1475456056474704,
+        7.999999999999999,
+        4.3666428352775934
+      ],
+      "velocity": [
+        0,
+        -0.4,
+        0
+      ],
+      "mesh": "/Game/AirGround/DetailedVehicles/Tank/SM_AG_DetailedTank.SM_AG_DetailedTank",
+      "asset_license": "CC-BY-4.0; SourceAssets/DetailedVehicles/CREDITS.txt"
+    },
+    {
+      "id": "AG_tank_01",
+      "class": "tank",
+      "position": [
+        35,
+        0,
+        -2.1833214176387967
+      ],
+      "size": [
+        3.1475456056474704,
+        7.999999999999999,
+        4.3666428352775934
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "mesh": "/Game/AirGround/DetailedVehicles/Tank/SM_AG_DetailedTank.SM_AG_DetailedTank",
+      "asset_license": "CC-BY-4.0; SourceAssets/DetailedVehicles/CREDITS.txt"
+    },
+    {
+      "id": "AG_tank_03",
+      "class": "tank",
+      "position": [
+        0,
+        -25,
+        -1.6
+      ],
+      "size": [
+        7,
+        2.5,
+        3.2
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "mesh": "/Game/AirGround/FreeAssets/Tanks/SM_QTank4.SM_QTank4"
+    },
+    {
+      "id": "AG_drone_01",
+      "class": "drone",
+      "position": [
+        20,
+        -10,
+        -25
+      ],
+      "size": [
+        1.5,
+        1.5,
+        0.4
+      ],
+      "velocity": [
+        0,
+        0.15,
+        0
+      ]
+    },
+    {
+      "id": "AG_drone_02",
+      "class": "drone",
+      "position": [
+        -25,
+        25,
+        -45
+      ],
+      "size": [
+        1.5,
+        1.5,
+        0.4
+      ],
+      "velocity": [
+        0.15,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "AG_drone_03",
+      "class": "drone",
+      "position": [
+        0,
+        35,
+        -15
+      ],
+      "size": [
+        1.5,
+        1.5,
+        0.4
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "AG_car_03",
+      "class": "car",
+      "position": [
+        30,
+        30,
+        -0.6196161939088909
+      ],
+      "size": [
+        2.7422194823578914,
+        4.7,
+        1.2392323878177818
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "mesh": "/Game/AirGround/DetailedVehicles/Car/SM_AG_DetailedCar.SM_AG_DetailedCar",
+      "asset_license": "CC-BY-4.0; SourceAssets/DetailedVehicles/CREDITS.txt"
+    },
+    {
+      "id": "AG_ObserverDrone",
+      "class": "drone",
+      "position": [
+        -55,
+        -35,
+        -0.7
+      ],
+      "size": [
+        1.5,
+        1.5,
+        0.4
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "role": "observer"
+    }
+  ],
+  "asset_meshes": {
+    "car": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV",
+    "tank": "/Game/AirGround/FreeAssets/Tanks/SM_QTank.SM_QTank"
+  },
+  "note": "Detailed Khronos concept car and dannzjs M1A2 tanks, 2K PBR textures; other vehicle types retained for visual variety.",
+  "level_path": "/Game/AirGround/AirGroundRange",
+  "create_level": true,
+  "require_airsim": false,
+  "mission": {
+    "home_ned_m": [
+      -55,
+      -35,
+      -0.7
+    ],
+    "cruise_altitude_m": 30,
+    "vertical_speed_mps": 3,
+    "speed_mps": 5,
+    "hover_sec": 5,
+    "waypoints_ned_m": [
+      [
+        -25,
+        -20,
+        -30
+      ],
+      [
+        30,
+        -20,
+        -30
+      ],
+      [
+        30,
+        25,
+        -35
+      ],
+      [
+        -25,
+        25,
+        -35
+      ]
+    ],
+    "hover_seconds_by_waypoint": [
+      5,
+      5,
+      45,
+      5
+    ]
+  },
+  "observer_visual_actor": "AG_ObserverDrone",
+  "four_mode_test_note": "Same UE AirGroundRange scene and assets; 45 s PX4 hover at inspection waypoint 3 allows SmartTracker, FeatureTracker, ColorTracker, and FusionTracker to be sampled on the same view."
+}

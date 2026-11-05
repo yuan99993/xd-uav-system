@@ -1,0 +1,18 @@
+<launch>
+  <arg name="px4_autopilot_dir" default="$(optenv PX4_AUTOPILOT_DIR)"/>
+  <include file="$(find xd_uav_track)/launch/px4_mavros_uav1_sitl.launch">
+    <arg name="px4_autopilot_dir" value="$(arg px4_autopilot_dir)"/>
+    <arg name="vehicle" value="iris"/><arg name="model_name" value="airground_iris"/>
+    <arg name="UAV_NAME" value="uav1"/><arg name="gui" value="false"/>
+    <arg name="interactive" value="false"/><arg name="z" value="0.2"/>
+  </include>
+  <!-- Native UE captures and estimator stamps must share wall time. -->
+  <param name="/use_sim_time" value="false"/>
+  <param name="/airground_px4_simulation" value="true"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="airground_body_tf"
+        args="0 0 0 0 0 0 uav1/base_link base_link"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="airground_body_frd_tf"
+        args="0 0 0 0 0 3.141592653589793 uav1/base_link uav1/base_link_frd"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="airground_odom_ned_tf"
+        args="0 0 0 1.570796326794897 0 3.141592653589793 uav1/odom uav1/odom_ned"/>
+</launch>

@@ -13,7 +13,12 @@ fi
 python_executable="${SAR_YOLO_SMART_PYTHON:-}"
 workspace_dir="$(cd "$package_dir/../.." 2>/dev/null && pwd || true)"
 if [[ -z "$python_executable" ]]; then
-  if [[ -x "$workspace_dir/.venv-fusion/bin/python" ]]; then
+  packaged_runtime="${SAR_DFINE_ENV:-${XDG_DATA_HOME:-$HOME/.local/share}/sar_yolo_detector/dfine-v3}"
+  if [[ -x "$packaged_runtime/bin/python" ]]; then
+    python_executable="$packaged_runtime/bin/python"
+  elif [[ -x "$workspace_dir/.venv-dfine/bin/python" ]]; then
+    python_executable="$workspace_dir/.venv-dfine/bin/python"
+  elif [[ -x "$workspace_dir/.venv-fusion/bin/python" ]]; then
     # The isolated PT experiment needs CUDA and actual contrib KCF/CSRT.
     # An explicit interpreter remains the highest-priority deployment choice.
     python_executable="$workspace_dir/.venv-fusion/bin/python"

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+package_dir="$(rospack find sar_yolo_detector)"
+exec "${SAR_UE_ROS_PYTHON:-/usr/bin/python3}" "$package_dir/tools/ue/ue_native_bridge.py" "$@"

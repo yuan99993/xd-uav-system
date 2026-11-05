@@ -317,7 +317,8 @@ class BoxFusion:
             self.tracker.reset()
             if dt > self.max_gap:
                 self.pending_count = 0
-        local = self.tracker.update(frame) if not correction and not self._long_recovery else None
+        self.diagnostics['local_tracker_executed'] = not correction and not self._long_recovery
+        local = self.tracker.update(frame) if self.diagnostics['local_tracker_executed'] else None
         self.diagnostics['local_tracker'] = ("cached_same_capture" if correction else
             "short_tracking_ended" if self._long_recovery else
             "frame_gap_reset" if dt > self.max_gap else

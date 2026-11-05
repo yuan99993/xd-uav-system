@@ -37,3 +37,12 @@ Market-1501 model-zoo checkpoint.  Torchreid/OSNet are MIT-licensed; the
 upstream project and license are available at
 <https://github.com/KaiyangZhou/deep-person-reid>.  This package verifies the
 checkpoint SHA-256 at startup and does not download model files implicitly.
+
+## D-FINE native runtime
+
+The packaged D-FINE-S V3 entry includes unmodified native Python source and YAML
+configuration from D-FINE commit `956d1709314c2c6a4df6f34de232054578a7449f`.
+The source is distributed under Apache-2.0; see `third_party/D-FINE/LICENSE`
+and upstream attribution in the source headers. The trained safetensors are
+loaded locally with per-artifact and per-source SHA256 checks. Ultralytics is
+still used for BoT-SORT, not for detection in this entry.

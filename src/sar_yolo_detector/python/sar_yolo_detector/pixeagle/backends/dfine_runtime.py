@@ -14,11 +14,33 @@ WORKSPACE=Path(__file__).resolve().parents[6]
 REPOS={'dfine':'D-FINE','deim_dfine':'DEIM'}
 
 
+def package_root():
+    source_package = Path(__file__).resolve().parents[4]
+    if (source_package/'package.xml').is_file():
+        return source_package
+    import rospkg
+    return Path(rospkg.RosPack().get_path('sar_yolo_detector')).resolve()
+
+
+def native_repository(variant, declared_root=None):
+    packaged = package_root()/'third_party'/REPOS[variant]
+    workspace = WORKSPACE/'third_party'/REPOS[variant]
+    if declared_root is None:
+        return packaged if packaged.is_dir() else workspace
+    if declared_root == 'package://sar_yolo_detector/third_party/'+REPOS[variant]:
+        return packaged
+    # Keep historical training bundles usable, without accepting arbitrary
+    # manifest-supplied Python code locations.
+    if Path(declared_root).is_absolute() and Path(declared_root).resolve() == workspace.resolve():
+        return workspace
+    raise ValueError('Unapproved native framework root')
+
+
 def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def config(variant,path=None):
-    repo=WORKSPACE/'third_party'/REPOS[variant]
+def config(variant,path=None,repository=None):
+    repo=Path(repository) if repository is not None else native_repository(variant)
     if str(repo) not in sys.path:sys.path.insert(0,str(repo))
     module=importlib.import_module('src.core' if variant=='dfine' else 'engine.core')
     if not Path(module.__file__).resolve().is_relative_to(repo):raise ValueError('Native framework namespace collision')
@@ -100,13 +122,13 @@ def load_bundle(path,device):
     for name,expected in manifest['files'].items():
         p=path.parent/name
         if p.is_symlink() or not p.is_file() or digest(p)!=expected:raise ValueError('D-FINE artifact integrity mismatch: '+name)
-    source=manifest['source_repository'];repo=Path(source['root']).resolve()
-    if repo!=WORKSPACE/'third_party'/REPOS[manifest['variant']]:raise ValueError('Unapproved native framework root')
+    source=manifest['source_repository']
+    repo=native_repository(manifest['variant'],source['root']).resolve()
     for name,expected in source['files'].items():
         p=repo/name
         if not p.resolve().is_relative_to(repo) or p.is_symlink() or not p.is_file() or digest(p)!=expected:
             raise ValueError('Native source integrity mismatch: '+name)
-    cfg=config(manifest['variant'],path.parent/'config.json')
+    cfg=config(manifest['variant'],path.parent/'config.json',repository=repo)
     model=cfg.model
     model.load_state_dict(load_file(str(path.parent/'model.safetensors'),device='cpu'),strict=True)
     model.to(device).eval();post=cfg.postprocessor.to(device).eval()

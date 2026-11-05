@@ -4,28 +4,36 @@
   <arg name="web_port" default="8787" />
   <arg name="enable_xd_tracking" default="true" />
   <arg name="class_consensus_enabled" default="true" />
-  <arg name="model_path" default="$(find sar_yolo_detector)/../../experiments/dfine_s_candidates_v3_16e/best/manifest.json" />
-  <arg name="model_sha256" default="af6a95b0efdf0f5bcb8358187b8fedc3e3babbd603e07040d9ff3dd9d88a8774" />
-  <arg name="python_executable" default="$(find sar_yolo_detector)/../../.venv-dfine/bin/python" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
+  <arg name="model_sha256" default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
+  <arg name="python_executable" default="" />
+
+  <arg name="input_image_topic" default="/$(arg UAV_NAME)/fixed_camera/image_raw" />
+  <arg name="camera_info_topic" default="/$(arg UAV_NAME)/fixed_camera/camera_info" />
+  <arg name="camera_motion_fixed_frame" default="ue_render_ned" />
+  <arg name="image_width" default="960" />
+  <arg name="image_height" default="540" />
+  <arg name="use_gpu" default="true" />
+  <arg name="bind_address" default="127.0.0.1" />
 
   <include file="$(find sar_yolo_detector)/launch/xd_smart_tracker_fusion_integration.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="instance_name" value="$(arg instance_name)" />
     <arg name="tracking_mode" value="smart_tracker" />
-    <arg name="config" value="$(find sar_yolo_detector)/../../config/airground_legacy_dfine.yaml" />
+    <arg name="config" value="$(find sar_yolo_detector)/config/dfine_v3.yaml" />
     <arg name="vehicle_config" value="" />
-    <arg name="fusion_config" value="$(find sar_yolo_detector)/config/fusion_tracker.yaml" />
+    <arg name="fusion_config" value="$(find sar_yolo_detector)/config/fusion_tracker_dfine_v3.yaml" />
     <arg name="model_path" value="$(arg model_path)" />
     <arg name="model_sha256" value="$(arg model_sha256)" />
     <arg name="python_executable" value="$(arg python_executable)" />
-    <arg name="use_gpu" value="true" />
+    <arg name="use_gpu" value="$(arg use_gpu)" />
     <!-- UE render/decode delivery can add 0.5–0.7 s before D-FINE starts. -->
     <arg name="maximum_capture_age_sec" value="1.0" />
-    <arg name="input_image_topic" value="/$(arg UAV_NAME)/fixed_camera/image_raw" />
-    <arg name="camera_info_topic" value="/$(arg UAV_NAME)/fixed_camera/camera_info" />
-    <arg name="camera_motion_fixed_frame" value="ue_render_ned" />
-    <arg name="image_width" value="960" />
-    <arg name="image_height" value="540" />
+    <arg name="input_image_topic" value="$(arg input_image_topic)" />
+    <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
+    <arg name="camera_motion_fixed_frame" value="$(arg camera_motion_fixed_frame)" />
+    <arg name="image_width" value="$(arg image_width)" />
+    <arg name="image_height" value="$(arg image_height)" />
     <arg name="sensor_id" value="ue_fixed_camera" />
     <arg name="profile" value="dfine_s_v3_legacy_fourmode" />
     <arg name="model_version" value="dfine_s_v3_16e" />
@@ -48,7 +56,7 @@
   <include file="$(find sar_yolo_detector)/launch/fusion_web_preview.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="instance_name" value="$(arg instance_name)" />
-    <arg name="bind_address" value="127.0.0.1" />
+    <arg name="bind_address" value="$(arg bind_address)" />
     <arg name="port" value="$(arg web_port)" />
     <arg name="class_names" value="car,tank,drone" />
   </include>

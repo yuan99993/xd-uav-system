@@ -1,10 +1,10 @@
 <launch>
-  <!-- PixEagle/PT fusion runtime; unique name avoids archived launch collisions. -->
-  <arg name="config" default="$(find sar_yolo_detector)/config/smart_tracker.yaml" />
+  <!-- D-FINE-S V3 four-mode fusion runtime; unique name avoids archived launch collisions. -->
+  <arg name="config" default="$(find sar_yolo_detector)/config/dfine_v3.yaml" />
   <arg name="node_name" default="sar_yolo_smart_tracker" />
   <arg name="overlay_config" default="" />
   <arg name="tracking_mode" default="" />
-  <arg name="fusion_config" default="$(find sar_yolo_detector)/config/fusion_tracker.yaml" />
+  <arg name="fusion_config" default="$(find sar_yolo_detector)/config/fusion_tracker_dfine_v3.yaml" />
   <arg name="input_image_topic" default="camera/image_raw" />
   <arg name="camera_info_topic" default="" />
   <arg name="camera_motion_fixed_frame" default="world" />
@@ -15,8 +15,8 @@
   <arg name="annotated_image_topic" default="sar_yolo_detector/smart/annotated" />
   <arg name="selected_detections_topic" default="sar_yolo_detector/smart/selected_tracked_detections" />
   <arg name="select_pixel_topic" default="sar_yolo_detector/smart/select_pixel" />
-  <arg name="model_path" default="" />
-  <arg name="model_sha256" default="" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
+  <arg name="model_sha256" default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
   <arg name="use_gpu" default="true" />
   <arg name="fallback_to_cpu" default="true" />
   <arg name="publish_annotated_image" default="true" />

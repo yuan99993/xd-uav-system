@@ -1,0 +1,19 @@
+<launch>
+  <arg name="ue_project" />
+  <arg name="UAV_NAME" default="ue_test" />
+  <arg name="scene" default="$(find sar_yolo_detector)/config/ue/airground_scene.json" />
+  <arg name="output" default="$(env HOME)/.ros/sar_ue/$(anon capture)" />
+  <arg name="pose_source" default="px4" />
+  <arg name="mavros_namespace" default="/uav1" />
+  <arg name="seconds" default="180" />
+  <arg name="capture_fps" default="5" />
+  <arg name="web_port" default="8787" />
+  <arg name="python_executable" default="" />
+  <include file="$(find sar_yolo_detector)/launch/ue_dfine_v3_legacy_four_modes.launch">
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="web_port" value="$(arg web_port)" />
+    <arg name="python_executable" value="$(arg python_executable)" />
+  </include>
+  <node pkg="sar_yolo_detector" type="ue_camera_bridge" name="ue_camera_bridge" output="screen"
+        args="--project '$(arg ue_project)' --scene '$(arg scene)' --out '$(arg output)' --seconds $(arg seconds) --fps $(arg capture_fps) --camera down --ros --pose-source $(arg pose_source) --mavros-namespace $(arg mavros_namespace) --namespace $(arg UAV_NAME) --stream-only" />
+</launch>

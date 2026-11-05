@@ -1,3 +1,7 @@
+> 当前四模式默认模型：**D-FINE-S V3**。训练权重、原生推理源码和完整链路部署说明已随包提供。
+> 使用 `roslaunch xd_uav_track dfine_v3_four_modes.launch` 启动检测、跟踪、融合、bridge、XD 和网页。
+> 先按 [D-FINE-S V3 部署说明](../sar_yolo_detector/docs/dfine_v3_deployment.md) 安装独立 Python 运行环境；下文中的 YOLO 配置属于历史/其他任务入口。
+
 # xd_uav_track
 
 完整启动、三模式、接口字段、网页接入和跨主机部署说明见

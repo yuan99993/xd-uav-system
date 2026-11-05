@@ -1,22 +1,22 @@
 <launch>
   <!-- Isolated PixEagle/PT fusion entry, keeping the latest smart/selection topics. -->
-  <!-- Real Ultralytics .pt inference for the XD detection/localization stack.
+  <!-- Packaged D-FINE-S V3 inference for the XD detection/localization stack.
        This replaces the synthetic red-box detector but leaves xd_uav_detect
        independently configured and running. -->
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
   <!-- Unique suffix for a second (for example gimbal) camera instance. -->
   <arg name="instance_name" default="smart" /> 
   <arg name="tracking_mode" default="" />
-  <arg name="fusion_config" default="$(find sar_yolo_detector)/config/fusion_tracker.yaml" />
+  <arg name="fusion_config" default="$(find sar_yolo_detector)/config/fusion_tracker_dfine_v3.yaml" />
   <!-- 不要改这个instancename -->
   <arg name="config"
-       default="$(find sar_yolo_detector)/config/smart_tracker.yaml" />
+       default="$(find sar_yolo_detector)/config/dfine_v3.yaml" />
   <arg name="vehicle_config"
-       default="$(find sar_yolo_detector)/config/smart_tracker_xd_vehicle.yaml" />
+       default="" />
   <arg name="model_path"
-       default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt" />
+       default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
   <arg name="model_sha256"
-       default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54" />
+       default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
   <arg name="python_executable" default="" />
   <arg name="use_gpu" default="true" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
@@ -41,8 +41,8 @@
   <arg name="maximum_capture_age_sec" default="0.5" />
   <arg name="image_source" default="fixed_rgb" />
   <arg name="sensor_id" default="fixed_camera" />
-  <arg name="profile" default="xd_vehicle_car_ar_car_tank" />
-  <arg name="model_version" default="xd_vehicle_train7_best" />
+  <arg name="profile" default="dfine_s_v3_car_tank_drone" />
+  <arg name="model_version" default="dfine_s_v3_16e" />
 
   <group ns="$(arg UAV_NAME)">
     <include file="$(find sar_yolo_detector)/launch/smart_tracker_fusion.launch">
