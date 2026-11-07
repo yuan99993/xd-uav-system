@@ -35,7 +35,7 @@ post_arrival:
     # This is the fixed-wing gimbal follower. gm_velocity_chase is for
     # multicopter-style velocity control.
     follower_profile: gm_velocity_chase
-    required_execution_sec: 10.0
+    required_execution_sec: 60.0
     maximum_duration_sec: 120.0
 
   mobility_profile_overrides:

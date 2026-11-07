@@ -22,7 +22,8 @@ import rospkg
 import rospy
 from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import Image, RegionOfInterest, CameraInfo
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
+from std_srvs.srv import SetBool, SetBoolResponse
 from vision_msgs.msg import BoundingBox2D, Detection2D, ObjectHypothesisWithPose
 
 from sar_yolo_detector.msg import (
@@ -221,6 +222,12 @@ class SmartTrackerNode:
         select_pixel_topic = rospy.get_param(
             "~select_pixel_topic", "sar_yolo_detector/smart/select_pixel"
         )
+        auto_select_service = rospy.get_param(
+            "~auto_select_service", "sar_yolo_detector/smart/auto_select"
+        )
+        auto_select_status_topic = rospy.get_param(
+            "~auto_select_status_topic", "sar_yolo_detector/smart/auto_select_status"
+        )
         self._publish_annotated = bool(
             rospy.get_param("~publish_annotated_image", True)
         )
@@ -325,6 +332,26 @@ class SmartTrackerNode:
         smart_config = dict(rospy.get_param("~SmartTracker", {}))
         if not smart_config.get("SMART_TRACKER_ENABLED", True):
             raise RuntimeError("SmartTracker is disabled by configuration")
+        auto_select_config = dict(rospy.get_param("~AutoSelect", {}))
+        self._auto_select_enabled = bool(
+            auto_select_config.get("enabled_at_startup", False)
+        ) and self._auto_select_mode_supported()
+        self._auto_select_stable_frames = int(
+            auto_select_config.get("stable_frames", 5)
+        )
+        if not 1 <= self._auto_select_stable_frames <= 120:
+            raise ValueError("AutoSelect/stable_frames must be within 1..120")
+        self._auto_select_min_confidence = _finite(
+            auto_select_config.get("minimum_confidence", 0.0), 0.0
+        )
+        if not 0.0 <= self._auto_select_min_confidence <= 1.0:
+            raise ValueError("AutoSelect/minimum_confidence must be within 0..1")
+        self._auto_select_max_frame_gap = _finite(
+            auto_select_config.get("max_frame_gap_sec", 1.0), 1.0
+        )
+        if self._auto_select_max_frame_gap <= 0.0:
+            raise ValueError("AutoSelect/max_frame_gap_sec must be positive")
+        self._reset_auto_select_candidate()
         smart_config["SMART_TRACKER_MODELS_ROOT"] = str(self._package_root)
         for key in (
             "SMART_TRACKER_GPU_MODEL_PATH",
@@ -422,6 +449,15 @@ class SmartTrackerNode:
             queue_size=1,
             tcp_nodelay=True,
         )
+        self._auto_select_status_publisher = rospy.Publisher(
+            auto_select_status_topic, Bool, queue_size=1, latch=True
+        )
+        self._auto_select_service = rospy.Service(
+            auto_select_service,
+            SetBool,
+            self._auto_select_control_callback,
+        )
+        self._publish_auto_select_status()
         self._manual_roi_subscriber = None
         if self._manual_enabled:
             self._manual_roi_subscriber = rospy.Subscriber(
@@ -454,6 +490,13 @@ class SmartTrackerNode:
             "Click selection: pixel_topic=%s (negative pixel cancels) selected_detections=%s",
             select_pixel_topic,
             selected_detections_topic,
+        )
+        rospy.loginfo(
+            "Auto selection: service=%s status_topic=%s enabled=%s stable_frames=%d",
+            auto_select_service,
+            auto_select_status_topic,
+            self._auto_select_enabled,
+            self._auto_select_stable_frames,
         )
 
     def close(self) -> None:
@@ -870,7 +913,10 @@ class SmartTrackerNode:
                         last_detector_stamp=rospy.Time(0),
                     ))
                 self._manual_color_candidates = tuple(candidates)
-                selected_source = self._select_manual_color_candidate(candidates, frame.shape)
+                auto_selected = self._auto_select_from_detections(message, candidates)
+                selected_source = auto_selected or self._select_manual_color_candidate(
+                    candidates, frame.shape
+                )
                 selected = None
                 detections = []
                 for candidate in candidates:
@@ -927,6 +973,7 @@ class SmartTrackerNode:
                 self._inference_ms = packet.processing_ms
                 output = self._tracker.get_output()
                 detections = tuple(self._tracker.last_detections)
+                self._auto_select_from_detections(message, detections)
                 frame_error_rate = _finite(
                     output.quality_metrics.get("frame_error_rate")
                 )
@@ -1644,6 +1691,154 @@ class SmartTrackerNode:
         dy = max(float(y1) - y, 0.0, y - float(y2))
         return dx * dx + dy * dy
 
+    def _reset_auto_select_candidate(self) -> None:
+        self._auto_select_candidate = None
+        self._auto_select_candidate_count = 0
+        self._auto_select_last_stamp = rospy.Time(0)
+
+    def _publish_auto_select_status(self) -> None:
+        publisher = getattr(self, "_auto_select_status_publisher", None)
+        if publisher is not None:
+            publisher.publish(Bool(data=bool(self._auto_select_enabled)))
+
+    def _auto_select_control_callback(self, request) -> SetBoolResponse:
+        requested = bool(request.data)
+        response = SetBoolResponse()
+        with self._lock:
+            if requested and not self._auto_select_mode_supported():
+                self._auto_select_enabled = False
+                self._reset_auto_select_candidate()
+                accepted = False
+                response.success = False
+                response.message = (
+                    "Auto target selection requires SmartTracker/YOLO or "
+                    "configured-colour ColorTracker; current mode=%s" % self._tracking_mode
+                )
+            else:
+                self._auto_select_enabled = requested
+                self._reset_auto_select_candidate()
+                accepted = True
+                response.success = True
+                response.message = (
+                    "Auto target selection started; waiting for %d stable frames"
+                    % self._auto_select_stable_frames
+                    if requested
+                    else "Auto target selection stopped"
+                )
+        self._publish_auto_select_status()
+        if not accepted:
+            rospy.logwarn("%s", response.message)
+        elif requested:
+            rospy.loginfo("%s", response.message)
+        else:
+            rospy.loginfo("Auto target selection stopped")
+        return response
+
+    def _auto_select_mode_supported(self) -> bool:
+        if self._tracking_mode == "smart_tracker":
+            return True
+        if self._tracking_mode == "color_tracker":
+            tracker = self._manual_trackers.get("color_tracker")
+            return tracker is not None and tracker.colour_source == "configured"
+        return False
+
+    @staticmethod
+    def _auto_select_same_target(previous, current) -> bool:
+        if int(previous.class_id) != int(current.class_id):
+            return False
+        previous_stable = bool(getattr(previous, "track_id_is_stable", False))
+        current_stable = bool(getattr(current, "track_id_is_stable", False))
+        if previous_stable or current_stable:
+            return (
+                previous_stable
+                and current_stable
+                and int(previous.track_id) == int(current.track_id)
+            )
+        return SmartTrackerNode._iou(
+            previous.aabb_xyxy, current.aabb_xyxy
+        ) >= 0.30
+
+    def _auto_select_from_detections(
+        self, image: Image, detections
+    ) -> Optional[Any]:
+        if not self._auto_select_enabled or not self._auto_select_mode_supported():
+            return None
+
+        stamp = image.header.stamp
+        if stamp.is_zero() or (
+            not self._auto_select_last_stamp.is_zero()
+            and stamp <= self._auto_select_last_stamp
+        ):
+            return None
+
+        candidates = []
+        for detection in detections:
+            confidence = _finite(detection.confidence, -1.0)
+            x1, y1, x2, y2 = detection.aabb_xyxy
+            if (
+                confidence < self._auto_select_min_confidence
+                or x2 <= x1
+                or y2 <= y1
+            ):
+                continue
+            candidates.append(detection)
+
+        previous = self._auto_select_candidate
+        previous_stamp = self._auto_select_last_stamp
+        self._auto_select_last_stamp = stamp
+        if not candidates:
+            self._auto_select_candidate = None
+            self._auto_select_candidate_count = 0
+            return None
+
+        winner = max(
+            candidates,
+            key=lambda detection: (
+                _finite(detection.confidence, -1.0),
+                (detection.aabb_xyxy[2] - detection.aabb_xyxy[0])
+                * (detection.aabb_xyxy[3] - detection.aabb_xyxy[1]),
+                -int(detection.class_id),
+                -int(detection.track_id),
+            ),
+        )
+        gap = (
+            (stamp - previous_stamp).to_sec()
+            if not previous_stamp.is_zero()
+            else 0.0
+        )
+        same_target = previous is not None and self._auto_select_same_target(
+            previous, winner
+        )
+        if same_target and 0.0 < gap <= self._auto_select_max_frame_gap:
+            self._auto_select_candidate_count += 1
+        else:
+            self._auto_select_candidate_count = 1
+        self._auto_select_candidate = winner
+
+        if self._auto_select_candidate_count < self._auto_select_stable_frames:
+            return None
+
+        # Keep the same mode-specific selection state and downstream output
+        # path as a manual click.
+        if self._tracking_mode == "color_tracker":
+            self._manual_color_selected_bbox = tuple(winner.aabb_xyxy)
+            self._manual_color_misses = 0
+        else:
+            self._remember_selected_detection(winner)
+        self._auto_select_enabled = False
+        selected_frames = self._auto_select_candidate_count
+        self._reset_auto_select_candidate()
+        self._publish_auto_select_status()
+        rospy.loginfo(
+            "Auto-selected %s box: track_id=%d class=%d confidence=%.3f stable_frames=%d",
+            self._tracking_mode,
+            int(winner.track_id),
+            int(winner.class_id),
+            _finite(winner.confidence),
+            selected_frames,
+        )
+        return winner
+
     def _select_pixel_callback(self, message: PointStamped) -> None:
         """Lock the detection box nearest to a UI click in source-image pixels."""
         x = _finite(message.point.x, float("nan"))
@@ -1655,6 +1850,10 @@ class SmartTrackerNode:
             if not math.isfinite(x) or not math.isfinite(y):
                 rospy.logwarn("Ignoring non-finite target pixel click")
                 return
+            if self._auto_select_enabled:
+                self._auto_select_enabled = False
+                self._reset_auto_select_candidate()
+                self._publish_auto_select_status()
             if x < 0 or y < 0:
                 self._clear_selected_target()
                 self._publish_empty_selected_detections()
@@ -2109,6 +2308,10 @@ class SmartTrackerNode:
             self._manual_color_selected_bbox = None
             self._manual_color_misses = 0
             self._tracking_mode = requested_mode
+            self._reset_auto_select_candidate()
+            if self._auto_select_enabled:
+                self._auto_select_enabled = False
+                self._publish_auto_select_status()
             self._invalidate_pipeline()
             self._fusion.reset()
             self._fusion_snapshots.clear()
@@ -2158,6 +2361,7 @@ class SmartTrackerNode:
 
     def _reset_temporal_state(self):
         self._invalidate_pipeline()
+        self._reset_auto_select_candidate()
         self._last_capture_stamp = rospy.Time(0)
         self._last_header = None
         self._last_input_stamp = rospy.Time(0)
@@ -2183,6 +2387,7 @@ class SmartTrackerNode:
                 response.message = "BUSY: model switch in progress"
                 return response
             self._model_busy = True
+            self._reset_auto_select_candidate()
             self._invalidate_pipeline()
             self._clear_selected_target()
             self._tracker.clear_selection()

@@ -41,9 +41,13 @@
        default="sar_yolo_detector/$(arg instance_name)/selected_tracked_detections" />
   <arg name="select_pixel_topic"
        default="sar_yolo_detector/$(arg instance_name)/select_pixel" />
+  <arg name="auto_select_service"
+       default="sar_yolo_detector/$(arg instance_name)/auto_select" />
+  <arg name="auto_select_status_topic"
+       default="sar_yolo_detector/$(arg instance_name)/auto_select_status" />
   <!-- Set gimbal_control.py ~detection_topic to this topic. SmartTracker
-       selection is click-driven; FeatureTracker publishes its valid ROI box
-       here automatically, without a second pixel-selection click. -->
+       selection can be started by a pixel click or the SetBool auto-select
+       service; FeatureTracker publishes its valid ROI box directly here. -->
   <arg name="gimbal_detection_topic" default="$(arg selected_detections_topic)" />
   <arg name="output_detections_topic"
        default="track/selected_detections" />
@@ -94,6 +98,8 @@
       <arg name="selected_detections_topic"
            value="$(arg selected_detections_topic)" />
       <arg name="select_pixel_topic" value="$(arg select_pixel_topic)" />
+      <arg name="auto_select_service" value="$(arg auto_select_service)" />
+      <arg name="auto_select_status_topic" value="$(arg auto_select_status_topic)" />
       <arg name="state_topic" value="sar_yolo_detector/$(arg instance_name)/state" />
       <arg name="annotated_image_topic"
            value="sar_yolo_detector/$(arg instance_name)/annotated" />

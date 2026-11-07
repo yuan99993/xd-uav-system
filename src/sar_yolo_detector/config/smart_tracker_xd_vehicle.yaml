@@ -26,6 +26,17 @@ SmartTracker:
   SMART_TRACKER_TRACKER_CONFIG_PATH: config/vehicle_botsort.yaml
   SMART_TRACKER_INFERENCE_IMAGE_SIZE: 512
 
+# std_srvs/SetBool true on the auto-select service starts a one-shot selection
+# in SmartTracker or configured-colour mode. The top-confidence candidate must
+# remain the winner for this many frames before it is selected.
+AutoSelect:
+  enabled_at_startup: false
+  stable_frames: 5
+  # YOLO confidence is already filtered by its detector threshold. Color
+  # components use the tracker minimum-area filter instead.
+  minimum_confidence: 0.0
+  max_frame_gap_sec: 1.0
+
 ManualBoxTracker:
   enabled: true
   initial_roi_topic: sar_yolo_detector/manual/initial_roi
