@@ -173,6 +173,16 @@ class SmartTrackerNode:
         self._image_mailbox = LatestMailbox()
         self._inference_mailbox = LatestMailbox()
         self._result_mailbox = LatestMailbox()
+        self._inference_max_fps = max(
+            0.0, float(rospy.get_param("~inference_max_fps", 0.0))
+        )
+        self._inference_min_interval = (
+            1.0 / self._inference_max_fps if self._inference_max_fps > 0.0 else 0.0
+        )
+        self._last_inference_enqueue_wall = 0.0
+        self._inference_rate_limited = 0
+        self._inference_completed = 0
+        self._inference_failed = 0
         self._publication_context = threading.local()
         self._pipeline_current = None
         self._last_input_stamp = rospy.Time(0)
@@ -639,9 +649,20 @@ class SmartTrackerNode:
         # ROS transport never waits for CUDA, KCF, rendering, or a mode service.
         self._image_mailbox.put(message)
 
-    def _infer(self, frame):
+    def _infer(self, frame, header=None, image_message=None):
         tracker = self._tracker
         arguments = dict(conf=tracker.conf_threshold, iou=tracker.iou_threshold, max_det=tracker.max_det)
+        remote_detect = getattr(tracker.backend, "detect_frame", None)
+        if callable(remote_detect):
+            if header is None:
+                raise RuntimeError("shared inference requires the source image header")
+            source_id = "%s/%s/%s" % (
+                self._identity.uav_id, self._identity.sensor_id, rospy.get_name()
+            )
+            remote_image = getattr(tracker.backend, "detect_image", None)
+            if image_message is not None and callable(remote_image):
+                return tuple(remote_image(image_message, source_id, **arguments))
+            return tuple(remote_detect(frame, header, source_id, **arguments))
         if tracker._should_run_track_api():
             _, detections = tracker.backend.detect_and_track(
                 frame, tracker_type=tracker.tracker_type_str, tracker_args=tracker.tracker_args, **arguments)
@@ -665,8 +686,10 @@ class SmartTrackerNode:
                     if backend_epoch != generation:
                         self._tracker.backend.reset_tracking()
                         backend_epoch = generation
-                    detections = self._infer(frame)
+                    detections = self._infer(frame, message.header, image_message=message)
+                    self._inference_completed += 1
                 except Exception as exc:
+                    self._inference_failed += 1
                     error = "inference failed: %s: %s" % (type(exc).__name__, exc)
                     rospy.logerr_throttle(
                         2., "%s\n%s" % (error, traceback.format_exc()))
@@ -711,7 +734,13 @@ class SmartTrackerNode:
                     self._last_input_stamp = message.header.stamp
                     self._pipeline_current = (epoch, message, frame)
                     if mode in ("smart_tracker", "fusion_tracker") and not self._model_busy:
-                        self._inference_mailbox.put((epoch, message, frame))
+                        now_wall = time.monotonic()
+                        if (self._inference_min_interval <= 0.0 or
+                                now_wall - self._last_inference_enqueue_wall >= self._inference_min_interval):
+                            self._inference_mailbox.put((epoch, message, frame))
+                            self._last_inference_enqueue_wall = now_wall
+                        else:
+                            self._inference_rate_limited += 1
                 current = self._pipeline_current
                 if current is None or current[0] != self._epoch or self._model_busy:
                     continue
@@ -977,7 +1006,7 @@ class SmartTrackerNode:
         suppressed_class_duplicates = 0
         try:
             if detections is None:
-                detections = self._infer(frame)
+                detections = self._infer(frame, image.header, image_message=image)
             allowed = self._tracker.allowed_class_ids
             detections = [d for d in detections if allowed is None or int(d.class_id) in allowed]
             candidates = [self._fusion_candidate(d) for d in detections]
@@ -2215,6 +2244,12 @@ class SmartTrackerNode:
             status.add("capture_segment", self._capture_clock.segment)
             status.add("image_frames_replaced", self._image_mailbox.replaced)
             status.add("inference_frames_replaced", self._inference_mailbox.replaced)
+            status.add("inference_rate_limited_frames", self._inference_rate_limited)
+            status.add("inference_max_fps", self._inference_max_fps)
+            status.add("inference_completed", self._inference_completed)
+            status.add("inference_failed", self._inference_failed)
+            status.add("inference_stale_frames_dropped",
+                       getattr(tracker.backend, "stale_frames_dropped", 0) if tracker else 0)
             status.add("camera_motion_source", self._camera_motion.source)
             status.add("camera_motion_inlier_ratio", self._camera_motion.inlier_ratio)
             status.add("tracker_config_path", getattr(tracker.backend, "_tracker_config_path", "") if tracker else "")
@@ -2222,6 +2257,11 @@ class SmartTrackerNode:
             status.add("model_path", runtime.get("model_path", ""))
             status.add("effective_device", runtime.get("effective_device", ""))
             status.add("backend", runtime.get("backend", ""))
+            status.add(
+                "inference_provider",
+                getattr(tracker.backend, "backend_name", "unknown") if tracker else "unknown",
+            )
+            status.add("shared_model_key", runtime.get("shared_model_key", ""))
             status.add("artifact_sha256", runtime.get("artifact_sha256", ""))
             reid_runtime = runtime.get("appearance_reid") or {}
             status.add("appearance_reid_model", reid_runtime.get("model_name", "disabled"))

@@ -8,9 +8,17 @@ target_registry:
 
 allocation:
   worker_execution:
-    # Visual handoff requires both this XY distance and a matching local class
-    # detection from uav2. Increase if the fixed-wing camera needs more lead-in.
-    target_radius_m: 100.0
+    # Fallback visual-handoff radius. A worker-specific value overrides this.
+    target_radius_m: 20.0
+    worker_overrides:
+      uav2:
+        # uav2 may begin GM tracking inside this radius after a matching
+        # camera detection.
+        target_radius_m: 4000.0
+        # The selected-detection bridge ID (for example 900000000) is not the
+        # global track ID expected by xd_uav_track/SelectTrack. Let that node
+        # auto-select from uav2's selected-only detection stream.
+        pass_detection_track_id: false
 
 post_arrival:
   mode: task_execute
@@ -26,13 +34,13 @@ post_arrival:
     local_track_id: -1
     # This is the fixed-wing gimbal follower. gm_velocity_chase is for
     # multicopter-style velocity control.
-    follower_profile: gmfw_velocity_vector
+    follower_profile: gm_velocity_chase
     required_execution_sec: 10.0
     maximum_duration_sec: 120.0
 
   mobility_profile_overrides:
     fixedwing:
-      follower_profile: gmfw_velocity_vector
+      follower_profile: gm_velocity_chase
 
   worker_overrides:
     uav2:
@@ -40,9 +48,9 @@ post_arrival:
       handoff_mode: visual
       follower_profile: gm_velocity_chase
 
-    uav3:
-      task_type: arrive
-      handoff_mode: position
-      follower_profile: ""
+    # uav3:
+    #   task_type: arrive
+    #   handoff_mode: position
+    #   follower_profile: ""
 
   class_overrides: {}

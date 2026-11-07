@@ -11,6 +11,10 @@ AVAILABLE_BACKENDS = {
         "sar_yolo_detector.pixeagle.backends.ultralytics_backend",
         "UltralyticsBackend",
     ),
+    "shared_remote": (
+        "sar_yolo_detector.pixeagle.backends.shared_remote_backend",
+        "SharedRemoteBackend",
+    ),
 }
 
 

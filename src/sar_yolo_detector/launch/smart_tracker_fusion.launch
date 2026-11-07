@@ -20,6 +20,9 @@
   <arg name="use_gpu" default="true" />
   <arg name="fallback_to_cpu" default="true" />
   <arg name="publish_annotated_image" default="true" />
+  <arg name="shared_inference" default="false" />
+  <arg name="inference_max_fps" default="15.0" />
+  <arg name="maximum_capture_age_sec" default="0.5" />
   <!-- Leave empty to auto-discover .venv-sar-gpu in this catkin workspace. -->
   <arg name="python_executable" default="" />
   <arg name="mission_id" default="mission_unset" />
@@ -51,6 +54,8 @@
     <param name="selected_detections_topic" value="$(arg selected_detections_topic)" />
     <param name="select_pixel_topic" value="$(arg select_pixel_topic)" />
     <param name="publish_annotated_image" value="$(arg publish_annotated_image)" />
+    <param name="inference_max_fps" value="$(arg inference_max_fps)" />
+    <param name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
     <param name="mission_id" value="$(arg mission_id)" />
     <param name="uav_id" value="$(arg uav_id)" />
     <param name="session_uuid" value="$(arg session_uuid)" />
@@ -60,6 +65,8 @@
     <param name="calibration_version" value="$(arg calibration_version)" />
     <param name="coordinate_contract" value="$(arg coordinate_contract)" />
     <param name="SmartTracker/SMART_TRACKER_USE_GPU" value="$(arg use_gpu)" />
+    <param if="$(arg shared_inference)"
+           name="SmartTracker/DETECTION_BACKEND" value="shared_remote" />
     <param name="SmartTracker/SMART_TRACKER_FALLBACK_TO_CPU"
            value="$(arg fallback_to_cpu)" />
     <param if="$(eval arg('model_path') != '')"

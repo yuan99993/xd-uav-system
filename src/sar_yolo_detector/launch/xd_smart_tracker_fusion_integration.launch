@@ -19,6 +19,15 @@
        default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54" />
   <arg name="python_executable" default="" />
   <arg name="use_gpu" default="true" />
+  <!-- One elected process per model hash owns the GPU model. Every UAV
+       tracker remains independent and calls that process for detections. -->
+  <arg name="shared_inference" default="true" />
+  <!-- Use the provided static TensorRT engine directly at startup. Set to 2
+       only when the cached dynamic-batch engine has already been built. -->
+  <arg name="maximum_batch_size" default="1" />
+  <!-- Drop frames that have already waited too long, keeping image updates fresh. -->
+  <arg name="inference_max_fps" default="7.0" />
+  <arg name="maximum_capture_age_sec" default="0.5" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
   <arg name="camera_info_topic" default="down_camera/camera_info" />
   <arg name="camera_motion_fixed_frame" default="world" />
@@ -52,6 +61,22 @@
   <arg name="image_source" default="fixed_rgb" />
   <arg name="sensor_id" default="fixed_camera" />
 
+  <group if="$(arg shared_inference)">
+    <node pkg="sar_yolo_detector" type="sar_yolo_shared_model_server"
+          name="sar_yolo_shared_model_$(arg UAV_NAME)_$(arg instance_name)"
+          output="screen">
+      <env name="SAR_YOLO_SMART_PYTHON" value="$(arg python_executable)" />
+      <param name="config" value="$(arg config)" />
+      <param name="overlay_config" value="$(arg vehicle_config)" />
+      <param name="model_path" value="$(arg model_path)" />
+      <param name="model_sha256" value="$(arg model_sha256)" />
+      <param name="use_gpu" value="$(arg use_gpu)" />
+      <param name="fallback_to_cpu" value="false" />
+      <param name="maximum_batch_size" value="$(arg maximum_batch_size)" />
+      <param name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
+    </node>
+  </group>
+
   <group ns="$(arg UAV_NAME)">
     <include file="$(find sar_yolo_detector)/launch/smart_tracker_fusion.launch">
       <arg name="tracking_mode" value="$(arg tracking_mode)" />
@@ -80,6 +105,9 @@
       <arg name="python_executable" value="$(arg python_executable)" />
       <arg name="publish_annotated_image"
            value="$(arg publish_annotated_image)" />
+      <arg name="shared_inference" value="$(arg shared_inference)" />
+      <arg name="inference_max_fps" value="$(arg inference_max_fps)" />
+      <arg name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
       <arg name="uav_id" value="$(arg UAV_NAME)" />
       <arg name="sensor_id" value="$(arg sensor_id)" />
       <arg name="profile" value="xd_vehicle_car_ar_car_tank" />

@@ -92,6 +92,7 @@ def prepare_fp16_engine(
     workspace_gib: float = 0.5,
     optimization_level: int = 1,
     expected_model_sha256: str = "",
+    dynamic_batch: bool = False,
 ) -> Tuple[Path, str]:
     """Build/reuse a model- and host-specific TensorRT FP16 cache artifact."""
     source = model_path.expanduser().resolve()
@@ -130,8 +131,10 @@ def prepare_fp16_engine(
         "workspace_gib": float(workspace_gib),
         "builder_optimization_level": int(optimization_level),
         "precision": "fp16",
-        "dynamic": False,
+        "dynamic": bool(dynamic_batch),
     }
+    if dynamic_batch:
+        fingerprint_data["batch_size"] = 2
     fingerprint = hashlib.sha256(
         json.dumps(fingerprint_data, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -164,7 +167,8 @@ def prepare_fp16_engine(
                     format="engine",
                     half=True,
                     imgsz=int(image_size),
-                    dynamic=False,
+                    dynamic=bool(dynamic_batch),
+                    batch=2 if dynamic_batch else 1,
                     device=0,
                     workspace=float(workspace_gib),
                 )

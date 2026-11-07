@@ -176,6 +176,11 @@ class TaskAllocateCoordinator:
                 )
             ),
         )
+        self.worker_execution_overrides = dict(
+            rospy.get_param(
+                "~allocation/worker_execution/worker_overrides", {}
+            )
+        )
         self.planner_failure_retry_sec = float(
             rospy.get_param("~allocation/planner_failure_retry_sec", 5.0)
         )
@@ -786,6 +791,24 @@ class TaskAllocateCoordinator:
         # target may require observation even if this aircraft normally tracks.
         options.update(dict(class_options))
         return options
+
+    def _worker_visual_handoff_radius(self, worker: str) -> float:
+        """Return the visual handoff radius configured for one worker."""
+
+        fallback = float(
+            getattr(self, "worker_execution_target_radius", 10.0)
+        )
+        worker_overrides = getattr(self, "worker_execution_overrides", {})
+        options = worker_overrides.get(str(worker), {})
+        if not isinstance(options, dict):
+            return max(0.0, fallback) if isfinite(fallback) else 0.0
+        try:
+            radius = float(options.get("target_radius_m", fallback))
+        except (TypeError, ValueError):
+            radius = fallback
+        if not isfinite(radius):
+            radius = fallback
+        return max(0.0, radius) if isfinite(radius) else 0.0
 
     def _task_execute_handoff_mode(self, task, worker: str) -> str:
         """Resolve whether task_execute starts from vision or position arrival.
@@ -2746,7 +2769,7 @@ class TaskAllocateCoordinator:
                 (worker_position[0] - task.target_position[0]) ** 2
                 + (worker_position[1] - task.target_position[1]) ** 2
             )
-            if worker_target_distance > self.worker_execution_target_radius:
+            if worker_target_distance > self._worker_visual_handoff_radius(worker):
                 return
 
             matching = [
@@ -2758,12 +2781,22 @@ class TaskAllocateCoordinator:
                 return
 
             candidate = max(matching, key=lambda item: float(item.confidence))
-            # Stable detector IDs are preserved by xd_uav_track and can select
-            # the exact local track. With an unstable ID the executor performs
-            # its normal automatic selection instead.
+            # DetectionArray.track_id belongs to the detector/bridge ID
+            # namespace. It is not necessarily xd_uav_track's global track ID,
+            # which is what SelectTrack expects. Allow a worker override to
+            # pass the detector ID only when the source explicitly guarantees
+            # that both namespaces match; otherwise let the track node
+            # auto-select from its (often selected-only) detection input.
+            worker_execution_options = getattr(
+                self, "worker_execution_overrides", {}
+            ).get(str(worker), {})
+            pass_detection_track_id = bool(
+                worker_execution_options.get("pass_detection_track_id", True)
+            ) if isinstance(worker_execution_options, dict) else True
             local_track_id = (
                 int(candidate.track_id)
-                if bool(candidate.track_id_is_stable)
+                if pass_detection_track_id
+                and bool(candidate.track_id_is_stable)
                 and int(candidate.track_id) >= 0
                 else -1
             )

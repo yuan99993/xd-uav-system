@@ -40,12 +40,12 @@ fixedwing:
     lookahead_filter_time_constant: 0.55
 
   lateral_control:
-    course_time_constant: 0.9
+    course_time_constant: 1.4
     # 所有常规外部参考（轨迹或PositionTarget）共用course PI环；积分输出单位rad/s，
     # 用于消除风、舵效和模型偏差，限幅与滚转限幅共同防止wind-up。
     course_integral_gain: 0.08
     course_integral_rate_limit: 0.25
-    roll_time_constant: 0.20
+    roll_time_constant: 0.40
 
   vertical_control:
     altitude_time_constant: 3.0
