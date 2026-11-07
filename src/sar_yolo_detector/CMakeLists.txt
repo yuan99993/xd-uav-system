@@ -84,6 +84,7 @@ add_message_files(
   FusionDetection2DArray.msg
   UavDecisionHeartbeat.msg
   DetectorModelInfo.msg
+  NormalizedDetection.msg
 )
 
 add_service_files(
@@ -101,6 +102,8 @@ add_service_files(
   SelectFusionROI.srv
   SelectFusionPoint.srv
   ListDetectorModels.srv
+  GetSharedModelInfo.srv
+  RunSharedInference.srv
 )
 
 generate_messages(
@@ -321,8 +324,10 @@ install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt
 )
 install(PROGRAMS
   scripts/sar_yolo_smart_tracker
+  scripts/sar_yolo_shared_model_server
   scripts/sar_yolo_multi_source_detection
   scripts/smart_tracker_node.py
+  scripts/shared_inference_server.py
   # The shared one/two-source wrapper executes this sibling in both devel and
   # install spaces.  Installing only the wrapper made a source workspace work
   # while an installed deployment failed at launch.
