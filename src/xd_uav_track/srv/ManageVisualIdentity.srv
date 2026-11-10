@@ -1,0 +1,16 @@
+# Internal vision identity contract; does not enable flight follow.
+# register is idempotent by owner_session + registration_key.
+# update carries true visual evidence. bind requires repeated same-frame gates.
+string action                       # register / attach existing / detach / retire / update / bind / reset_bind
+string owner_session
+string registration_key
+string image_source
+int32 global_id
+int32 candidate_global_id
+xd_uav_track/TrackState observation
+float32[] image_signature            # separate weak appearance, never deep ReID
+---
+bool success
+bool bound
+string message
+int32 global_id

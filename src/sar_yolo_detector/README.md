@@ -1,9 +1,87 @@
 # sar_yolo_detector
 
-面向多无人机应急搜救的 ROS1 感知与任务网关包。**主要入口是部署在侦察机上的
-PixEagle SmartTracker**：相机图像经 YOLO 识别和稳定跟踪后，目标连同可验证的方位或
-世界坐标被转换为规划器可消费的任务候选。规划器完成全局去重、定位融合、分配与航线规划后，再通过每架工作机
-自己的任务网关下发任务。
+## 当前正式方案：PixEagle/PT 四模式（2026-10-09 确认）
+
+用户于2026-10-09确定本目录的 `sar_yolo_detector` 与同级 `xd_uav_track` 为后续正式开发、接口适配和部署基线。
+路径继续保留 `/home/promise/mrs_test/sar_fusion_experiment.wlpAs3/src`；目录名中的experiment是历史命名，不再表示选型未定。
+两包基于 feature/xd-uav-construction 的 `3db09b0`，只有 SAR 修改；XD 保持上游原样，旧 `/home/promise/mrs_test/src` 下两包未被覆盖。
+保留三种 PixEagle 模式，新增可选 FusionTracker，使用原 train7.pt / CUDA + 选中目标 KCF，不走共享 TensorRT。
+新入口：`xd_smart_tracker_fusion_integration.launch`；旧归档入口仍支持原三模式。
+原消息/服务 MD5 不改，新增平行融合来源消息和原帧 ROI 服务。具体使用见
+[四模式融合指南](docs/fusion_experiment_guide.md)、[验证记录](docs/fusion_validation_20261009.md)和[需求交接](docs/fusion_requirements_and_handoff.md)。
+后续网页与新主机部署请使用本方案对应的[网页接口适配指南](docs/web_frontend_integration_guide.md)
+和[接口绑定 JSON](docs/web_frontend_interface_manifest.json)，不要直接套用下方旧三模式网页合同。
+正式方案确认不等于现场上线认证：UE/实拍验收、新四模式网页、跨相机等未完成项仍以指南为准。
+确认方案不自动改变模式默认值、不搬目录、不推送仓库，也不重新启用旧共享TensorRT链路。
+
+## 历史方案兼容说明（非当前正式默认）
+
+车辆共享检测与 `xd_uav_track` 三模式的完整启动、接口、网页接入和跨主机部署说明见
+[感知使用与部署指南](../xd_uav_track/docs/perception_user_deployment_guide.md)与[网页视频/交互接口](../xd_uav_track/docs/perception_web_video_interface.md)。旧 SmartTracker
+接口与旧 `perception/*` 合同不同，不要混用；上述两个XD文档描述旧三模式网页，不是本方案网页合同。
+
+旧共享方案入口由 `xd_uav_track/launch/vision_tracking_stack.launch`
+统一编排。该历史方案默认 train7 TensorRT FP16；固定相机和云台共享一份 YOLO，
+目标身份、遮挡重捕获和锁定由 `xd_uav_track` 负责。
+将统一入口加入无人机 bringup 后，任一路相机上线都会自动处理；仅启动一个
+外部相机驱动不会反向启动 ROS launch，因此不要分别为两路重复运行检测入口。
+`enable_tracking:=false` 可仅运行识别。单相机兼容入口
+[`detection_only.launch`](launch/detection_only.launch) 也使用同一检测实现，
+但它本身不会产生稳定目标 ID。旧 COCO/救援/SmartTracker 启动入口已移至
+[`archive/launch`](archive/launch)，不再是生产入口。
+
+以下原有搜救/任务网关说明属于历史兼容资料，不代表当前车辆任务的默认部署合同。
+
+## 只读模型运行状态
+
+共享检测节点提供私有锁存话题 `~model_status`，类型为
+`diagnostic_msgs/DiagnosticArray`。标准入口的完整话题为
+`/uav1/sar_yolo_multi_source_detection/model_status`（飞机/节点命名空间可变）。
+节点初始化完成后发布首份快照，随后每秒刷新；网页重连订阅可收到最近快照。
+
+```bash
+rostopic echo -n 1 /uav1/sar_yolo_multi_source_detection/model_status
+```
+
+网页将 `status[0].values` 的 `key/value` 数组转换为映射使用，所有值都是字符串：
+
+| 字段 | 含义 |
+|---|---|
+| `schema_version` | 当前为 `1` |
+| `state` / `startup_ready` / `startup_error` | `WARMING_UP/READY/ERROR/UNAVAILABLE` 与预热状态 |
+| `configured_model_path` | 请求的源文件，仅供对照，不能作为实际活动模型 |
+| `loaded_model_path` / `loaded_model_name` | 后端成功加载的实际文件路径与名称 |
+| `loaded_artifact_sha256` / `artifact_id` | 加载器记录的文件摘要，以及 `sha256:<摘要>` 内容身份 |
+| `active_model_id` / `source_model_sha256` | 由注册表中源模型内容摘要识别出的 train/train4/train7；无法证明来源时为 `unknown` |
+| `model_epoch` | 当前模型代次；节点重启会建立新运行会话，网页不能仅凭此字段跨重启比较 |
+| `artifact_digest_available` | 摘要是否完整；不可用时为空且诊断告警，不用预期摘要代替 |
+| `backend` / `model_format` | 实际推理后端和文件格式 |
+| `requested_device` / `effective_device` | 请求设备和实际设备 |
+| `fallback_occurred` / `fallback_reason` | 后端是否回退及其原因 |
+
+布尔值编码为 `true/false`。TensorRT 情况下，`loaded_artifact_sha256` 属于实际加载的
+`.engine`，`source_model_sha256` 是启动配置中经过校验的 engine 来源 `.pt` 摘要；
+`active_model_id` 只按该内容摘要匹配注册表，不依据文件名猜测。摘要来自加载器成功
+记录，不会周期性重新读取磁盘文件。
+
+共享节点同时提供私有服务 `~list_models`（`sar_yolo_detector/ListDetectorModels`），
+返回注册表中的稳定 model_id、类别合同、源文件摘要、engine 准备状态，以及当前实际
+加载产物。注册表文件为 `config/model_registry.yaml`，节点启动时会校验文件范围和
+SHA-256；任一声明不一致会拒绝启动。该服务目前是只读能力，模型热切换命令将在完成
+双驻留/回滚事务后开放，网页不能把选择下拉框等同于切换成功。
+
+`header.stamp` 是状态快照的 ROS 时间，不是图像时间。网页应同时按本地接收时间
+判断状态是否陈旧（建议超过 3 秒没有更新时显示“状态过期”）；锁存消息不证明
+节点仍在线。模型加载失败、节点尚未完成初始化时，可能没有这个话题。
+该接口只提供状态，不提供模型、模式或目标切换命令。
+
+`models/xd_vehicle_latest` 的历史文件名并不表示当前默认模型；正式 launch
+默认 train7，历史 SmartTracker 回退说明仅适用于归档入口。
+
+## 已归档的搜救功能说明
+
+相机图像经旧 YOLO/SmartTracker 后，目标可转换为规划器可消费的任务候选。
+规划器完成全局去重、定位融合、分配与航线规划后，再通过每架工作机自己的任务网关下发任务。
 
 包内按 `scout`（侦察感知上行）和 `worker`（规划任务下行）隔离职责。SmartTracker
 及任务候选节点不发布飞控命令；工作机网关只把通过身份、地理参考、鉴权、能力和
@@ -63,7 +141,7 @@ engine 后端；不能在控制电脑上静默换模型。
 ## 主要飞机识别链与兼容 profile
 
 飞机识别不通过下表的旧 `rescue_profile.launch` 切换，而由
-[`scout_perception.launch`](launch/scout_perception.launch) 作为侦察机主要入口。
+[`scout_perception.launch`](archive/launch/scout_perception.launch) 曾作为侦察机主要入口。
 该入口加载 `aircraft_coco` profile：SmartTracker 可以跟踪和显示模型识别的所有
 COCO 类别，但任务生成器只允许类别 4 `airplane` 进入规划接口。
 
@@ -217,6 +295,38 @@ roslaunch sar_yolo_detector scout_perception.launch \
 
 包装脚本只补充 `/opt/ros/$ROS_DISTRO/lib/python3/dist-packages`，不会把另一 Python
 小版本的系统 NumPy/OpenCV 注入虚拟环境；`rospkg` 由上述可选 requirements 安装。
+
+### YOLO 双相机 TensorRT FP16
+
+`xd_yolo_multi_source_detection_integration.launch` 默认使用 TensorRT FP16。给定
+`.pt` 权重而没有匹配 engine 时，节点会验证配置的权重 SHA-256，并在首次启动时自动
+导出固定尺寸静态 engine（builder optimization level 默认 1）；后续按权重摘要、TensorRT/Ultralytics 版本、GPU 型号和输入
+尺寸复用 `~/.cache/sar_yolo_detector/tensorrt/` 中的产物。原始 `.pt` 不会被改写。
+若提供了 engine 路径，只有 engine 摘要正确且 `engine_source_model_sha256` 与选定
+权重一致时才直接使用；否则在 `auto_export_engine:=true` 时构建对应缓存版本。
+
+本机的 Python 环境应使用与系统 TensorRT/CUDA 运行库匹配的 bindings。当前主机为
+TensorRT 10.1 / CUDA 12.4：
+
+```bash
+.venv-sar-gpu/bin/pip install -r src/sar_yolo_detector/requirements-tensorrt-cu12.txt
+```
+
+该依赖只安装 Python bindings，不重复下载主机已有的 TensorRT 运行库。也可显式离线
+生成 train7 engine（固定 `640×640`、FP16、静态 batch=1，workspace 默认 0.5 GiB）：
+
+```bash
+.venv-sar-gpu/bin/python3 src/sar_yolo_detector/scripts/export_xd_vehicle_tensorrt.py \
+  --model src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7.pt \
+  --output src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7.engine \
+  --imgsz 640 --workspace 0.5
+```
+
+`tracking_benchmark_perception.launch` 会默认选择该 train7 engine；把
+`inference_backend:=ultralytics` 可显式退回 `.pt` 路径，或用
+`auto_export_engine:=false` 禁止缺少 engine 时自动构建。engine 与 GPU、CUDA、TensorRT
+版本相关，换部署主机时应重新生成或使用自动缓存；FP16 转换不会改变 YOLO 权重，但
+仍需用目标视频做精度回归后再用于实机。
 
 主要入口默认使用包内 `models/aircraft_coco/yolo11n.pt`，并在加载前校验 SHA-256、
 文件类型、大小和写权限。通用兼容入口 `smart_tracker.launch` 仍默认使用 thermal
@@ -592,15 +702,16 @@ rosservice call /uav1/sar_yolo_smart_tracker/switch_tracking_mode \
   "{mode: 'color_tracker', color_name: 'red'}"
 ```
 
-指定颜色后会直接在整幅图像中分割该颜色并输出面积最大的有效区域，不需要初始框；
+指定颜色后会在整幅图像中分割该颜色，并把所有达到面积/尺寸阈值的区域作为候选框发布；
+UI 点击或拖框选择其中一个后，`selected_tracked_detections` 持续只发布被选目标。该模式不需要初始框。
 `color_name` 留空时才等待画框并从框内学习颜色。自定义 HSV 范围通过
 `ManualBoxTracker/color_tracker/custom_hsv_ranges` 配置。两种手动算法分别为：
 
 - `feature_tracker`：按 `tracker_algorithm` 使用 CSRT、KCF、MIL 或模板匹配；
-- `color_tracker`：未指定颜色时用 ROI 学习的 HSV 直方图和 CamShift；指定颜色时做全图颜色检测。
+- `color_tracker`：未指定颜色时用 ROI 学习的 HSV 直方图和 CamShift；指定颜色时全图发布多个颜色候选框并允许 UI 单选。
 
-两种模式都只接受一个初始框，并沿用同一个 `coco/state`、标注图和 bridge 输出。
-连续失败达到 `max_fail_frames` 后会停止当前目标并等待新 ROI，不会自动切回 YOLO。
+特征模式与 ROI 学习颜色模式各跟踪一个手动目标；配置颜色模式会发布多个候选框，并允许 UI 选中一个持续输出。
+特征/ROI 学习目标连续失败达到 `max_fail_frames` 后会等待新 ROI，不会自动切回 YOLO。
 
 旧的 `xd_detector_integration.launch` 保留给兼容 OpenCV/TensorRT 的 ONNX/engine
 模型；当前 Ubuntu 20.04 自带 OpenCV 4.2 无法加载包内新式 Ultralytics ONNX，

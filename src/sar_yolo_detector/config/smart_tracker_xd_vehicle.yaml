@@ -6,24 +6,44 @@
 Default_Tracker: SmartTracker # SmartTracker / FeatureTracker / ColorTracker
 
 SmartTracker:
-  # xd_vehicle_train7.pt uses the local training label space:
-  # car=0, ar-car=1, tank=2. Filtering is applied both inside Ultralytics and
-  # before SmartTracker draws or publishes detections.
-  SMART_TRACKER_ALLOWED_CLASS_IDS: [0, 1, 2]
+  # xd_vehicle_train7.pt label space: car=0, ar-car=1, tank=2, m142=3.
+  # Filtering is applied both inside Ultralytics and before SmartTracker draws
+  # or publishes detections.
+  SMART_TRACKER_ALLOWED_CLASS_IDS: [0, 1, 2, 3]
   # Gazebo's older meshes/textures have a domain gap from COCO photographs.
-  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.6
+  # Match the detector deployment profile: keep distant vehicle candidates so
+  # the downstream tracker can associate them over time.
+  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.10
   SMART_TRACKER_MAX_DETECTIONS: 30
+  # All four labels belong to the vehicle parent class. Suppress duplicate
+  # tank/m142/etc. boxes BEFORE BoT-SORT allocates identities. A conservative
+  # overlap threshold preserves nearby vehicles better than agnostic IoU=0.30.
+  SMART_TRACKER_AGNOSTIC_NMS: true
+  SMART_TRACKER_IOU_THRESHOLD: 0.60
 
-  # ByteTrack is sufficient for the fixed overhead camera and lighter than
-  # BoT-SORT on the 2 GB deployment GPU.
+  # Preserve the upstream PixEagle association backend.
   TRACKER_TYPE: BoT-SORT
+  SMART_TRACKER_TRACKER_CONFIG_PATH: config/vehicle_botsort.yaml
+  SMART_TRACKER_INFERENCE_IMAGE_SIZE: 512
+
+# std_srvs/SetBool true on the auto-select service starts a one-shot selection
+# in SmartTracker or configured-colour mode. The top-confidence candidate must
+# remain the winner for this many frames before it is selected.
+AutoSelect:
+  enabled_at_startup: false
+  stable_frames: 5
+  # YOLO confidence is already filtered by its detector threshold. Color
+  # components use the tracker minimum-area filter instead.
+  minimum_confidence: 0.0
+  max_frame_gap_sec: 1.0
 
 ManualBoxTracker:
   enabled: true
   initial_roi_topic: sar_yolo_detector/manual/initial_roi
 
   # FeatureTracker and ColorTracker are independent modes selected through the
-  # switch service. Both modes wait for exactly one initial ROI after switching.
+  # switch service. FeatureTracker publishes its valid ROI box directly as the
+  # selected target; it does not require a separate select_pixel click.
   class_id: 2                  # class attached to the manual Detection2D
   track_id: 900000000          # stable ID, kept inside signed int32 range
   minimum_confidence: 0.0
@@ -46,7 +66,7 @@ ManualBoxTracker:
     # Empty: wait for an ROI and learn its colour. Non-empty: detect that colour
     # directly in the complete image without requiring an initial ROI. A service
     # request color_name overrides this startup value each time the mode switches.
-    color: ""                  # "" / red / green / blue / white / black / custom
+    color: "red"                  # "" / red / green / blue / white / black / custom
     min_area_px: 80.0
     min_width_px: 4.0
     min_height_px: 4.0

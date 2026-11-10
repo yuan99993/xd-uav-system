@@ -1,0 +1,23 @@
+<launch>
+  <!-- Optional visual stress scene. The pinned two-tank regression entry stays unchanged. -->
+  <arg name="gui" default="true"/>
+  <arg name="paused" default="false"/>
+  <arg name="verbose" default="false"/>
+  <arg name="rate_hz" default="20.0"/>
+
+  <include file="$(find xd_uav_track)/launch/tracking_benchmark.launch">
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="verbose" value="$(arg verbose)"/>
+    <arg name="rate_hz" value="$(arg rate_hz)"/>
+  </include>
+
+  <!--
+    This stationary third target stays at least 16 m center-to-center from
+    either moving lane. It is a visual multi-object check, not part of the
+    two-target truth-scored regression baseline.
+  -->
+  <node pkg="gazebo_ros" type="spawn_model"
+        name="spawn_benchmark_tank_charlie" output="screen"
+        args="-sdf -file $(find xd_uav_track)/models/tracking_tank/model.sdf -model benchmark_tank_charlie -x 12 -y 20 -z 0 -Y 0"/>
+</launch>

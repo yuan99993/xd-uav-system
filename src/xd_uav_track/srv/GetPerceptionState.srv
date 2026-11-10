@@ -1,0 +1,4 @@
+---
+bool success
+string message
+xd_uav_track/PerceptionState state

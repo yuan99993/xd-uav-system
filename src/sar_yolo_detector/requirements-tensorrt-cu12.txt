@@ -1,0 +1,6 @@
+# Optional Python bindings for the system TensorRT 10.1 / CUDA 12.4 runtime.
+# The CUDA-suffixed binding wheel avoids installing a duplicate TensorRT libs
+# wheel; libnvinfer 10.1 must be supplied by the host. Ultralytics' `tensorrt`
+# import is adapted to this wheel's `tensorrt_bindings` module by our backend.
+--extra-index-url https://pypi.nvidia.com
+tensorrt-cu12-bindings==10.1.0

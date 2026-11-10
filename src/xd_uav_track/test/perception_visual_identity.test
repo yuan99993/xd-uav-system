@@ -1,0 +1,26 @@
+<launch>
+  <group ns="perception_test">
+    <node pkg="xd_uav_track" type="xd_uav_track_node" name="track" output="screen">
+      <rosparam command="load" file="$(find xd_uav_track)/config/track.yaml"/>
+      <!-- Deliberately conflicting legacy settings: the immutable boundary wins. -->
+      <param name="runtime/perception_only" value="true"/>
+      <param name="runtime/publish_control_reference" value="true"/>
+      <param name="tracker/enabled_at_startup" value="true"/>
+      <rosparam param="tracker/sources/allowed">[fixed, gimbal, unlocated, overflow]</rosparam>
+      <param name="tracker/sources/maximum_count" value="3"/>
+      <param name="tracker/selection/auto_select" value="false"/>
+      <param name="frames/body_frd" value="perception_test/base_link_frd"/>
+    </node>
+    <node pkg="xd_uav_track" type="perception_mode_manager.py" name="mode_manager" output="screen">
+      <param name="frame_cache_size" value="12"/>
+      <rosparam param="sources">
+        - image_source: fixed
+          image_topic: fixed/image_raw
+        - image_source: gimbal
+          image_topic: gimbal/image_raw
+      </rosparam>
+    </node>
+  </group>
+  <test test-name="visual_identity_contract" pkg="xd_uav_track"
+        type="test_visual_identity_ros.py" time-limit="60"/>
+</launch>

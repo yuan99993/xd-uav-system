@@ -13,7 +13,11 @@ fi
 python_executable="${SAR_YOLO_SMART_PYTHON:-}"
 if [[ -z "$python_executable" ]]; then
   workspace_dir="$(cd "$package_dir/../.." 2>/dev/null && pwd || true)"
-  if [[ -x "$workspace_dir/.venv-sar-gpu/bin/python" ]]; then
+  if [[ -x "$workspace_dir/.venv-fusion/bin/python" ]]; then
+    # The isolated PT experiment needs CUDA and actual contrib KCF/CSRT.
+    # An explicit interpreter remains the highest-priority deployment choice.
+    python_executable="$workspace_dir/.venv-fusion/bin/python"
+  elif [[ -x "$workspace_dir/.venv-sar-gpu/bin/python" ]]; then
     python_executable="$workspace_dir/.venv-sar-gpu/bin/python"
   else
     python_executable="python3"

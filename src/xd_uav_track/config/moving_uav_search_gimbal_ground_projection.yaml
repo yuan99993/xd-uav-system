@@ -1,0 +1,44 @@
+# Calibrated Gazebo gimbal view. The test driver publishes the timestamped
+# body-to-camera transform while sweeping the simulated pan axis.
+localization:
+  enabled: true
+  method: "ground_plane"
+
+metadata:
+  image_source: "search_gimbal"
+  sensor_id: "search_quadrotor_gimbal_camera"
+  detector_name: "sar_yolo_detector"
+
+interfaces:
+  input:
+    detections_2d: "detect/input/gimbal/detections_2d"
+    image: "gimbal_camera/image_raw"
+    camera_info: "gimbal_camera/camera_info"
+  output:
+    detections_3d: "track/detections"
+    status: "detect/gimbal_ground_projection/status"
+    debug_image: "detect/gimbal_ground_projection/debug_image"
+
+frames:
+  world: "world"
+  camera: "moving_uav_search/gimbal_camera_optical_frame"
+
+ground_projection:
+  ground_plane_z_m: 0.0
+  minimum_range_m: 1.0
+  maximum_range_m: 120.0
+  minimum_ray_plane_angle_deg: 8.0
+  # Same physical box anchor as fixed_camera; mixing bottom/center splits IDs.
+  box_anchor_y_ratio: 0.50
+  pixel_stddev_px: 2.0
+  ground_height_stddev_m: 0.10
+  # Simulation-only centroid/ground-plane proxy uncertainty. Different hull /
+  # turret silhouettes are not a sub-decimetre measurement of vehicle origin.
+  position_stddev_m: 1.0
+  tf_timeout_sec: 0.15
+  tf_use_latest_on_failure: false
+  require_detection_timestamp: true
+  require_matching_camera_frame: true
+
+visualization:
+  enabled: false

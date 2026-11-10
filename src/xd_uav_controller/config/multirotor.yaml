@@ -56,13 +56,13 @@ multirotor:
     minimum_throttle: 0.05
     maximum_throttle: 0.90
     maximum_tilt: 0.52
-    maximum_body_rate: [2.5, 2.5, 1.8]
-    maximum_velocity_xy: 4.0
-    maximum_velocity_z: 3.0
-    maximum_acceleration_xy: 3.5
-    maximum_acceleration_z: 2.0
-    maximum_jerk_xy: 5
-    maximum_jerk_z: 2
+    maximum_body_rate: [4, 4, 3]
+    maximum_velocity_xy: 15.0
+    maximum_velocity_z: 10.0
+    maximum_acceleration_xy: 7
+    maximum_acceleration_z: 5
+    maximum_jerk_xy: 7
+    maximum_jerk_z: 3
 
   # 起飞与降落保持为两种机型一致的顶层业务阶段；具体参数由当前机型文件定义。
   takeoff:
@@ -76,7 +76,7 @@ multirotor:
     # odom使用相对起飞/Home地面的Z，适用于没有下视测距的仿真；它不能识别
     # 高于起飞点的平台。distance_sensor仅把纵向降落切换为下视AGL，XY仍使用
     # 当前定位源；需要飞机模型和MAVROS distance_sensor插件提供Range话题。
-    height_source: distance_sensor
+    height_source: odom
   
     # land_home水平返航的速度上限。控制器会根据剩余距离和多旋翼最大加速度
     # 自动提前减速，不会把该速度保持到目标点。

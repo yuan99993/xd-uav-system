@@ -131,6 +131,10 @@ bool parseFollowerProfile(const std::string& value, FollowerProfile* profile) {
     *profile = FollowerProfile::kFixedWingVelocityVector;
     return true;
   }
+  if (value == "gmfw_velocity_vector") {
+    *profile = FollowerProfile::kGimbalFixedWingVelocityVector;
+    return true;
+  }
   if (value == "fw_metric_pursuit") {
     *profile = FollowerProfile::kFixedWingMetricPursuit;
     return true;
@@ -152,6 +156,8 @@ const char* followerProfileName(const FollowerProfile profile) {
     case FollowerProfile::kGimbalVelocityVector: return "gm_velocity_vector";
     case FollowerProfile::kFixedWingVelocityVector:
       return "fw_velocity_vector";
+    case FollowerProfile::kGimbalFixedWingVelocityVector:
+      return "gmfw_velocity_vector";
     case FollowerProfile::kFixedWingMetricPursuit:
       return "fw_metric_pursuit";
     case FollowerProfile::kFixedWingMetricOrbit:
@@ -162,6 +168,7 @@ const char* followerProfileName(const FollowerProfile profile) {
 
 bool isFixedWingProfile(const FollowerProfile profile) {
   return profile == FollowerProfile::kFixedWingVelocityVector ||
+      profile == FollowerProfile::kGimbalFixedWingVelocityVector ||
       profile == FollowerProfile::kFixedWingMetricPursuit ||
       profile == FollowerProfile::kFixedWingMetricOrbit;
 }
@@ -341,6 +348,18 @@ TrackController::TrackController(const TrackControllerConfig& requested)
       config_.fw_maximum_course_offset, 0.01, 1.40);
   config_.fw_maximum_climb_rate = std::max(0.0,
       config_.fw_maximum_climb_rate);
+  config_.gmfw_commanded_airspeed = std::max(0.1,
+      config_.gmfw_commanded_airspeed);
+  config_.gmfw_maximum_course_offset = clamp(
+      config_.gmfw_maximum_course_offset, 0.01, 1.40);
+  config_.gmfw_maximum_climb_rate = std::max(0.0,
+      config_.gmfw_maximum_climb_rate);
+  config_.gmfw_horizontal_fov_rad = clamp(
+      config_.gmfw_horizontal_fov_rad, 0.01, 3.0);
+  config_.gmfw_vertical_fov_rad = clamp(
+      config_.gmfw_vertical_fov_rad, 0.01, 3.0);
+  config_.gmfw_image_alignment_rad = std::max(
+      0.01, config_.gmfw_image_alignment_rad);
   config_.uncertainty_nominal_sigma = std::max(
       1e-6, config_.uncertainty_nominal_sigma);
   config_.uncertainty_slow_ratio = std::max(
@@ -380,6 +399,10 @@ TrackController::TrackController(const TrackControllerConfig& requested)
                            config_.fw_maximum_course_offset);
   fw_climb_rate_pid_.configure(config_.fw_climb_rate_pid,
                                config_.fw_maximum_climb_rate);
+  gmfw_course_pid_.configure(config_.gmfw_course_pid,
+                             config_.gmfw_maximum_course_offset);
+  gmfw_climb_rate_pid_.configure(config_.gmfw_climb_rate_pid,
+                                 config_.gmfw_maximum_climb_rate);
   // The metric fixed-wing profiles are complete modes, not aliases for the
   // visual vector profile.  Selecting one enables the shared metric guidance
   // core and fixes its policy even when the YAML only contains the common
@@ -1326,7 +1349,8 @@ TrackVelocity TrackController::baseOutput(const double now) const {
 }
 
 bool TrackController::filteredGimbalAngles(const double now, double* yaw,
-                                           double* pitch, double* roll) {
+                                           double* pitch, double* roll,
+                                           const bool require_tracking) {
   if (yaw == nullptr || pitch == nullptr || roll == nullptr ||
       !gimbal_state_.valid || now - gimbal_state_.receive_time < -1e-6 ||
       now - gimbal_state_.receive_time > config_.gimbal_input_timeout_sec) {
@@ -1339,7 +1363,8 @@ bool TrackController::filteredGimbalAngles(const double now, double* yaw,
              config_.gimbal_input_timeout_sec)) {
       return false;
     }
-    if (!gimbal_state_.healthy || !gimbal_state_.tracking_active ||
+    if (!gimbal_state_.healthy ||
+        (require_tracking && !gimbal_state_.tracking_active) ||
         !gimbal_state_.control_authority_available) {
       return false;
     }
@@ -1453,10 +1478,27 @@ TrackVelocity TrackController::compute(const double now) {
     }
   }
 
+  // A confirmed selection arms gimbal-guided motion. After that, the gimbal
+  // angle is the guidance input for these profiles, so a detector gap must
+  // not zero the velocity command. Start/stop and emergency-stop handling
+  // remain owned by the node, and the gimbal profile below still requires a
+  // fresh, healthy gimbal state on every control cycle.
+  const bool gimbal_velocity_profile =
+      config_.profile == FollowerProfile::kGimbalVelocityChase ||
+      config_.profile == FollowerProfile::kGimbalVelocityVector;
+  const bool gimbal_only_control =
+      !fresh && ever_acquired_ && gimbal_velocity_profile;
+  if (gimbal_only_control) {
+    fresh = true;
+    measurement_age = std::max(0.0, now - measurement_.receive_time);
+    output.input_age_sec = measurement_age;
+  }
+
   // Optional metric guidance is evaluated before the legacy loss path.  This
   // lets a fixed-wing keep the captured inertial orbit during a bounded
   // detector gap while preserving the existing TrackVelocity interface.
-  const bool guidance_enabled = target_guidance_ != nullptr &&
+  const bool guidance_enabled = !gimbal_only_control &&
+      target_guidance_ != nullptr &&
       config_.target_guidance.enabled &&
       config_.target_guidance.mode != TargetGuidanceMode::kLegacyVisual;
   if (guidance_enabled && (have_measurement_ || have_metric_state_)) {
@@ -1556,7 +1598,9 @@ TrackVelocity TrackController::compute(const double now) {
       input.vehicle_pitch = vehicle_state_.pitch;
       const double guidance_speed = config_.target_guidance.commanded_speed > 0.1
           ? config_.target_guidance.commanded_speed
-          : config_.fw_commanded_airspeed;
+          : (config_.profile == FollowerProfile::kGimbalFixedWingVelocityVector
+                 ? config_.gmfw_commanded_airspeed
+                 : config_.fw_commanded_airspeed);
       input.commanded_speed = isFixedWingProfile(config_.profile)
           ? guidance_speed : std::min(guidance_speed,
                                       config_.maximum_forward_velocity);
@@ -1580,6 +1624,12 @@ TrackVelocity TrackController::compute(const double now) {
         input.gimbal_zoom_ratio = gimbal_state_.zoom_ratio;
       }
       TargetGuidanceOutput guidance = target_guidance_->update(input);
+      // Keep the profile-independent image-alignment error available to
+      // TrackStatus consumers (including the phase image overlay). Metric
+      // guidance uses world-relative state for control but still follows the
+      // same visual target, so these fields must not remain zero by default.
+      output.error_x = clamp(input.image_error_x, -2.0, 2.0);
+      output.error_y = clamp(input.image_error_y, -2.0, 2.0);
       if (gimbal_state_.status_valid && input.source_is_gimbal &&
           (!gimbal_state_.healthy || !gimbal_state_.tracking_active ||
            !gimbal_state_.control_authority_available)) {
@@ -1704,6 +1754,8 @@ TrackVelocity TrackController::compute(const double now) {
       ground_forward_pid_.reset();
       fw_course_pid_.reset();
       fw_climb_rate_pid_.reset();
+      gmfw_course_pid_.reset();
+      gmfw_climb_rate_pid_.reset();
       smoothed_left_ = 0.0;
       smoothed_up_ = 0.0;
       yaw_rate_limited_ = 0.0;
@@ -1760,7 +1812,7 @@ TrackVelocity TrackController::compute(const double now) {
       output.error_y, config_.vertical_deadband);
 
   double safety_scale = 1.0;
-  if (config_.uncertainty_control_enabled) {
+  if (config_.uncertainty_control_enabled && !gimbal_only_control) {
     const double sigma = std::sqrt(std::max(
         0.0, std::max(measurement_.state_covariance[0],
                       measurement_.state_covariance[1])));
@@ -1778,7 +1830,7 @@ TrackVelocity TrackController::compute(const double now) {
       output.uncertainty_limited = true;
     }
   }
-  if (reidentification_time_ >= 0.0 &&
+  if (!gimbal_only_control && reidentification_time_ >= 0.0 &&
       config_.reidentification_recovery_sec > 0.0) {
     const double progress = clamp(
         (now - reidentification_time_) /
@@ -1966,18 +2018,69 @@ TrackVelocity TrackController::compute(const double now) {
       break;
     }
     case FollowerProfile::kFixedWingVelocityVector:
+    case FollowerProfile::kGimbalFixedWingVelocityVector:
     case FollowerProfile::kFixedWingMetricPursuit:
     case FollowerProfile::kFixedWingMetricOrbit: {
       // The horizontal vector direction is the requested course relative to
       // current heading. Its magnitude is the requested airspeed. Positive
       // image x is right, while body-FLU y is left, hence the negative error.
-      const double course_offset =
-          safety_scale * fw_course_pid_.update(-error_x, dt);
-      const double airspeed = config_.fw_commanded_airspeed;
+      double course_error = error_x;
+      double climb_error = error_y;
+      const bool use_gimbal = config_.profile ==
+          FollowerProfile::kGimbalFixedWingVelocityVector;
+      if (use_gimbal) {
+        double yaw = 0.0;
+        double pitch = 0.0;
+        double roll = 0.0;
+        if (!filteredGimbalAngles(now, &yaw, &pitch, &roll, false)) {
+          output.valid = false;
+          output.tracking_state = "waiting_for_gimbal_state";
+          output.invalid_reason =
+              "gmfw_velocity_vector requires fresh valid gimbal angles";
+          return output;
+        }
+        const double hfov = gimbal_state_.status_valid &&
+                std::isfinite(gimbal_state_.horizontal_fov_rad) &&
+                gimbal_state_.horizontal_fov_rad > 0.0
+            ? gimbal_state_.horizontal_fov_rad
+            : config_.gmfw_horizontal_fov_rad;
+        const double vfov = gimbal_state_.status_valid &&
+                std::isfinite(gimbal_state_.vertical_fov_rad) &&
+                gimbal_state_.vertical_fov_rad > 0.0
+            ? gimbal_state_.vertical_fov_rad
+            : config_.gmfw_vertical_fov_rad;
+        // Convert the normalized box offset into a ray in the gimbal frame.
+        // Gimbal roll rotates the image axes relative to the aircraft.
+        const double image_weight = clamp(
+            1.0 - std::abs(yaw) / config_.gmfw_image_alignment_rad,
+            0.0, 1.0);
+        const double image_right = image_weight * std::atan(
+            error_x * std::tan(0.5 * clamp(hfov, 0.01, 3.0)));
+        const double image_down = image_weight * std::atan(
+            error_y * std::tan(0.5 * clamp(vfov, 0.01, 3.0)));
+        const double right = std::cos(roll) * image_right -
+            std::sin(roll) * image_down;
+        const double down = std::sin(roll) * image_right +
+            std::cos(roll) * image_down;
+        double unit_forward = 0.0;
+        double unit_right = 0.0;
+        double unit_down = 0.0;
+        gimbalToBodyVector(yaw + right, pitch + down, 0.0,
+                           &unit_forward, &unit_right, &unit_down);
+        course_error = std::atan2(unit_right, unit_forward);
+        climb_error = std::atan2(unit_down,
+                                  std::hypot(unit_forward, unit_right));
+      }
+      const double course_offset = safety_scale * (use_gimbal
+          ? gmfw_course_pid_.update(-course_error, dt)
+          : fw_course_pid_.update(-course_error, dt));
+      const double airspeed = use_gimbal ? config_.gmfw_commanded_airspeed
+                                        : config_.fw_commanded_airspeed;
       output.forward = airspeed * std::cos(course_offset);
       output.left = airspeed * std::sin(course_offset);
       output.up = config_.enable_vertical_control
-          ? fw_climb_rate_pid_.update(-error_y, dt) : 0.0;
+          ? (use_gimbal ? gmfw_climb_rate_pid_.update(-climb_error, dt)
+                        : fw_climb_rate_pid_.update(-climb_error, dt)) : 0.0;
       output.up *= safety_scale;
       output.yaw_rate = 0.0;
       output.use_yaw_rate = false;
@@ -2017,7 +2120,7 @@ TrackVelocity TrackController::compute(const double now) {
   output.yaw_rate = clamp(smoothYaw(desired_yaw, dt, output.forward),
                           -config_.maximum_yaw_rate,
                           config_.maximum_yaw_rate);
-  if (config_.relative_state_control_enabled &&
+  if (!gimbal_only_control && config_.relative_state_control_enabled &&
       (config_.profile == FollowerProfile::kVelocityChase ||
        config_.profile == FollowerProfile::kGimbalVelocityChase) &&
       measurement_.range_valid && measurement_.has_relative_position_body) {
@@ -2054,6 +2157,13 @@ TrackVelocity TrackController::compute(const double now) {
   output.up *= safety_scale;
   output.yaw_rate *= safety_scale * config_.uncertainty_yaw_scale +
       (1.0 - config_.uncertainty_yaw_scale);
+  if (gimbal_only_control) {
+    output.target_visible = false;
+    output.target_predicted = false;
+    output.tracking_state = "gimbal_guidance";
+    output.association_method = "gimbal_only";
+    output.target_loss_duration_sec = measurement_age;
+  }
   output.invalid_reason.clear();
   return output;
 }
@@ -2103,6 +2213,8 @@ void TrackController::resetFollowerState() {
   ground_forward_pid_.reset();
   fw_course_pid_.reset();
   fw_climb_rate_pid_.reset();
+  gmfw_course_pid_.reset();
+  gmfw_climb_rate_pid_.reset();
   forward_velocity_ = config_.initial_forward_velocity;
   smoothed_left_ = 0.0;
   smoothed_up_ = 0.0;

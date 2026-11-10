@@ -1,0 +1,24 @@
+<launch>
+  <!-- Separate A/B entry: never rewrite the frozen historical benchmark. -->
+  <arg name="gui" default="false"/>
+  <arg name="high_frequency_pixels" default="false"/>
+  <include file="$(find xd_uav_track)/launch/tracking_benchmark.launch">
+    <arg name="gui" value="$(arg gui)"/>
+  </include>
+  <include file="$(find xd_uav_track)/launch/tracking_benchmark_perception.launch">
+    <arg name="show_overlay" value="false"/>
+    <arg name="auto_export_engine" value="false"/>
+  </include>
+  <group ns="tracking_benchmark">
+    <param name="perception/high_frequency_pixel_enabled" value="$(arg high_frequency_pixels)"/>
+    <node pkg="xd_uav_track" type="perception_mode_manager.py" name="perception_mode_manager"
+          output="screen" required="true">
+      <param name="initial_mode" value="detect"/>
+      <param name="tracks_topic" value="track/tracks_by_source"/>
+      <rosparam param="sources">
+        - image_source: benchmark_fixed
+          image_topic: fixed_camera/image_raw
+      </rosparam>
+    </node>
+  </group>
+</launch>

@@ -40,12 +40,12 @@ fixedwing:
     lookahead_filter_time_constant: 0.55
 
   lateral_control:
-    course_time_constant: 0.9
+    course_time_constant: 1.4
     # 所有常规外部参考（轨迹或PositionTarget）共用course PI环；积分输出单位rad/s，
     # 用于消除风、舵效和模型偏差，限幅与滚转限幅共同防止wind-up。
     course_integral_gain: 0.08
     course_integral_rate_limit: 0.25
-    roll_time_constant: 0.20
+    roll_time_constant: 0.40
 
   vertical_control:
     altitude_time_constant: 3.0
@@ -63,9 +63,9 @@ fixedwing:
     bank_load_factor_pitch_gain: 0.25
 
   energy_control:
-    cruise_airspeed: 15.0
-    minimum_airspeed: 11.0
-    maximum_airspeed: 24.0
+    cruise_airspeed: 20.0
+    minimum_airspeed: 10.0
+    maximum_airspeed: 40.0
     trim_throttle: 0.25
     airspeed_throttle_gain: 0.08
     # 爬升时同步补油以维持空速。
@@ -140,7 +140,7 @@ multirotor:
   # 机体模型与悬停工作点。
   model:
     gravity: 9.80665
-    hover_throttle: 0.57
+    hover_throttle: 0.15
 
   path_following:
     nominal_speed: 3.0
@@ -194,20 +194,20 @@ multirotor:
     minimum_throttle: 0.05
     maximum_throttle: 0.90
     maximum_tilt: 0.45
-    maximum_body_rate: [2.0, 2.0, 1.5]
-    maximum_velocity_xy: 5.0
-    maximum_velocity_z: 5.0
-    maximum_acceleration_xy: 2.5
-    maximum_acceleration_z: 1.2
-    maximum_jerk_xy: 4
-    maximum_jerk_z: 1
+    maximum_body_rate: [5.0, 5.0, 3]
+    maximum_velocity_xy: 50.0
+    maximum_velocity_z: 50.0
+    maximum_acceleration_xy: 20.0
+    maximum_acceleration_z: 20.0
+    maximum_jerk_xy: 20.0
+    maximum_jerk_z: 10.0
 
   takeoff:
-    default_altitude: 3.0
-    max_velocity: 0.8
-    max_acceleration: 0.6
-    position_tolerance: 0.15
-    velocity_tolerance: 0.15
+    default_altitude: 100.0
+    max_velocity: 3.0
+    max_acceleration: 2.0
+    position_tolerance: 4.0
+    velocity_tolerance: 2.5
 
   landing:
     # VTOL 悬停降落使用相对起飞/Home地面的 Z，避免依赖固定翼配置。
@@ -219,8 +219,8 @@ multirotor:
     # 5m/s返航需要更早交给固定Home位置控制制动；进入后保持锁存，避免
     # 越过原点时速度方向反复翻转。
     capture_radius: 5.0
-    position_tolerance: 0.20
-    velocity_tolerance: 0.15
+    position_tolerance: 4.0
+    velocity_tolerance: 2.5
 
     distance_sensor_cfg:
       timeout: 0.5
@@ -236,8 +236,8 @@ multirotor:
 
     # 没有下视测距时保留原有的相对Home/起飞点高度降落逻辑。
     odom_cfg:
-      descent_velocity: 0.35
-      final_descent_velocity: 0.15
+      descent_velocity: 3.0
+      final_descent_velocity: 0.5
       slow_height: 0.7
       touchdown_offset: 0.10
       touchdown_height_tolerance: 0.05

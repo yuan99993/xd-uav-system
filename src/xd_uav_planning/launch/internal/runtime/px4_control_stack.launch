@@ -4,6 +4,8 @@
   <arg name="common_frame" default="world"/>
   <arg name="simple_goal_topic"
        default="/$(arg UAV_NAME)/integration/disabled_simple_goal"/>
+  <arg name="offboard_config"
+       default="$(find xd_uav_control_manager)/config/offboard.yaml"/>
   <arg name="adapt_manager_imu" default="false"/>
   <arg name="gps_origin_topic" default="mavros/global_position/gp_origin"/>
   <arg name="launch_world_registration" default="true"/>
@@ -37,16 +39,19 @@
            file="$(find xd_uav_control_manager)/launch/control_manager.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="vehicle_type" value="multirotor"/>
+    <arg name="offboard_config" value="$(arg offboard_config)"/>
   </include>
   <include if="$(arg adapt_manager_imu)"
            file="$(find xd_uav_planning)/launch/internal/runtime/control_manager_guarded.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="offboard_config" value="$(arg offboard_config)"/>
   </include>
 
   <include file="$(find xd_uav_controller)/launch/controller.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
     <arg name="vehicle_type" value="multirotor"/>
     <arg name="config" value="$(arg controller_config)"/>
+    <arg name="offboard_config" value="$(arg offboard_config)"/>
     <arg name="simple_goal_topic" value="$(arg simple_goal_topic)"/>
   </include>
 

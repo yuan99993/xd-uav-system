@@ -1,0 +1,9 @@
+---
+bool success
+string message
+sar_yolo_detector/DetectorModelInfo[] models
+string active_model_id
+string loaded_artifact_path
+string loaded_artifact_sha256
+string active_backend
+uint64 model_epoch

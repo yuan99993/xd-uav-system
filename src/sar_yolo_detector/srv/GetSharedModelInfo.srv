@@ -1,0 +1,7 @@
+string model_key
+---
+bool success
+string message
+string runtime_json
+string labels_json
+string model_task

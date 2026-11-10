@@ -9,8 +9,10 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   nav_msgs
   rospy
+  sensor_msgs
   std_msgs
   std_srvs
+  target_geolocation
   tf2_ros
   visualization_msgs
   xd_uav_controller
@@ -57,8 +59,10 @@ catkin_package(
     message_runtime
     nav_msgs
     rospy
+    sensor_msgs
     std_msgs
     std_srvs
+    target_geolocation
     tf2_ros
     visualization_msgs
     xd_uav_controller

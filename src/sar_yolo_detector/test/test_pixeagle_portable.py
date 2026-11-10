@@ -187,6 +187,19 @@ class PixEaglePortableTest(unittest.TestCase):
         self.assertEqual(detections[0].class_id, 0)
         self.assertFalse(detections[0].track_id_is_stable)
 
+    def test_vehicle_agnostic_nms_reaches_predict_and_track(self):
+        backend = UltralyticsBackend({"SMART_TRACKER_AGNOSTIC_NMS": True,
+                                      "SMART_TRACKER_ALLOWED_CLASS_IDS": [0, 1, 2, 3]})
+        backend._model = mock.Mock()
+        backend._model.predict.return_value = []
+        backend._model.track.return_value = []
+        backend.detect(np.zeros((64, 64, 3), np.uint8), iou=.6)
+        backend.detect_and_track(np.zeros((64, 64, 3), np.uint8), iou=.6)
+        for call in (backend._model.predict.call_args, backend._model.track.call_args):
+            self.assertTrue(call.kwargs["agnostic_nms"])
+            self.assertEqual(call.kwargs["classes"], [0, 1, 2, 3])
+            self.assertEqual(call.kwargs["iou"], .6)
+
     def test_model_integrity_accepts_only_matching_digest(self):
         payload = b"trusted-model-fixture"
         expected = hashlib.sha256(payload).hexdigest()

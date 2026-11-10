@@ -1,0 +1,12 @@
+string model_key
+string source_id
+sensor_msgs/Image image
+float32 confidence
+float32 iou
+uint32 max_detections
+int32 image_size
+---
+bool success
+string message
+float64 inference_ms
+sar_yolo_detector/NormalizedDetection[] detections

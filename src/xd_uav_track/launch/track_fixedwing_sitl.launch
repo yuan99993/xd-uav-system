@@ -1,6 +1,7 @@
 <launch>
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
   <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
+  <arg name="body_frd_frame" default="$(arg UAV_NAME)/base_link_frd"/>
   <!-- Keep the fixed-wing profile as an overlay on the complete, shared
        tracker/follower configuration.  This guarantees that association,
        filtering, gimbal, loss handling and safety parameters added for the
@@ -19,6 +20,7 @@
       <rosparam command="load" file="$(arg base_config)"/>
       <rosparam command="load" file="$(arg config)"/>
       <param name="frames/body" value="$(arg body_frame)"/>
+      <param name="frames/body_frd" value="$(arg body_frd_frame)"/>
     </node>
   </group>
 </launch>

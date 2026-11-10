@@ -15,6 +15,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger, TriggerResponse
 from visualization_msgs.msg import Marker, MarkerArray
 
+from target_geolocation.msg import GeolocatedTarget
 from xd_uav_controller.msg import ControlState, PathStatus
 from xd_uav_task_allocate.core.allocation import (
     TASK_COMPLETED,
@@ -42,6 +43,10 @@ from xd_uav_task_allocate.core.geometry import (
     RigidTransform,
     relative_frd_to_shared,
     rotate_covariance_frd_to_shared,
+)
+from xd_uav_task_allocate.core.geodesy import (
+    geodetic_to_world,
+    rotate_enu_covariance_to_world,
 )
 from xd_uav_task_allocate.core.registry import (
     TARGET_ASSIGNED,
@@ -171,6 +176,11 @@ class TaskAllocateCoordinator:
                 )
             ),
         )
+        self.worker_execution_overrides = dict(
+            rospy.get_param(
+                "~allocation/worker_execution/worker_overrides", {}
+            )
+        )
         self.planner_failure_retry_sec = float(
             rospy.get_param("~allocation/planner_failure_retry_sec", 5.0)
         )
@@ -237,6 +247,49 @@ class TaskAllocateCoordinator:
 
         self.scout_configs = dict(rospy.get_param("~scouts", {}))
         self.worker_configs = dict(rospy.get_param("~workers", {}))
+        self.geodetic_target_configs = {}
+        for name, config in self.scout_configs.items():
+            geodetic_target = dict(dict(config).get("geodetic_target", {}))
+            topic = str(geodetic_target.get("topic", "")).strip()
+            if not topic:
+                continue
+            minimum_confidence = float(
+                geodetic_target.get("minimum_confidence", 0.0)
+            )
+            if not 0.0 <= minimum_confidence <= 1.0:
+                raise ValueError(
+                    "scout %s geodetic_target/minimum_confidence must be in [0, 1]"
+                    % name
+                )
+            self.geodetic_target_configs[str(name)] = dict(
+                geodetic_target,
+                topic=topic,
+                minimum_confidence=minimum_confidence,
+            )
+        self.world_georeference = {}
+        if self.geodetic_target_configs:
+            georeference = dict(
+                rospy.get_param("~mission/georeference", {})
+            )
+            datum = dict(georeference.get("datum", {}))
+            required_datum_fields = ("latitude", "longitude", "altitude")
+            if any(field not in datum for field in required_datum_fields):
+                raise ValueError(
+                    "mission/georeference/datum must define latitude, longitude and altitude "
+                    "when a geodetic_target input is configured"
+                )
+            world_position = tuple(
+                float(value) for value in georeference.get("position", (0.0, 0.0, 0.0))
+            )
+            if len(world_position) != 3:
+                raise ValueError("mission/georeference/position must have three values")
+            self.world_georeference = {
+                "datum": tuple(float(datum[field]) for field in required_datum_fields),
+                "enu_to_world_yaw": float(
+                    georeference.get("enu_to_world_yaw", 0.0)
+                ),
+                "position": world_position,
+            }
         configured_scout_mobility = {
             self._configured_mobility_profile(dict(config))
             for config in self.scout_configs.values()
@@ -738,6 +791,24 @@ class TaskAllocateCoordinator:
         # target may require observation even if this aircraft normally tracks.
         options.update(dict(class_options))
         return options
+
+    def _worker_visual_handoff_radius(self, worker: str) -> float:
+        """Return the visual handoff radius configured for one worker."""
+
+        fallback = float(
+            getattr(self, "worker_execution_target_radius", 10.0)
+        )
+        worker_overrides = getattr(self, "worker_execution_overrides", {})
+        options = worker_overrides.get(str(worker), {})
+        if not isinstance(options, dict):
+            return max(0.0, fallback) if isfinite(fallback) else 0.0
+        try:
+            radius = float(options.get("target_radius_m", fallback))
+        except (TypeError, ValueError):
+            radius = fallback
+        if not isfinite(radius):
+            radius = fallback
+        return max(0.0, radius) if isfinite(radius) else 0.0
 
     def _task_execute_handoff_mode(self, task, worker: str) -> str:
         """Resolve whether task_execute starts from vision or position arrival.
@@ -1349,6 +1420,18 @@ class TaskAllocateCoordinator:
         worker_visual_subscription = (
             self._worker_visual_handoff_subscription_enabled()
         )
+        geodetic_target = self.geodetic_target_configs.get(str(name))
+        if is_scout and geodetic_target is not None:
+            self._subscribers.append(
+                rospy.Subscriber(
+                    geodetic_target["topic"],
+                    GeolocatedTarget,
+                    lambda message, vehicle=str(name): self._geodetic_target_callback(
+                        vehicle, message
+                    ),
+                    queue_size=10,
+                )
+            )
         if is_scout or worker_visual_subscription:
             for detection_topic in self._topics(
                 config, "detections", f"/{name}/track/detections"
@@ -2686,7 +2769,7 @@ class TaskAllocateCoordinator:
                 (worker_position[0] - task.target_position[0]) ** 2
                 + (worker_position[1] - task.target_position[1]) ** 2
             )
-            if worker_target_distance > self.worker_execution_target_radius:
+            if worker_target_distance > self._worker_visual_handoff_radius(worker):
                 return
 
             matching = [
@@ -2698,12 +2781,22 @@ class TaskAllocateCoordinator:
                 return
 
             candidate = max(matching, key=lambda item: float(item.confidence))
-            # Stable detector IDs are preserved by xd_uav_track and can select
-            # the exact local track. With an unstable ID the executor performs
-            # its normal automatic selection instead.
+            # DetectionArray.track_id belongs to the detector/bridge ID
+            # namespace. It is not necessarily xd_uav_track's global track ID,
+            # which is what SelectTrack expects. Allow a worker override to
+            # pass the detector ID only when the source explicitly guarantees
+            # that both namespaces match; otherwise let the track node
+            # auto-select from its (often selected-only) detection input.
+            worker_execution_options = getattr(
+                self, "worker_execution_overrides", {}
+            ).get(str(worker), {})
+            pass_detection_track_id = bool(
+                worker_execution_options.get("pass_detection_track_id", True)
+            ) if isinstance(worker_execution_options, dict) else True
             local_track_id = (
                 int(candidate.track_id)
-                if bool(candidate.track_id_is_stable)
+                if pass_detection_track_id
+                and bool(candidate.track_id_is_stable)
                 and int(candidate.track_id) >= 0
                 else -1
             )
@@ -2748,6 +2841,120 @@ class TaskAllocateCoordinator:
                 local_track_id=local_track_id,
                 handoff_detail=detail,
             )
+            self._publish_state()
+
+    def _record_target_observation(
+        self, scout: str, observation: TargetObservation
+    ) -> None:
+        """Feed any metric target source through the same confirmation path."""
+        update = self.registry.observe(observation)
+        if (
+            self.hierarchical_search_enabled
+            and self._mobility_profile(scout) == "hover"
+        ):
+            region_id = self._containing_verification_region(update.target.position)
+            if region_id is not None:
+                self._attach_target_to_verification_region(update.target, region_id)
+        if update.newly_confirmed:
+            priority = self.class_priorities.get(update.target.class_id, 0)
+            task = self.allocator.ensure_task(
+                update.target,
+                priority=priority,
+                duplicate_radius_m=self.task_duplicate_radius,
+            )
+            if task.target_id != update.target.target_id:
+                rospy.logwarn(
+                    "[task_allocate] target %d confirmed near existing "
+                    "same-class task %d/target %d; duplicate task suppressed",
+                    update.target.target_id,
+                    task.task_id,
+                    task.target_id,
+                )
+            else:
+                rospy.loginfo(
+                    "[task_allocate] target %d confirmed at "
+                    "(%.2f, %.2f), class=%d",
+                    update.target.target_id,
+                    update.target.position[0],
+                    update.target.position[1],
+                    update.target.class_id,
+                )
+        elif (
+            self.hierarchical_search_enabled
+            and self._mobility_profile(scout) == "fixedwing"
+            and update.newly_evidence_ready
+        ):
+            self._queue_target_verification(update.target)
+
+    def _geodetic_target_callback(
+        self, scout: str, message: GeolocatedTarget
+    ) -> None:
+        """Convert a box-associated WGS84 solution into a task observation."""
+        fix = message.fix
+        stamp = fix.header.stamp.to_sec()
+        if stamp <= 0.0:
+            rospy.logwarn_throttle(
+                2.0, "[task_allocate] rejected zero-stamped geodetic target"
+            )
+            return
+        if int(fix.status.status) < 0:
+            rospy.logwarn_throttle(
+                2.0, "[task_allocate] rejected geodetic target without a GNSS fix"
+            )
+            return
+        class_id = int(message.class_id)
+        confidence = float(message.confidence)
+        if class_id < 0 or not isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+            rospy.logwarn_throttle(
+                2.0,
+                "[task_allocate] rejected geodetic target with invalid class/confidence",
+            )
+            return
+        config = self.geodetic_target_configs[scout]
+        if confidence < config["minimum_confidence"]:
+            return
+        try:
+            georeference = self.world_georeference
+            position = geodetic_to_world(
+                fix.latitude,
+                fix.longitude,
+                fix.altitude,
+                georeference["datum"],
+                enu_to_world_yaw=georeference["enu_to_world_yaw"],
+                world_position=georeference["position"],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            rospy.logwarn_throttle(
+                2.0,
+                "[task_allocate] %s geodetic target rejected: %s",
+                scout,
+                error,
+            )
+            return
+
+        covariance = (0.0,) * 9
+        if int(fix.position_covariance_type) != 0:
+            covariance = rotate_enu_covariance_to_world(
+                fix.position_covariance,
+                georeference["enu_to_world_yaw"],
+            )
+        observation = TargetObservation(
+            source_uav=scout,
+            stamp=stamp,
+            class_id=class_id,
+            position=position,
+            confidence=confidence,
+            covariance=covariance,
+            source_mobility_profile=self._mobility_profile(scout),
+            track_id=int(message.track_id),
+            track_id_is_stable=bool(message.track_id_is_stable),
+            sensor_id=str(message.sensor_id or "target_geolocation"),
+        )
+        with self._lock:
+            if self.mission_state != MISSION_ACTIVE:
+                return
+            self._record_target_observation(scout, observation)
+            self._dispatch_assignments()
             self._publish_state()
 
     def _detection_callback(self, scout: str, message: DetectionArray) -> None:
@@ -2825,49 +3032,8 @@ class TaskAllocateCoordinator:
                         )
                     ),
                 )
-                update = self.registry.observe(observation)
+                self._record_target_observation(scout, observation)
                 changed = True
-                if (
-                    self.hierarchical_search_enabled
-                    and self._mobility_profile(scout) == "hover"
-                ):
-                    region_id = self._containing_verification_region(
-                        update.target.position
-                    )
-                    if region_id is not None:
-                        self._attach_target_to_verification_region(
-                            update.target, region_id
-                        )
-                if update.newly_confirmed:
-                    priority = self.class_priorities.get(update.target.class_id, 0)
-                    task = self.allocator.ensure_task(
-                        update.target,
-                        priority=priority,
-                        duplicate_radius_m=self.task_duplicate_radius,
-                    )
-                    if task.target_id != update.target.target_id:
-                        rospy.logwarn(
-                            "[task_allocate] target %d confirmed near existing "
-                            "same-class task %d/target %d; duplicate task suppressed",
-                            update.target.target_id,
-                            task.task_id,
-                            task.target_id,
-                        )
-                    else:
-                        rospy.loginfo(
-                            "[task_allocate] target %d confirmed at "
-                            "(%.2f, %.2f), class=%d",
-                            update.target.target_id,
-                            update.target.position[0],
-                            update.target.position[1],
-                            update.target.class_id,
-                        )
-                elif (
-                    self.hierarchical_search_enabled
-                    and self._mobility_profile(scout) == "fixedwing"
-                    and update.newly_evidence_ready
-                ):
-                    self._queue_target_verification(update.target)
             if changed:
                 self._dispatch_assignments()
                 self._publish_state()
@@ -3500,12 +3666,18 @@ class TaskAllocateCoordinator:
     def _path_status_callback(self, vehicle: str, message: PathStatus) -> None:
         """Translate controller path progress into the existing planner contract."""
         with self._lock:
-            if vehicle not in self.active_controller_paths:
-                return
             active = self.active_goals.get(vehicle)
             if active is None or int(message.path_id) != int(active[0]):
                 return
             state = int(message.state)
+            # A direct hold can clear this bookkeeping flag while the route
+            # goal remains active. The controller's terminal status is still
+            # authoritative when its path ID matches that active goal.
+            if (
+                vehicle not in self.active_controller_paths
+                and state != PathStatus.COMPLETED
+            ):
+                return
             if state in (
                 PathStatus.ACCEPTED,
                 PathStatus.ACTIVE,

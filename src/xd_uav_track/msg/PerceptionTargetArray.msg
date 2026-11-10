@@ -1,0 +1,11 @@
+std_msgs/Header header
+uint32 frame_seq
+string image_source
+uint32 image_width
+uint32 image_height
+string session_id
+uint64 state_version
+uint64 model_epoch
+string model_id
+string mode
+xd_uav_track/PerceptionTarget[] targets

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>感知模式与模型切换测试</title>
+<style>
+body{font:16px system-ui,sans-serif;max-width:860px;margin:30px auto;padding:0 16px;background:#f4f6f8;color:#182333}
+section{background:white;border:1px solid #ccd4dd;border-radius:8px;padding:18px;margin:16px 0}
+input,select,button{font:inherit;padding:8px;margin:4px;max-width:100%}button{cursor:pointer}button:disabled{cursor:default}
+.good{color:#08733e}.bad{color:#b32323}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
+label{display:inline-block}#status{font-weight:600}a{color:#1463aa}
+</style>
+</head>
+<body>
+<h1>模式 / 模型切换测试</h1>
+<p>连接现有 ROS 感知栈，不启动额外检测器、不订阅视频。成功判定：命令 APPLIED 且服务端实际状态符合请求。</p>
+<section>
+<label>WebSocket <input id="url" value="ws://127.0.0.1:9090" size="32"></label>
+<label>UAV <input id="namespace" value="uav1" size="10"></label>
+<button id="connect">连接 / 重连</button><button id="disconnect" disabled>断开</button>
+<p id="status">未连接</p><p id="actual">等待服务端状态</p>
+</section>
+<section>
+<h2>1. 切换模式</h2>
+<button data-mode="detect" disabled>检测 detect</button>
+<button data-mode="track" disabled>跟踪 track</button>
+<button data-mode="fusion" disabled>融合 fusion</button>
+<p>track 未选择目标时可能没有目标输出，这不代表模式切换失败。</p>
+<h2>2. 切换 YOLO 模型</h2>
+<select id="models" disabled aria-label="模型列表"></select>
+<button id="switch" disabled>切换所选模型</button><button id="refresh" disabled>刷新模型列表</button>
+<p id="model-info">等待 models/list；未准备 engine 的模型不能在线切换。</p>
+</section>
+<section>
+<h2>测试结果</h2><p id="result" aria-live="polite">尚未发送命令</p>
+<details><summary>最近命令日志（最多 60 条）</summary><pre id="log"></pre></details>
+<details><summary>实际 state</summary><pre id="state"></pre></details>
+</section>
+<p><a href="index.html">完整视频 / 框选页面</a> · <a href="perception_api.json">接口文件</a></p>
+<script src="perception_client.js"></script>
+<script src="switch_test.js"></script>
+</body>
+</html>

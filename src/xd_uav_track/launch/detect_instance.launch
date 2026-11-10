@@ -6,6 +6,8 @@
   <arg name="node_name" default="detect"/>
   <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
   <arg name="world_frame" default="$(arg UAV_NAME)/local_origin"/>
+  <arg name="camera_frame" default=""/>
+  <arg name="require_matching_camera_frame" default="true"/>
   <arg name="image_source" default=""/>
   <arg name="sensor_id" default=""/>
   <arg name="detector_name" default=""/>
@@ -14,6 +16,9 @@
   <arg name="detections_2d_topic" default=""/>
   <arg name="gimbal_state_topic" default=""/>
   <arg name="gimbal_range_topic" default=""/>
+  <arg name="detections_3d_topic" default=""/>
+  <arg name="status_topic" default=""/>
+  <arg name="debug_image_topic" default=""/>
 
   <group ns="$(arg UAV_NAME)">
     <node pkg="xd_uav_detect" type="xd_uav_detect_node"
@@ -21,6 +26,9 @@
       <rosparam command="load" file="$(arg config)"/>
       <param name="frames/body" value="$(arg body_frame)"/>
       <param name="frames/world" value="$(arg world_frame)"/>
+      <param name="frames/camera" value="$(arg camera_frame)"/>
+      <param name="ground_projection/require_matching_camera_frame"
+             value="$(arg require_matching_camera_frame)"/>
       <param if="$(eval arg('image_source') != '')"
              name="metadata/image_source" value="$(arg image_source)"/>
       <param if="$(eval arg('sensor_id') != '')"
@@ -37,6 +45,12 @@
              name="interfaces/input/gimbal_state" value="$(arg gimbal_state_topic)"/>
       <param if="$(eval arg('gimbal_range_topic') != '')"
              name="interfaces/input/gimbal_range" value="$(arg gimbal_range_topic)"/>
+      <param if="$(eval arg('detections_3d_topic') != '')"
+             name="interfaces/output/detections_3d" value="$(arg detections_3d_topic)"/>
+      <param if="$(eval arg('status_topic') != '')"
+             name="interfaces/output/status" value="$(arg status_topic)"/>
+      <param if="$(eval arg('debug_image_topic') != '')"
+             name="interfaces/output/debug_image" value="$(arg debug_image_topic)"/>
     </node>
   </group>
 </launch>

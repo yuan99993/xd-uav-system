@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
   std_msgs
+  std_srvs
   tf2
   tf2_geometry_msgs
   tf2_ros
@@ -80,7 +81,11 @@ add_message_files(
   TaskExecutionStatus.msg
   TrackedDetection2D.msg
   TrackedDetection2DArray.msg
+  FusionDetection2D.msg
+  FusionDetection2DArray.msg
   UavDecisionHeartbeat.msg
+  DetectorModelInfo.msg
+  NormalizedDetection.msg
 )
 
 add_service_files(
@@ -95,6 +100,11 @@ add_service_files(
   SubmitTaskAssignment.srv
   SwitchSmartTrackerModel.srv
   SwitchTrackingMode.srv
+  SelectFusionROI.srv
+  SelectFusionPoint.srv
+  ListDetectorModels.srv
+  GetSharedModelInfo.srv
+  RunSharedInference.srv
 )
 
 generate_messages(
@@ -120,6 +130,7 @@ catkin_package(
     rospy
     sensor_msgs
     std_msgs
+    std_srvs
     tf2
     tf2_geometry_msgs
     tf2_ros
@@ -300,10 +311,14 @@ install(TARGETS sar_yolo_postprocessor sar_yolo_inference_backend sar_model_inte
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
-install(DIRECTORY config launch training models
+install(DIRECTORY config launch training models docs web
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
-install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md requirements-smart-tracker.txt
+install(DIRECTORY archive/launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/archive
+)
+install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md
+  requirements-smart-tracker.txt requirements-tensorrt-cu12.txt
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt
@@ -311,10 +326,26 @@ install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt
 )
 install(PROGRAMS
   scripts/sar_yolo_smart_tracker
+  scripts/sar_yolo_shared_model_server
+  scripts/sar_yolo_multi_source_detection
   scripts/smart_tracker_node.py
+  scripts/shared_inference_server.py
+  # The shared one/two-source wrapper executes this sibling in both devel and
+  # install spaces.  Installing only the wrapper made a source workspace work
+  # while an installed deployment failed at launch.
+  scripts/multi_source_detection_node.py
+  # Offline-only export helper; it preserves the existing .pt model and is
+  # useful when provisioning a separately audited FP16 engine.
+  scripts/export_xd_vehicle_tensorrt.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 catkin_install_python(PROGRAMS
+  scripts/fusion_web_preview.py
+  scripts/fusion_interactive_viewer.py
+  scripts/validate_fusion_runtime.py
+  scripts/validate_formal_gazebo_fusion.py
+  test/test_fusion_bridge.py
+  scripts/verify_registered_engines.py
   examples/sign_and_submit_task.py
   test/test_detector_interfaces.py
   test/test_decision_bridge.py
@@ -336,6 +367,19 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_pixeagle_portable.py)
   catkin_add_nosetests(test/test_smart_tracker_image_codec.py)
   catkin_add_nosetests(test/test_manual_box_tracker.py)
+  catkin_add_nosetests(test/test_box_fusion.py)
+  catkin_add_nosetests(test/test_loss_journal.py)
+  catkin_add_nosetests(test/test_fusion_metrics.py)
+  catkin_add_nosetests(test/test_async_pipeline.py)
+  catkin_add_nosetests(test/test_camera_motion.py)
+  catkin_add_nosetests(test/test_capture_clock.py)
+  catkin_add_nosetests(test/test_interactive_view.py)
+  catkin_add_nosetests(test/test_fusion_web_preview.py)
+  catkin_add_nosetests(test/test_fusion_adapter.py)
+  catkin_add_nosetests(test/test_shared_detector_outputs.py)
+  catkin_add_nosetests(test/test_model_runtime_status.py)
+  catkin_add_nosetests(test/test_model_registry.py)
+  catkin_add_nosetests(test/test_model_switch.py)
   catkin_add_nosetests(test/test_interface_v1_md5.py)
   catkin_add_gtest(test_yolo_postprocessor
     test/test_yolo_postprocessor.cpp

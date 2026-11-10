@@ -1,0 +1,36 @@
+<launch>
+  <!-- Record the exact capture-time chain required for offline identity and
+       synchronization validation. This launch records only; it starts no
+       detector, tracker, controller, Gazebo or PX4 process. -->
+  <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)"/>
+  <arg name="output_prefix" default="tracking_evidence"/>
+  <arg name="fixed_image_topic" default="fixed_camera/image_raw"/>
+  <arg name="fixed_camera_info_topic" default="fixed_camera/camera_info"/>
+  <arg name="gimbal_image_topic" default="gimbal_camera/image_raw"/>
+  <arg name="gimbal_camera_info_topic" default="gimbal_camera/camera_info"/>
+  <arg name="vehicle_state_topic" default="state_estimator/main/odom"/>
+  <arg name="gimbal_status_topic" default="track/gimbal_status"/>
+  <arg name="identity_hints_topic" default="track/identity_hints"/>
+
+  <group ns="$(arg UAV_NAME)">
+    <node pkg="rosbag" type="record" name="record_tracking_evidence"
+          output="screen" required="true"
+          args="--lz4 -O $(arg output_prefix)
+                $(arg fixed_image_topic)
+                $(arg fixed_camera_info_topic)
+                $(arg gimbal_image_topic)
+                $(arg gimbal_camera_info_topic)
+                sar_yolo_detector/fixed/detections
+                sar_yolo_detector/gimbal/detections
+                detect/input/fixed/detections_raw
+                detect/input/fixed/detections_2d
+                detect/input/gimbal/detections_raw
+                detect/input/gimbal/detections_2d
+                detect/detections
+                track/tracks
+                track/status
+                $(arg identity_hints_topic)
+                $(arg vehicle_state_topic)
+                $(arg gimbal_status_topic)"/>
+  </group>
+</launch>

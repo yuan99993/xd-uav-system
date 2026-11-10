@@ -1,0 +1,12 @@
+<launch>
+  <node pkg="sar_yolo_detector" type="sar_vision_to_xd_bridge" name="fusion_bridge_adapter_test" required="true" output="screen">
+    <param name="input_type" value="fusion" />
+    <param name="input_detections_topic" value="/fusion_bridge_test/input" />
+    <param name="output_detections_topic" value="/fusion_bridge_test/output" />
+    <param name="image_source" value="gimbal_rgb" />
+    <!-- Deliberately incorrect fallback dimensions: captures must override. -->
+    <param name="image_width" value="1280" />
+    <param name="image_height" value="720" />
+  </node>
+  <test pkg="sar_yolo_detector" type="test_fusion_bridge.py" test-name="fusion_bridge" time-limit="20" />
+</launch>

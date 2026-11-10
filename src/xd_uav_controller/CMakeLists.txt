@@ -23,6 +23,7 @@ add_message_files(
   FILES
   ControlCommand.msg
   ControlState.msg
+  ControllerLocalSetpoint.msg
   PathStatus.msg
 )
 
@@ -35,6 +36,7 @@ add_service_files(
 generate_messages(
   DEPENDENCIES
   geometry_msgs
+  mavros_msgs
   std_msgs
 )
 

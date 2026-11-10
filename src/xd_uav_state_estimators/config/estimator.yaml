@@ -2,6 +2,8 @@
 output_rate: 100.0
 diagnostics_rate: 1.0
 max_localization_delay: 10.0
+# 放宽高延迟仿真中的消息时间戳超前容差。
+max_future_stamp_lead: 2.0
 max_dead_reckoning_time: 10.0
 imu_timeout: 10.0
 require_imu: true #true：IMU 掉线会停止有效主输出；false：定位健康时仍能输出，定位失效时则依赖最后状态做纯模型预测
@@ -9,7 +11,7 @@ frame_lookup_timeout: 10.0
 
 # 主估计结果除标准odom坐标系外，还可重发布到以下坐标系。
 # 对应话题为state_estimator/main/frames/<坐标系>/odom。
-main_republish_in_frames: [local_origin]
+main_republish_in_frames: [local_origin, world]
 
 filter:
   initial_position_variance: 1.0

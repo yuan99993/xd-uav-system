@@ -1,0 +1,108 @@
+# Pure perception. Edit this file for a new host/camera; no flight planner.
+# Paths are resolved in source AND install spaces by roslaunch subst_value.
+# A missing camera may connect later; it never fabricates target observations.
+sar_yolo_multi_source_detection:
+  model_path: $(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt
+  model_registry: $(find sar_yolo_detector)/config/model_registry.yaml
+  inference_backend: tensorrt_fp16
+  # Empty selects a verified, host-fingerprinted cache (not another GPU's engine).
+  engine_path: ""
+  auto_export_engine: true
+  engine_image_size: 640
+  engine_workspace_gib: 0.5
+  engine_builder_optimization_level: 1
+  use_gpu: true
+  fallback_to_cpu: false
+  maximum_batch_size: 1
+  batch_wait_ms: 4.0
+  startup_warmup_frames: 1
+  pause_without_subscribers: true
+  tracking_tracks_topic: track/tracks_by_source
+  pixel_assist_enabled: true
+  pixel_assist_confidence: 0.45
+  pixel_assist_hint_timeout_sec: 2.2
+  sources:
+    - name: fixed
+      input_image_topic: fixed_camera/image_raw
+      xd_detections_topic: detect/detections
+      image_source: fixed_rgb
+      sensor_id: fixed_camera
+      reid_enabled: true
+      reid_model_profile: xd_vehicle_train7
+      discovery_max_fps: 4.0
+      priority_max_fps: 4.0
+      standby_max_fps: 4.0
+      roi_recovery_enabled: true
+      roi_padding_ratio: 1.0
+      roi_target_short_side: 56
+    - name: gimbal
+      input_image_topic: gimbal_camera/image_raw
+      xd_detections_topic: detect/detections
+      image_source: gimbal_rgb
+      sensor_id: gimbal_camera
+      reid_enabled: true
+      reid_model_profile: xd_vehicle_train7
+      discovery_max_fps: 4.0
+      priority_max_fps: 4.0
+      standby_max_fps: 4.0
+      # Retain the conservative gimbal ROI default pending motion acceptance.
+      roi_recovery_enabled: false
+
+track:
+  runtime:
+    perception_only: true
+    publish_control_reference: false
+    publish_rate_hz: 2.0
+  tracker:
+    enabled_at_startup: false
+    selection:
+      auto_select: false
+      default_mode: all
+    sources:
+      allowed: [fixed_rgb, gimbal_rgb]
+      maximum_count: 2
+      idle_ttl_sec: 30.0
+  frames:
+    body: $(arg UAV_NAME)/base_link
+    body_frd: $(arg UAV_NAME)/base_link_frd
+
+perception:
+  # Preserve the previously released default; the high-rate worker is opt-in.
+  high_frequency_pixel_enabled: false
+
+perception_mode_manager:
+  initial_mode: detect
+  body_frd_frame: $(arg UAV_NAME)/base_link_frd
+  tracks_topic: track/tracks_by_source
+  model_status_topic: sar_yolo_multi_source_detection/model_status
+  class_names: [car, ar-car, tank, m142]
+  frame_cache_size: 15
+  source_timeout_sec: 1.0
+  prediction_horizon_sec: 0.5
+  position_timeout_sec: 1.0
+  trajectory:
+    retention_sec: 60.0
+    maximum_points: 600
+    sample_hz: 10.0
+    publish_hz: 2.0
+    gap_sec: 1.0
+  sources:
+    - image_source: fixed_rgb
+      image_topic: fixed_camera/image_raw
+    - image_source: gimbal_rgb
+      image_topic: gimbal_camera/image_raw
+
+fixed_perception_overlay:
+  image_source: fixed_rgb
+  input_image_topic: fixed_camera/image_raw
+  output_image_topic: fixed_camera/tracking_overlay
+  enable_web_video: true
+  video_rate_hz: 6.0
+  image_cache_size: 15
+gimbal_perception_overlay:
+  image_source: gimbal_rgb
+  input_image_topic: gimbal_camera/image_raw
+  output_image_topic: gimbal_camera/tracking_overlay
+  enable_web_video: true
+  video_rate_hz: 6.0
+  image_cache_size: 15

@@ -27,6 +27,7 @@
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>tf2</depend>
   <depend>tf2_geometry_msgs</depend>
   <depend>tf2_ros</depend>
@@ -37,7 +38,9 @@
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-pyqt5</exec_depend>
   <exec_depend>python3-rospkg</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>gtest</test_depend>
   <test_depend>python3-nose</test_depend>

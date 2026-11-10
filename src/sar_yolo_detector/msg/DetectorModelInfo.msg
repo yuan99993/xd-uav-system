@@ -1,0 +1,10 @@
+string model_id
+string display_name
+string pt_path
+string pt_sha256
+string[] class_names
+uint32 input_size
+bool engine_prepared
+string engine_path
+string engine_sha256
+bool validated

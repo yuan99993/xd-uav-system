@@ -1,0 +1,187 @@
+{
+  "document_schema": "sar-pixeagle-fusion-web-adaptation/1",
+  "updated_at": "2026-10-10",
+  "purpose": "Documentation-only interface binding template; not loaded by the ROS node and not a runtime discovery response.",
+  "package": "sar_yolo_detector",
+  "launch": "xd_smart_tracker_fusion_integration.launch",
+  "solution_designation": {
+    "status": "user_selected_official_baseline",
+    "selected_on": "2026-10-09",
+    "workspace": "/home/promise/mrs_test/sar_fusion_experiment.wlpAs3",
+    "packages": ["sar_yolo_detector", "xd_uav_track"],
+    "xd_uav_track_implementation_modified": false,
+    "ue_real_world_deployment_certified": false,
+    "selection_does_not_change_default_mode_or_move_packages": true
+  },
+  "bindings": {
+    "uav_name": "uav1",
+    "instance_name": "smart",
+    "topic_root": "/{uav_name}/sar_yolo_detector/{instance_name}",
+    "service_root": "/{uav_name}/sar_yolo_smart_tracker_{instance_name}",
+    "manual_roi_topic": "/{uav_name}/sar_yolo_detector/manual/initial_roi",
+    "manual_roi_requires_per_instance_override": true,
+    "bridge_output_default": "/{uav_name}/detect/input/detections_2d"
+  },
+  "current_gazebo_example": {
+    "uav_name": "moving_uav_search",
+    "instance_name": "fusion_fixed",
+    "topic_root": "/moving_uav_search/sar_yolo_detector/fusion_fixed",
+    "service_root": "/moving_uav_search/sar_yolo_smart_tracker_fusion_fixed",
+    "input_image": "/moving_uav_search/fixed_camera/image_raw",
+    "bridge_output": "/moving_uav_search/detect/input/fixed/detections_2d",
+    "interactive_viewer_launch": "fusion_interactive_viewer.launch",
+    "web_preview_launch": "fusion_web_preview.launch"
+  },
+  "model": {
+    "default_path": "models/xd_vehicle_train7/xd_vehicle_train7.pt",
+    "sha256": "8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54",
+    "default_execution": "PyTorch CUDA, one model per camera instance",
+    "class_names": {"0": "car", "1": "ar-car", "2": "tank", "3": "m142"},
+    "unknown_class_id": -1,
+    "manual_class_is_configured_not_yolo_classification": true,
+    "registry_service_available": false,
+    "switch_requires_trusted_backend": true
+  },
+  "modes": ["smart_tracker", "feature_tracker", "color_tracker", "fusion_tracker"],
+  "topics": {
+    "annotated_image": {
+      "name": "{topic_root}/annotated", "type": "sensor_msgs/Image", "direction": "subscribe",
+      "encoding": "bgr8", "source_resolution_preserved": true, "overlay_modifies_pixels": true,
+      "requires_subscriber": true, "requires_publish_annotated_image": true
+    },
+    "targets": {
+      "name": "{topic_root}/tracked_detections/fusion", "type": "sar_yolo_detector/FusionDetection2DArray", "direction": "subscribe",
+      "id_field": "detections[].target.track_id",
+      "class_field": "detections[].target.detection.results[].id",
+      "score_field": "detections[].target.detection.results[].score",
+      "center_field": "detections[].target.detection.bbox.center",
+      "source_field": "detections[].measurement_source",
+      "detector_stamp_field": "detections[].last_detector_stamp",
+      "manual_mode_source_semantics_require_override": false
+    },
+    "legacy_targets": {
+      "name": "{topic_root}/tracked_detections", "type": "sar_yolo_detector/TrackedDetection2DArray", "direction": "subscribe",
+      "contains_measurement_source": false
+    },
+    "authoritative_observations": {
+      "name": "{topic_root}/tracked_detections/observations",
+      "type": "sar_yolo_detector/FusionDetection2DArray", "direction": "subscribe",
+      "intended_consumer": "existing XD bridge; ordered capture-domain measurements, not presentation corrections",
+      "original_yolo_capture_stamp_preserved": true,
+      "default_bridge_input": true
+    },
+    "selected_target": {
+      "name": "{topic_root}/selected_tracked_detections", "type": "sar_yolo_detector/TrackedDetection2DArray", "direction": "subscribe",
+      "supported_consumption_modes": ["smart_tracker", "feature_tracker", "color_tracker", "fusion_tracker"],
+      "manual_modes_currently_publish_empty_selected_array": false
+    },
+    "state": {
+      "name": "{topic_root}/state", "type": "sar_yolo_detector/SmartTrackerState", "direction": "subscribe",
+      "latched": false, "contains_explicit_mode": false
+    },
+    "fusion_evidence": {
+      "name": "{service_root}/fusion_evidence", "type": "std_msgs/String", "direction": "subscribe",
+      "payload": "JSON", "emitted_in_modes": ["fusion_tracker"],
+      "strict_selection_header_field": "capture_header",
+      "pair_with_annotated_by": ["stamp.secs", "stamp.nsecs", "frame_id"]
+    },
+    "fusion_loss_history": {
+      "name": "{service_root}/fusion_loss_history", "type": "std_msgs/String", "direction": "subscribe",
+      "payload": "JSON", "latched": true, "maximum_rate_hz": 1,
+      "emitted_in_modes": ["fusion_tracker"], "recent_completed_events": 2,
+      "contains": ["loss_events", "recovered_events", "interrupted_events", "active", "recent_events", "finalized_through_stamp"]
+    },
+    "diagnostics": {
+      "name": "/diagnostics", "type": "diagnostic_msgs/DiagnosticArray", "direction": "subscribe",
+      "active_mode_key": "active_source", "filter_by_node_and_hardware_id": true
+    },
+    "click": {
+      "name": "{topic_root}/select_pixel", "type": "geometry_msgs/PointStamped", "direction": "publish",
+      "frame_bound_in_modes": [], "has_command_ack": false,
+      "compatibility_only_for_fusion_tracker": true,
+      "applies_to": ["feature_tracker", "color_tracker"]
+    },
+    "manual_roi": {
+      "name": "{manual_roi_topic}", "type": "sensor_msgs/RegionOfInterest", "direction": "publish",
+      "frame_bound": false, "has_command_ack": false,
+      "applies_to": ["feature_tracker", "color_tracker with empty color_name", "fusion_tracker using latest cached frame"]
+    },
+    "bridge_output": {
+      "name": "{bridge_output_default}", "type": "xd_uav_track/DetectionArray", "direction": "subscribe",
+      "initial_metric_position_valid": false
+    }
+  },
+  "services": {
+    "set_mode": {
+      "name": "{service_root}/switch_tracking_mode", "type": "sar_yolo_detector/SwitchTrackingMode",
+      "request_fields": ["mode", "color_name"],
+      "response_fields": ["success", "message", "active_mode", "color_source", "color_name", "waiting_for_initial_roi"],
+      "successful_call_resets_selection_even_if_mode_unchanged": true
+    },
+    "select_latest": {
+      "name": "{service_root}/select", "type": "sar_yolo_detector/SelectSmartTrack",
+      "request_fields": ["clear_selection", "use_target_id", "target_id", "use_normalized_point", "point_x", "point_y", "use_normalized_roi", "normalized_roi"],
+      "response_fields": ["success", "message", "tracking_active", "selected_target_id", "measurement_current"],
+      "frame_bound": false, "normalized_roi_format": ["x", "y", "width", "height"]
+    },
+    "select_original_frame_roi": {
+      "name": "{service_root}/select_fusion_roi", "type": "sar_yolo_detector/SelectFusionROI",
+      "request_fields": ["header", "roi", "clear_selection"],
+      "response_fields": ["success", "message", "selected_target_id"],
+      "required_mode": "fusion_tracker", "frame_bound": true,
+      "header_origin": "capture_header paired with the displayed annotated image by exact stamp/frame_id"
+    },
+    "select_original_frame_manual_roi": {
+      "name": "{service_root}/select_fusion_manual_roi", "type": "sar_yolo_detector/SelectFusionROI",
+      "request_fields": ["header", "roi", "clear_selection"],
+      "response_fields": ["success", "message", "selected_target_id"],
+      "required_mode": "fusion_tracker", "frame_bound": true,
+      "seed": "always initialize KCF from the original user ROI, even when YOLO detections overlap it",
+      "follow_up": "full-frame YOLO detections are associated near the current KCF track and may confirm identity and correct/reinitialize its box"
+    },
+    "select_original_frame_point": {
+      "name": "{service_root}/select_fusion_point", "type": "sar_yolo_detector/SelectFusionPoint",
+      "request_fields": ["header", "point"],
+      "response_fields": ["success", "message", "selected_target_id"],
+      "required_mode": "fusion_tracker", "frame_bound": true,
+      "point_must_identify": "exactly one YOLO detection in the displayed source frame",
+      "seed": "reinitialize KCF from the selected YOLO box and clear manual-seed ROI gating"
+    },
+    "switch_trusted_model": {
+      "name": "{service_root}/switch_model", "type": "sar_yolo_detector/SwitchSmartTrackerModel",
+      "request_fields": ["model_path", "device", "model_sha256"],
+      "response_fields": ["success", "message", "effective_device", "effective_model_path", "class_count"],
+      "execution": "synchronous service, backend-serialized, state lock released during load, concurrent commands return BUSY",
+      "expose_to_browser_by_default": false,
+      "has_model_epoch": true, "has_async_warmup_transaction": false
+    }
+  },
+  "coordinates": {
+    "origin": "top-left of original image", "x_direction": "right", "y_direction": "down", "unit": "pixel",
+    "bbox": "center.x, center.y, size_x, size_y",
+    "selection_header_match": ["stamp.secs", "stamp.nsecs", "frame_id"],
+    "pixel_topic_header_match": ["stamp.secs", "stamp.nsecs", "frame_id"],
+    "cross_topic_pairing": ["stamp.secs", "stamp.nsecs", "frame_id"],
+    "cross_topic_seq_equality_guaranteed": false,
+    "results_pose_is_valid_metric_measurement": false
+  },
+  "fusion_selection_defaults": {
+    "cache_max_frames": 24, "cache_max_bytes": 25165824,
+    "max_age_sec": 0.75, "future_tolerance_sec": 0.02,
+    "minimum_roi_width_px": 4, "minimum_roi_height_px": 4,
+    "never_fallback_to_latest_on_original_frame_rejection": true
+  },
+  "not_provided_by_this_runtime": [
+    "four-mode web UI", "HTTP video stream endpoint", "automatic compressed Image output",
+    "perception/* three-mode contract", "models/list registry", "state/get service",
+    "unified request-id transaction queue", "trajectory topic", "cross-camera global identity merging",
+    "frame-bound standalone feature/color ROI", "camera timestamp-reset recovery",
+    "automatic flight or gimbal hardware actuation"
+  ],
+  "security": {
+    "default_bind": "127.0.0.1", "remote_requires_authenticated_transport": true,
+    "legacy_web_bridge_allowlist_matches_sar_runtime": false,
+    "do_not_expose": ["arbitrary model paths/digests", "ROS parameter writes", "unrelated services", "flight control"],
+    "rosbridge_topic_allowlist_is_not_per_user_per_operation_authorization": true
+  }
+}

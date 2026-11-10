@@ -7,6 +7,7 @@ validation, and the learned colour model.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -145,6 +146,8 @@ class ManualBoxTracker:
         self._last_bbox: Optional[PixelBox] = None
         self._active = False
         self._failures = 0
+        self._configured_selection_roi: Optional[PixelBox] = None
+        self._configured_selection_confirmed = False
 
     @property
     def active(self) -> bool:
@@ -169,9 +172,35 @@ class ManualBoxTracker:
         self._opencv_tracker = None
         self._template = None
         self._colour_histogram = None
+        self._configured_selection_roi = None
+        self._configured_selection_confirmed = False
         self._last_bbox = None
         self._active = False
         self._failures = 0
+
+    def compensate_motion(self, previous_frame, matrix):
+        """Move the previous template into the current camera plane, not onto
+        the current target. The subsequent update remains an independent test.
+        """
+        if not self.active or self._last_bbox is None:
+            return False
+        from .camera_motion import CameraMotion, transform_box
+        if not CameraMotion.validate(matrix, previous_frame.shape):
+            return False
+        box = transform_box(self._last_bbox, matrix)
+        if box is None:
+            return False
+        x, y, width, height = box
+        if x < 0 or y < 0 or x+width > previous_frame.shape[1] or y+height > previous_frame.shape[0]:
+            return False
+        if np.max(np.abs(np.asarray(box)-self._last_bbox)) < 3.:
+            return True
+        if self.tracker_type == "color_tracker":
+            self._last_bbox = box
+            return True
+        warped = cv2.warpPerspective(previous_frame, matrix,
+            (previous_frame.shape[1], previous_frame.shape[0]))
+        return self.initialize(warped, box).valid
 
     def configure_colour(self, colour_name: str = "") -> None:
         """Select global named-colour detection or ROI-learned colour tracking.
@@ -246,6 +275,7 @@ class ManualBoxTracker:
         self._last_bbox = bbox
         if self.tracker_type == "color_tracker":
             if self.colour_source == "configured":
+                self._configured_selection_roi = bbox
                 return self._update_configured_colour(frame)
             if not self._initialize_colour(frame, bbox):
                 self.reset()
@@ -454,7 +484,11 @@ class ManualBoxTracker:
         valid = width >= 2 and height >= 2 and updated_window[2] >= 2 and updated_window[3] >= 2
         return bbox, confidence, valid, "ok" if valid else "colour_target_not_found"
 
-    def _update_configured_colour(self, frame: np.ndarray) -> ManualTrackResult:
+    def configured_colour_candidates(self, frame: np.ndarray):
+        """Return every configured-colour component as (xywh, confidence, area)."""
+        if (self.tracker_type != "color_tracker" or self.colour_source != "configured"
+                or frame is None or frame.ndim != 3 or frame.shape[2] != 3):
+            return ()
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask = self._configured_colour_mask(hsv)
         if self.morph_kernel > 1:
@@ -468,8 +502,8 @@ class ManualBoxTracker:
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         contours = contours_info[0] if len(contours_info) == 2 else contours_info[1]
-        best_bbox = None
-        best_area = 0.0
+        candidates = []
+        image_area = float(frame.shape[0] * frame.shape[1])
         for contour in contours:
             area = float(cv2.contourArea(contour))
             if area < self.minimum_colour_area:
@@ -480,24 +514,69 @@ class ManualBoxTracker:
                 or height < self.minimum_colour_height
             ):
                 continue
-            if area > best_area:
-                best_area = area
-                best_bbox = (float(x), float(y), float(width), float(height))
+            # Scale component size against 0.2% of the image. A 2% reference
+            # made normal-sized color targets fall below XD track's 0.50
+            # minimum for creating a confirmed track.
+            confidence = min(1.0, area / max(1.0, image_area * 0.002))
+            candidates.append(((float(x), float(y), float(width), float(height)), confidence, area))
+        candidates.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3]))
+        return tuple(candidates)
+
+    def _update_configured_colour(self, frame: np.ndarray) -> ManualTrackResult:
+        candidates = self.configured_colour_candidates(frame)
+
+        best_bbox = None
+        best_area = 0.0
+        anchor = self._last_bbox if self._configured_selection_confirmed else None
+        if anchor is None and self._configured_selection_roi is not None:
+            anchor = self._configured_selection_roi
+        if anchor is None:
+            if candidates:
+                best_bbox, _, best_area = max(candidates, key=lambda item: item[2])
+        else:
+            ax, ay, aw, ah = anchor
+            acx, acy = ax + aw * .5, ay + ah * .5
+            frame_jump = self.max_center_jump_norm * math.hypot(frame.shape[1], frame.shape[0])
+            target_jump = max(48.0, 4.0 * math.hypot(aw, ah))
+            max_jump = min(frame_jump, target_jump)
+            ranked = []
+            for bbox, _, area in candidates:
+                x, y, width, height = bbox
+                cx, cy = x + width * .5, y + height * .5
+                distance = math.hypot(cx - acx, cy - acy)
+                overlap_x = max(0.0, min(ax + aw, x + width) - max(ax, x))
+                overlap_y = max(0.0, min(ay + ah, y + height) - max(ay, y))
+                overlap = overlap_x * overlap_y
+                if not self._configured_selection_confirmed and overlap <= 0.0:
+                    continue
+                if self._configured_selection_confirmed and distance > max_jump:
+                    continue
+                ranked.append((distance, -overlap, -area, bbox, area))
+            if ranked:
+                _, _, _, best_bbox, best_area = min(ranked)
 
         self._tracker_name = "color_%s_detector" % self.colour_name
         if best_bbox is None:
+            if self._configured_selection_roi is not None:
+                return self._configured_colour_failure("selected_colour_not_found")
             return self._configured_colour_failure("configured_colour_not_found")
         image_area = float(frame.shape[0] * frame.shape[1])
-        confidence = min(1.0, best_area / max(1.0, image_area * 0.02))
+        confidence = min(1.0, best_area / max(1.0, image_area * 0.002))
         self._last_bbox = best_bbox
+        if self._configured_selection_roi is not None:
+            self._configured_selection_confirmed = True
         self._active = True
         self._failures = 0
         return self._result(best_bbox, confidence, True, "ok")
 
     def _configured_colour_failure(self, reason: str) -> ManualTrackResult:
         self._failures += 1
-        self._last_bbox = None
-        self._active = False
+        if self._configured_selection_roi is None:
+            self._last_bbox = None
+        self._active = bool(
+            self._configured_selection_roi is not None
+            and self._failures < self.max_fail_frames
+        )
         return self._result(None, 0.0, False, reason)
 
     def _configured_colour_mask(self, hsv: np.ndarray) -> np.ndarray:
