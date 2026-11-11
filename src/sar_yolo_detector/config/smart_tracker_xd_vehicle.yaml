@@ -13,7 +13,7 @@ SmartTracker:
   # Gazebo's older meshes/textures have a domain gap from COCO photographs.
   # Match the detector deployment profile: keep distant vehicle candidates so
   # the downstream tracker can associate them over time.
-  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.10
+  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.40
   SMART_TRACKER_MAX_DETECTIONS: 30
   # All four labels belong to the vehicle parent class. Suppress duplicate
   # tank/m142/etc. boxes BEFORE BoT-SORT allocates identities. A conservative

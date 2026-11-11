@@ -89,7 +89,7 @@ fixedwing:
     # Dubins radius (the previous 0.95 rad produced the measured inner loops).
     maximum_roll: 0.9
     maximum_pitch: 0.45
-    maximum_climb_rate: 5.0
+    maximum_climb_rate: 8.0
     maximum_body_rate: [2.5, 2.0, 2.0]
 
   modes:

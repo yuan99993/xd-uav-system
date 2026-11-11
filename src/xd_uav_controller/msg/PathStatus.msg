@@ -4,6 +4,7 @@ uint8 REACQUIRING=2
 uint8 COMPLETED=3
 uint8 REJECTED=4
 uint8 FAILED=5
+uint8 CANCELLED=6
 
 std_msgs/Header header
 uint32 path_id

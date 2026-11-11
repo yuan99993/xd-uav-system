@@ -7,7 +7,7 @@
 `config/world.yaml`定义：
 
 - `world/frame_id`
-- 世界WGS84基准经纬高
+- 世界WGS84基准经纬高，可手动配置或从话题读取
 - 地理ENU平面在world中的位置
 - 地理ENU平面相对world的航向
 - 接入world的飞机名称列表
@@ -35,6 +35,28 @@ vehicle_configs:
 修改清单后无需修改代码。
 
 ## 原点模式
+
+`world/datum`决定地理ENU平面的WGS84基准点，也就是world地理原点。默认从配置读取：
+
+```yaml
+world:
+  datum:
+    mode: fixed
+    latitude: -37.7177543
+    longitude: 144.8345184
+    altitude: -6.4093
+```
+
+也可以改为订阅话题（默认`/world/datum`）：
+
+```yaml
+world:
+  datum:
+    mode: topic
+    topic: /world/datum
+```
+
+话题类型为`sensor_msgs/NavSatFix`，使用其中的WGS84经纬高；`STATUS_NO_FIX`消息会被忽略。如果发布端只在收到请求后发布一次，需要先启动world TF manager，再触发该请求，否则非 latched 的消息不会补发。收到有效消息前，依赖地理原点的`gps_origin`和`geodetic`飞机不会发布TF；收到后会计算并发布。运行中datum更新时，也会重新计算这些飞机的world位置。`fixed`模式下仍需配置经纬高。
 
 - `gps_origin`：订阅`geographic_msgs/GeoPointStamped`并投影到共享world。
 - `geodetic`：直接在配置中填写该飞机本地原点经纬高。

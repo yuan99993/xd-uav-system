@@ -16,6 +16,7 @@
 #include <geographic_msgs/GeoPointStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <ros/ros.h>
+#include <sensor_msgs/NavSatFix.h>
 #include <std_msgs/Bool.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -119,6 +120,7 @@ struct Vehicle {
   ros::Subscriber origin_subscriber;
   ros::Publisher valid_publisher;
   GeodeticPoint origin;
+  bool has_origin{false};
   geometry_msgs::TransformStamped transform;
   ros::Time last_update;
   bool valid{false};
@@ -144,17 +146,60 @@ class WorldTfManager {
   void loadWorld() {
     private_nh_.param("world/frame_id", world_frame_, std::string("world"));
     world_frame_ = trimSlashes(world_frame_);
-    private_nh_.param("world/datum/latitude", world_datum_.latitude,
-                      std::numeric_limits<double>::quiet_NaN());
-    private_nh_.param("world/datum/longitude", world_datum_.longitude,
-                      std::numeric_limits<double>::quiet_NaN());
-    private_nh_.param("world/datum/altitude", world_datum_.altitude,
-                      std::numeric_limits<double>::quiet_NaN());
+    private_nh_.param("world/datum/mode", world_datum_mode_, std::string("fixed"));
+    if (world_datum_mode_ == "fixed") {
+      private_nh_.param("world/datum/latitude", world_datum_.latitude,
+                        std::numeric_limits<double>::quiet_NaN());
+      private_nh_.param("world/datum/longitude", world_datum_.longitude,
+                        std::numeric_limits<double>::quiet_NaN());
+      private_nh_.param("world/datum/altitude", world_datum_.altitude,
+                        std::numeric_limits<double>::quiet_NaN());
+      if (!validGeodetic(world_datum_)) {
+        throw std::runtime_error("world WGS84 datum is invalid");
+      }
+      world_datum_valid_ = true;
+    } else if (world_datum_mode_ == "topic") {
+      private_nh_.param("world/datum/topic", world_datum_topic_,
+                        std::string("/world/datum"));
+      if (world_datum_topic_.empty()) {
+        throw std::runtime_error("world datum topic must not be empty");
+      }
+      world_datum_subscriber_ = nh_.subscribe<sensor_msgs::NavSatFix>(
+          world_datum_topic_, 2, &WorldTfManager::worldDatumCallback, this);
+    } else {
+      throw std::runtime_error("unsupported world/datum/mode '" + world_datum_mode_ +
+                               "' (expected 'fixed' or 'topic')");
+    }
     private_nh_.param("world/enu_to_world_yaw", enu_to_world_yaw_, 0.0);
     world_position_ = readVector3(&private_nh_, "world/position", {{0.0, 0.0, 0.0}});
-    if (world_frame_.empty() || !validGeodetic(world_datum_)) {
-      throw std::runtime_error("world frame or WGS84 datum is invalid");
+    if (world_frame_.empty()) {
+      throw std::runtime_error("world frame is invalid");
     }
+  }
+
+  void worldDatumCallback(const sensor_msgs::NavSatFix::ConstPtr& message) {
+    if (message->status.status == sensor_msgs::NavSatStatus::STATUS_NO_FIX) {
+      ROS_WARN_THROTTLE(2.0, "[xd_uav_world_tf_manager] no valid fix on %s",
+                        world_datum_topic_.c_str());
+      return;
+    }
+    const GeodeticPoint datum{message->latitude, message->longitude, message->altitude};
+    if (!validGeodetic(datum)) {
+      ROS_WARN_THROTTLE(2.0, "[xd_uav_world_tf_manager] invalid world datum on %s",
+                        world_datum_topic_.c_str());
+      return;
+    }
+    world_datum_ = datum;
+    world_datum_valid_ = true;
+    for (const auto& vehicle : vehicles_) {
+      if (vehicle->has_origin &&
+          (vehicle->mode == "gps_origin" || vehicle->mode == "geodetic")) {
+        updateGeodeticVehicle(vehicle.get());
+      }
+    }
+    publishAllTransforms();
+    ROS_INFO_ONCE("[xd_uav_world_tf_manager] using WGS84 datum from %s",
+                  world_datum_topic_.c_str());
   }
 
   void loadVehicles() {
@@ -218,7 +263,10 @@ class WorldTfManager {
         if (!validGeodetic(vehicle->origin)) {
           throw std::runtime_error("vehicle '" + name + "' has invalid geodetic origin");
         }
-        updateGeodeticVehicle(vehicle.get());
+        vehicle->has_origin = true;
+        if (world_datum_valid_) {
+          updateGeodeticVehicle(vehicle.get());
+        }
       } else {
         throw std::runtime_error("vehicle '" + name + "' has unsupported mode '" +
                                  vehicle->mode + "'");
@@ -257,8 +305,11 @@ class WorldTfManager {
       return;
     }
     vehicle->origin = origin;
-    updateGeodeticVehicle(vehicle);
-    publishAllTransforms();
+    vehicle->has_origin = true;
+    if (world_datum_valid_) {
+      updateGeodeticVehicle(vehicle);
+      publishAllTransforms();
+    }
   }
 
   void updateGeodeticVehicle(Vehicle* vehicle) {
@@ -301,7 +352,10 @@ class WorldTfManager {
       status.hardware_id = vehicle->name;
       status.level = vehicle->valid ? diagnostic_msgs::DiagnosticStatus::OK
                                     : diagnostic_msgs::DiagnosticStatus::WARN;
-      status.message = vehicle->valid ? "connected to world" : "waiting for origin";
+      status.message = vehicle->valid
+                           ? "connected to world"
+                           : (world_datum_valid_ ? "waiting for origin"
+                                                 : "waiting for world datum");
       addValue(&status, "mode", vehicle->mode);
       addValue(&status, "child_frame", vehicle->local_origin_frame);
       addValue(&status, "origin_topic", vehicle->origin_topic);
@@ -326,11 +380,15 @@ class WorldTfManager {
 
   ros::NodeHandle nh_;
   ros::NodeHandle private_nh_;
+  ros::Subscriber world_datum_subscriber_;
   tf2_ros::StaticTransformBroadcaster static_broadcaster_;
   ros::Publisher diagnostics_publisher_;
   ros::Timer diagnostics_timer_;
   std::string world_frame_;
+  std::string world_datum_mode_;
+  std::string world_datum_topic_;
   GeodeticPoint world_datum_;
+  bool world_datum_valid_{false};
   std::array<double, 3> world_position_{{0.0, 0.0, 0.0}};
   double enu_to_world_yaw_{0.0};
   std::vector<std::unique_ptr<Vehicle>> vehicles_;

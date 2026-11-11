@@ -8,6 +8,7 @@ find_package(catkin REQUIRED COMPONENTS
   geographic_msgs
   geometry_msgs
   roscpp
+  sensor_msgs
   std_msgs
   tf2
   tf2_geometry_msgs
@@ -20,6 +21,7 @@ catkin_package(
     geographic_msgs
     geometry_msgs
     roscpp
+    sensor_msgs
     std_msgs
     tf2
     tf2_geometry_msgs

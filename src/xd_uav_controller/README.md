@@ -50,9 +50,14 @@ VTOL按当前活动后端选择配置，转换阶段沿用转换发起时的后�
 /uavX/controller/internal/command  xd_uav_controller/InternalCommand
 ```
 
-这是控制器与控制管理器之间唯一的内部服务，不是操作接口。正常使用时只调用
+这是控制器与控制管理器之间的内部编排服务，不是操作接口。正常使用时只调用
 `/uavX/control_manager/*`下的公开服务。ROS 1无法把跨节点服务从服务列表隐藏，
 因此用`internal`命名空间明确标识。
+
+暂停或恢复外部参考请调用控制管理器的标准`std_srvs/SetBool`服务
+`/uavX/control_manager/external_control`。`data: false`会清除当前路径、轨迹或点参考，
+多旋翼捕获当前位置悬停，固定翼进入等待盘旋，同时拒收新的外部参考；`data: true`
+重新开放外部参考输入。该切换不退出OFFBOARD，恢复后需重新发送被暂停期间的单次目标。
 
 外部参考使用ROS/MAVROS已有消息，不再额外定义一套模式消息：
 

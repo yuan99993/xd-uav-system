@@ -35,6 +35,7 @@
 #include <xd_uav_controller/InternalCommand.h>
 #include <xd_uav_controller/PathStatus.h>
 #include <xd_uav_controller/Takeoff.h>
+#include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
 
 namespace {
@@ -337,6 +338,9 @@ class ControllerNode {
     internal_command_server_ = private_nh_.advertiseService(
         "internal/command",
         &ControllerNode::internalCommandCallback, this);
+    external_control_server_ = private_nh_.advertiseService(
+        "internal/external_control",
+        &ControllerNode::externalControlCallback, this);
     timer_ = private_nh_.createTimer(
         ros::Duration(1.0 / std::max(1.0, control_rate_)),
         &ControllerNode::timerCallback, this);
@@ -1928,12 +1932,84 @@ class ControllerNode {
   }
 
   bool externalReferenceAllowed() const {
+    if (external_control_paused_) {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[xd_uav_controller] 外部控制参考已暂停，忽略新指令");
+      return false;
+    }
     if (landing_active_) {
       ROS_WARN_THROTTLE(
           1.0,
           "[xd_uav_controller] 正在降落，忽略外部控制参考");
       return false;
     }
+    return true;
+  }
+
+  bool externalControlCallback(
+      std_srvs::SetBool::Request& request,
+      std_srvs::SetBool::Response& response) {
+    if (request.data) {
+      external_control_paused_ = false;
+      response.success = true;
+      response.message = "已恢复接收外部控制参考";
+      ROS_INFO("[xd_uav_controller] 已恢复接收外部控制参考");
+      return true;
+    }
+
+    if (external_control_paused_) {
+      response.success = true;
+      response.message = "外部控制参考已经暂停，飞机继续保持OFFBOARD";
+      return true;
+    }
+    if (!have_state_ || !state_.state_valid ||
+        !state_.odometry_fresh || !state_.imu_fresh) {
+      response.success = false;
+      response.message = "当前控制状态无效，无法安全捕获当前位置";
+      return true;
+    }
+    if (landing_active_ || takeoff_active_) {
+      response.success = false;
+      response.message = "起飞或降落动作执行中，不能暂停外部控制参考";
+      return true;
+    }
+
+    if (path_active_) {
+      publishPathStatus(
+          xd_uav_controller::PathStatus::CANCELLED,
+          "外部控制参考已暂停", true);
+    }
+
+    external_control_paused_ = true;
+    have_reference_ = false;
+    have_reference_error_ = false;
+    have_normalized_reference_ = false;
+    reference_input_error_.clear();
+    path_active_ = false;
+    trajectory_active_ = false;
+    point_reference_latched_ = false;
+    active_reference_transform_failure_since_ = ros::Time();
+    internal_reference_active_ = false;
+    idle_reference_active_ = false;
+    takeoff_active_ = false;
+
+    if (isFixedwingBackendActive()) {
+      startFixedwingLoiter(
+          state_.position_odom.z,
+          "外部控制参考已暂停");
+    } else {
+      fixedwing_loiter_active_ = false;
+      resetMultirotorControlState();
+      captureIdleReference();
+    }
+
+    response.success = true;
+    response.message = isFixedwingBackendActive()
+                           ? "已停止当前参考并进入等待盘旋，继续保持OFFBOARD"
+                           : "已停止当前参考并在当前位置悬停，继续保持OFFBOARD";
+    ROS_INFO("[xd_uav_controller] %s",
+             response.message.c_str());
     return true;
   }
 
@@ -5900,6 +5976,7 @@ class ControllerNode {
   ros::Publisher local_target_publisher_;
   ros::Publisher command_publisher_;
   ros::ServiceServer internal_command_server_;
+  ros::ServiceServer external_control_server_;
   ros::Timer timer_;
 
   xd_uav_controller::ControlState state_;
@@ -5931,6 +6008,7 @@ class ControllerNode {
   bool trajectory_active_{false};
   bool path_active_{false};
   bool point_reference_latched_{false};
+  bool external_control_paused_{false};
   uint32_t simple_goal_sequence_counter_{0};
   uint32_t pending_simple_goal_sequence_{0};
   uint32_t path_sequence_counter_{0};

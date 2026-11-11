@@ -35,6 +35,8 @@
       <remap from="command_long" to="mavros/cmd/command"/>
       <remap from="controller_internal_command"
              to="controller/internal/command"/>
+      <remap from="controller_external_control"
+             to="controller/internal/external_control"/>
     </node>
   </group>
 </launch>

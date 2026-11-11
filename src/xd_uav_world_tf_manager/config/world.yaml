@@ -4,9 +4,13 @@ world:
 
   # 世界ENU切平面的WGS84基准点。
   datum:
+    # fixed：使用下方手动配置的经纬高；topic：读取 sensor_msgs/NavSatFix。
+    mode: topic
+    topic: /world/datum
     latitude: -37.71775430000001
     longitude: 144.8345184
     altitude: -6.409311559051275
+    # 改为 topic 后，以下经纬高不再使用，world 原点由 /world/datum 提供。
     # latitude: 47.3977421
     # longitude: 8.5455934
     # altitude: 535.3249164945362
