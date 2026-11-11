@@ -281,6 +281,9 @@ class ControlManagerNode {
     cancel_land_server_ = private_nh_.advertiseService(
         "cancel_land", &ControlManagerNode::cancelLandingCallback,
         this);
+    external_control_server_ = private_nh_.advertiseService(
+        "external_control",
+        &ControlManagerNode::externalControlCallback, this);
     reset_failsafe_server_ = private_nh_.advertiseService(
         "reset_failsafe",
         &ControlManagerNode::resetFailsafeCallback, this);
@@ -299,6 +302,9 @@ class ControlManagerNode {
     controller_internal_command_client_ =
         nh_.serviceClient<xd_uav_controller::InternalCommand>(
             "controller_internal_command");
+    controller_external_control_client_ =
+        nh_.serviceClient<std_srvs::SetBool>(
+            "controller_external_control");
 
     timer_ = private_nh_.createTimer(
         ros::Duration(1.0 / std::max(2.0, setpoint_rate_)),
@@ -1494,6 +1500,32 @@ class ControlManagerNode {
     response.success = true;
     response.message =
         "已取消OFFBOARD并请求切换到" + cancel_mode_;
+    return true;
+  }
+
+  bool externalControlCallback(
+      std_srvs::SetBool::Request& request,
+      std_srvs::SetBool::Response& response) {
+    if (!request.data &&
+        (state_machine_state_ != State::kActive ||
+         mavros_state_.mode != offboard_mode_)) {
+      response.success = false;
+      response.message =
+          "只有飞机处于ACTIVE且PX4处于OFFBOARD时才能暂停外部参考";
+      return true;
+    }
+    std_srvs::SetBool service;
+    service.request.data = request.data;
+    if (!controller_external_control_client_.call(service)) {
+      response.success = false;
+      response.message = "无法调用控制器外部控制开关服务";
+      return true;
+    }
+    response = service.response;
+    if (response.success) {
+      ROS_INFO("[xd_uav_control_manager] %s",
+               response.message.c_str());
+    }
     return true;
   }
 
@@ -2760,6 +2792,7 @@ class ControlManagerNode {
   ros::ServiceServer land_server_;
   ros::ServiceServer land_home_server_;
   ros::ServiceServer cancel_land_server_;
+  ros::ServiceServer external_control_server_;
   ros::ServiceServer reset_failsafe_server_;
   ros::ServiceServer set_flight_regime_server_;
   ros::ServiceClient set_mode_client_;
@@ -2767,6 +2800,7 @@ class ControlManagerNode {
   ros::ServiceClient command_long_client_;
   ros::ServiceClient vtol_transition_client_;
   ros::ServiceClient controller_internal_command_client_;
+  ros::ServiceClient controller_external_control_client_;
   ros::Timer timer_;
 
   nav_msgs::Odometry odometry_;

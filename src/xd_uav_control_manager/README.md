@@ -49,6 +49,20 @@ PX4接受模式请求后才停止setpoint。
 每个roscpp节点自动生成的`get_loggers`和`set_logger_level`属于ROS日志管理接口，
 不是飞行业务服务。
 
+暂停或恢复控制器接收外部路径、轨迹和点目标，使用标准`std_srvs/SetBool`服务：
+
+```bash
+# 暂停：取消当前外部参考，在当前位置保持OFFBOARD
+rosservice call /uav1/control_manager/external_control "data: false"
+
+# 恢复接收新的外部参考
+rosservice call /uav1/control_manager/external_control "data: true"
+```
+
+多旋翼暂停后捕获当前位置悬停；固定翼暂停后按当前航向进入等待盘旋。暂停期间新到达的外部
+参考会被忽略，管理器仍维持OFFBOARD。恢复后需要重新发布外部指令；暂停期间被忽略的一次性
+路径或点目标不会自动重放。起飞或降落动作执行中，暂停请求会失败。
+
 只进入并维持OFFBOARD，不解锁：
 
 ```bash
