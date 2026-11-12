@@ -1,0 +1,33 @@
+# Parameters shared by the leader-follow and consensus nodes.
+# Formation manager service lookup timeout in seconds.
+service_timeout: 3.0
+# Follower state/control parameters.
+rate: 50.0
+state_timeout: 20.0
+mavros_timeout: 20.0
+tf_max_age: 30.0
+# Maximum allowed future skew for state, center, and TF stamps, in seconds.
+future_stamp_tolerance: 5.0
+# TF lookup wait and transform history cache, in seconds.
+tf_lookup_timeout: 5.0
+tf_buffer_cache_time: 5.0
+external_quiet_time: 10.0
+minimum_slot_distance: 2.0
+fixedwing_minimum_slot_distance: 30.0
+# Speed and formation tracking parameters.
+fixedwing_min_speed: 9.0
+# Groundspeed threshold for estimating course; below it, use body heading
+# when a valid safe airspeed is available.
+fixedwing_min_groundspeed_for_course: 1.0
+fixedwing_max_speed: 30.0
+multirotor_max_speed: 10.0
+catchup_gain: 0.60
+max_catchup_speed: 10.0
+max_turn_rate: 0.30
+yaw_offset: 0.0
+# Topic names resolved in each UAV namespace unless absolute.
+reference_topic: control/reference/setpoint
+team_cancel_topic: /formation/{team_id}/cancel
+preempt_topic: formation/preempt
+task_goal_topic: task_execute/execute/goal
+

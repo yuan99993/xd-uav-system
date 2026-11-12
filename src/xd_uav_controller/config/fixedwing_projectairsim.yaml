@@ -60,12 +60,12 @@ fixedwing:
 
   energy_control:
     # 两机在较稳定盘旋中约20.5m/s；让巡航和盘旋目标接近实际工作空速。
-    cruise_airspeed: 20.0
+    cruise_airspeed: 30.0
     # 当前uav2盘旋采样曾降到6.4m/s；提高下限，使转弯中更早卸载坡度并恢复空速。
-    minimum_airspeed: 16.0
-    maximum_airspeed: 24.0
+    minimum_airspeed: 15.0
+    maximum_airspeed: 45.0
     trim_throttle: 0.25
-    airspeed_throttle_gain: 0.08
+    airspeed_throttle_gain: 0.10
     # 爬升时同步补油以维持空速。
     climb_rate_throttle_gain: 0.04
     # 补偿量为gain*(1/cos(bank)-1)，在空速实际下降前随目标滚转补油。
@@ -93,7 +93,7 @@ fixedwing:
       # 起飞达到目标高度后，固定翼以当前位置和航向切入圆的切点，
       # 在该圆上等待外部参考。+1为逆时针，-1为顺时针。
       radius: 400.0
-      airspeed: 20.0
+      airspeed: 30.0
       direction: 1
       radial_gain: 0.75
       max_course_correction: 0.35

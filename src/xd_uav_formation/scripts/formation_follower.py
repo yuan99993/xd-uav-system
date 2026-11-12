@@ -114,6 +114,8 @@ class FormationFollower:
             "~fixedwing_minimum_slot_distance", 30.0))
         self._fixedwing_min_speed = float(rospy.get_param(
             "~fixedwing_min_speed", 11.0))
+        self._fixedwing_min_groundspeed_for_course = float(rospy.get_param(
+            "~fixedwing_min_groundspeed_for_course", 2.0))
         self._fixedwing_max_speed = float(rospy.get_param(
             "~fixedwing_max_speed", 24.0))
         self._multirotor_max_speed = float(rospy.get_param(
@@ -129,13 +131,23 @@ class FormationFollower:
         self._state_timeout = float(rospy.get_param("~state_timeout", 0.5))
         self._mavros_timeout = float(rospy.get_param("~mavros_timeout", 2.5))
         self._tf_max_age = float(rospy.get_param("~tf_max_age", 1.0))
+        self._future_stamp_tolerance = float(rospy.get_param(
+            "~future_stamp_tolerance", 0.5))
+        self._tf_lookup_timeout = float(rospy.get_param(
+            "~tf_lookup_timeout", 0.05))
+        self._tf_buffer_cache_time = float(rospy.get_param(
+            "~tf_buffer_cache_time", 5.0))
         self._external_quiet_time = float(
             rospy.get_param("~external_quiet_time", 0.5))
         timing_values = (
                 self._rate, self._state_timeout, self._mavros_timeout,
-                self._tf_max_age, self._external_quiet_time,
+                self._tf_max_age, self._future_stamp_tolerance,
+                self._tf_lookup_timeout, self._tf_buffer_cache_time,
+                self._external_quiet_time,
                 self._fixedwing_minimum_slot_distance,
-                self._fixedwing_min_speed, self._fixedwing_max_speed,
+                self._fixedwing_min_speed,
+                self._fixedwing_min_groundspeed_for_course,
+                self._fixedwing_max_speed,
                 self._multirotor_max_speed, self._catchup_gain,
                 self._max_catchup_speed, self._max_turn_rate)
         if self._mode == "consensus":
@@ -150,9 +162,13 @@ class FormationFollower:
                 not math.isfinite(self._yaw_offset) or self._rate <= 0 or
                 self._state_timeout <= 0 or self._mavros_timeout <= 0 or
                 self._tf_max_age <= 0 or
+                self._future_stamp_tolerance < 0 or
+                self._tf_lookup_timeout < 0 or
+                self._tf_buffer_cache_time <= 0 or
                 self._external_quiet_time < 0 or
                 self._fixedwing_minimum_slot_distance <= 0 or
                 self._fixedwing_min_speed <= 0 or
+                self._fixedwing_min_groundspeed_for_course <= 0 or
                 self._fixedwing_max_speed <= self._fixedwing_min_speed or
                 self._multirotor_max_speed <= 0 or
                 self._catchup_gain < 0 or self._max_catchup_speed < 0 or
@@ -167,6 +183,14 @@ class FormationFollower:
                 self._acquire_timeout <= 0 or
                 self._corner_radius < 0):
             raise rospy.ROSInitException("invalid consensus gains")
+
+        rospy.loginfo(
+            "[xd_uav_formation] mode=%s state_timeout=%.2fs "
+            "future_stamp_tolerance=%.2fs tf_max_age=%.2fs "
+            "tf_lookup_timeout=%.3fs tf_buffer_cache_time=%.2fs",
+            self._mode, self._state_timeout,
+            self._future_stamp_tolerance, self._tf_max_age,
+            self._tf_lookup_timeout, self._tf_buffer_cache_time)
 
         self._enabled = False
         self._own_state = None
@@ -194,15 +218,18 @@ class FormationFollower:
         self._acquire_heading = None
         self._acquire_altitude = None
         self._reason = "waiting_for_start"
-        self._tf = tf2_ros.Buffer(cache_time=rospy.Duration(5.0))
+        self._tf = tf2_ros.Buffer(
+            cache_time=rospy.Duration(self._tf_buffer_cache_time))
         self._tf_listener = tf2_ros.TransformListener(self._tf)
 
         self._reference_topic = rospy.get_param(
             "~reference_topic", "control/reference/setpoint")
         self._reference_pub = rospy.Publisher(
             self._reference_topic, PositionTarget, queue_size=10)
-        self._team_cancel_topic = rospy.get_param(
-            "~team_cancel_topic", "/formation/{}/cancel".format(self._team_id))
+        team_cancel_template = rospy.get_param(
+            "~team_cancel_topic", "/formation/{team_id}/cancel")
+        self._team_cancel_topic = team_cancel_template.format(
+            team_id=self._team_id)
         self._team_cancel_pub = rospy.Publisher(
             self._team_cancel_topic, String, queue_size=10)
         self._status_pub = rospy.Publisher(
@@ -384,8 +411,9 @@ class FormationFollower:
     def _fresh(self, message, received, now):
         if message is None or received is None or message.header.stamp.is_zero():
             return False
+        stamp_age = (now - message.header.stamp).to_sec()
         return (0 <= (now - received).to_sec() <= self._state_timeout and
-                -0.05 <= (now - message.header.stamp).to_sec() <=
+                -self._future_stamp_tolerance <= stamp_age <=
                 self._state_timeout)
 
     def _readiness(self, now):
@@ -484,10 +512,12 @@ class FormationFollower:
         if source == target:
             return pose, velocity, acceleration
         transform = self._tf.lookup_transform(
-            target, source, rospy.Time(0), rospy.Duration(0.05))
+            target, source, rospy.Time(0),
+            rospy.Duration(self._tf_lookup_timeout))
         if not transform.header.stamp.is_zero():
             age = (now - transform.header.stamp).to_sec()
-            if age < -0.05 or age > self._tf_max_age:
+            if (age < -self._future_stamp_tolerance or
+                    age > self._tf_max_age):
                 raise ValueError("leader_to_follower_tf_stale")
         return (do_transform_pose(pose, transform),
                 do_transform_vector3(velocity, transform),
@@ -533,10 +563,11 @@ class FormationFollower:
         if source != self._common_frame:
             transform = self._tf.lookup_transform(
                 self._common_frame, source, rospy.Time(0),
-                rospy.Duration(0.05))
+                rospy.Duration(self._tf_lookup_timeout))
             if not transform.header.stamp.is_zero():
                 age = (now - transform.header.stamp).to_sec()
-                if age < -0.05 or age > self._tf_max_age:
+                if (age < -self._future_stamp_tolerance or
+                        age > self._tf_max_age):
                     raise ValueError("state_to_common_tf_stale")
             pose = do_transform_pose(pose, transform)
             velocity = do_transform_vector3(velocity, transform)
@@ -557,10 +588,23 @@ class FormationFollower:
         position, velocity, pose = self._state_in_common_frame(own, now)
         if own.vehicle_type == ControlState.VEHICLE_FIXEDWING:
             vx, vy = velocity.x, velocity.y
-            if not all(math.isfinite(value) for value in (vx, vy)) or \
-                    math.hypot(vx, vy) < self._fixedwing_min_speed:
+            ground_speed = math.hypot(vx, vy)
+            if not all(math.isfinite(value) for value in (vx, vy)):
                 raise ValueError("own_speed_too_low_for_fixedwing")
-            heading = math.atan2(vy, vx)
+            if own.airspeed_valid:
+                if (not math.isfinite(own.airspeed) or
+                        own.airspeed < self._fixedwing_min_speed):
+                    raise ValueError("own_airspeed_too_low_for_fixedwing")
+                if ground_speed >= self._fixedwing_min_groundspeed_for_course:
+                    heading = math.atan2(vy, vx)
+                else:
+                    # Course is ill-conditioned near zero ground speed; a
+                    # safely flying fixed-wing can still use its body heading.
+                    heading = self._yaw(pose)
+            elif ground_speed >= self._fixedwing_min_speed:
+                heading = math.atan2(vy, vx)
+            else:
+                raise ValueError("own_speed_too_low_for_fixedwing")
         else:
             heading = self._yaw(pose)
         return virtual_center(position, heading, self._offset)
@@ -692,6 +736,25 @@ class FormationFollower:
             (speed * math.cos(heading), speed * math.sin(heading), 0.0),
             self._common_frame)
 
+    def _fixedwing_gathering_target(self, now, altitude):
+        """Gather fixed-wing members around their live center before routing."""
+        _, center, _ = self._consensus_centers(now)
+        heading = self._acquire_heading
+        x, y, _, yaw = slot_target(
+            center, heading, self._offset, self._yaw_offset)
+        speed = max(self._fixedwing_min_speed,
+                    min(self._cruise_speed, self._fixedwing_max_speed))
+        own_position, _, _ = self._state_in_common_frame(
+            self._own_state, now)
+        velocity = catchup_velocity(
+            (speed * math.cos(heading), speed * math.sin(heading), 0.0),
+            (x, y, altitude), own_position,
+            self._catchup_gain, self._max_catchup_speed,
+            self._fixedwing_max_speed, self._fixedwing_min_speed)
+        return self._position_target(
+            (x, y, altitude), yaw, now,
+            velocity, self._common_frame)
+
     def _acquisition_target(self, now):
         if self._acquire_stage == "waiting_for_team":
             if self._team_enabled(now):
@@ -728,10 +791,10 @@ class FormationFollower:
             if self._acquire_stage == "separating":
                 return self._fixedwing_wait_target(
                     now, self._acquire_tiers[own_index])
-            target = self._consensus_target(now)
             if self._acquire_stage == "gathering":
-                target.position.z = self._acquire_tiers[own_index]
-                target.velocity.z = 0.0
+                return self._fixedwing_gathering_target(
+                    now, self._acquire_tiers[own_index])
+            target = self._consensus_target(now)
             return target
         slot_error = max(math.hypot(point[0] - slot[0],
                                     point[1] - slot[1])
@@ -956,8 +1019,11 @@ class FormationFollower:
                 target = (self._acquisition_target(now)
                           if self._mode == "consensus" else
                           self._formation_target(now))
-            except (ValueError, tf2_ros.TransformException) as error:
+            except tf2_ros.TransformException as error:
                 self._stop("transform_unavailable:" + str(error), hold=True)
+                return
+            except ValueError as error:
+                self._stop("invalid_formation_state:" + str(error), hold=True)
                 return
             self._reference_pub.publish(target)
 

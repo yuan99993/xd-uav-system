@@ -1,0 +1,39 @@
+# Shared profile for the current three fixed-wing aircraft.
+# The unified launch starts nodes for every configured mode; the service's
+# `mode` selects which group publishes references.
+team_id: fixedwing_three
+
+leader_follow:
+  shape: manual
+  leader_name: uav1
+  # members: [uav2, uav3]
+  members: [uav2]
+  offsets:
+    # [forward, left, up] metres relative to uav1's ground-track direction.
+    uav2: [-80.0, 40.0, 0.0]
+    uav3: [-80.0, -40.0, 0.0]
+
+consensus:
+  team_id: fixedwing_three_consensus
+  members: [uav1, uav2, uav3]
+  # members: [uav1, uav2, uav3, uav4, uav5]
+  common_frame: world
+  shape: circle
+  spacing: 50.0
+  acquire_tolerance: 20.0
+  acquire_height_tolerance: 5.0
+  acquire_vertical_spacing: 10.0
+  acquire_timeout: 300.0
+  # Demonstration route; replace with a safe route in the current world frame.
+  waypoints:
+    - [-1000.0, -1000.0, 100.0]
+    - [2000.0, -1000.0, 100.0]
+    - [2000.0, 2000.0, 100.0]
+    - [-1000.0, 2000.0, 100.0]
+  loop_path: true
+  corner_radius: 300.0
+  cruise_speed: 20.0
+  lookahead_distance: 50.0
+  consensus_gain: 0.4
+  convergence_time: 100.0
+  max_consensus_velocity: 20.0

@@ -26,8 +26,8 @@
        only when the cached dynamic-batch engine has already been built. -->
   <arg name="maximum_batch_size" default="1" />
   <!-- Drop frames that have already waited too long, keeping image updates fresh. -->
-  <arg name="inference_max_fps" default="7.0" />
-  <arg name="maximum_capture_age_sec" default="0.5" />
+  <arg name="inference_max_fps" default="10.0" />
+  <arg name="maximum_capture_age_sec" default="2.0" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
   <arg name="camera_info_topic" default="down_camera/camera_info" />
   <arg name="camera_motion_fixed_frame" default="world" />

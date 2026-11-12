@@ -12,6 +12,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+import numpy as np
 import rospy
 import rospkg
 import yaml
@@ -191,6 +192,21 @@ class SharedInferenceServer:
             str(self._provider_model_path), preference, fallback_enabled=fallback,
             context="shared_inference_startup",
         )
+        # TensorRT creates its execution context lazily on the first predict().
+        # Warm it before advertising the service so that the first live camera
+        # request does not consume the short shared-inference queue deadline.
+        if (self._provider_model_path.suffix.lower() == ".engine" and
+                bool(rospy.get_param("~startup_warmup", True))):
+            image_size = int(self._smart_config.get(
+                "SMART_TRACKER_INFERENCE_IMAGE_SIZE", 512))
+            started = time.perf_counter()
+            self._backend.detect(
+                np.zeros((image_size, image_size, 3), dtype=np.uint8),
+                conf=1.0, iou=0.3, max_det=1, image_size=image_size,
+            )
+            warmup_ms = (time.perf_counter() - started) * 1000.0
+            self._runtime["startup_warmup_ms"] = warmup_ms
+            rospy.loginfo("shared YOLO TensorRT warmup completed in %.1f ms", warmup_ms)
         self._labels = self._backend.get_model_labels()
         self._model_task = self._backend.get_model_task()
         rospy.loginfo(
