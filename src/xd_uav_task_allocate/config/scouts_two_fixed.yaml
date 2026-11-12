@@ -19,7 +19,7 @@ scouts:
       # Zero preserves SearchArea.altitude from the incoming search-area topic.
       coverage_altitude_m: 0.0
       coverage_lane_spacing_m: 0.0
-      minimum_turn_radius_m: 100.0
+      minimum_turn_radius_m: 50.0
       turn_waypoint_spacing_m: 30.0
       straight_lead_distance_m: 30.0
       waypoint_acceptance_radius_m: 20.0
