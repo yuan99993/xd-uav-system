@@ -1,0 +1,373 @@
+# TCP supervisor configuration. Edit this file to change launch mappings,
+# config files, ports, or ROS profiles; do not put shell commands in messages.
+workspace: /home/nvidia/xd-uavsystem-test
+runtime_dir: ~/.ros/xd_uav_start_manager
+default_profile: vtol
+max_vehicles: 60
+stop_grace_sec: 5.0
+
+# Each child launch sources these files before exec'ing its argv.
+setup_scripts:
+  - /opt/ros/noetic/setup.bash
+  - "{workspace}/devel/setup.bash"
+  - "{workspace}/.venv-sar/bin/activate"
+
+network:
+  host: 0.0.0.0
+  port: 8765
+  heartbeat_timeout_sec: 30.0
+  max_message_bytes: 1048576
+  auth_token_env: XD_UAV_START_TOKEN
+  require_auth: true
+
+# These run for every aircraft in every snapshot. The video sender subscribes
+# to the tracking overlay topic and uses UDP port 32796 + the uav number.
+required_vehicle_launches:
+  - track
+  - h264_sender
+
+sensor_types:
+  front_gimbal_camera:
+    description: Front EO camera on the gimbal, with range sensor topics.
+  down_camera:
+    description: Downward camera.
+  lidar:
+    description: Point cloud or laser range sensor.
+
+parameters:
+  gimbal_attitude_bridge_script: "{workspace}/src/bridge/gimbal_attitude_bridge.py"
+  gimbal_control_script: "{workspace}/src/bridge/gimbal_control.py"
+  h264_sender_script: "{workspace}/src/bridge/h264_nal_multicast_sender.py"
+  airsim_scene: SceneBasicDrone
+
+aircraft_types:
+  vtol:
+    launches:
+      - id: localization
+        argv:
+          - roslaunch
+          - xd_uav_state_estimators
+          - uav_localization_stack.launch
+          - "UAV_NAME:={name}"
+          - "tf_config:={tf_config}"
+      - id: control
+        argv:
+          - roslaunch
+          - xd_uav_control_manager
+          - vtol_system.launch
+          - "UAV_NAME:={name}"
+
+  fixedwing:
+    launches:
+      - id: localization
+        argv:
+          - roslaunch
+          - xd_uav_state_estimators
+          - uav_localization_stack.launch
+          - "UAV_NAME:={name}"
+          - "tf_config:={tf_config}"
+      - id: control
+        argv:
+          - roslaunch
+          - xd_uav_control_manager
+          - fixedwing_system.launch
+          - "UAV_NAME:={name}"
+          - "controller_config:={controller_config}"
+
+  multirotor:
+    launches:
+      - id: localization
+        argv:
+          - roslaunch
+          - xd_uav_state_estimators
+          - uav_localization_stack.launch
+          - "UAV_NAME:={name}"
+          - "tf_config:={tf_config}"
+      - id: control
+        argv:
+          - roslaunch
+          - xd_uav_control_manager
+          - multirotor_system.launch
+          - "UAV_NAME:={name}"
+          - "controller_config:={controller_config}"
+
+# Optional per-aircraft launches. Only entries selected in that aircraft's
+# JSON launches list are started; merely declaring a sensor starts nothing.
+vehicle_launches:
+  track:
+    argv:
+      - roslaunch
+      - xd_uav_track
+      - track.launch
+      - "UAV_NAME:={name}"
+      - "config:={track_config}"
+
+  h264_sender:
+    argv:
+      - python3
+      - "{h264_sender_script}"
+    parameter_prefix: "_"
+    default_params:
+      image_topic: "{video_topic}"
+      port: "{video_port}"
+      group: "224.0.5.4"
+      local_ip: "192.168.2.102"
+
+  detect:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera, down_camera, lidar]
+    required_sensor_params:
+      front_gimbal_camera: [image_topic, camera_info_topic]
+      down_camera: [image_topic, camera_info_topic]
+      lidar: [point_cloud_topic]
+    sensor_param_map:
+      image_topic: image_topic
+      camera_info_topic: camera_info_topic
+      point_cloud_topic: point_cloud_topic
+      laser_range_topic: laser_range_topic
+    argv:
+      - roslaunch
+      - xd_uav_detect
+      - detect.launch
+      - "UAV_NAME:={name}"
+      - "config:={detect_config}"
+
+  task_execute:
+    argv:
+      - roslaunch
+      - xd_uav_task_execute
+      - task_execute.launch
+      - "UAV_NAME:={name}"
+
+  sar_yolo_detector:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera, down_camera]
+    required_sensor_params:
+      front_gimbal_camera: [image_topic, camera_info_topic]
+      down_camera: [image_topic, camera_info_topic]
+    argv:
+      - roslaunch
+      - sar_yolo_detector
+      - xd_smart_tracker_fusion_integration.launch
+      - "UAV_NAME:={name}"
+      - "instance_name:={instance_name}"
+      - "tracking_mode:={tracking_mode}"
+      - "config:={config}"
+      - "vehicle_config:={vehicle_config}"
+      - "fusion_config:={fusion_config}"
+      - "input_image_topic:={input_image_topic}"
+      - "camera_info_topic:={camera_info_topic}"
+      - "camera_motion_fixed_frame:={camera_motion_fixed_frame}"
+      - "image_width:={image_width}"
+      - "image_height:={image_height}"
+      - "tracked_detections_topic:={tracked_detections_topic}"
+      - "fusion_detections_topic:={fusion_detections_topic}"
+      - "fusion_observations_topic:={fusion_observations_topic}"
+      - "selected_detections_topic:={selected_detections_topic}"
+      - "select_pixel_topic:={select_pixel_topic}"
+      - "auto_select_service:={auto_select_service}"
+      - "auto_select_status_topic:={auto_select_status_topic}"
+      - "state_topic:={state_topic}"
+      - "annotated_image_topic:={annotated_image_topic}"
+      - "gimbal_detection_topic:={gimbal_detection_topic}"
+      - "bridge_input_topic:={bridge_input_topic}"
+      - "bridge_input_type:={bridge_input_type}"
+      - "output_detections_topic:={output_detections_topic}"
+      - "detect_bridge_enabled:={detect_bridge_enabled}"
+      - "detect_output_detections_topic:={detect_output_detections_topic}"
+      - "model_path:={model_path}"
+      - "model_sha256:={model_sha256}"
+      - "python_executable:={python_executable}"
+      - "use_gpu:={use_gpu}"
+      - "shared_inference:={shared_inference}"
+      - "maximum_batch_size:={maximum_batch_size}"
+      - "inference_max_fps:={inference_max_fps}"
+      - "maximum_capture_age_sec:={maximum_capture_age_sec}"
+      - "publish_annotated_image:={publish_annotated_image}"
+      - "image_source:={image_source}"
+      - "sensor_id:={sensor_id}"
+
+  gimbal_attitude_bridge:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera]
+    parameter_prefix: "_"
+    sensor_param_map:
+      track_gimbal_state_topic: track_gimbal_state_topic
+    default_params:
+      uav_ns: "/{name}"
+      track_gimbal_state_topic: "/{name}/track/gimbal_state"
+    argv:
+      - python3
+      - "{gimbal_attitude_bridge_script}"
+
+  gimbal_control:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera]
+    required_params: [mode]
+    parameter_choices:
+      mode: [tracking, manual, simulate]
+      detection_input: [tracked, bbox2d]
+    conditional_required_params:
+      mode:
+        tracking: [detection_input, detection_topic]
+    parameter_prefix: "_"
+    sensor_param_map:
+      image_width: image_width
+      image_height: image_height
+    default_params:
+      uav_name: "{name}"
+    argv:
+      - python3
+      - "{gimbal_control_script}"
+
+  target_geolocation:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera]
+    required_params: [detection_topic]
+    required_sensor_params:
+      front_gimbal_camera: [range_topic, gimbal_att_topic]
+    sensor_param_map:
+      range_topic: range_topic
+      gimbal_att_topic: gimbal_att_topic
+    argv:
+      - roslaunch
+      - target_geolocation
+      - target_geolocation.launch
+      - gimbal:=true
+      - "uav_ns:=/{name}"
+      - "airsim_scene:={airsim_scene}"
+      - "airsim_drone:={drone}"
+      - "node_name:=target_geolocation_{name}"
+      - "det_topic:={detection_topic}"
+      - "det_sensor_id:={sensor_id}"
+
+shared_launches:
+  world_tf:
+    argv:
+      - roslaunch
+      - xd_uav_world_tf_manager
+      - world_tf.launch
+      - "config:={world_tf_config}"
+
+  formation:
+    argv:
+      - roslaunch
+      - xd_uav_formation
+      - formation.launch
+      - "config:={formation_config}"
+      - "common_config:={formation_common_config}"
+
+profiles:
+  vtol:
+    parameters:
+      detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml
+      lidar_detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/lidar_camera.yaml
+      smart_model_path: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine
+      smart_model_sha256: 471011311fa9fa6a4067c9cae2fb7e29215fb32956c36a3ea3112c06e75b784e
+      sar_python: /home/nvidia/xd-uavsystem-test/.venv-sar/bin/python
+      tracking_mode: FusionTracker
+      bridge_input_type: tracked
+      detect_bridge_enabled: "false"
+      use_gpu: "true"
+      shared_inference: "true"
+      maximum_batch_size: 1
+      inference_max_fps: 10.0
+      maximum_capture_age_sec: 2.0
+      publish_annotated_image: "true"
+      image_source: fixed_rgb
+      camera_motion_fixed_frame: world
+      image_width: 1280
+      image_height: 720
+    files:
+      world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
+      formation_template: /home/nvidia/xd-uavsystem-test/src/start_script/templates/formation_template.yaml
+      formation_common_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_formation/config/common.yaml
+      track_config_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
+      sar_base_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker.yaml
+      sar_vehicle_config_template: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml
+      sar_fusion_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/fusion_tracker.yaml
+      tf_config_by_type:
+        vtol: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+      controller_config_by_type:
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/fixedwing_projectairsim.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/multirotor.yaml
+    formation_longitudinal_spacing: 80.0
+    formation_lateral_offset: 40.0
+
+  fixedwing:
+    parameters:
+      detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_front_detect.yaml
+      lidar_detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/lidar_camera.yaml
+      smart_model_path: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine
+      smart_model_sha256: 471011311fa9fa6a4067c9cae2fb7e29215fb32956c36a3ea3112c06e75b784e
+      sar_python: /home/nvidia/xd-uavsystem-test/.venv-sar/bin/python
+      tracking_mode: FusionTracker
+      bridge_input_type: tracked
+      detect_bridge_enabled: "false"
+      use_gpu: "true"
+      shared_inference: "true"
+      maximum_batch_size: 1
+      inference_max_fps: 10.0
+      maximum_capture_age_sec: 2.0
+      publish_annotated_image: "true"
+      image_source: fixed_rgb
+      camera_motion_fixed_frame: world
+      image_width: 1280
+      image_height: 720
+    files:
+      world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
+      formation_template: /home/nvidia/xd-uavsystem-test/src/start_script/templates/formation_template.yaml
+      formation_common_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_formation/config/common.yaml
+      track_config_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
+      sar_base_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker.yaml
+      sar_vehicle_config_template: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml
+      sar_fusion_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/fusion_tracker.yaml
+      tf_config_by_type:
+        vtol: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+      controller_config_by_type:
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/fixedwing_projectairsim.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/multirotor.yaml
+    formation_longitudinal_spacing: 80.0
+    formation_lateral_offset: 40.0
+
+  multirotor:
+    parameters:
+      detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml
+      lidar_detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/lidar_camera.yaml
+      smart_model_path: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine
+      smart_model_sha256: 471011311fa9fa6a4067c9cae2fb7e29215fb32956c36a3ea3112c06e75b784e
+      sar_python: /home/nvidia/xd-uavsystem-test/.venv-sar/bin/python
+      tracking_mode: FusionTracker
+      bridge_input_type: tracked
+      detect_bridge_enabled: "false"
+      use_gpu: "true"
+      shared_inference: "true"
+      maximum_batch_size: 1
+      inference_max_fps: 10.0
+      maximum_capture_age_sec: 2.0
+      publish_annotated_image: "true"
+      image_source: fixed_rgb
+      camera_motion_fixed_frame: world
+      image_width: 1280
+      image_height: 720
+    files:
+      world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
+      formation_template: /home/nvidia/xd-uavsystem-test/src/start_script/templates/formation_template.yaml
+      formation_common_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_formation/config/common.yaml
+      track_config_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
+      sar_base_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker.yaml
+      sar_vehicle_config_template: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml
+      sar_fusion_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/fusion_tracker.yaml
+      tf_config_by_type:
+        vtol: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+      controller_config_by_type:
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/fixedwing_projectairsim.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/multirotor.yaml
+    formation_longitudinal_spacing: 80.0
+    formation_lateral_offset: 40.0

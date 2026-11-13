@@ -50,19 +50,19 @@ roslaunch xd_uav_formation formation.launch \
 | `service_timeout` | 管理器等待成员启停服务的最长时间 |
 | `rate` | 编队参考更新频率 |
 | `state_timeout`、`mavros_timeout`、`tf_max_age` | 状态、MAVROS 和 TF 的最大允许过去时间 |
-| `future_stamp_tolerance` | 状态、编队中心和 TF 时间戳允许超前 ROS 当前时间的范围；当前配置为 5 秒 |
+| `future_stamp_tolerance` | 状态、编队中心和 TF 时间戳允许超前 ROS 当前时间的范围；当前配置为 30 秒 |
 | `tf_lookup_timeout`、`tf_buffer_cache_time` | TF 查询等待时间和缓存时长 |
 | `external_quiet_time` | 启动前等待外部参考静默的时间 |
 | `minimum_slot_distance`、`fixedwing_minimum_slot_distance` | 通用及固定翼最小槽位距离 |
-| `fixedwing_min_speed`、`fixedwing_max_speed`、`multirotor_max_speed` | 各机型参考速度范围/上限 |
+| `fixedwing_min_speed`、`multirotor_max_speed` | 固定翼参考速度下限和多旋翼参考速度上限 |
 | `fixedwing_min_groundspeed_for_course` | 固定翼地速低于此值时，若空速有效且安全，则用机头方向估算队形中心航向 |
-| `catchup_gain`、`max_catchup_speed` | 领机跟随位置误差的追赶补偿 |
-| `max_turn_rate`、`yaw_offset` | 转弯补偿转率上限和机头偏角修正 |
+| `catchup_gain`、`multirotor_max_catchup_speed` | 位置误差追赶补偿；速度上限只用于多旋翼 |
+| `yaw_offset` | 机头偏角修正 |
 | `reference_topic`、`team_cancel_topic`、`preempt_topic`、`task_goal_topic` | 参考、队伍取消和任务接管话题；队伍取消话题中的 `{team_id}` 会替换成配置的队伍标识 |
 
-默认固定翼速度范围为 15–45 m/s，固定翼槽位距离至少 30 m。它们必须与实际机型、动力学模型和控制器限制相符；更换飞机后应先核对并修改这些值。
+固定翼槽位速度由领机速度、转弯和槽位偏置计算，再按位置误差增加追赶速度。编队节点不对固定翼速度指令做上限裁剪；飞机自身控制器和动力学决定实际能达到的速度。多旋翼仍使用配置的速度上限。
 
-`future_stamp_tolerance` 同时用于状态消息、编队中心和 TF 的时间戳检查。当前 [common.yaml](config/common.yaml) 设置为 5 秒；可在该文件中调整，修改后需重启统一 launch 才会被编队节点读取。代码中的默认值仅作为缺少配置时的后备值。节点启动日志会打印实际加载的超时和 TF 参数。
+`future_stamp_tolerance` 同时用于状态消息、编队中心和 TF 的时间戳检查。当前 [common.yaml](config/common.yaml) 设置为 30 秒；可在该文件中调整，修改后需重启统一 launch 才会被编队节点读取。代码中的默认值仅作为缺少配置时的后备值。节点启动日志会打印实际加载的超时和 TF 参数。
 
 ## 启动条件与状态
 

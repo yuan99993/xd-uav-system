@@ -1,0 +1,34 @@
+# Count-independent seed copied from the existing formation tuning.
+# The start manager replaces members and creates offsets for the current fleet.
+team_id: formation
+
+leader_follow:
+  shape: manual
+  leader_name: uav1
+  members: [uav2]
+  offsets:
+    # [forward, left, up] metres relative to the leader's ground-track direction.
+    uav2: [-80.0, 40.0, 0.0]
+
+consensus:
+  team_id: formation_consensus
+  members: [uav1, uav2]
+  common_frame: world
+  shape: circle
+  spacing: 50.0
+  acquire_tolerance: 20.0
+  acquire_height_tolerance: 5.0
+  acquire_vertical_spacing: 10.0
+  acquire_timeout: 300.0
+  waypoints:
+    - [-1000.0, -1000.0, 100.0]
+    - [2000.0, -1000.0, 100.0]
+    - [2000.0, 2000.0, 100.0]
+    - [-1000.0, 2000.0, 100.0]
+  loop_path: true
+  corner_radius: 300.0
+  cruise_speed: 20.0
+  lookahead_distance: 50.0
+  consensus_gain: 0.4
+  convergence_time: 100.0
+  max_consensus_velocity: 20.0

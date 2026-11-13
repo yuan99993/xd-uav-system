@@ -1,0 +1,53 @@
+# Shared profile for 30 fixed-wing aircraft.
+# The unified launch starts nodes for every configured mode; the service's
+# `mode` selects which group publishes references.
+team_id: fixedwing_30
+
+leader_follow:
+  shape: manual
+  leader_name: uav1
+  members: [uav2, uav3, uav4, uav5, uav6, uav7, uav8, uav9, uav10, uav11, uav12, uav13, uav14, uav15, uav16, uav17, uav18, uav19, uav20]
+  offsets:
+    # [forward, left, up] metres relative to uav1's ground-track direction.
+    uav2: [-80.0, 40.0, 0.0]
+    uav3: [-80.0, -40.0, 0.0]
+    uav4: [-160.0, 40.0, 0.0]
+    uav5: [-160.0, -40.0, 0.0]
+    uav6: [-240.0, 40.0, 0.0]
+    uav7: [-240.0, -40.0, 0.0]
+    uav8: [-320.0, 40.0, 0.0]
+    uav9: [-320.0, -40.0, 0.0]
+    uav10: [-400.0, 40.0, 0.0]
+    uav11: [-400.0, -40.0, 0.0]
+    uav12: [-480.0, 40.0, 0.0]
+    uav13: [-480.0, -40.0, 0.0]
+    uav14: [-560.0, 40.0, 0.0]
+    uav15: [-560.0, -40.0, 0.0]
+    uav16: [-640.0, 40.0, 0.0]
+    uav17: [-640.0, -40.0, 0.0]
+    uav18: [-720.0, 40.0, 0.0]
+    uav19: [-720.0, -40.0, 0.0]
+    uav20: [-800.0, 40.0, 0.0]
+
+consensus:
+  team_id: fixedwing_30_consensus
+  members: [uav1, uav2, uav3, uav4, uav5, uav6, uav7, uav8, uav9, uav10, uav11, uav12, uav13, uav14, uav15, uav16, uav17, uav18, uav19, uav20]
+  common_frame: world
+  shape: circle
+  spacing: 50.0
+  acquire_tolerance: 20.0
+  acquire_height_tolerance: 5.0
+  acquire_vertical_spacing: 10.0
+  acquire_timeout: 300.0
+  # Demonstration route; replace with a safe route in the current world frame.
+  waypoints:
+    - [-1000.0, -1000.0, 100.0]
+    - [2000.0, -1000.0, 100.0]
+    - [2000.0, 2000.0, 100.0]
+    - [-1000.0, 2000.0, 100.0]
+  loop_path: true
+  corner_radius: 300.0
+  cruise_speed: 20.0
+  lookahead_distance: 50.0
+  consensus_gain: 0.4
+  convergence_time: 100.0

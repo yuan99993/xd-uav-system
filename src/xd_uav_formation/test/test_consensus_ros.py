@@ -138,11 +138,12 @@ class ConsensusRosTest(unittest.TestCase):
         base_speed = 3.0 if self._airframe == "multirotor" else 15.0
         self._uav2_x = 80.0
         self.assertTrue(self._until(lambda:
-            abs(self._latest_velocity_x.get("uav1", 0.0) -
-                (base_speed - 2.0)) < 0.01 and
-            abs(self._latest_velocity_x.get("uav2", 0.0) -
-                (base_speed + 2.0)) < 0.01),
-            "lagging member did not speed up while its neighbor slowed")
+            self._latest_velocity_x.get("uav1", base_speed) <
+                base_speed - 0.2 and
+            self._latest_velocity_x.get("uav2", base_speed) >
+                base_speed + 0.2),
+            "lagging member did not speed up while its neighbor slowed: {}".
+            format(self._latest_velocity_x))
         self._uav2_x = 100.0
         self.assertTrue(self._until(lambda: all(
             abs(self._latest_velocity_x.get(name, 0.0) - base_speed) < 0.01

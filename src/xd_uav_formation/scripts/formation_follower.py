@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Leader-follow or path-consensus references with shared task preemption."""
 
+import copy
 import math
 import threading
 
@@ -19,8 +20,10 @@ from xd_uav_controller.msg import ControlState
 from xd_uav_task_execute.msg import ExecuteTaskActionGoal
 
 from xd_uav_formation.core import (
-    acquisition_slots, blocking_action, catchup_velocity, consensus_velocity,
-    formation_offsets, path_reference, ring_neighbors, rounded_path,
+    acquisition_slots, blocking_action, catchup_velocity,
+    consensus_speed_targets, consensus_velocity,
+    formation_offsets, path_reference, path_reference_state,
+    ring_neighbors, rounded_path,
     shared_center, slot_target,
     slot_velocity, validate_offset, virtual_center)
 
@@ -33,6 +36,7 @@ class FormationFollower:
         if self._mode not in ("leader_follow", "consensus"):
             raise rospy.ROSInitException("mode must be leader_follow or consensus")
         leader = rospy.get_param("~leader_name", "uav1").strip("/")
+        self._leader_name = leader
         follower = rospy.get_namespace().strip("/")
         if not follower or (self._mode == "leader_follow" and
                             (not leader or leader == follower)):
@@ -51,12 +55,17 @@ class FormationFollower:
         shape = rospy.get_param(
             "~shape", "manual" if self._mode == "leader_follow" else "circle")
         self._shape = shape
+        self._members = tuple(rospy.get_param("~members", []))
+        if (not self._members or
+                len(set(self._members)) != len(self._members) or
+                follower not in self._members or
+                any(not name or "/" in name for name in self._members)):
+            raise rospy.ROSInitException(
+                "formation members must be unique UAV namespace names")
+        self._common_frame = rospy.get_param(
+            "~common_frame", "/world").strip("/")
         if self._mode == "consensus":
-            self._members = tuple(rospy.get_param("~members", []))
-            if (len(self._members) < 2 or
-                    len(set(self._members)) != len(self._members) or
-                    follower not in self._members or
-                    any(not name or "/" in name for name in self._members)):
+            if len(self._members) < 2:
                 raise rospy.ROSInitException(
                     "consensus members must be unique UAV namespace names")
             self._neighbors = ring_neighbors(self._members, follower)
@@ -65,8 +74,6 @@ class FormationFollower:
                 shape, len(self._members), self._spacing)
             self._slots = slots
             configured_offset = slots[self._members.index(follower)]
-            self._common_frame = rospy.get_param(
-                "~common_frame", "/world").strip("/")
             self._waypoints = rospy.get_param("~waypoints", [])
             self._corner_radius = float(rospy.get_param("~corner_radius", 0.0))
             self._cruise_speed = float(rospy.get_param("~cruise_speed", 20.0))
@@ -116,16 +123,12 @@ class FormationFollower:
             "~fixedwing_min_speed", 11.0))
         self._fixedwing_min_groundspeed_for_course = float(rospy.get_param(
             "~fixedwing_min_groundspeed_for_course", 2.0))
-        self._fixedwing_max_speed = float(rospy.get_param(
-            "~fixedwing_max_speed", 24.0))
         self._multirotor_max_speed = float(rospy.get_param(
             "~multirotor_max_speed", 5.0))
         self._catchup_gain = float(rospy.get_param(
             "~catchup_gain", 0.25))
-        self._max_catchup_speed = float(rospy.get_param(
-            "~max_catchup_speed", 3.0))
-        self._max_turn_rate = float(rospy.get_param(
-            "~max_turn_rate", 0.15))
+        self._multirotor_max_catchup_speed = float(rospy.get_param(
+            "~multirotor_max_catchup_speed", 3.0))
         self._yaw_offset = float(rospy.get_param("~yaw_offset", 0.0))
         self._rate = float(rospy.get_param("~rate", 20.0))
         self._state_timeout = float(rospy.get_param("~state_timeout", 0.5))
@@ -139,6 +142,11 @@ class FormationFollower:
             "~tf_buffer_cache_time", 5.0))
         self._external_quiet_time = float(
             rospy.get_param("~external_quiet_time", 0.5))
+        self._dropout_vertical_clearance = float(rospy.get_param(
+            "~dropout_vertical_clearance",
+            max(10.0, float(rospy.get_param("~spacing", 20.0)) * 0.25)))
+        self._dropout_height_tolerance = float(rospy.get_param(
+            "~dropout_height_tolerance", 1.0))
         timing_values = (
                 self._rate, self._state_timeout, self._mavros_timeout,
                 self._tf_max_age, self._future_stamp_tolerance,
@@ -147,9 +155,10 @@ class FormationFollower:
                 self._fixedwing_minimum_slot_distance,
                 self._fixedwing_min_speed,
                 self._fixedwing_min_groundspeed_for_course,
-                self._fixedwing_max_speed,
                 self._multirotor_max_speed, self._catchup_gain,
-                self._max_catchup_speed, self._max_turn_rate)
+                self._multirotor_max_catchup_speed,
+                self._dropout_vertical_clearance,
+                self._dropout_height_tolerance)
         if self._mode == "consensus":
             timing_values += (self._consensus_gain, self._convergence_time,
                               self._max_consensus_velocity,
@@ -169,10 +178,11 @@ class FormationFollower:
                 self._fixedwing_minimum_slot_distance <= 0 or
                 self._fixedwing_min_speed <= 0 or
                 self._fixedwing_min_groundspeed_for_course <= 0 or
-                self._fixedwing_max_speed <= self._fixedwing_min_speed or
                 self._multirotor_max_speed <= 0 or
-                self._catchup_gain < 0 or self._max_catchup_speed < 0 or
-                self._max_turn_rate <= 0):
+                self._catchup_gain < 0 or
+                self._multirotor_max_catchup_speed < 0 or
+                self._dropout_vertical_clearance <= 0 or
+                self._dropout_height_tolerance <= 0):
             raise rospy.ROSInitException("invalid formation timing or yaw parameters")
         if self._mode == "consensus" and (
                 self._consensus_gain < 0 or self._convergence_time <= 0 or
@@ -181,6 +191,8 @@ class FormationFollower:
                 self._acquire_height_tolerance <= 0 or
                 self._acquire_vertical_spacing <= 0 or
                 self._acquire_timeout <= 0 or
+                self._dropout_vertical_clearance <= 0 or
+                self._dropout_height_tolerance <= 0 or
                 self._corner_radius < 0):
             raise rospy.ROSInitException("invalid consensus gains")
 
@@ -210,6 +222,17 @@ class FormationFollower:
         self._center_received = {}
         self._peer_statuses = {}
         self._peer_status_received = {}
+        self._dropped_members = set()
+        self._dropout_exit_active = False
+        self._dropout_exit_altitude = None
+        self._dropout_exit_reason = None
+        self._cached_reference_kind = None
+        self._cached_reference = None
+        self._progress_error_filter = {}
+        self._filtered_course = None
+        self._filtered_course_stamp = None
+        self._paced_speed = None
+        self._paced_speed_stamp = None
         self._acquire_stage = None
         self._acquire_started = None
         self._acquire_slots = None
@@ -224,8 +247,16 @@ class FormationFollower:
 
         self._reference_topic = rospy.get_param(
             "~reference_topic", "control/reference/setpoint")
+        self._path_topic = rospy.get_param(
+            "~path_topic", "control/reference/path")
+        self._trajectory_topic = rospy.get_param(
+            "~trajectory_topic", "control/reference/trajectory")
         self._reference_pub = rospy.Publisher(
             self._reference_topic, PositionTarget, queue_size=10)
+        self._path_pub = rospy.Publisher(
+            self._path_topic, Path, queue_size=1)
+        self._trajectory_pub = rospy.Publisher(
+            self._trajectory_topic, MultiDOFJointTrajectory, queue_size=1)
         team_cancel_template = rospy.get_param(
             "~team_cancel_topic", "/formation/{team_id}/cancel")
         self._team_cancel_topic = team_cancel_template.format(
@@ -241,10 +272,10 @@ class FormationFollower:
                              self._own_mavros_callback, queue_size=10),
             rospy.Subscriber(self._reference_topic, PositionTarget,
                              self._external_reference_callback, queue_size=20),
-            rospy.Subscriber("control/reference/path", Path,
+            rospy.Subscriber(self._path_topic, Path,
                              self._other_reference_callback,
                              callback_args="path", queue_size=10),
-            rospy.Subscriber("control/reference/trajectory",
+            rospy.Subscriber(self._trajectory_topic,
                              MultiDOFJointTrajectory,
                              self._other_reference_callback,
                              callback_args="trajectory", queue_size=10),
@@ -264,7 +295,30 @@ class FormationFollower:
                                  ControlState, self._leader_state_callback,
                                  queue_size=10),
                 rospy.Subscriber("/{}/mavros/state".format(leader), State,
-                                 self._leader_mavros_callback, queue_size=10)))
+                                 self._leader_mavros_callback, queue_size=10),
+                rospy.Subscriber(
+                    "/{}/task_execute/execute/goal".format(leader),
+                    ExecuteTaskActionGoal, self._leader_task_goal_callback,
+                    queue_size=10),
+                rospy.Subscriber(
+                    "/{}/formation/preempt".format(leader), String,
+                    self._leader_preempt_callback, queue_size=10)))
+            for member in self._members:
+                if member == self._self_name:
+                    continue
+                self._subscribers.extend((
+                    rospy.Subscriber(
+                        "/{}/control_manager/state".format(member),
+                        ControlState, self._peer_state_callback,
+                        callback_args=member, queue_size=10),
+                    rospy.Subscriber(
+                        "/{}/mavros/state".format(member), State,
+                        self._peer_mavros_callback,
+                        callback_args=member, queue_size=10),
+                    rospy.Subscriber(
+                        "/{}/formation_follower/status".format(member),
+                        String, self._peer_status_callback,
+                        callback_args=member, queue_size=10)))
         else:
             self._center_topic = "/formation/{}/{}/center".format(
                 self._team_id, self._self_name)
@@ -304,13 +358,188 @@ class FormationFollower:
         self._status_pub.publish(String(
             data=("active" if self._enabled else "inactive") + ":" + self._reason))
 
+    def _mark_peer_dropped(self, member, reason):
+        if member == self._self_name or member in self._dropped_members:
+            return
+        self._dropped_members.add(member)
+        rospy.logwarn(
+            "[xd_uav_formation] excluding %s after %s",
+            member, reason)
+        if self._mode == "consensus" and self._enabled:
+            # A member leaving during acquisition should not strand the
+            # remaining aircraft in a stage whose shared plan still includes
+            # that member. Keep each remaining aircraft's original slot and
+            # continue on the route with the reduced team.
+            if self._acquire_stage != "following":
+                self._acquire_stage = "following"
+                self._acquire_started = None
+            self._reason = "following_degraded:{}:{}".format(member, reason)
+            self._publish_status()
+
+    def _active_members(self):
+        return tuple(member for member in self._members
+                     if member not in self._dropped_members)
+
+    def _refresh_team_membership(self, now):
+        if self._mode != "consensus" or not self._enabled:
+            return
+        for member in self._members:
+            if member == self._self_name or member in self._dropped_members:
+                continue
+            status = self._peer_statuses.get(member, "")
+            if status.startswith("inactive:dropout"):
+                self._mark_peer_dropped(member, status)
+                continue
+            state = self._peer_states.get(member)
+            received = self._peer_state_received.get(member)
+            mavros = self._peer_mavros.get(member)
+            mavros_received = self._peer_mavros_received.get(member)
+            reason = None
+            if not self._fresh(state, received, now):
+                reason = "state_stale"
+            elif not state.state_valid:
+                reason = "state_invalid"
+            elif state.transition_pending:
+                reason = "transition_pending"
+            elif blocking_action(state.vehicle_action, ControlState):
+                reason = "flight_action"
+            elif state.airframe_type != self._own_state.airframe_type:
+                reason = "airframe_changed"
+            elif (state.vehicle_type != self._own_state.vehicle_type or
+                  state.flight_regime != self._own_state.flight_regime):
+                reason = "flight_regime_changed"
+            elif (mavros is None or mavros_received is None or
+                  (now - mavros_received).to_sec() > self._mavros_timeout or
+                  not mavros.armed or mavros.mode != "OFFBOARD"):
+                reason = "left_offboard"
+            elif not self._fresh(self._centers.get(member),
+                                 self._center_received.get(member), now):
+                reason = "center_stale"
+            if reason:
+                self._mark_peer_dropped(member, reason)
+
+    def _resume_degraded_acquisition(self):
+        if self._mode == "consensus" and self._enabled and \
+                self._dropped_members and self._acquire_stage != "following":
+            self._acquire_stage = "following"
+            self._acquire_started = None
+            self._reason = "following_degraded"
+            self._publish_status()
+
+    def _safe_for_dropout_climb(self, now):
+        state = self._own_state
+        return (
+            self._fresh(state, self._own_state_received, now) and
+            state.state_valid and not state.transition_pending and
+            not blocking_action(state.vehicle_action, ControlState) and
+            state.vehicle_type in (
+                ControlState.VEHICLE_MULTIROTOR,
+                ControlState.VEHICLE_FIXEDWING) and
+            self._own_mavros is not None and
+            self._own_mavros_received is not None and
+            (now - self._own_mavros_received).to_sec() <=
+            self._mavros_timeout and self._own_mavros.armed and
+            self._own_mavros.mode == "OFFBOARD")
+
+    def _begin_dropout(self, reason, attempt_climb=True):
+        was_enabled = self._enabled
+        self._enabled = False
+        self._acquire_stage = None
+        self._acquire_started = None
+        self._dropout_exit_active = False
+        self._dropout_exit_altitude = None
+        self._dropout_exit_reason = reason
+        self._dropped_members.add(self._self_name)
+        self._reason = "dropout:" + reason
+        now = rospy.Time.now()
+        if attempt_climb and self._safe_for_dropout_climb(now):
+            try:
+                own_position, _velocity, _pose = self._state_in_common_frame(
+                    self._own_state, now)
+                highest_altitude = own_position[2]
+                peer_states = [
+                    (state, self._peer_state_received.get(name))
+                    for name, state in self._peer_states.items()]
+                if self._leader_state is not None:
+                    peer_states.append((self._leader_state,
+                                        self._leader_state_received))
+                for state, received in peer_states:
+                    if not self._fresh(state, received, now) or \
+                            not state.state_valid:
+                        continue
+                    try:
+                        position, _velocity, _pose = \
+                            self._state_in_common_frame(state, now)
+                    except (ValueError, tf2_ros.TransformException):
+                        continue
+                    highest_altitude = max(highest_altitude, position[2])
+                self._dropout_exit_altitude = (
+                    highest_altitude + self._dropout_vertical_clearance)
+                self._dropout_exit_active = True
+                self._reason = "dropout_egress:" + reason
+            except (ValueError, tf2_ros.TransformException) as error:
+                rospy.logwarn(
+                    "[xd_uav_formation] cannot start safe dropout climb: %s",
+                    error)
+        self._publish_status()
+        if was_enabled:
+            rospy.logwarn(
+                "[xd_uav_formation] member %s left the formation: %s",
+                self._self_name, reason)
+
+    def _cache_reference(self, kind, message):
+        self._cached_reference_kind = kind
+        self._cached_reference = copy.deepcopy(message)
+
+    def _resume_cached_reference(self):
+        message = self._cached_reference
+        kind = self._cached_reference_kind
+        if message is None:
+            return
+        try:
+            if kind == "setpoint":
+                message.header.stamp = rospy.Time.now()
+                self._reference_pub.publish(message)
+            elif kind == "path":
+                message.header.stamp = rospy.Time.now()
+                self._path_pub.publish(message)
+            elif kind == "trajectory":
+                message.header.stamp = rospy.Time.now()
+                self._trajectory_pub.publish(message)
+            rospy.loginfo(
+                "[xd_uav_formation] resumed cached %s reference for %s",
+                kind, self._self_name)
+        except rospy.ROSException as error:
+            rospy.logwarn(
+                "[xd_uav_formation] cached reference resume failed: %s",
+                error)
+
+    def _dropout_target(self, now):
+        position, _velocity, pose = self._state_in_common_frame(
+            self._own_state, now)
+        if position[2] >= self._dropout_exit_altitude - \
+                self._dropout_height_tolerance:
+            self._dropout_exit_active = False
+            self._reason = "dropout_complete:" + str(
+                self._dropout_exit_reason or "unknown")
+            self._publish_status()
+            self._resume_cached_reference()
+            return None
+        if self._own_state.vehicle_type == ControlState.VEHICLE_FIXEDWING:
+            return self._fixedwing_wait_target(
+                now, altitude=self._dropout_exit_altitude)
+        return self._position_target(
+            (position[0], position[1], self._dropout_exit_altitude),
+            self._yaw(pose), now, (0.0, 0.0, 0.0), self._common_frame)
+
     def _own_state_callback(self, message):
         with self._lock:
             self._own_state = message
             self._own_state_received = rospy.Time.now()
             if self._enabled and blocking_action(message.vehicle_action,
                                                  ControlState):
-                self._stop("follower_flight_action", hold=False)
+                self._begin_dropout("follower_flight_action",
+                                    attempt_climb=False)
 
     def _leader_state_callback(self, message):
         with self._lock:
@@ -318,36 +547,51 @@ class FormationFollower:
             self._leader_state_received = rospy.Time.now()
             if self._enabled and blocking_action(message.vehicle_action,
                                                  ControlState):
-                self._stop("leader_flight_action", hold=True)
+                self._stop("leader_flight_action", hold=True,
+                           broadcast=False)
 
     def _own_mavros_callback(self, message):
         with self._lock:
             self._own_mavros = message
             self._own_mavros_received = rospy.Time.now()
             if self._enabled and (not message.armed or message.mode != "OFFBOARD"):
-                self._stop("follower_left_offboard", hold=False)
+                self._begin_dropout("follower_left_offboard",
+                                    attempt_climb=False)
 
     def _leader_mavros_callback(self, message):
         with self._lock:
             self._leader_mavros = message
             self._leader_mavros_received = rospy.Time.now()
             if self._enabled and not message.armed:
-                self._stop("leader_disarmed", hold=True)
+                self._stop("leader_disarmed", hold=True,
+                           broadcast=False)
+
+    def _leader_task_goal_callback(self, message):
+        with self._lock:
+            if self._enabled:
+                self._stop(
+                    "leader_task_goal:{}".format(message.goal.task_id),
+                    hold=True, broadcast=False)
+
+    def _leader_preempt_callback(self, message):
+        with self._lock:
+            if self._enabled:
+                self._stop("leader_preempt:" + message.data[:128],
+                           hold=True, broadcast=False)
 
     def _peer_state_callback(self, message, member):
         with self._lock:
             self._peer_states[member] = message
             self._peer_state_received[member] = rospy.Time.now()
-            if self._enabled and blocking_action(message.vehicle_action,
-                                                 ControlState):
-                self._stop("peer_flight_action:" + member, hold=True)
+            if self._enabled and self._mode == "consensus":
+                self._refresh_team_membership(rospy.Time.now())
 
     def _peer_mavros_callback(self, message, member):
         with self._lock:
             self._peer_mavros[member] = message
             self._peer_mavros_received[member] = rospy.Time.now()
-            if self._enabled and (not message.armed or message.mode != "OFFBOARD"):
-                self._stop("peer_left_offboard:" + member, hold=True)
+            if self._enabled and self._mode == "consensus":
+                self._refresh_team_membership(rospy.Time.now())
 
     def _center_callback(self, message, member):
         with self._lock:
@@ -358,6 +602,8 @@ class FormationFollower:
         with self._lock:
             self._peer_statuses[member] = message.data
             self._peer_status_received[member] = rospy.Time.now()
+            if self._enabled and message.data.startswith("inactive:dropout"):
+                self._mark_peer_dropped(member, message.data)
 
     def _external_reference_callback(self, message):
         caller = (getattr(message, "_connection_header", None) or {}).get(
@@ -366,14 +612,19 @@ class FormationFollower:
             return
         with self._lock:
             self._last_external_reference = rospy.Time.now()
+            self._cache_reference("setpoint", message)
             if self._enabled:
-                self._stop("external_setpoint_from:" + caller, hold=False)
+                self._begin_dropout(
+                    "external_setpoint_from:" + caller,
+                    attempt_climb=False)
 
-    def _other_reference_callback(self, _message, source):
+    def _other_reference_callback(self, message, source):
         with self._lock:
             self._last_external_reference = rospy.Time.now()
+            self._cache_reference(source, message)
             if self._enabled:
-                self._stop("external_" + source, hold=False)
+                self._begin_dropout("external_" + source,
+                                    attempt_climb=False)
 
     def _team_cancel_callback(self, message):
         if message.data.startswith(self._node_name + ":"):
@@ -398,15 +649,17 @@ class FormationFollower:
                 self._external_quiet_time)
             self._last_external_reference = now
             if self._enabled:
-                self._stop("preempt:" + message.data[:128],
-                           hold=not own_reference_recent)
+                self._begin_dropout(
+                    "preempt:" + message.data[:128],
+                    attempt_climb=not own_reference_recent)
 
     def _task_goal_callback(self, message):
         with self._lock:
             self._last_external_reference = rospy.Time.now()
             if self._enabled:
-                self._stop("task_goal:{}".format(message.goal.task_id),
-                           hold=False)
+                self._begin_dropout(
+                    "task_goal:{}".format(message.goal.task_id),
+                    attempt_climb=False)
 
     def _fresh(self, message, received, now):
         if message is None or received is None or message.header.stamp.is_zero():
@@ -456,12 +709,14 @@ class FormationFollower:
                       self._leader_state_received, self._leader_mavros,
                       self._leader_mavros_received),)
         else:
+            active_members = set(self._active_members())
             peers = tuple((member, self._peer_states.get(member),
                            self._peer_state_received.get(member),
                            self._peer_mavros.get(member),
                            self._peer_mavros_received.get(member))
                           for member in self._members
-                          if member != self._self_name)
+                          if member != self._self_name and
+                          member in active_members)
         for name, state, received, mavros, mavros_received in peers:
             if not self._fresh(state, received, now):
                 return "{}_state_stale".format(name)
@@ -485,7 +740,7 @@ class FormationFollower:
                 return "leader_armed_required" if self._mode == \
                     "leader_follow" else "peer_offboard_required:" + name
         if self._mode == "consensus":
-            for name in self._members:
+            for name in self._active_members():
                 if name == self._self_name:
                     continue
                 center = self._centers.get(name)
@@ -630,13 +885,132 @@ class FormationFollower:
 
     def _consensus_centers(self, now):
         center = self._own_center_in_common_frame(now)
-        centers = (center,) + tuple(
+        centers = self._team_center_points(center)
+        mean, largest_error = shared_center(centers)
+        return center, mean, largest_error
+
+    def _team_center_points(self, own_center):
+        return tuple(
+            own_center if name == self._self_name else
             (self._centers[name].point.x,
              self._centers[name].point.y,
              self._centers[name].point.z)
-            for name in self._members if name != self._self_name)
-        mean, largest_error = shared_center(centers)
-        return center, mean, largest_error
+            for name in self._active_members())
+
+    def _effective_convergence_time(self):
+        preview_time = self._lookahead / max(self._cruise_speed, 1e-3)
+        return min(self._convergence_time, max(0.1, preview_time))
+
+    def _paced_path_reference(self, center, speed):
+        speed = max(speed, 1e-3)
+        lookahead = self._lookahead * speed / max(self._cruise_speed, 1e-3)
+        return path_reference_state(
+            center, self._waypoints, speed, lookahead, self._loop_path)
+
+    def _team_paced_speed(self, now, center_points, mean, path_velocity,
+                          heading, turn_rate):
+        """Slow the group for lagging members and speed laggards up."""
+        path_speed = math.hypot(path_velocity[0], path_velocity[1])
+        active_members = self._active_members()
+        if len(active_members) > 6 or path_speed < 1e-6:
+            return path_speed
+
+        tangent = (path_velocity[0] / path_speed,
+                   path_velocity[1] / path_speed)
+        raw_progress_errors = tuple(
+            ((mean[0] - point[0]) * tangent[0] +
+             (mean[1] - point[1]) * tangent[1])
+            for point in center_points)
+        progress_dt = (0.0 if self._paced_speed_stamp is None else
+                       max(0.0, min(0.2,
+                           (now - self._paced_speed_stamp).to_sec())))
+        progress_alpha = progress_dt / (0.8 + progress_dt)
+        progress_errors = []
+        for name, raw_error in zip(active_members, raw_progress_errors):
+            previous_error = self._progress_error_filter.get(name, raw_error)
+            filtered_error = previous_error + progress_alpha * (
+                raw_error - previous_error)
+            self._progress_error_filter[name] = filtered_error
+            progress_errors.append(filtered_error)
+        progress_errors = tuple(progress_errors)
+        member_speeds = []
+        for name in active_members:
+            index = self._members.index(name)
+            state = (self._own_state if name == self._self_name else
+                     self._peer_states[name])
+            _position, velocity, _pose = self._state_in_common_frame(
+                state, now)
+            slot_turn = slot_velocity(
+                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), heading,
+                self._slots[index], turn_rate=turn_rate)
+            center_vx = velocity.x - slot_turn[0]
+            center_vy = velocity.y - slot_turn[1]
+            member_speeds.append(
+                center_vx * tangent[0] + center_vy * tangent[1])
+
+        is_fixedwing = (self._own_state.vehicle_type ==
+                        ControlState.VEHICLE_FIXEDWING)
+        minimum_speed = self._fixedwing_min_speed if is_fixedwing else 0.0
+        targets = consensus_speed_targets(
+            path_speed, progress_errors, member_speeds,
+            self._consensus_gain, self._max_consensus_velocity,
+            minimum_speed)
+        target = targets[active_members.index(self._self_name)]
+
+        # Smooth pace changes so waiting does not turn into repeated speed
+        # jumps as noisy position estimates cross the arrival threshold.
+        if self._paced_speed is None or self._paced_speed_stamp is None:
+            self._paced_speed = target
+        else:
+            dt = max(0.0, min(0.2, (now - self._paced_speed_stamp).to_sec()))
+            # Pace corrections react to sustained lag, while this slower
+            # slew prevents noisy center estimates from making fixed-wings
+            # repeatedly chase and brake on adjacent control cycles.
+            maximum_change = 2.0 * dt
+            self._paced_speed += max(
+                -maximum_change,
+                min(maximum_change, target - self._paced_speed))
+        self._paced_speed_stamp = now
+        return max(minimum_speed, self._paced_speed)
+
+    def _smooth_course_velocity(self, velocity, now):
+        if self._own_state.vehicle_type != ControlState.VEHICLE_FIXEDWING:
+            return velocity
+        vx, vy, vz = velocity
+        speed = math.hypot(vx, vy)
+        if speed < 1e-3:
+            return velocity
+        target_course = math.atan2(vy, vx)
+        if self._filtered_course is None or \
+                self._filtered_course_stamp is None:
+            self._filtered_course = target_course
+            self._filtered_course_stamp = now
+            return velocity
+        dt = max(0.0, min(0.2,
+                          (now - self._filtered_course_stamp).to_sec()))
+        # Limit only course jitter; keep the commanded speed and vertical
+        # component unchanged. This is well above the curvature of the
+        # configured rounded routes, but filters noisy consensus corrections.
+        max_course_step = 0.25 * dt
+        course_error = math.atan2(
+            math.sin(target_course - self._filtered_course),
+            math.cos(target_course - self._filtered_course))
+        course_step = max(-max_course_step,
+                          min(max_course_step, course_error))
+        self._filtered_course += course_step
+        self._filtered_course_stamp = now
+        return (speed * math.cos(self._filtered_course),
+                speed * math.sin(self._filtered_course), vz)
+
+    @staticmethod
+    def _cross_track_center(center, mean, heading):
+        """Return the shared center with along-track error removed."""
+        normal = (-math.sin(heading), math.cos(heading))
+        cross_error = ((mean[0] - center[0]) * normal[0] +
+                       (mean[1] - center[1]) * normal[1])
+        return (center[0] + normal[0] * cross_error,
+                center[1] + normal[1] * cross_error,
+                mean[2])
 
     def _team_enabled(self, now):
         return all(
@@ -644,7 +1018,8 @@ class FormationFollower:
             self._peer_status_received.get(member) is not None and
             0 <= (now - self._peer_status_received[member]).to_sec() <=
             self._mavros_timeout
-            for member in self._members if member != self._self_name)
+            for member in self._active_members()
+            if member != self._self_name)
 
     def _set_acquire_stage(self, stage):
         self._acquire_stage = stage
@@ -725,8 +1100,7 @@ class FormationFollower:
         position, velocity, _ = self._state_in_common_frame(
             self._own_state, now)
         heading = math.atan2(velocity.y, velocity.x)
-        speed = max(self._fixedwing_min_speed,
-                    min(self._cruise_speed, self._fixedwing_max_speed))
+        speed = max(self._fixedwing_min_speed, self._cruise_speed)
         preview = max(self._lookahead, speed * 2.0)
         target = (position[0] + preview * math.cos(heading),
                   position[1] + preview * math.sin(heading),
@@ -737,20 +1111,40 @@ class FormationFollower:
             self._common_frame)
 
     def _fixedwing_gathering_target(self, now, altitude):
-        """Gather fixed-wing members around their live center before routing."""
-        _, center, _ = self._consensus_centers(now)
-        heading = self._acquire_heading
+        """Gather toward route slots while continuing along the route."""
+        center, mean, _ = self._consensus_centers(now)
+        center_points = self._team_center_points(center)
+        _nominal_position, nominal_velocity, nominal_turn_rate = \
+            path_reference_state(
+                mean, self._waypoints, self._cruise_speed,
+                self._lookahead, self._loop_path)
+        heading = math.atan2(nominal_velocity[1], nominal_velocity[0])
+        paced_speed = self._team_paced_speed(
+            now, center_points, mean, nominal_velocity, heading,
+            nominal_turn_rate)
+        route_position, paced_path_velocity, paced_turn_rate = \
+            self._paced_path_reference(mean, paced_speed)
+        heading = math.atan2(paced_path_velocity[1],
+                             paced_path_velocity[0])
         x, y, _, yaw = slot_target(
-            center, heading, self._offset, self._yaw_offset)
-        speed = max(self._fixedwing_min_speed,
-                    min(self._cruise_speed, self._fixedwing_max_speed))
-        own_position, _, _ = self._state_in_common_frame(
-            self._own_state, now)
-        velocity = catchup_velocity(
-            (speed * math.cos(heading), speed * math.sin(heading), 0.0),
-            (x, y, altitude), own_position,
-            self._catchup_gain, self._max_catchup_speed,
-            self._fixedwing_max_speed, self._fixedwing_min_speed)
+            route_position, heading, self._offset, self._yaw_offset)
+        if len(self._members) <= 6:
+            neighbors = (self._cross_track_center(center, mean, heading),)
+        else:
+            neighbors = tuple((self._centers[name].point.x,
+                               self._centers[name].point.y,
+                               self._centers[name].point.z)
+                              for name in self._neighbors)
+        velocity = consensus_velocity(
+            paced_path_velocity, route_position, center, neighbors,
+            self._catchup_gain,
+            self._effective_convergence_time(),
+            self._max_consensus_velocity) if len(self._active_members()) > 1 \
+            else paced_path_velocity
+        velocity = slot_velocity(
+            velocity, (0.0, 0.0, 0.0), heading, self._offset,
+            turn_rate=paced_turn_rate)
+        velocity = self._smooth_course_velocity(velocity, now)
         return self._position_target(
             (x, y, altitude), yaw, now,
             velocity, self._common_frame)
@@ -788,10 +1182,7 @@ class FormationFollower:
                         self._acquire_height_tolerance
                         for point in positions)):
                 self._set_acquire_stage("following")
-            if self._acquire_stage == "separating":
-                return self._fixedwing_wait_target(
-                    now, self._acquire_tiers[own_index])
-            if self._acquire_stage == "gathering":
+            if self._acquire_stage in ("separating", "gathering"):
                 return self._fixedwing_gathering_target(
                     now, self._acquire_tiers[own_index])
             target = self._consensus_target(now)
@@ -825,34 +1216,49 @@ class FormationFollower:
 
     def _consensus_target(self, now):
         center, mean, _ = self._consensus_centers(now)
-        position, path_velocity = path_reference(
-            mean, self._waypoints, self._cruise_speed,
-            self._lookahead, self._loop_path)
-        heading = math.atan2(path_velocity[1], path_velocity[0])
+        center_points = self._team_center_points(center)
+        _nominal_position, nominal_velocity, nominal_turn_rate = \
+            path_reference_state(
+                mean, self._waypoints, self._cruise_speed,
+                self._lookahead, self._loop_path)
+        heading = math.atan2(nominal_velocity[1], nominal_velocity[0])
+        paced_speed = self._team_paced_speed(
+            now, center_points, mean, nominal_velocity, heading,
+            nominal_turn_rate)
+        position, paced_path_velocity, paced_turn_rate = \
+            self._paced_path_reference(mean, paced_speed)
+        heading = math.atan2(paced_path_velocity[1],
+                             paced_path_velocity[0])
         x, y, z, yaw = slot_target(position, heading, self._offset,
                                    self._yaw_offset)
-        neighbors = tuple((self._centers[name].point.x,
-                           self._centers[name].point.y,
-                           self._centers[name].point.z)
-                          for name in self._neighbors)
-        velocity = consensus_velocity(
-            path_velocity, position, center, neighbors,
-            self._consensus_gain, self._convergence_time,
-            self._max_consensus_velocity)
+        if len(self._members) <= 6:
+            # Small teams already exchange every center. Use that shared
+            # estimate directly instead of waiting for errors to diffuse
+            # around a ring one aircraft at a time.
+            neighbors = (self._cross_track_center(center, mean, heading),)
+        else:
+            neighbors = tuple((self._centers[name].point.x,
+                               self._centers[name].point.y,
+                               self._centers[name].point.z)
+                              for name in self._neighbors)
         fixedwing = (self._own_state.vehicle_type ==
                      ControlState.VEHICLE_FIXEDWING)
-        if fixedwing:
-            path_speed = math.hypot(path_velocity[0], path_velocity[1])
-            if not self._fixedwing_min_speed <= path_speed <= \
-                    self._fixedwing_max_speed:
-                raise ValueError("path_speed_outside_fixedwing_limits")
-        # Consensus already adds neighbor-center error. Bound its resulting
-        # request without adding a second correction toward the preview point.
+        velocity = (consensus_velocity(
+            paced_path_velocity, position, center, neighbors,
+            self._consensus_gain,
+            self._effective_convergence_time(),
+            self._max_consensus_velocity)
+            if len(self._active_members()) > 1 else paced_path_velocity)
+        velocity = slot_velocity(
+            velocity, (0.0, 0.0, 0.0), heading, self._offset,
+            turn_rate=paced_turn_rate)
+        # Consensus already adds neighbor-center error, so avoid adding a
+        # second correction toward the preview point.
         velocity = catchup_velocity(
-            velocity, position, position, 0.0, 0.0,
-            self._fixedwing_max_speed if fixedwing else
-            self._multirotor_max_speed,
-            self._fixedwing_min_speed if fixedwing else 0.0)
+            velocity, position, position, 0.0,
+            None if fixedwing else 0.0,
+            None if fixedwing else self._multirotor_max_speed)
+        velocity = self._smooth_course_velocity(velocity, now)
         return self._position_target((x, y, z), yaw, now, velocity,
                                      self._common_frame)
 
@@ -869,8 +1275,6 @@ class FormationFollower:
         fixedwing = (self._own_state.vehicle_type ==
                      ControlState.VEHICLE_FIXEDWING)
         speed = math.hypot(vector.x, vector.y)
-        if fixedwing and speed < self._fixedwing_min_speed:
-            raise ValueError("leader_speed_too_low_for_fixedwing")
         # Swiftwing rotates its slots using the leader's ground-track heading.
         # Hovering rotors can translate sideways, so their body yaw is the
         # meaningful orientation for a visual formation instead.
@@ -890,26 +1294,27 @@ class FormationFollower:
             rotation = pose.pose.orientation
             bank = euler_from_quaternion((rotation.x, rotation.y,
                                           rotation.z, rotation.w))[0]
-            turn_rate = 9.8 * math.tan(bank) / speed
+            turn_rate = 9.8 * math.tan(bank) / max(
+                speed, self._fixedwing_min_speed)
         elif not fixedwing and math.isfinite(self._leader_state.body_rate.z):
             turn_rate = self._leader_state.body_rate.z
         velocity = slot_velocity(
             leader_velocity_xyz, leader_acceleration_xyz,
-            heading, self._offset, self._max_turn_rate,
+            heading, self._offset,
             turn_rate=turn_rate)
-        if fixedwing:
-            baseline_speed = math.hypot(velocity[0], velocity[1])
-            if not self._fixedwing_min_speed <= baseline_speed <= \
-                    self._fixedwing_max_speed:
-                raise ValueError("slot_speed_outside_fixedwing_limits")
         own_position = self._own_state.position_odom
-        velocity = catchup_velocity(
-            velocity, (x, y, z),
-            (own_position.x, own_position.y, own_position.z),
-            self._catchup_gain, self._max_catchup_speed,
-            self._fixedwing_max_speed if fixedwing else
-            self._multirotor_max_speed,
-            self._fixedwing_min_speed if fixedwing else 0.0)
+        if fixedwing:
+            velocity = catchup_velocity(
+                velocity, (x, y, z),
+                (own_position.x, own_position.y, own_position.z),
+                self._catchup_gain)
+        else:
+            velocity = catchup_velocity(
+                velocity, (x, y, z),
+                (own_position.x, own_position.y, own_position.z),
+                self._catchup_gain, self._multirotor_max_catchup_speed,
+                self._multirotor_max_speed)
+        velocity = self._smooth_course_velocity(velocity, now)
         return self._position_target((x, y, z), yaw, now, velocity)
 
     def _publish_hold(self):
@@ -934,6 +1339,7 @@ class FormationFollower:
     def _stop(self, reason, hold, broadcast=True):
         was_enabled = self._enabled
         self._enabled = False
+        self._dropout_exit_active = False
         self._acquire_stage = None
         self._acquire_started = None
         self._reason = reason
@@ -976,13 +1382,19 @@ class FormationFollower:
             except (ValueError, rospy.ROSException,
                     tf2_ros.TransformException) as error:
                 return SetBoolResponse(False, "transform unavailable: " + str(error))
+            self._dropped_members.clear()
             self._enabled = True
             if self._mode == "consensus":
+                self._paced_speed = None
+                self._paced_speed_stamp = None
+                self._progress_error_filter.clear()
                 self._acquire_stage = "waiting_for_team"
                 self._acquire_started = now
                 self._reason = "acquiring_waiting_for_team"
             else:
                 self._reason = "following"
+            self._filtered_course = None
+            self._filtered_course_stamp = None
             self._publish_status()
             return SetBoolResponse(
                 True, "formation gathering started" if
@@ -995,37 +1407,78 @@ class FormationFollower:
             now = rospy.Time.now()
             if self._mode == "consensus":
                 self._publish_center(now)
+                self._refresh_team_membership(now)
+            if self._dropout_exit_active:
+                if not self._safe_for_dropout_climb(now):
+                    self._dropout_exit_active = False
+                    self._reason = "dropout_egress_aborted:" + str(
+                        self._dropout_exit_reason or "unknown")
+                    self._publish_status()
+                    return
+                try:
+                    target = self._dropout_target(now)
+                except (ValueError, tf2_ros.TransformException) as error:
+                    self._dropout_exit_active = False
+                    self._reason = "dropout_egress_failed:" + str(error)
+                    self._publish_status()
+                    rospy.logwarn(
+                        "[xd_uav_formation] dropout climb aborted: %s", error)
+                    return
+                if target is not None:
+                    self._reference_pub.publish(target)
             if not self._enabled:
                 return
             self._publish_status()
             reason = self._readiness(now)
             if reason:
-                self._stop(reason, hold=reason not in (
-                    "follower_flight_action", "follower_offboard_required"))
+                if self._is_own_readiness_failure(reason):
+                    self._begin_dropout(
+                        reason, attempt_climb=reason not in (
+                            "follower_flight_action",
+                            "follower_offboard_required",
+                            "follower_left_offboard"))
+                else:
+                    self._stop(reason, hold=True, broadcast=False)
                 return
             if self._mode == "consensus" and \
                     self._acquire_stage != "waiting_for_team" and \
                     not self._team_enabled(now):
-                self._stop("peer_formation_stopped", hold=True)
+                self._begin_dropout("peer_formation_stopped",
+                                    attempt_climb=True)
                 return
             if self._mode == "consensus" and \
                     self._acquire_stage != "following" and \
                     self._acquire_started is not None and \
                     (now - self._acquire_started).to_sec() > \
                     self._acquire_timeout:
-                self._stop("acquisition_timeout", hold=True)
+                self._begin_dropout("acquisition_timeout",
+                                    attempt_climb=True)
                 return
             try:
                 target = (self._acquisition_target(now)
                           if self._mode == "consensus" else
                           self._formation_target(now))
             except tf2_ros.TransformException as error:
-                self._stop("transform_unavailable:" + str(error), hold=True)
+                self._begin_dropout(
+                    "transform_unavailable:" + str(error),
+                    attempt_climb=True)
                 return
             except ValueError as error:
-                self._stop("invalid_formation_state:" + str(error), hold=True)
+                self._begin_dropout(
+                    "invalid_formation_state:" + str(error),
+                    attempt_climb=True)
                 return
             self._reference_pub.publish(target)
+
+    @staticmethod
+    def _is_own_readiness_failure(reason):
+        return reason in (
+            "follower_state_stale", "state_invalid", "unsupported_airframe",
+            "transition_pending", "hover_regime_required",
+            "forward_flight_required", "fixedwing_slot_too_close",
+            "unsupported_vehicle_type", "follower_flight_action",
+            "state_frame_missing", "follower_offboard_required",
+            "same_airframe_type_required", "same_flight_regime_required")
 
 
 if __name__ == "__main__":

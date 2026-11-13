@@ -36,4 +36,3 @@ consensus:
   lookahead_distance: 50.0
   consensus_gain: 0.4
   convergence_time: 100.0
-  max_consensus_velocity: 20.0

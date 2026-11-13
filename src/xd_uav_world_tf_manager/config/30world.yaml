@@ -1,0 +1,280 @@
+# 共享世界坐标定义。一个世界TF管理器进程负责清单中的全部飞机。
+world:
+  frame_id: world
+
+  # 世界ENU切平面的WGS84基准点。
+  datum:
+    # fixed：使用下方手动配置的经纬高；topic：读取 sensor_msgs/NavSatFix。
+    mode: topic
+    topic: /world/datum
+    latitude: -37.71775430000001
+    longitude: 144.8345184
+    altitude: -6.409311559051275
+    # 改为 topic 后，以下经纬高不再使用，world 原点由 /world/datum 提供。
+    # latitude: 47.3977421
+    # longitude: 8.5455934
+    # altitude: 535.3249164945362
+
+  # 地理ENU平面在world坐标系中的位置和航向。
+  position: [0.0, 0.0, 0.0]
+  enu_to_world_yaw: 0.0
+
+# 在此增删飞机名称，控制哪些飞机接入world。
+# vehicles: [uav1, uav2, uav3, uav4]
+vehicles: [uav1, uav2, uav3, uav4, uav5, uav6, uav7, uav8, uav9, uav10, uav11, uav12, uav13, uav14, uav15, uav16, uav17, uav18, uav19, uav20, uav21, uav22, uav23, uav24, uav25, uav26, uav27, uav28, uav29, uav30]
+
+vehicle_configs:
+  uav1:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav1/mavros/global_position/gp_origin_lla #这个话题提供的local_origin的经纬度位置
+    local_origin_frame: uav1/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav2:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav2/mavros/global_position/gp_origin_lla #这个话题提供的local_origin的经纬度位置
+    local_origin_frame: uav2/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav3:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav3/mavros/global_position/gp_origin_lla #这个话题提供的local_origin的经纬度位置
+    local_origin_frame: uav3/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav4:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav4/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav4/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+
+  uav5:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav5/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav5/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav6:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav6/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav6/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav7:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav7/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav7/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav8:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav8/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav8/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav9:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav9/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav9/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav10:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav10/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav10/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav11:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav11/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav11/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav12:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav12/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav12/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav13:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav13/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav13/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav14:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav14/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav14/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav15:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav15/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav15/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav16:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav16/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav16/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav17:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav17/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav17/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav18:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav18/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav18/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav19:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav19/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav19/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav20:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav20/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav20/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav21:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav21/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav21/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav22:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav22/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav22/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav23:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav23/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav23/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav24:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav24/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav24/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav25:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav25/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav25/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav26:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav26/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav26/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav27:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav27/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav27/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav28:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav28/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav28/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav29:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav29/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav29/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  uav30:
+    enabled: true
+    mode: gps_origin
+    origin_topic: /uav30/mavros/global_position/gp_origin_lla
+    local_origin_frame: uav30/local_origin
+    position_offset: [0.0, 0.0, 0.0]
+    yaw_offset: 0.0
+  # # 不使用实时GPS原点话题时的固定位置示例，自定义指定飞机在world坐标系中的位置和航向。
+  # uav1:
+  #   enabled: true
+  #   mode: fixed
+  #   local_origin_frame: uav1/local_origin
+  #   fixed_position: [0.0, 0.0, 0.0]
+  #   fixed_yaw: 0.0
+  # uav2:
+  #   enabled: true
+  #   mode: fixed
+  #   local_origin_frame: uav2/local_origin
+  #   fixed_position: [45.0, 0.0, 0.0]
+  #   fixed_yaw: 0.0
+  # uav3:
+  #   enabled: true
+  #   mode: fixed
+  #   local_origin_frame: uav3/local_origin
+  #   fixed_position: [0.0, 45.0, 0.0]
+  #   fixed_yaw: 0.0
+  # uav3:
+  #   enabled: true
+  #   mode: fixed
+  #   local_origin_frame: uav3/local_origin
+  #   fixed_position: [20.0, 0.0, 0.0]
+  #   fixed_yaw: 0.0
+  # uav4:
+  #   enabled: true
+  #   mode: fixed
+  #   local_origin_frame: uav4/local_origin
+  #   fixed_position: [30.0, 0.0, 0.0]
+  #   fixed_yaw: 0.0
+
+  # #自己配置经纬高作为uav3的原点，注意经纬高是WGS84坐标系下的坐标
+  # uav3:
+  #   enabled: true
+  #   mode: geodetic
+  #   local_origin_frame: uav3/local_origin
+  #   origin:
+  #     latitude: 47.397750
+  #     longitude: 8.545600
+  #     altitude: 535.3
+  #   position_offset: [0.0, 0.0, 0.0]
+  #   yaw_offset: 0.0

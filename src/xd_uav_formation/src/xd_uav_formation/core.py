@@ -63,21 +63,21 @@ def slot_target(leader_position, leader_yaw, offset, yaw_offset=0.0):
 
 
 def slot_velocity(leader_velocity, leader_acceleration, heading, offset,
-                  max_turn_rate, turn_rate=None):
+                  max_turn_rate=None, turn_rate=None):
     """Differentiate the moving slot: v_slot = v_leader + omega x R*offset.
 
     Ground-track curvature is measured from velocity and acceleration in
-    the common frame.  Unlike commanded bank angle, its sign is unambiguous
-    in ENU coordinates.  The cap prevents a noisy acceleration spike from
-    producing an impossible feed-forward command.
+    the common frame. Unlike commanded bank angle, its sign is unambiguous
+    in ENU coordinates. A turn-rate cap is optional.
     """
-    values = (*leader_velocity, *leader_acceleration, heading,
-              *offset, max_turn_rate)
+    values = (*leader_velocity, *leader_acceleration, heading, *offset)
+    if max_turn_rate is not None:
+        values += (max_turn_rate,)
     if turn_rate is not None:
         values += (turn_rate,)
     if not all(math.isfinite(float(value)) for value in values):
         raise ValueError("non-finite formation velocity")
-    if max_turn_rate <= 0:
+    if max_turn_rate is not None and max_turn_rate <= 0:
         raise ValueError("max_turn_rate must be positive")
     vx, vy, vz = leader_velocity
     ax, ay, _ = leader_acceleration
@@ -85,7 +85,8 @@ def slot_velocity(leader_velocity, leader_acceleration, heading, offset,
     if turn_rate is None:
         turn_rate = ((vx * ay - vy * ax) / speed_squared
                      if speed_squared > 1e-6 else 0.0)
-    turn_rate = max(-max_turn_rate, min(max_turn_rate, turn_rate))
+    if max_turn_rate is not None:
+        turn_rate = max(-max_turn_rate, min(max_turn_rate, turn_rate))
     forward, left, _ = offset
     cosine, sine = math.cos(heading), math.sin(heading)
     rx = cosine * forward - sine * left
@@ -94,21 +95,26 @@ def slot_velocity(leader_velocity, leader_acceleration, heading, offset,
 
 
 def catchup_velocity(base_velocity, slot_position, own_position, gain,
-                     max_correction, max_horizontal_speed,
+                     max_correction=None, max_horizontal_speed=None,
                      min_horizontal_speed=0.0):
-    """Add bounded slot-error velocity to the moving formation reference.
+    """Add slot-error velocity, with optional correction and speed bounds.
 
     A lagging aircraft asks for more speed; one ahead of its slot slows down.
-    The resulting horizontal command respects the aircraft's configured
-    speed envelope. Altitude feedback remains with the flight controller.
+    Altitude feedback remains with the flight controller.
     """
     values = (*base_velocity, *slot_position, *own_position, gain,
-              max_correction, max_horizontal_speed, min_horizontal_speed)
+              min_horizontal_speed)
+    if max_correction is not None:
+        values += (max_correction,)
+    if max_horizontal_speed is not None:
+        values += (max_horizontal_speed,)
     if not all(math.isfinite(float(value)) for value in values):
         raise ValueError("non-finite catchup input")
-    if (gain < 0 or max_correction < 0 or max_horizontal_speed <= 0 or
-            min_horizontal_speed < 0 or
-            min_horizontal_speed > max_horizontal_speed):
+    if (gain < 0 or (max_correction is not None and max_correction < 0) or
+            (max_horizontal_speed is not None and
+             max_horizontal_speed <= 0) or min_horizontal_speed < 0 or
+            (max_horizontal_speed is not None and
+             min_horizontal_speed > max_horizontal_speed)):
         raise ValueError("invalid catchup speed limits")
     error_x = slot_position[0] - own_position[0]
     error_y = slot_position[1] - own_position[1]
@@ -117,20 +123,20 @@ def catchup_velocity(base_velocity, slot_position, own_position, gain,
     correction_norm = math.hypot(correction_x, correction_y)
     if not math.isfinite(correction_norm):
         raise ValueError("catchup correction overflow")
-    if min_horizontal_speed > 0:
+    if min_horizontal_speed > 0 and max_correction is not None:
         base_speed = math.hypot(base_velocity[0], base_velocity[1])
         if base_speed < 1e-6:
             raise ValueError("fixedwing reference has no course")
-        # A large configured correction must not reverse fixed-wing flight.
         max_correction = min(max_correction, 0.5 * base_speed)
-    if correction_norm > max_correction:
+    if max_correction is not None and correction_norm > max_correction:
         scale = max_correction / correction_norm
         correction_x *= scale
         correction_y *= scale
     vx = base_velocity[0] + correction_x
     vy = base_velocity[1] + correction_y
     speed = math.hypot(vx, vy)
-    if speed > max_horizontal_speed:
+    if (max_horizontal_speed is not None and
+            speed > max_horizontal_speed):
         scale = max_horizontal_speed / speed
         vx *= scale
         vy *= scale
@@ -269,8 +275,8 @@ def rounded_path(waypoints, radius, loop):
     return tuple(result)
 
 
-def path_reference(center, waypoints, speed, lookahead, loop):
-    """Project the virtual center onto a shared path and preview along it."""
+def path_reference_state(center, waypoints, speed, lookahead, loop):
+    """Return a path preview, its velocity, and its local turn rate."""
     points = tuple(tuple(float(value) for value in point) for point in waypoints)
     if len(points) < 2 or any(len(point) != 3 for point in points):
         raise ValueError("path requires at least two XYZ waypoints")
@@ -314,26 +320,49 @@ def path_reference(center, waypoints, speed, lookahead, loop):
                         start[2] + fraction * (end[2] - start[2]))
             velocity = (speed * dx / length, speed * dy / length,
                         speed * (end[2] - start[2]) / length)
-            return position, velocity
+            if len(segments) < 2 or (not loop and index == 0):
+                turn_rate = 0.0
+            else:
+                previous = segments[(index - 1) % len(segments)]
+                cross = previous[2] * dy - previous[3] * dx
+                dot = previous[2] * dx + previous[3] * dy
+                heading_change = math.atan2(cross, dot)
+                arc_length = 0.5 * (previous[4] + length)
+                turn_rate = speed * heading_change / arc_length
+            return position, velocity, turn_rate
     raise AssertionError("unreachable path segment")
+
+
+def path_reference(center, waypoints, speed, lookahead, loop):
+    """Project the virtual center onto a shared path and preview along it."""
+    position, velocity, _turn_rate = path_reference_state(
+        center, waypoints, speed, lookahead, loop)
+    return position, velocity
 
 
 def consensus_velocity(path_velocity, desired_center, own_center,
                        neighbor_centers, gain, convergence_time,
-                       max_correction):
-    """Path velocity plus the Swiftwing ring Laplacian center correction."""
+                       max_correction=None):
+    """Path velocity plus neighbor-center consensus correction."""
     values = (*path_velocity, *desired_center, *own_center,
               *(value for center in neighbor_centers for value in center),
-              gain, convergence_time, max_correction)
+              gain, convergence_time)
+    if max_correction is not None:
+        values += (max_correction,)
     if not all(math.isfinite(float(value)) for value in values):
         raise ValueError("non-finite consensus input")
-    if gain < 0 or convergence_time <= 0 or max_correction < 0:
+    if (gain < 0 or convergence_time <= 0 or
+            (max_correction is not None and max_correction < 0)):
         raise ValueError("invalid consensus gains")
     if not neighbor_centers:
         raise ValueError("consensus requires neighbors")
     vx = path_velocity[0] + (desired_center[0] - own_center[0]) / convergence_time
     vy = path_velocity[1] + (desired_center[1] - own_center[1]) / convergence_time
     path_speed = math.hypot(path_velocity[0], path_velocity[1])
+    if (vx * path_velocity[0] + vy * path_velocity[1] < 0.0):
+        # A member ahead of the preview point should slow down and let the
+        # group catch up; asking it to fly backward destabilizes fixed-wings.
+        vx, vy = path_velocity[:2]
     magnitude = math.hypot(vx, vy)
     if magnitude > 1e-6:
         vx, vy = vx * path_speed / magnitude, vy * path_speed / magnitude
@@ -343,11 +372,51 @@ def consensus_velocity(path_velocity, desired_center, own_center,
     correction_y = -gain * sum(own_center[1] - center[1]
                                for center in neighbor_centers)
     correction_norm = math.hypot(correction_x, correction_y)
-    if correction_norm > max_correction and correction_norm > 0:
+    if (max_correction is not None and
+            correction_norm > max_correction and correction_norm > 0):
         scale = max_correction / correction_norm
         correction_x *= scale
         correction_y *= scale
     return vx + correction_x, vy + correction_y, path_velocity[2]
+
+
+def consensus_speed_targets(path_speed, progress_errors, member_speeds,
+                            gain, max_speed_adjustment, min_speed,
+                            deadband=1.0):
+    """Pace a team so lagging members gain speed and others wait for them.
+
+    ``progress_errors`` are positive for members behind the team's mean.
+    During a gap, lagging members get a speed increase while members ahead of
+    the mean slow down by the same bounded amount. An ahead member already
+    moving slowly is not told to speed back up just to match that pace. A
+    small deadband avoids speed changes caused by position noise.
+    """
+    errors = tuple(float(value) for value in progress_errors)
+    speeds = tuple(float(value) for value in member_speeds)
+    values = (path_speed, gain, max_speed_adjustment, min_speed, deadband,
+              *errors, *speeds)
+    if (not errors or len(errors) != len(speeds) or
+            not all(math.isfinite(float(value)) for value in values) or
+            path_speed <= 0 or gain < 0 or max_speed_adjustment < 0 or
+            min_speed < 0 or deadband < 0):
+        raise ValueError("invalid consensus pacing inputs")
+
+    baseline_speed = max(path_speed, min_speed)
+    maximum_lag = max(0.0, max(errors) - deadband)
+    if maximum_lag <= 0:
+        return tuple(baseline_speed for _ in errors)
+
+    shared_adjustment = min(max_speed_adjustment, gain * maximum_lag)
+    targets = []
+    for error, speed in zip(errors, speeds):
+        if error > deadband:
+            targets.append(baseline_speed + shared_adjustment)
+        elif error < -deadband:
+            pace = max(min_speed, baseline_speed - shared_adjustment)
+            targets.append(max(min_speed, min(pace, speed)))
+        else:
+            targets.append(baseline_speed)
+    return tuple(targets)
 
 
 def blocking_action(action, control_state):
