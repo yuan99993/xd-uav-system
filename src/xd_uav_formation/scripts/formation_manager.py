@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Configured team-level formation service and member process launcher."""
+"""Team-level formation service and shared per-member runtime."""
 
 import copy
 import math
 import os
 import re
 import threading
+import time
 
-import roslaunch
-import roslaunch.core
-import roslaunch.rlutil
-import roslaunch.scriptapi
 import rospy
+import tf2_ros
 import yaml
 from std_srvs.srv import SetBool, Trigger, TriggerResponse
 
+from xd_uav_formation.runtime import FormationRuntime
 from xd_uav_formation.srv import FormationControl, FormationControlResponse
 
 
@@ -40,8 +39,9 @@ class FormationManager:
     def __init__(self):
         self._lock = threading.RLock()
         self._active_group = None
-        self._child_launch = None
-        self._child_processes = []
+        self._mode_runtimes = {}
+        self._tf_buffer = None
+        self._tf_listener = None
         self._configured_modes = {}
 
         config_path = rospy.get_param("~config", "")
@@ -56,20 +56,23 @@ class FormationManager:
             raise ValueError("service_timeout must be a positive finite number")
         self._load_mode_configs(self._profile, common_parameters)
 
-        if rospy.get_param("~spawn_members", False):
+        self._spawn_members = bool(rospy.get_param("~spawn_members", False))
+        if self._spawn_members:
             if not self._configured_modes:
                 raise ValueError("formation config has no configured mode")
-            self._start_configured_members()
 
         self._service = rospy.Service(
             "/formation/set_enabled", FormationControl, self._handle)
         self._stop_service = rospy.Service(
             "/formation/stop", Trigger, self._handle_stop)
         rospy.on_shutdown(self._shutdown_children)
+        launch_policy = ("single process on first enable" if self._spawn_members
+                         else "external member nodes")
         rospy.loginfo(
             "[xd_uav_formation] unified services ready: "
-            "/formation/set_enabled and /formation/stop; configured modes=%s",
-            ",".join(self._configured_modes) or "manual")
+            "/formation/set_enabled and /formation/stop; configured modes=%s; "
+            "shared runtime policy=%s",
+            ",".join(self._configured_modes) or "manual", launch_policy)
 
     @staticmethod
     def _valid_name(value):
@@ -79,7 +82,7 @@ class FormationManager:
     def _normalise_mode_config(mode_config, common_parameters, root_config):
         if not isinstance(mode_config, dict):
             raise ValueError("mode configuration must be a mapping")
-        result = copy.deepcopy(common_parameters)
+        result = dict(common_parameters)
         result.update(copy.deepcopy(mode_config))
         result["team_id"] = mode_config.get(
             "team_id", root_config.get("team_id", "team1"))
@@ -140,59 +143,92 @@ class FormationManager:
             "formation_follower"
         return "/{}/{}/set_enabled".format(member, node_name)
 
-    def _start_configured_members(self):
+    def _shared_tf_buffer(self):
+        if self._tf_buffer is not None:
+            return self._tf_buffer
+        cache_times = [float(config.get("tf_buffer_cache_time", 5.0))
+                       for config in self._configured_modes.values()]
+        cache_time = max(cache_times or [5.0])
+        if not math.isfinite(cache_time) or cache_time <= 0.0:
+            raise ValueError("tf_buffer_cache_time must be positive and finite")
+        self._tf_buffer = tf2_ros.Buffer(
+            cache_time=rospy.Duration(cache_time))
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
+        return self._tf_buffer
+
+    def _release_shared_tf(self):
+        if self._tf_listener is not None:
+            self._tf_listener.unregister()
+        self._tf_listener = None
+        self._tf_buffer = None
+
+    def _start_configured_members(self, mode):
+        """Create one shared runtime with per-member controllers."""
+        if mode in self._mode_runtimes:
+            return
+        config = self._configured_modes.get(mode)
+        if config is None:
+            raise RuntimeError("no configured {} mode to launch".format(mode))
+
         code, message, state = rospy.get_master().getSystemState()
         if code != 1:
             raise RuntimeError("cannot inspect ROS master: " + message)
         existing_services = {name for name, _nodes in state[2]}
         planned = []
-        for mode, config in self._configured_modes.items():
-            for member in config["members"]:
-                service_name = self._service_name(member, mode)
-                if service_name in existing_services:
-                    raise RuntimeError(
-                        "{} already exists; stop the old formation nodes first".format(
-                            service_name))
-                planned.append((mode, member, service_name))
+        for member in config["members"]:
+            service_name = self._service_name(member, mode)
+            if service_name in existing_services:
+                raise RuntimeError(
+                    "{} already exists; stop the old formation nodes first".format(
+                        service_name))
+            planned.append((member, service_name))
 
-        launch_uuid = roslaunch.rlutil.get_or_generate_uuid(None, False)
-        roslaunch.configure_logging(launch_uuid)
-        self._child_launch = roslaunch.scriptapi.ROSLaunch()
-        self._child_launch.start()
+        runtime = None
         try:
-            for mode, member, _service_name in planned:
-                config = self._configured_modes[mode]
-                node_name = "formation_consensus" if mode == "consensus" \
-                    else "formation_follower"
-                namespace = self._node_namespace(member, mode)
-                parameters = copy.deepcopy(config)
-                parameters.pop("offsets", None)
-                parameters.pop("common", None)
-                parameters.pop("service_timeout", None)
-                if mode == "leader_follow":
-                    parameters["offset"] = list(config["offsets"][member])
-                rospy.set_param(namespace, parameters)
-                node = roslaunch.core.Node(
-                    "xd_uav_formation", "formation_follower.py",
-                    name=node_name, namespace="/" + member,
-                    output="screen")
-                self._child_processes.append(self._child_launch.launch(node))
-                rospy.loginfo(
-                    "[xd_uav_formation] launched %s in /%s",
-                    node_name, member)
+            runtime = FormationRuntime(
+                mode, config, self._shared_tf_buffer())
+            startup_deadline = time.monotonic() + self._service_timeout
+            for _member, service_name in planned:
+                remaining = startup_deadline - time.monotonic()
+                if remaining <= 0.0:
+                    raise rospy.ROSException(
+                        "timed out waiting for {}".format(service_name))
+                rospy.wait_for_service(service_name, timeout=remaining)
+            rate = float(config.get("rate", 20.0))
+            startup_settle = min(1.0, max(0.1, 2.0 / rate))
+            if mode == "consensus":
+                state_timeout = float(config.get("state_timeout", 0.5))
+                center_period = min(1.0, 0.5 * state_timeout)
+                startup_settle = max(startup_settle, center_period + 0.05)
+            time.sleep(startup_settle)
         except Exception:
-            self._shutdown_children()
+            if runtime is not None:
+                runtime.shutdown()
+            if not self._mode_runtimes:
+                self._release_shared_tf()
             raise
+        self._mode_runtimes[mode] = runtime
 
-    def _shutdown_children(self):
-        if self._child_launch is not None:
+    def _shutdown_mode_runtime(self, mode):
+        runtime = self._mode_runtimes.pop(mode, None)
+        if runtime is None:
+            return
+        try:
+            runtime.shutdown()
+        except Exception as error:
+            rospy.logwarn(
+                "[xd_uav_formation] %s runtime shutdown error: %s",
+                mode, error)
+        if not self._mode_runtimes:
             try:
-                self._child_launch.stop()
+                self._release_shared_tf()
             except Exception as error:
                 rospy.logwarn(
-                    "[xd_uav_formation] child shutdown error: %s", error)
-            self._child_launch = None
-            self._child_processes = []
+                    "[xd_uav_formation] TF shutdown error: %s", error)
+
+    def _shutdown_children(self):
+        for mode in tuple(self._mode_runtimes):
+            self._shutdown_mode_runtime(mode)
 
     def _discover_members(self, mode):
         try:
@@ -266,6 +302,12 @@ class FormationManager:
         return (mode, members), ""
 
     def _validate_member_configuration(self, mode, members):
+        if self._spawn_members and mode in self._configured_modes:
+            config = self._configured_modes[mode]
+            if list(config["members"]) != list(members):
+                return None, "members do not match the loaded YAML profile"
+            return config["team_id"], ""
+
         team_id = None
         leaders = set()
         for member in members:
@@ -308,8 +350,9 @@ class FormationManager:
         rospy.wait_for_service(service_name, timeout=self._service_timeout)
         return rospy.ServiceProxy(service_name, SetBool)(enabled)
 
-    @staticmethod
-    def _clear_acquisition_plan(team_id):
+    def _clear_acquisition_plan(self, team_id):
+        for runtime in self._mode_runtimes.values():
+            runtime.clear_acquisition_plan(team_id)
         path = "/formation/{}/acquisition_plan".format(team_id)
         if rospy.has_param(path):
             rospy.delete_param(path)
@@ -375,7 +418,10 @@ class FormationManager:
         for service_name, member, node_mode in sorted(formation_services):
             mode = "consensus" if node_mode == "consensus" else "leader_follow"
             namespace = self._node_namespace(member, mode)
-            team_id = rospy.get_param(namespace + "/team_id", None)
+            if self._spawn_members and mode in self._configured_modes:
+                team_id = self._configured_modes[mode]["team_id"]
+            else:
+                team_id = rospy.get_param(namespace + "/team_id", None)
             if self._valid_name(team_id):
                 teams.add(team_id)
             try:
@@ -390,6 +436,10 @@ class FormationManager:
         for team_id in teams:
             self._clear_acquisition_plan(team_id)
         self._active_group = None
+
+        if not errors and self._spawn_members:
+            for mode in tuple(self._mode_runtimes):
+                self._shutdown_mode_runtime(mode)
 
         if errors:
             return False, "stopped {} node(s); {}".format(
@@ -415,8 +465,22 @@ class FormationManager:
         if error:
             return FormationControlResponse(False, error)
         mode, members = validated
+        if request.enabled and self._spawn_members:
+            try:
+                self._start_configured_members(mode)
+            except Exception as error:
+                return FormationControlResponse(False, str(error))
+        elif not request.enabled and self._spawn_members and \
+                mode not in self._mode_runtimes:
+            return FormationControlResponse(True, "formation already stopped")
+
         team_id, error = self._validate_member_configuration(mode, members)
         if error:
+            active_mode = (self._active_group[1]
+                           if self._active_group is not None else None)
+            if request.enabled and self._spawn_members and \
+                    mode != active_mode:
+                self._shutdown_mode_runtime(mode)
             return FormationControlResponse(False, error)
 
         if request.enabled and self._active_group is not None:
@@ -425,8 +489,10 @@ class FormationManager:
                 try:
                     self._set_members(old_team, old_mode, old_members, False)
                     self._active_group = None
+                    self._shutdown_mode_runtime(old_mode)
                 except (rospy.ROSException, rospy.ServiceException,
                         RuntimeError) as stop_error:
+                    self._shutdown_mode_runtime(mode)
                     return FormationControlResponse(
                         False, "could not stop previous mode: {}".format(
                             stop_error))
@@ -442,6 +508,8 @@ class FormationManager:
         elif self._active_group is not None and \
                 self._active_group[1] == mode:
             self._active_group = None
+        if not request.enabled and self._spawn_members:
+            self._shutdown_mode_runtime(mode)
         action = "enabled" if request.enabled else "disabled"
         rospy.loginfo(
             "[xd_uav_formation] team %s %s (%s): %s",

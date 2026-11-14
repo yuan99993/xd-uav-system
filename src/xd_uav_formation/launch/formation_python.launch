@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config"
+       default="$(find xd_uav_formation)/config/formation_10_fixedwing.yaml"/>
+  <arg name="common_config"
+       default="$(find xd_uav_formation)/config/common.yaml"/>
+  <!-- One manager process hosts all configured member controllers on demand. -->
+  <node pkg="xd_uav_formation" type="formation_manager.py"
+        name="formation_manager" output="screen" required="true"
+        clear_params="true">
+    <param name="config" value="$(arg config)"/>
+    <param name="common_config" value="$(arg common_config)"/>
+    <param name="spawn_members" value="true"/>
+  </node>
+</launch>

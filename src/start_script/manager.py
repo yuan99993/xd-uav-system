@@ -46,25 +46,6 @@ def _proc_info(pid):
         return None, None
 
 
-def _group_has_live_processes(pgid):
-    try:
-        entries = os.scandir("/proc")
-    except OSError:
-        return True
-    with entries:
-        for entry in entries:
-            if not entry.name.isdigit():
-                continue
-            try:
-                raw = Path(entry.path, "stat").read_text(encoding="utf-8")
-                fields = raw[raw.rfind(")") + 2:].split()
-                if int(fields[2]) == int(pgid) and fields[0] != "Z":
-                    return True
-            except (OSError, ValueError, IndexError):
-                continue
-    return False
-
-
 def _expand_string(value, context):
     def replace(match):
         key = match.group(1)
@@ -104,7 +85,6 @@ class ProcessManager:
         if self.require_auth and not self.auth_token:
             raise RuntimeError("set {} before starting the listener".format(
                 self.auth_token_env or "network.auth_token_env"))
-        self.stop_grace_sec = float(self.config.get("stop_grace_sec", 5.0))
         self.max_vehicles = int(self.config.get("max_vehicles", 60))
         self.setup_scripts = [
             _expand_string(os.path.expandvars(os.path.expanduser(str(item))),
@@ -153,44 +133,42 @@ class ProcessManager:
         os.chmod(temp_path, 0o600)
         os.replace(temp_path, self.registry_path)
 
-    def _signal_record(self, record):
-        pid = int(record.get("pid", -1))
-        pgid = int(record.get("pgid", -1))
-        expected_start = str(record.get("start_time", ""))
-        if pid <= 1 or pgid != pid:
-            return False
-        actual_pgid, actual_start = _proc_info(pid)
-        if actual_start is not None and (
-                actual_pgid != pgid or actual_start != expected_start):
-            self._log("skipping PID {} because its identity changed".format(pid))
-            return False
-        if actual_start is None:
+    def _signal_records(self, records):
+        """Immediately SIGKILL all recorded groups after checking PID identity."""
+        signalled = set()
+        for record in records:
             try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                return False
-            except PermissionError:
-                return False
-            self._log("stopping recorded process group {} after its leader exited".format(
-                pgid))
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            self._log("permission denied stopping process group {}".format(pgid))
-            return False
+                pid = int(record.get("pid", -1))
+                pgid = int(record.get("pgid", -1))
+                expected_start = str(record.get("start_time", ""))
+            except (AttributeError, TypeError, ValueError):
+                self._log("skipping malformed process record")
+                continue
+            if pid <= 1 or pgid != pid or pgid in signalled:
+                continue
 
-        deadline = time.monotonic() + self.stop_grace_sec
-        while time.monotonic() < deadline:
-            if not _group_has_live_processes(pgid):
-                return True
-            time.sleep(0.1)
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        return True
+            actual_pgid, actual_start = _proc_info(pid)
+            if actual_start is not None and (
+                    actual_pgid != pgid or actual_start != expected_start):
+                self._log("skipping PID {} because its identity changed".format(pid))
+                continue
+            if actual_start is None:
+                try:
+                    os.killpg(pgid, 0)
+                except ProcessLookupError:
+                    continue
+                except PermissionError:
+                    self._log("permission denied checking process group {}".format(pgid))
+                    continue
+
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+                signalled.add(pgid)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                self._log("permission denied killing process group {}".format(pgid))
+        return signalled
 
     def _recover_previous_processes(self):
         registry = self._load_registry()
@@ -198,9 +176,7 @@ class ProcessManager:
         if isinstance(records, dict) and records:
             self._log("stopping {} process group(s) left by the previous manager".format(
                 len(records)))
-            for record in records.values():
-                if isinstance(record, dict):
-                    self._signal_record(record)
+            self._signal_records(list(records.values()))
         self.registry_path.unlink(missing_ok=True)
         generated_root = self.runtime_dir / "generated"
         if generated_root.exists():
@@ -800,36 +776,40 @@ class ProcessManager:
         self._log("started {} pid={} log={}".format(
             spec["label"], process.pid, log_path))
 
-    def _stop_process(self, key):
-        managed = self.active.pop(key, None)
-        if not managed:
+    def _stop_processes(self, keys):
+        stopping = []
+        for key in keys:
+            managed = self.active.pop(key, None)
+            if managed:
+                stopping.append((key, managed))
+        if not stopping:
             return
-        record = managed["record"]
-        self._signal_record(record)
-        process = managed.get("process")
-        if process is not None:
-            try:
-                process.wait(timeout=0.5)
-            except subprocess.TimeoutExpired:
-                pass
-        self._log("stopped {} pid={}".format(record.get("label", key), record["pid"]))
+
+        self._signal_records([managed["record"] for _, managed in stopping])
+        for key, managed in stopping:
+            process = managed.get("process")
+            if process is not None:
+                process.poll()
+            record = managed["record"]
+            self._log("stopped {} pid={}".format(record.get("label", key), record["pid"]))
 
     def _reconcile(self, desired):
+        stale_keys = []
         for key, managed in list(self.active.items()):
             wanted = desired.get(key)
             process = managed.get("process")
             alive = process is None or process.poll() is None
             same = wanted and wanted["signature"] == managed["record"].get("signature")
             if not same or not alive:
-                self._stop_process(key)
+                stale_keys.append(key)
+        self._stop_processes(stale_keys)
         for key, spec in desired.items():
             if key not in self.active:
                 self._start_process(key, spec)
         self._write_registry()
 
     def _stop_all(self):
-        for key in list(self.active):
-            self._stop_process(key)
+        self._stop_processes(list(self.active))
         self.active.clear()
         old_generation = self.generation_dir
         self.generation_dir = None

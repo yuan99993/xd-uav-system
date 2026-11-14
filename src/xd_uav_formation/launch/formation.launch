@@ -1,11 +1,11 @@
 <?xml version="1.0"?>
 <launch>
   <arg name="config"
-       default="$(find xd_uav_formation)/config/formation_three_fixedwing.yaml"/>
+       default="$(find xd_uav_formation)/config/formation_10_fixedwing.yaml"/>
   <arg name="common_config"
        default="$(find xd_uav_formation)/config/common.yaml"/>
-  <!-- The manager starts the configured member nodes from the selected YAML. -->
-  <node pkg="xd_uav_formation" type="formation_manager.py"
+  <!-- One C++ manager process hosts all configured member controllers. -->
+  <node pkg="xd_uav_formation" type="formation_manager_cpp"
         name="formation_manager" output="screen" required="true"
         clear_params="true">
     <param name="config" value="$(arg config)"/>

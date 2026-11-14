@@ -1,0 +1,13 @@
+<launch>
+  <node pkg="xd_uav_formation" type="formation_manager_cpp"
+        name="formation_manager" output="screen" required="true">
+    <param name="config" value="$(find xd_uav_formation)/test/cpp_fixedwing.yaml"/>
+    <param name="spawn_members" value="true"/>
+  </node>
+  <test test-name="formation_cpp_fixedwing" pkg="xd_uav_formation"
+        type="test_formation_ros.py" time-limit="40">
+    <param name="airframe" value="fixedwing"/>
+    <param name="expected_x" value="30.0"/>
+    <param name="separate_frames" value="true"/>
+  </test>
+</launch>

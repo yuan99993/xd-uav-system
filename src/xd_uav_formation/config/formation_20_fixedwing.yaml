@@ -50,4 +50,16 @@ consensus:
   cruise_speed: 20.0
   lookahead_distance: 50.0
   consensus_gain: 0.4
+  max_consensus_velocity: 4.0  # m/s, slot correction limit during route flight
+  # Capture-stage settings: lateral gain and independent velocity limits (m/s).
+  acquire_consensus_gain: 0.8
+  acquire_max_consensus_velocity: 8.0
+  acquire_max_speed_adjustment: 8.0
+  # Shared geometry and command slew limits for all configured members.
+  formation_heading_rate_limit: 0.10  # rad/s, slot rotation during route flight
+  formation_speed_slew_rate: 2.0     # m/s^2, commanded speed change limit
+  formation_course_slew_rate: 0.25   # rad/s, commanded course change limit
+  # Route attraction acts after gathering and altitude merging have completed.
+  route_correction_gain: 0.4
+  max_route_correction_velocity: 4.0 # m/s, separate from slot capture correction
   convergence_time: 100.0

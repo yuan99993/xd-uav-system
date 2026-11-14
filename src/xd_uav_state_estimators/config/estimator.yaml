@@ -9,6 +9,25 @@ imu_timeout: 10.0
 require_imu: true #true：IMU 掉线会停止有效主输出；false：定位健康时仍能输出，定位失效时则依赖最后状态做纯模型预测
 frame_lookup_timeout: 10.0
 
+# 首次初始化前要求所有必需修正连续稳定。适用于飞机仍在地面、仿真
+# 尚在完成坐标/传感器初始化的启动阶段。位置容差较宽，以吸收仿真
+# 初期抖动；若观测持续移动、时间戳重复或出现坐标系切换，则重新计时。
+startup_initialization:
+  enabled: true
+  stable_duration: 5.0
+  min_samples: 10
+  max_sample_gap: 1.0
+  position_xy_tolerance: 50.0
+  position_z_tolerance: 30.0
+  velocity_xy_tolerance: 5.0
+  velocity_z_tolerance: 3.0
+  heading_tolerance: 0.7
+  yaw_rate_tolerance: 0.75
+  # 在地面初始化时限制明显的滑行/爬升速度，避免把运动状态当作静止初值。
+  velocity_xy_max_speed: 1.5
+  velocity_z_max_speed: 0.75
+  yaw_rate_max: 0.75
+
 # 主估计结果除标准odom坐标系外，还可重发布到以下坐标系。
 # 对应话题为state_estimator/main/frames/<坐标系>/odom。
 main_republish_in_frames: [local_origin, world]

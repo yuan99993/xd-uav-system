@@ -2,7 +2,7 @@
 # Formation manager service lookup timeout in seconds.
 service_timeout: 30.0
 # Follower state/control parameters.
-rate: 50.0
+rate: 30.0
 state_timeout: 120.0
 mavros_timeout: 120.0
 tf_max_age: 120.0
@@ -16,12 +16,20 @@ minimum_slot_distance: 0.1
 fixedwing_minimum_slot_distance: 0.1
 # Speed and formation tracking parameters.
 fixedwing_min_speed: 0.1
+# Maximum horizontal speed increase for a fixed-wing follower catching up.
+fixedwing_max_catchup_speed: 10.0
 # Groundspeed threshold for estimating course; below it, use body heading
 # when a valid airspeed is available.
 fixedwing_min_groundspeed_for_course: 0.1
 # Multirotor-only speed caps; fixed-wing references are not capped here.
 multirotor_max_speed: 10.0
-catchup_gain: 0.60
+catchup_gain: 0.20
+# I/D terms for slot tracking; catchup_gain is the proportional term.
+catchup_ki: 0.01
+catchup_kd: 0.20
+catchup_deadband: 1.0
+catchup_integral_limit: 50.0
+catchup_derivative_filter_time_constant: 0.4
 multirotor_max_catchup_speed: 25.0
 yaw_offset: 0.0
 # Topic names resolved in each UAV namespace unless absolute.

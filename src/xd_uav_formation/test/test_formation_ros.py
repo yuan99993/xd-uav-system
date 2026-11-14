@@ -153,12 +153,25 @@ class FormationRosTest(unittest.TestCase):
         self.assertTrue(self._until(lambda: self._formation_count >= 3),
                         "formation did not stream its slot")
         base_x = 0.0 if self._airframe == "multirotor" else 15.0
-        correction = max(-3.0, min(3.0, 0.25 * self._expected_x))
-        expected_velocity_x = base_x + correction
+        base_y = 0.0 if self._airframe == "multirotor" else -8.0
+        correction_limit = 3.0 if self._airframe == "multirotor" else 4.0
+        correction = max(-correction_limit, min(
+            correction_limit, 0.25 * (self._expected_x - 1.0)))
+        if self._airframe == "multirotor":
+            expected_velocity_x = base_x + correction
+            expected_velocity_y = base_y
+        else:
+            base_speed = math.hypot(base_x, base_y)
+            target_speed = base_speed + correction
+            expected_velocity_x = base_x * target_speed / base_speed
+            expected_velocity_y = base_y * target_speed / base_speed
         self.assertTrue(self._until(
             lambda: self._latest_velocity is not None and
-            abs(self._latest_velocity[0] - expected_velocity_x) < 0.01),
-            "slot error did not adjust the requested speed")
+            abs(self._latest_velocity[0] - expected_velocity_x) < 0.01 and
+            abs(self._latest_velocity[1] - expected_velocity_y) < 0.01),
+            "slot error did not adjust the requested velocity: {} != {}".format(
+                self._latest_velocity,
+                (expected_velocity_x, expected_velocity_y)))
         self._own_x = self._expected_x
         self.assertTrue(self._until(
             lambda: self._latest_velocity is not None and
@@ -174,12 +187,15 @@ class FormationRosTest(unittest.TestCase):
         external.header.stamp = rospy.Time.now()
         external.header.frame_id = "world"
         external.position.x = 20.0
+        self.assertTrue(self._until(
+            lambda: self._external_pub.get_num_connections() > 0),
+            "external setpoint publisher did not connect")
         for _ in range(3):
             self._external_pub.publish(external)
             time.sleep(0.03)
         self.assertTrue(self._until(
             lambda: self._status.startswith(
-                "inactive:external_setpoint_from:")),
+                "inactive:dropout:external_setpoint_from:")),
             "formation did not yield to a different publisher")
         with self._lock:
             count = self._formation_count
@@ -222,7 +238,7 @@ class FormationRosTest(unittest.TestCase):
         self.assertTrue(self._until(lambda: self._formation_count >= 2))
         self._preempt_pub.publish(String(data="new_task"))
         self.assertTrue(self._until(
-            lambda: self._status == "inactive:preempt:new_task"))
+            lambda: self._status == "inactive:dropout:preempt:new_task"))
 
     def test_execute_task_goal_ends_formation(self):
         rospy.wait_for_service(
@@ -240,9 +256,14 @@ class FormationRosTest(unittest.TestCase):
         goal = ExecuteTaskActionGoal()
         goal.header.stamp = rospy.Time.now()
         goal.goal.task_id = 42
-        self._task_goal_pub.publish(goal)
         self.assertTrue(self._until(
-            lambda: self._status == "inactive:task_goal:42"))
+            lambda: self._task_goal_pub.get_num_connections() > 0),
+            "task goal subscriber did not connect")
+        for _ in range(3):
+            self._task_goal_pub.publish(goal)
+            time.sleep(0.03)
+        self.assertTrue(self._until(
+            lambda: self._status == "inactive:dropout:task_goal:42"))
 
 
 if __name__ == "__main__":

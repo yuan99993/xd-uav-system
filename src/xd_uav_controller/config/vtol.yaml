@@ -40,12 +40,12 @@ fixedwing:
     lookahead_filter_time_constant: 0.55
 
   lateral_control:
-    course_time_constant: 1.6
+    course_time_constant: 2.0
     # 所有常规外部参考（轨迹或PositionTarget）共用course PI环；积分输出单位rad/s，
     # 用于消除风、舵效和模型偏差，限幅与滚转限幅共同防止wind-up。
-    course_integral_gain: 0.08
+    course_integral_gain: 0.04
     course_integral_rate_limit: 0.25
-    roll_time_constant: 0.45
+    roll_time_constant: 0.90
 
   vertical_control:
     altitude_time_constant: 3.5
@@ -87,10 +87,10 @@ fixedwing:
     # R=30 m at the observed 15--17.5 m/s requires roughly 0.65--0.81 rad.
     # Do not let course-error feedback tighten the turn far below the planned
     # Dubins radius (the previous 0.95 rad produced the measured inner loops).
-    maximum_roll: 0.9
+    maximum_roll: 0.6
     maximum_pitch: 0.45
     maximum_climb_rate: 8.0
-    maximum_body_rate: [2.5, 2.0, 2.0]
+    maximum_body_rate: [2.0, 2.0, 2.0]
 
   modes:
     loiter:

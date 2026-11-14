@@ -9,20 +9,21 @@ leader_follow:
   members: [uav2, uav3, uav4, uav5, uav6]
   offsets:
     # [forward, left, up] metres relative to uav1's ground-track direction.
-    uav2: [-80.0, 40.0, 0.0]
-    uav3: [-80.0, -40.0, 0.0]
-    uav4: [-160.0, 40.0, 0.0]
-    uav5: [-160.0, -40.0, 0.0]
-    uav6: [-240.0, 0.0, 0.0]
-
-
+    uav2: [-100.0, 80.0, 0.0]
+    uav3: [-100.0, -80.0, 0.0]
+    uav4: [-200.0, 160.0, 0.0]
+    uav5: [-200.0, -160.0, 0.0]
+    uav6: [-300.0, 240.0, 0.0]
+    # uav7: [-300.0, -240.0, 0.0]
+    # uav8: [-400.0, 320.0, 0.0]
+    # uav9: [-400.0, -320.0, 0.0]
 
 consensus:
   team_id: fixedwing_30_consensus
   members: [uav1, uav2, uav3, uav4, uav5, uav6]
   common_frame: world
   shape: circle
-  spacing: 50.0
+  spacing: 100.0
   acquire_tolerance: 20.0
   acquire_height_tolerance: 5.0
   acquire_vertical_spacing: 10.0
@@ -38,4 +39,16 @@ consensus:
   cruise_speed: 20.0
   lookahead_distance: 50.0
   consensus_gain: 0.4
+  max_consensus_velocity: 4.0  # m/s, slot correction limit during route flight
+  # Capture-stage settings: lateral gain and independent velocity limits (m/s).
+  acquire_consensus_gain: 0.8
+  acquire_max_consensus_velocity: 10.0
+  acquire_max_speed_adjustment: 10.0
+  # Shared geometry and command slew limits for all configured members.
+  formation_heading_rate_limit: 0.10  # rad/s, slot rotation during route flight
+  formation_speed_slew_rate: 2.0     # m/s^2, commanded speed change limit
+  formation_course_slew_rate: 0.25   # rad/s, commanded course change limit
+  # Route attraction acts after gathering and altitude merging have completed.
+  route_correction_gain: 0.4
+  max_route_correction_velocity: 8.0 # m/s, separate from slot capture correction
   convergence_time: 100.0

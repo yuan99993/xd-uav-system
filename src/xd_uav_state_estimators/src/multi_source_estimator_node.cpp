@@ -426,14 +426,21 @@ struct CorrectionRuntime {
   ros::Subscriber subscriber;
   ros::Time last_received;
   ros::Time last_accepted;
+  ros::Time startup_stable_since;
+  ros::Time startup_last_receive;
+  ros::Time startup_last_sample_stamp;
   ros::Time quarantine_until;
   ros::Time recovery_started;
+  Eigen::Vector2d startup_anchor_vector{Eigen::Vector2d::Zero()};
+  double startup_anchor_scalar{0.0};
   std::uint64_t received{0};
   std::uint64_t accepted{0};
   std::uint64_t rejected{0};
   std::uint64_t valid_session{0};
   int consecutive_rejections{0};
   int recovery_samples{0};
+  int startup_stable_samples{0};
+  bool startup_anchor_initialized{false};
   bool recovering{false};
 };
 
@@ -523,6 +530,8 @@ struct SourceRuntime {
   double alignment_yaw{0.0};
   bool alignment_initialized{false};
   bool filters_initialized{false};
+  bool startup_initialized{false};
+  bool startup_stability_announced{false};
   bool required_corrections_were_connected{false};
   bool required_corrections_were_fresh{false};
   bool filter_reseed_pending{false};
@@ -633,6 +642,45 @@ class MultiSourceEstimatorNode {
     private_nh_.param("imu_timeout", imu_timeout_, 0.3);
     private_nh_.param("require_imu", require_imu_, false);
     private_nh_.param("frame_lookup_timeout", frame_lookup_timeout_, 0.03);
+    private_nh_.param("startup_initialization/enabled",
+                      startup_initialization_enabled_, true);
+    private_nh_.param("startup_initialization/stable_duration",
+                      startup_stable_duration_, 10.0);
+    private_nh_.param("startup_initialization/min_samples",
+                      startup_min_samples_, 20);
+    private_nh_.param("startup_initialization/max_sample_gap",
+                      startup_max_sample_gap_, 1.0);
+    private_nh_.param("startup_initialization/position_xy_tolerance",
+                      startup_position_xy_tolerance_, 10.0);
+    private_nh_.param("startup_initialization/position_z_tolerance",
+                      startup_position_z_tolerance_, 5.0);
+    private_nh_.param("startup_initialization/velocity_xy_tolerance",
+                      startup_velocity_xy_tolerance_, 3.0);
+    private_nh_.param("startup_initialization/velocity_z_tolerance",
+                      startup_velocity_z_tolerance_, 2.0);
+    private_nh_.param("startup_initialization/heading_tolerance",
+                      startup_heading_tolerance_, 0.7);
+    private_nh_.param("startup_initialization/yaw_rate_tolerance",
+                      startup_yaw_rate_tolerance_, 0.75);
+    private_nh_.param("startup_initialization/velocity_xy_max_speed",
+                      startup_velocity_xy_max_speed_, 1.5);
+    private_nh_.param("startup_initialization/velocity_z_max_speed",
+                      startup_velocity_z_max_speed_, 0.75);
+    private_nh_.param("startup_initialization/yaw_rate_max",
+                      startup_yaw_rate_max_, 0.75);
+    if (startup_stable_duration_ < 0.0 || startup_min_samples_ <= 0 ||
+        startup_max_sample_gap_ <= 0.0 ||
+        startup_position_xy_tolerance_ < 0.0 ||
+        startup_position_z_tolerance_ < 0.0 ||
+        startup_velocity_xy_tolerance_ < 0.0 ||
+        startup_velocity_z_tolerance_ < 0.0 ||
+        startup_heading_tolerance_ < 0.0 ||
+        startup_yaw_rate_tolerance_ < 0.0 ||
+        startup_velocity_xy_max_speed_ < 0.0 ||
+        startup_velocity_z_max_speed_ < 0.0 ||
+        startup_yaw_rate_max_ < 0.0) {
+      throw std::runtime_error("startup_initialization参数无效");
+    }
 
     private_nh_.param("filter/initial_position_variance",
                       axis_parameters_.initial_position_variance, 1.0);
@@ -1039,6 +1087,148 @@ class MultiSourceEstimatorNode {
     return true;
   }
 
+  bool startupStabilityRequired(const SourceRuntime& source) const {
+    return startup_initialization_enabled_ &&
+           !source.startup_initialized && !main_state_->initialized;
+  }
+
+  double startupTolerance(const CorrectionKind kind) const {
+    switch (kind) {
+      case CorrectionKind::kPositionXY:
+        return startup_position_xy_tolerance_;
+      case CorrectionKind::kPositionZ:
+        return startup_position_z_tolerance_;
+      case CorrectionKind::kVelocityXY:
+        return startup_velocity_xy_tolerance_;
+      case CorrectionKind::kVelocityZ:
+        return startup_velocity_z_tolerance_;
+      case CorrectionKind::kHeading:
+        return startup_heading_tolerance_;
+      case CorrectionKind::kYawRate:
+        return startup_yaw_rate_tolerance_;
+    }
+    return 0.0;
+  }
+
+  bool startupSampleWithinAnchor(
+      const CorrectionRuntime& correction,
+      const CorrectionSample& sample) const {
+    switch (sample.kind) {
+      case CorrectionKind::kPositionXY:
+      case CorrectionKind::kVelocityXY:
+        return (sample.vector - correction.startup_anchor_vector).norm() <=
+               startupTolerance(sample.kind);
+      case CorrectionKind::kPositionZ:
+      case CorrectionKind::kVelocityZ:
+        return std::abs(sample.scalar - correction.startup_anchor_scalar) <=
+               startupTolerance(sample.kind);
+      case CorrectionKind::kHeading:
+        return std::abs(wrapAngle(
+                   sample.scalar - correction.startup_anchor_scalar)) <=
+               startupTolerance(sample.kind);
+      case CorrectionKind::kYawRate:
+        return std::abs(sample.scalar - correction.startup_anchor_scalar) <=
+               startupTolerance(sample.kind);
+    }
+    return false;
+  }
+
+  bool startupMotionWithinLimits(const CorrectionSample& sample) const {
+    switch (sample.kind) {
+      case CorrectionKind::kVelocityXY:
+        return sample.vector.norm() <= startup_velocity_xy_max_speed_;
+      case CorrectionKind::kVelocityZ:
+        return std::abs(sample.scalar) <= startup_velocity_z_max_speed_;
+      case CorrectionKind::kYawRate:
+        return std::abs(sample.scalar) <= startup_yaw_rate_max_;
+      default:
+        return true;
+    }
+  }
+
+  void resetStartupStability(CorrectionRuntime* correction) {
+    correction->startup_stable_since = ros::Time();
+    correction->startup_last_receive = ros::Time();
+    correction->startup_last_sample_stamp = ros::Time();
+    correction->startup_anchor_vector.setZero();
+    correction->startup_anchor_scalar = 0.0;
+    correction->startup_stable_samples = 0;
+    correction->startup_anchor_initialized = false;
+  }
+
+  void resetStartupWindow(SourceRuntime* source) {
+    source->raw = RawState();
+    source->fused_raw = RawState();
+    source->raw_frame.clear();
+    source->latest_raw_stamp = ros::Time();
+    source->alignment_initialized = false;
+    source->alignment_translation.setZero();
+    source->alignment_yaw = 0.0;
+    source->last_alignment_publish_stamp = ros::Time();
+    source->startup_stability_announced = false;
+    for (auto& correction : source->corrections) {
+      correction->valid_session = 0;
+      correction->last_accepted = ros::Time();
+      resetStartupStability(correction.get());
+    }
+  }
+
+  void updateStartupStability(CorrectionRuntime* correction,
+                             const CorrectionSample& sample,
+                             const ros::Time& now) {
+    const bool sample_stamp_not_increasing =
+        !correction->startup_last_sample_stamp.isZero() &&
+        sample.stamp <= correction->startup_last_sample_stamp;
+    const bool sample_gap_too_large =
+        !correction->startup_last_receive.isZero() &&
+        (now - correction->startup_last_receive).toSec() >
+            startup_max_sample_gap_;
+    const bool outside_anchor =
+        correction->startup_anchor_initialized &&
+        !startupSampleWithinAnchor(*correction, sample);
+    const bool excessive_startup_motion =
+        !startupMotionWithinLimits(sample);
+    const bool restart_window =
+        !correction->startup_anchor_initialized ||
+        sample_stamp_not_increasing || sample_gap_too_large ||
+        outside_anchor || excessive_startup_motion;
+    if (restart_window) {
+      correction->startup_anchor_vector = sample.vector;
+      correction->startup_anchor_scalar = sample.scalar;
+      correction->startup_stable_since = now;
+      correction->startup_stable_samples = 1;
+    } else {
+      ++correction->startup_stable_samples;
+    }
+    correction->startup_anchor_initialized = true;
+    correction->startup_last_receive = now;
+    correction->startup_last_sample_stamp = sample.stamp;
+  }
+
+  bool startupCorrectionsStable(const SourceRuntime& source,
+                                const ros::Time& now) const {
+    bool have_required = false;
+    for (const auto& correction : source.corrections) {
+      if (!correction->config.required) {
+        continue;
+      }
+      have_required = true;
+      if (!correction->startup_anchor_initialized ||
+          correction->startup_stable_samples < startup_min_samples_ ||
+          correction->startup_stable_since.isZero() ||
+          now < correction->startup_stable_since ||
+          (now - correction->startup_stable_since).toSec() <
+              startup_stable_duration_ ||
+          correction->startup_last_receive.isZero() ||
+          now < correction->startup_last_receive ||
+          (now - correction->startup_last_receive).toSec() >
+              startup_max_sample_gap_) {
+        return false;
+      }
+    }
+    return have_required;
+  }
+
   void processCorrection(SourceRuntime* source,
                          CorrectionRuntime* correction,
                          const CorrectionSample& sample) {
@@ -1066,15 +1256,44 @@ class MultiSourceEstimatorNode {
         if (source->raw_frame.empty()) {
           source->raw_frame = sample.frame_id;
         } else if (sample.frame_id != source->raw_frame) {
-          registerRejection(source, correction,
-                            "同一提供者的位姿坐标系发生变化");
-          return;
+          if (startupStabilityRequired(*source) &&
+              !source->filters_initialized) {
+            resetStartupWindow(source);
+            source->raw_frame = sample.frame_id;
+            ROS_WARN_THROTTLE(
+                1.0,
+                "[xd_uav_state_estimators] 来源%s启动期间坐标系变化为%s，"
+                "重新等待稳定观测",
+                source->config.name.c_str(), sample.frame_id.c_str());
+          } else {
+            registerRejection(source, correction,
+                              "同一提供者的位姿坐标系发生变化");
+            return;
+          }
         }
       }
       if (!source->filters_initialized) {
         updateRawState(&source->raw, sample);
         source->latest_raw_stamp =
             std::max(source->latest_raw_stamp, sample.stamp);
+      }
+    }
+
+    if (startupStabilityRequired(*source)) {
+      updateStartupStability(correction, sample, ros::Time::now());
+      if (!startupCorrectionsStable(*source, ros::Time::now())) {
+        ROS_INFO_THROTTLE(
+            2.0,
+            "[xd_uav_state_estimators] 来源%s等待必需定位输入稳定后初始化",
+            source->config.name.c_str());
+        return;
+      }
+      if (!source->startup_stability_announced) {
+        ROS_INFO(
+            "[xd_uav_state_estimators] 来源%s必需定位输入已稳定，"
+            "开始对齐和初始化",
+            source->config.name.c_str());
+        source->startup_stability_announced = true;
       }
     }
 
@@ -1106,6 +1325,7 @@ class MultiSourceEstimatorNode {
         return;
       }
       initializeFiltersFromFusedRaw(source, sample.stamp);
+      source->startup_initialized = true;
       if (source->config.name == active_source_) {
         // 活动来源的新会话已经直接对齐到当前main，因此旧会话的handover
         // 不能继续叠加。
@@ -1780,6 +2000,10 @@ class MultiSourceEstimatorNode {
 
   std::string sourceHealthReason(const SourceRuntime& source,
                                  const ros::Time& now) const {
+    if (startupStabilityRequired(source) &&
+        !startupCorrectionsStable(source, now)) {
+      return "等待启动定位输入稳定";
+    }
     if (!source.alignment_initialized) {
       return "来源原点尚未对齐";
     }
@@ -2688,6 +2912,13 @@ class MultiSourceEstimatorNode {
           xd_uav_state_estimators::EstimatorStatus::WAITING;
       message.state_name = "WAITING";
       message.failure_reason = "没有健康定位源";
+      for (const auto& source : sources_) {
+        if (startupStabilityRequired(*source) &&
+            !startupCorrectionsStable(*source, now)) {
+          message.failure_reason = "等待首个定位源的启动观测稳定";
+          break;
+        }
+      }
     } else {
       const double age = sourceLocalizationAge(
           *source_by_name_.at(active_source_), now);
@@ -2724,11 +2955,16 @@ class MultiSourceEstimatorNode {
           source->config.name;
       source_status.hardware_id = source->config.name;
       const bool healthy = sourceHealthy(*source, now);
+      const bool waiting_for_startup =
+          startupStabilityRequired(*source) &&
+          !startupCorrectionsStable(*source, now);
       source_status.level =
           healthy ? diagnostic_msgs::DiagnosticStatus::OK
                   : diagnostic_msgs::DiagnosticStatus::WARN;
       source_status.message =
-          healthy ? "健康" : "等待或存在必需修正异常";
+          healthy ? "健康"
+                  : (waiting_for_startup ? "等待启动定位输入稳定"
+                                         : "等待或存在必需修正异常");
       addDiagnostic(
           &source_status, "active",
           source->config.name == active_source_ ? "true" : "false");
@@ -2747,6 +2983,11 @@ class MultiSourceEstimatorNode {
       addDiagnostic(
           &source_status, "filter_reseed_pending",
           source->filter_reseed_pending ? "true" : "false");
+      addDiagnostic(&source_status, "startup_initialized",
+                    source->startup_initialized ? "true" : "false");
+      addDiagnostic(
+          &source_status, "startup_stability_required",
+          startupStabilityRequired(*source) ? "true" : "false");
       addDiagnostic(&source_status, "session",
                     std::to_string(source->session));
       addDiagnostic(
@@ -2793,6 +3034,14 @@ class MultiSourceEstimatorNode {
                 ? "-1"
                 : std::to_string(
                       (now - correction->last_accepted).toSec()));
+        addDiagnostic(&status, "startup_stable_samples",
+                      std::to_string(correction->startup_stable_samples));
+        addDiagnostic(
+            &status, "startup_stable_duration",
+            correction->startup_stable_since.isZero()
+                ? "0"
+                : std::to_string(
+                      (now - correction->startup_stable_since).toSec()));
         array.status.push_back(status);
       }
     }
@@ -2820,6 +3069,8 @@ class MultiSourceEstimatorNode {
     for (auto& source : sources_) {
       source->alignment_initialized = false;
       source->filters_initialized = false;
+      source->startup_initialized = false;
+      source->startup_stability_announced = false;
       source->raw = RawState();
       source->fused_raw = RawState();
       source->raw_frame.clear();
@@ -2841,6 +3092,7 @@ class MultiSourceEstimatorNode {
         correction->recovering = false;
         correction->consecutive_rejections = 0;
         correction->recovery_samples = 0;
+        resetStartupStability(correction.get());
       }
     }
     active_source_.clear();
@@ -2967,7 +3219,20 @@ class MultiSourceEstimatorNode {
   double minimum_active_time_{1.0};
   double switch_cooldown_{0.5};
   double frame_lookup_timeout_{0.03};
+  double startup_stable_duration_{10.0};
+  double startup_max_sample_gap_{1.0};
+  double startup_position_xy_tolerance_{10.0};
+  double startup_position_z_tolerance_{5.0};
+  double startup_velocity_xy_tolerance_{3.0};
+  double startup_velocity_z_tolerance_{2.0};
+  double startup_heading_tolerance_{0.7};
+  double startup_yaw_rate_tolerance_{0.75};
+  double startup_velocity_xy_max_speed_{1.5};
+  double startup_velocity_z_max_speed_{0.75};
+  double startup_yaw_rate_max_{0.75};
+  int startup_min_samples_{20};
   bool require_imu_{false};
+  bool startup_initialization_enabled_{true};
   bool remove_gravity_{true};
   bool use_nis_{true};
   bool hard_reject_nis_{false};

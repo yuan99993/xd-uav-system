@@ -4,7 +4,6 @@ workspace: /home/nvidia/xd-uavsystem-test
 runtime_dir: ~/.ros/xd_uav_start_manager
 default_profile: vtol
 max_vehicles: 60
-stop_grace_sec: 5.0
 
 # Each child launch sources these files before exec'ing its argv.
 setup_scripts:

@@ -66,4 +66,4 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 
 `world_tf` 和 `formation` 的运行配置、SAR 的传感器 overlay、以及每架飞机的 track 配置都写入 `~/.ros/xd_uav_start_manager/generated/`，不会改写 `src/` 下的源配置。world_tf 临时配置会按照本次 JSON 中的飞机列表更新 `vehicles` 和 `vehicle_configs`。
 
-每个启动项独立运行并记录 PID、进程组、命令和日志。断开连接或停止会话时，管理器会结束本会话的进程组；日志位于 `~/.ros/xd_uav_start_manager/logs/`。
+每个启动项独立运行并记录 PID、进程组、启动时间、命令和日志。停止会话、连接断开或更新移除启动项时，管理器会先核对 PID 身份，再对目标进程组批量发送 `SIGKILL`，不逐个等待宽限期；日志位于 `~/.ros/xd_uav_start_manager/logs/`。

@@ -3,9 +3,11 @@
 #include <clocale>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -13,9 +15,11 @@
 #include <mavros_msgs/PositionTarget.h>
 #include <nav_msgs/Path.h>
 #include <ros/ros.h>
+#include <ros/message_event.h>
 #include <sensor_msgs/Range.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/String.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -272,6 +276,20 @@ struct FixedwingControlTarget {
   bool enable_altitude_integrator{false};
 };
 
+struct FormationReferenceSource {
+  std::string node_name;
+  std::string publisher_name;
+  bool status_seen{false};
+  bool active{false};
+  bool blocked{false};
+  bool saw_inactive{false};
+};
+
+struct ReferencePublisherState {
+  ros::Time last_seen;
+  bool blocked{false};
+};
+
 }  // namespace
 
 class ControllerNode {
@@ -312,6 +330,14 @@ class ControllerNode {
     reference_position_target_publisher_ =
         nh_.advertise<mavros_msgs::PositionTarget>(
             "reference_position_target", 1, true);
+    formation_sources_[0].node_name = nh_.resolveName("formation_follower");
+    formation_sources_[1].node_name = nh_.resolveName("formation_consensus");
+    formation_follow_status_subscriber_ = nh_.subscribe(
+        "formation_follower/status", 20,
+        &ControllerNode::formationFollowStatusCallback, this);
+    formation_consensus_status_subscriber_ = nh_.subscribe(
+        "formation_consensus/status", 20,
+        &ControllerNode::formationConsensusStatusCallback, this);
     reference_trajectory_subscriber_ = nh_.subscribe(
         "reference_trajectory", 5,
         &ControllerNode::referenceTrajectoryCallback, this);
@@ -445,6 +471,9 @@ class ControllerNode {
     loadParameterWithLegacy(
         private_nh_, "reference_input/timeout", "reference_timeout",
         &reference_timeout_, 0.50);
+    private_nh_.param(
+        "reference_input/source_rearm_quiet_time",
+        reference_source_rearm_quiet_time_, 0.20);
     loadParameterWithLegacy(
         private_nh_, "reference_input/transform/timeout",
         "reference_frames/transform_timeout",
@@ -1052,6 +1081,8 @@ class ControllerNode {
         !std::isfinite(state_timeout_) || state_timeout_ <= 0.0 ||
         !std::isfinite(reference_timeout_) ||
         reference_timeout_ <= 0.0 ||
+        !std::isfinite(reference_source_rearm_quiet_time_) ||
+        reference_source_rearm_quiet_time_ < 0.0 ||
         !std::isfinite(reference_transform_timeout_) ||
         reference_transform_timeout_ < 0.0 ||
         !std::isfinite(maximum_transform_age_) ||
@@ -1981,6 +2012,7 @@ class ControllerNode {
           "外部控制参考已暂停", true);
     }
 
+    relinquishExternalReferenceSources();
     external_control_paused_ = true;
     have_reference_ = false;
     have_reference_error_ = false;
@@ -2170,8 +2202,158 @@ class ControllerNode {
         reason.c_str());
   }
 
+  int formationSourceIndex(const std::string& publisher) const {
+    for (std::size_t index = 0; index < formation_sources_.size(); ++index) {
+      if (formation_sources_[index].node_name == publisher ||
+          (!formation_sources_[index].publisher_name.empty() &&
+           formation_sources_[index].publisher_name == publisher)) {
+        return static_cast<int>(index);
+      }
+    }
+    return -1;
+  }
+
+  bool formationReferenceBlocked(const std::string& publisher) const {
+    bool matched_source = false;
+    for (const auto& source : formation_sources_) {
+      if (source.node_name != publisher &&
+          (source.publisher_name.empty() ||
+           source.publisher_name != publisher)) {
+        continue;
+      }
+      matched_source = true;
+      // The unified formation manager publishes every member's references
+      // under one ROS caller ID. Allow that shared publisher while at least
+      // one matching formation source is active and still owns this aircraft.
+      if (source.active && !source.blocked) {
+        return false;
+      }
+    }
+    return matched_source;
+  }
+
+  bool referencePublisherBlocked(const std::string& publisher) {
+    if (publisher.empty() || publisher == ros::this_node::getName()) {
+      return false;
+    }
+    const ros::Time now = ros::Time::now();
+    auto& state = reference_publishers_[publisher];
+    if (state.blocked) {
+      const double quiet_time = state.last_seen.isZero()
+                                    ? std::numeric_limits<double>::infinity()
+                                    : (now - state.last_seen).toSec();
+      if (quiet_time < reference_source_rearm_quiet_time_) {
+        state.last_seen = now;
+        return true;
+      }
+      state.last_seen = now;
+      return false;
+    }
+    state.last_seen = now;
+    return false;
+  }
+
+  void blockFormationReferences() {
+    for (auto& source : formation_sources_) {
+      source.blocked = true;
+      source.saw_inactive = source.status_seen && !source.active;
+    }
+  }
+
+  void claimExternalReference(const std::string& publisher) {
+    if (publisher.empty() || publisher == ros::this_node::getName()) {
+      return;
+    }
+    const ros::Time now = ros::Time::now();
+    if (!active_reference_publisher_.empty() &&
+        active_reference_publisher_ != publisher) {
+      auto& previous = reference_publishers_[active_reference_publisher_];
+      previous.blocked = true;
+      previous.last_seen = now;
+    }
+    active_reference_publisher_ = publisher;
+    auto& current = reference_publishers_[publisher];
+    current.blocked = false;
+    current.last_seen = now;
+    if (formationSourceIndex(publisher) < 0) {
+      // A valid external command owns this aircraft immediately. Formation
+      // messages already queued on another TCP connection must not replace it.
+      blockFormationReferences();
+    }
+  }
+
+  void relinquishExternalReferenceSources() {
+    const ros::Time now = ros::Time::now();
+    if (!active_reference_publisher_.empty()) {
+      auto& previous = reference_publishers_[active_reference_publisher_];
+      previous.blocked = true;
+      previous.last_seen = now;
+      active_reference_publisher_.clear();
+    }
+    blockFormationReferences();
+  }
+
+  void unblockReferencePublisher(const std::string& publisher) {
+    if (publisher.empty()) {
+      return;
+    }
+    const auto found = reference_publishers_.find(publisher);
+    if (found != reference_publishers_.end()) {
+      found->second.blocked = false;
+      found->second.last_seen = ros::Time::now();
+    }
+  }
+
+  void formationStatusCallback(
+      const ros::MessageEvent<std_msgs::String const>& event,
+      const std::size_t index) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    auto& source = formation_sources_[index];
+    if (!publisher.empty()) {
+      source.publisher_name = publisher;
+    }
+    const bool active = message->data.compare(0, 7, "active:") == 0;
+    const bool inactive = message->data.compare(0, 9, "inactive:") == 0;
+    if (!active && !inactive) {
+      return;
+    }
+    if (inactive) {
+      source.saw_inactive = true;
+    } else if (source.status_seen && !source.active && source.saw_inactive) {
+      // Only an explicit inactive -> active lifecycle transition rejoins the
+      // formation. Active heartbeats queued before dropout cannot reclaim it.
+      source.blocked = false;
+      source.saw_inactive = false;
+      unblockReferencePublisher(source.publisher_name);
+    }
+    source.status_seen = true;
+    source.active = active;
+  }
+
+  void formationFollowStatusCallback(
+      const ros::MessageEvent<std_msgs::String const>& event) {
+    formationStatusCallback(event, 0);
+  }
+
+  void formationConsensusStatusCallback(
+      const ros::MessageEvent<std_msgs::String const>& event) {
+    formationStatusCallback(event, 1);
+  }
+
   void referencePositionTargetCallback(
-      const mavros_msgs::PositionTarget::ConstPtr& message) {
+      const ros::MessageEvent<mavros_msgs::PositionTarget const>& event) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    if (publisher == ros::this_node::getName()) {
+      // simpleGoalCallback already applied this goal before publishing its
+      // canonical mirror. Replaying that mirror could overwrite a newer goal.
+      return;
+    }
+    if (formationReferenceBlocked(publisher) ||
+        referencePublisherBlocked(publisher)) {
+      return;
+    }
     if (!externalReferenceAllowed()) {
       return;
     }
@@ -2187,12 +2369,6 @@ class ControllerNode {
             *message, &source, &reason)) {
       rejectExternalReference(reason);
       return;
-    }
-    if (pending_simple_goal_sequence_ != 0U &&
-        message->header.seq == pending_simple_goal_sequence_) {
-      source.type = xd_uav_controller::ReferenceType::kSimpleGoal;
-      source.source = "simple_goal";
-      pending_simple_goal_sequence_ = 0U;
     }
     if (!positionTargetSupportedByVehicle(source, &reason)) {
       rejectExternalReference(reason);
@@ -2214,6 +2390,7 @@ class ControllerNode {
     updateFixedwingExternalSetpointGuidance(
         normalized, starting_new_mode);
 
+    claimExternalReference(publisher);
     reference_source_ = source;
     reference_ = normalized;
     path_active_ = false;
@@ -2243,7 +2420,12 @@ class ControllerNode {
   }
 
   void simpleGoalCallback(
-      const geometry_msgs::PoseStamped::ConstPtr& message) {
+      const ros::MessageEvent<geometry_msgs::PoseStamped const>& event) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    if (referencePublisherBlocked(publisher)) {
+      return;
+    }
     if (!externalReferenceAllowed()) {
       return;
     }
@@ -2297,7 +2479,6 @@ class ControllerNode {
         canonicalFrame(message->header.frame_id);
     reference.header.stamp = ros::Time::now();
     reference.header.seq = ++simple_goal_sequence_counter_;
-    pending_simple_goal_sequence_ = reference.header.seq;
     reference.coordinate_frame =
         mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
     reference.type_mask =
@@ -2331,6 +2512,7 @@ class ControllerNode {
         idle_reference_active_ || fixedwing_loiter_active_ ||
         !have_reference_;
     updateFixedwingExternalSetpointGuidance(normalized, starting_new_mode);
+    claimExternalReference(publisher);
     reference_source_ = source;
     reference_ = normalized;
     path_active_ = false;
@@ -2965,7 +3147,14 @@ class ControllerNode {
     return true;
   }
 
-  void referencePathCallback(const nav_msgs::Path::ConstPtr& message) {
+  void referencePathCallback(
+      const ros::MessageEvent<nav_msgs::Path const>& event) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    if (formationReferenceBlocked(publisher) ||
+        referencePublisherBlocked(publisher)) {
+      return;
+    }
     // rospy replaces a top-level Header.seq during serialization.  Prefer the
     // independently stored ID in the first path pose so multiple per-vehicle
     // publishers cannot accidentally collapse to path ID 1.
@@ -3018,6 +3207,7 @@ class ControllerNode {
       rejectPath(requested_id, "去除重复点后Path不足两个点");
       return;
     }
+    claimExternalReference(publisher);
     reference_path_source_points_ = std::move(source_points);
     reference_path_points_ = std::move(points);
     reference_path_frame_ = canonicalFrame(message->header.frame_id);
@@ -3048,8 +3238,14 @@ class ControllerNode {
   }
 
   void referenceTrajectoryCallback(
-      const trajectory_msgs::MultiDOFJointTrajectory::ConstPtr&
-          message) {
+      const ros::MessageEvent<trajectory_msgs::MultiDOFJointTrajectory const>&
+          event) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    if (formationReferenceBlocked(publisher) ||
+        referencePublisherBlocked(publisher)) {
+      return;
+    }
     if (!externalReferenceAllowed()) {
       return;
     }
@@ -3076,6 +3272,7 @@ class ControllerNode {
       rejectExternalReference(reason);
       return;
     }
+    claimExternalReference(publisher);
     reference_trajectory_ = *message;
     reference_ = normalized;
     reference_trajectory_start_ =
@@ -3255,6 +3452,7 @@ class ControllerNode {
              request.action_phase ==
                  xd_uav_controller::InternalCommand::Request::
                      PHASE_WAIT_HOVER)) {
+          relinquishExternalReferenceSources();
           finish(true, "已记录VTOL起飞动作，等待manager确认旋翼模式");
           return true;
         }
@@ -3273,6 +3471,7 @@ class ControllerNode {
              request.action_phase ==
                  xd_uav_controller::InternalCommand::Request::
                      PHASE_WAIT_HOVER)) {
+          relinquishExternalReferenceSources();
           finish(true, "已记录VTOL降落动作，等待manager确认悬停");
           return true;
         }
@@ -3290,6 +3489,7 @@ class ControllerNode {
              request.action_phase ==
                  xd_uav_controller::InternalCommand::Request::
                      PHASE_WAIT_HOVER)) {
+          relinquishExternalReferenceSources();
           finish(true, "已记录VTOL返航降落动作，等待manager确认悬停");
           return true;
         }
@@ -3389,6 +3589,7 @@ class ControllerNode {
     ROS_INFO("[xd_uav_controller] %s",
              home_message.c_str());
 
+    relinquishExternalReferenceSources();
     internal_reference_active_ = true;
     idle_reference_active_ = false;
     if (isMultirotorBackendActive()) {
@@ -3708,6 +3909,7 @@ class ControllerNode {
           landing_origin_.z(), landing_course_);
     }
 
+    relinquishExternalReferenceSources();
     landing_active_ = true;
     landing_touchdown_ = false;
     landing_return_home_ = return_home;
@@ -3757,6 +3959,7 @@ class ControllerNode {
       return true;
     }
 
+    relinquishExternalReferenceSources();
     landing_active_ = false;
     landing_touchdown_ = false;
     landing_return_home_ = false;
@@ -3804,6 +4007,7 @@ class ControllerNode {
   bool resetCallback(
       std_srvs::Trigger::Request&,
       std_srvs::Trigger::Response& response) {
+    relinquishExternalReferenceSources();
     takeoff_active_ = false;
     fixedwing_loiter_active_ = false;
     landing_active_ = false;
@@ -5968,6 +6172,8 @@ class ControllerNode {
   ros::Subscriber reference_position_target_subscriber_;
   ros::Subscriber reference_trajectory_subscriber_;
   ros::Subscriber reference_path_subscriber_;
+  ros::Subscriber formation_follow_status_subscriber_;
+  ros::Subscriber formation_consensus_status_subscriber_;
   ros::Subscriber simple_goal_subscriber_;
   ros::Subscriber local_alignment_valid_subscriber_;
   ros::Publisher reference_position_target_publisher_;
@@ -5983,6 +6189,10 @@ class ControllerNode {
   sensor_msgs::Range distance_sensor_;
   Reference reference_;
   Reference reference_source_;
+  std::array<FormationReferenceSource, 2> formation_sources_;
+  std::unordered_map<std::string, ReferencePublisherState>
+      reference_publishers_;
+  std::string active_reference_publisher_;
   trajectory_msgs::MultiDOFJointTrajectory
       reference_trajectory_;
   std::vector<Eigen::Vector3d> reference_path_source_points_;
@@ -6010,7 +6220,6 @@ class ControllerNode {
   bool point_reference_latched_{false};
   bool external_control_paused_{false};
   uint32_t simple_goal_sequence_counter_{0};
-  uint32_t pending_simple_goal_sequence_{0};
   uint32_t path_sequence_counter_{0};
   uint32_t active_path_id_{0};
   std::size_t path_current_segment_{0};
@@ -6090,6 +6299,7 @@ class ControllerNode {
   double control_rate_{100.0};
   double state_timeout_{0.2};
   double reference_timeout_{0.5};
+  double reference_source_rearm_quiet_time_{0.20};
   double reference_transform_timeout_{0.03};
   double maximum_transform_age_{0.5};
   double reference_transform_future_tolerance_{0.05};

@@ -16,12 +16,14 @@ from xd_uav_formation.srv import FormationControl
 class ConsensusRosTest(unittest.TestCase):
     def setUp(self):
         self._airframe = rospy.get_param("~airframe", "multirotor")
+        self._expected_x = float(rospy.get_param("~expected_x", 120.0))
         self._lock = threading.Lock()
         self._running = True
         self._peer_airframe_override = None
         self._statuses = {}
         self._references = {"uav1": 0, "uav2": 0}
         self._latest_velocity_x = {}
+        self._latest_reference = {}
         self._uav2_x = 100.0
         self._state_pubs = {name: rospy.Publisher(
             "/{}/control_manager/state".format(name), ControlState,
@@ -85,13 +87,18 @@ class ConsensusRosTest(unittest.TestCase):
             self._statuses[name] = message.data
 
     def _on_reference(self, message, name):
+        with self._lock:
+            self._latest_reference[name] = (
+                message.position.x, message.position.y,
+                message.header.frame_id, message.type_mask,
+                message.velocity.x, message.velocity.y)
         expected_y = 40.0 if name == "uav1" else -40.0
         if (abs(message.position.y - expected_y) < 0.01 and
                 message.header.frame_id == "world" and
                 not (message.type_mask & PositionTarget.IGNORE_VX)):
             with self._lock:
                 self._latest_velocity_x[name] = message.velocity.x
-                if (abs(message.position.x - 120.0) < 0.01 and
+                if (abs(message.position.x - self._expected_x) < 0.01 and
                         (self._airframe == "multirotor" or
                          abs(message.velocity.x - 15.0) < 0.01)):
                     self._references[name] += 1
@@ -116,7 +123,19 @@ class ConsensusRosTest(unittest.TestCase):
             if self._airframe == "multirotor" else
             ControlState.AIRFRAME_MULTIROTOR)
         time.sleep(0.15)
-        mismatch = services["uav1"](True)
+        # A manager can advertise member services before state, MAVROS, and
+        # center telemetry has reached every callback queue. Wait through those
+        # startup-only readiness errors to check the airframe mismatch itself.
+        transient_readiness = {
+            "follower_state_stale", "follower_offboard_required",
+            "uav2_state_stale", "peer_offboard_required:uav2",
+            "neighbor_center_stale:uav2"}
+        mismatch = None
+        for _ in range(20):
+            mismatch = services["uav1"](True)
+            if mismatch.message not in transient_readiness:
+                break
+            time.sleep(0.05)
         self.assertFalse(mismatch.success)
         self.assertEqual(mismatch.message, "same_airframe_type_required")
         self._peer_airframe_override = None
@@ -134,7 +153,9 @@ class ConsensusRosTest(unittest.TestCase):
         self.assertTrue(response.success, response.message)
         self.assertTrue(self._until(lambda: all(
             count >= 3 for count in self._references.values())),
-            "both members did not stream their slots")
+            "both members did not stream their slots: references={}, statuses={}, velocities={}, raw={}".
+            format(self._references, self._statuses,
+                   self._latest_velocity_x, self._latest_reference))
         base_speed = 3.0 if self._airframe == "multirotor" else 15.0
         self._uav2_x = 80.0
         self.assertTrue(self._until(lambda:
@@ -149,21 +170,23 @@ class ConsensusRosTest(unittest.TestCase):
             abs(self._latest_velocity_x.get(name, 0.0) - base_speed) < 0.01
             for name in self._references)),
             "members did not return to cruise speed after convergence")
-        external = PositionTarget()
-        external.header.stamp = rospy.Time.now()
-        external.header.frame_id = "world"
-        external.position.x = 200.0
+        self._preempt = rospy.Publisher(
+            "/uav2/formation/preempt", String, queue_size=10)
+        self.assertTrue(self._until(
+            lambda: self._preempt.get_num_connections() > 0),
+            "member preempt subscriber did not connect")
+        previous_count = self._references["uav1"]
         for _ in range(3):
-            self._external.publish(external)
+            self._preempt.publish(String(data="member_fault"))
             time.sleep(0.03)
-        self.assertTrue(self._until(lambda: all(
-            status.startswith("inactive:")
-            for status in self._statuses.values()) and
-            len(self._statuses) == 2), "team did not stop together")
-        self.assertTrue(self._statuses["uav2"].startswith(
-            "inactive:external_setpoint_from:"))
-        self.assertTrue(self._statuses["uav1"].startswith(
-            "inactive:team_cancel:"))
+        self.assertTrue(self._until(lambda:
+            self._statuses.get("uav2", "").startswith(
+                "inactive:dropout:preempt:member_fault") and
+            self._statuses.get("uav1", "").startswith("active:")),
+            "member preemption affected the remaining formation member")
+        self.assertTrue(self._until(
+            lambda: self._references["uav1"] > previous_count),
+            "remaining member stopped publishing its formation reference")
 
 
 if __name__ == "__main__":
