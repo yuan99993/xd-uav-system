@@ -74,6 +74,8 @@ XmlRpc::XmlRpcValue acquisitionPlanValue(const AcquisitionPlan& plan) {
   parameter["tiers"] = tiers;
   parameter["heading"] = plan.heading;
   parameter["altitude"] = plan.altitude;
+  parameter["selection_revision"] =
+      static_cast<int>(plan.selection_revision);
   return parameter;
 }
 
@@ -87,6 +89,7 @@ Follower::Follower(ros::NodeHandle nh, const Config& config, std::string member,
     : nh_(std::move(nh)), config_(config), member_(std::move(member)),
       shared_(std::move(shared)), geometry_(std::move(geometry)),
       tf_buffer_(std::move(tf_buffer)), shared_inputs_(shared_inputs) {
+  if (!shared_) shared_ = std::make_shared<SharedData>();
   if (config_.mode != "leader_follow" && config_.mode != "consensus") {
     throw std::invalid_argument("mode must be leader_follow or consensus");
   }
@@ -111,12 +114,18 @@ Follower::Follower(ros::NodeHandle nh, const Config& config, std::string member,
   }
   if (!geometry_) throw std::invalid_argument("formation geometry is missing");
   if (config_.mode == "consensus") {
+    formation_selection_ = shared_->formationSelection();
     if (config_.members.size() < 2 || config_.common_frame.empty()) {
       throw std::invalid_argument("consensus requires members and common_frame");
     }
-    offset_ = validateOffset(geometry_->slots.at(static_cast<std::size_t>(
+    const auto own_slot_index = static_cast<std::size_t>(
         std::find(config_.members.begin(), config_.members.end(), member_) -
-        config_.members.begin())), config_.minimum_slot_distance);
+        config_.members.begin());
+    offset_ = geometry_->slots.at(own_slot_index);
+    if (!std::isfinite(offset_[0]) || !std::isfinite(offset_[1]) ||
+        !std::isfinite(offset_[2])) {
+      throw std::invalid_argument("consensus slot must be finite");
+    }
   } else {
     auto offset = config_.offsets.find(member_);
     if (offset != config_.offsets.end()) {
@@ -138,8 +147,6 @@ Follower::Follower(ros::NodeHandle nh, const Config& config, std::string member,
         ros::Duration(config_.tf_buffer_cache_time));
     owned_tf_listener_.reset(new tf2_ros::TransformListener(*tf_buffer_));
   }
-  if (!shared_) shared_ = std::make_shared<SharedData>();
-
   const auto require_finite_positive = [](double value, const char* name,
                                            bool allow_zero = false) {
     if (!std::isfinite(value) || (allow_zero ? value < 0.0 : value <= 0.0)) {
@@ -690,10 +697,26 @@ std::optional<std::string> Follower::readiness(
     if (own.flight_regime !=
         xd_uav_controller::ControlState::REGIME_FORWARD_FLIGHT)
       return "forward_flight_required";
-    const double offset_length = std::sqrt(offset_[0] * offset_[0] +
-        offset_[1] * offset_[1] + offset_[2] * offset_[2]);
-    if (offset_length < config_.fixedwing_minimum_slot_distance)
-      return "fixedwing_slot_too_close";
+    if (config_.mode == "consensus") {
+      const auto offsets = consensusSlotOffsets();
+      const auto own_offset = offsets.find(member_);
+      if (own_offset == offsets.end()) return "missing_consensus_slot";
+      for (const auto& entry : offsets) {
+        if (entry.first == member_) continue;
+        const double dx = own_offset->second[0] - entry.second[0];
+        const double dy = own_offset->second[1] - entry.second[1];
+        const double dz = own_offset->second[2] - entry.second[2];
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) <
+            config_.fixedwing_minimum_slot_distance) {
+          return "fixedwing_slot_too_close";
+        }
+      }
+    } else {
+      const double offset_length = std::sqrt(offset_[0] * offset_[0] +
+          offset_[1] * offset_[1] + offset_[2] * offset_[2]);
+      if (offset_length < config_.fixedwing_minimum_slot_distance)
+        return "fixedwing_slot_too_close";
+    }
   } else {
     return "unsupported_vehicle_type";
   }
@@ -815,13 +838,33 @@ std::vector<std::string> Follower::activeMembers() const {
   return active_members_cache_;
 }
 
+void Follower::refreshFormationSelection(const ros::Time& now) {
+  if (config_.mode != "consensus" || !shared_) return;
+  FormationSelection selection = shared_->formationSelection();
+  if (selection.revision == formation_selection_.revision) return;
+  formation_selection_ = std::move(selection);
+  consensus_heading_.reset();
+  consensus_heading_stamp_.reset();
+  paced_speed_.reset();
+  paced_speed_stamp_.reset();
+  progress_error_filter_.clear();
+  if (enabled_) {
+    acquire_heading_.reset();
+    acquire_stage_ = "waiting_for_team";
+    acquire_started_ = now;
+    reason_ = "acquiring_waiting_for_team";
+    publishStatus();
+  }
+}
+
 std::map<std::string, Vec3> Follower::consensusSlotOffsets() const {
   const auto members = activeMembers();
   std::vector<Vec3> slots;
   if (members.size() == 1) {
     slots.push_back({0.0, 0.0, 0.0});
   } else if (!members.empty()) {
-    slots = formationOffsets(config_.shape, members.size(), config_.spacing);
+    slots = formationOffsets(formation_selection_.shape, members.size(),
+                             config_.spacing);
   }
   std::map<std::string, Vec3> offsets;
   for (std::size_t i = 0; i < members.size(); ++i)
@@ -1197,16 +1240,18 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
     double seed_heading;
     if (consensus_heading_) seed_heading = *consensus_heading_;
     else {
-      const auto reference = pathReferenceState(centroid, config_.waypoints,
-          config_.cruise_speed, config_.lookahead, config_.loop_path);
+      const auto reference = pathReferenceState(centroid,
+          formation_selection_.waypoints, config_.cruise_speed,
+          config_.lookahead, formation_selection_.loop_path);
       seed_heading = std::atan2(reference.velocity[1], reference.velocity[0]);
     }
     std::vector<Vec3> estimates;
     for (std::size_t i = 0; i < positions.size(); ++i)
       estimates.push_back(virtualCenter(positions[i], seed_heading, offsets[i]));
     const Vec3 estimate = sharedCenter(estimates).first;
-    const auto reference = pathReferenceState(estimate, config_.waypoints,
-        config_.cruise_speed, config_.lookahead, config_.loop_path);
+    const auto reference = pathReferenceState(estimate,
+        formation_selection_.waypoints, config_.cruise_speed,
+        config_.lookahead, formation_selection_.loop_path);
     const double desired = std::atan2(reference.velocity[1], reference.velocity[0]);
     geometry.heading = desired;
     if (consensus_heading_) {
@@ -1285,8 +1330,9 @@ Vec3 Follower::ownCenterInCommonFrame(const ros::Time& now,
         Vec3 estimate = sharedCenter(peer_points).first;
         Vec3 center = position;
         for (int i = 0; i < 2; ++i) {
-          const auto path = pathReferenceState(estimate, config_.waypoints,
-              config_.cruise_speed, config_.lookahead, config_.loop_path);
+          const auto path = pathReferenceState(estimate,
+              formation_selection_.waypoints, config_.cruise_speed,
+              config_.lookahead, formation_selection_.loop_path);
           const double heading = std::atan2(path.velocity[1], path.velocity[0]);
           center = virtualCenter(position, heading, consensus_offset);
           auto all = peer_points; all.push_back(center);
@@ -1297,8 +1343,9 @@ Vec3 Follower::ownCenterInCommonFrame(const ros::Time& now,
     }
     Vec3 center = position;
     for (int i = 0; i < 2; ++i) {
-      const auto path = pathReferenceState(center, config_.waypoints,
-          config_.cruise_speed, config_.lookahead, config_.loop_path);
+      const auto path = pathReferenceState(center,
+          formation_selection_.waypoints, config_.cruise_speed,
+          config_.lookahead, formation_selection_.loop_path);
       center = virtualCenter(position,
           std::atan2(path.velocity[1], path.velocity[0]), consensus_offset);
     }
@@ -1386,8 +1433,8 @@ PathResult Follower::pacedPathReference(const Vec3& center, double speed) const 
   speed = std::max(speed, 1e-3);
   const double lookahead = config_.lookahead * speed /
       std::max(config_.cruise_speed, 1e-3);
-  return pathReferenceState(center, config_.waypoints, speed, lookahead,
-                            config_.loop_path);
+  return pathReferenceState(center, formation_selection_.waypoints, speed,
+                            lookahead, formation_selection_.loop_path);
 }
 
 double Follower::teamPacedSpeed(
@@ -1511,18 +1558,21 @@ AcquisitionPlan Follower::buildAcquisitionPlan(
     const ros::Time& now, const StateSnapshot& input) const {
   AcquisitionPlan plan;
   plan.members = config_.members;
-  plan.shape = config_.shape;
+  plan.shape = formation_selection_.shape;
   plan.spacing = config_.spacing;
+  plan.selection_revision = formation_selection_.revision;
   plan.stamp = now;
   plan.initial_positions = memberPositionsInCommonFrame(now, input);
   Vec3 mean{0.0, 0.0, 0.0};
   for (const auto& point : plan.initial_positions)
     for (int axis = 0; axis < 3; ++axis) mean[axis] += point[axis] / plan.initial_positions.size();
-  const auto route = pathReferenceState(mean, config_.waypoints,
-      config_.cruise_speed, config_.lookahead, config_.loop_path);
+  const auto route = pathReferenceState(mean, formation_selection_.waypoints,
+      config_.cruise_speed, config_.lookahead,
+      formation_selection_.loop_path);
   plan.heading = std::atan2(route.velocity[1], route.velocity[0]);
   plan.altitude = route.position[2];
-  plan.slots = acquisitionSlots(plan.initial_positions, geometry_->slots,
+  plan.slots = acquisitionSlots(plan.initial_positions,
+                                formation_selection_.slots,
                                 plan.heading, plan.altitude);
   double top = route.position[2];
   for (const auto& point : plan.initial_positions) top = std::max(top, point[2]);
@@ -1539,7 +1589,7 @@ void Follower::planAcquisition(const ros::Time& now,
     std::lock_guard<std::mutex> lock(shared_->acquisition_plan_mutex);
     plan = shared_->acquisition_plan;
   }
-  if (!plan && member_ == config_.members.front()) {
+  if (!plan && (member_ == config_.members.front() || shared_inputs_)) {
     plan = buildAcquisitionPlan(now, input);
     {
       std::lock_guard<std::mutex> lock(shared_->acquisition_plan_mutex);
@@ -1557,6 +1607,8 @@ void Follower::planAcquisition(const ros::Time& now,
           parsed.members.push_back(static_cast<std::string>(parameter["members"][i]));
         parsed.shape = static_cast<std::string>(parameter["shape"]);
         parsed.spacing = static_cast<double>(parameter["spacing"]);
+        parsed.selection_revision = static_cast<std::uint64_t>(
+            static_cast<int>(parameter["selection_revision"]));
         parsed.stamp = ros::Time(static_cast<double>(parameter["stamp"]));
         auto readPoints = [](const XmlRpc::XmlRpcValue& values) {
           std::vector<Vec3> points;
@@ -1581,7 +1633,20 @@ void Follower::planAcquisition(const ros::Time& now,
     }
   }
   const std::size_t count = config_.members.size();
-  if (!plan || plan->members != config_.members || plan->shape != config_.shape ||
+  if (plan && plan->selection_revision != formation_selection_.revision)
+    plan.reset();
+  if (!plan && (member_ == config_.members.front() || shared_inputs_)) {
+    plan = buildAcquisitionPlan(now, input);
+    {
+      std::lock_guard<std::mutex> lock(shared_->acquisition_plan_mutex);
+      shared_->acquisition_plan = plan;
+    }
+    nh_.setParam("/formation/" + config_.team_id + "/acquisition_plan",
+                 acquisitionPlanValue(*plan));
+  }
+  if (!plan || plan->members != config_.members ||
+      plan->shape != formation_selection_.shape ||
+      plan->selection_revision != formation_selection_.revision ||
       plan->spacing != config_.spacing || plan->initial_positions.size() != count ||
       plan->slots.size() != count || plan->tiers.size() != count)
     throw std::invalid_argument("shared acquisition plan is missing or mismatched");
@@ -1695,6 +1760,137 @@ mavros_msgs::PositionTarget Follower::fixedwingConsensusTarget(
     const ros::Time& now, const StateSnapshot& input,
     const xd_uav_controller::ControlState& own,
     std::optional<double> altitude) {
+  const bool acquisition_stage = acquire_stage_ &&
+      (*acquire_stage_ == "waiting_for_team" ||
+       *acquire_stage_ == "separating" || *acquire_stage_ == "gathering" ||
+       *acquire_stage_ == "merging");
+  if (!acquisition_stage &&
+      (formation_selection_.shape == "column" ||
+       formation_selection_.shape == "single_file")) {
+    const auto members = activeMembers();
+    const auto slot_offsets = consensusSlotOffsets();
+    std::vector<double> progresses;
+    std::vector<double> phases;
+    progresses.reserve(members.size());
+    phases.reserve(members.size());
+    Vec3 own_position{};
+    double path_length = 0.0;
+    for (std::size_t i = 0; i < members.size(); ++i) {
+      const auto& name = members[i];
+      const xd_uav_controller::ControlState* state =
+          name == member_ ? &own : nullptr;
+      if (!state) {
+        const auto it = input.states.find(name);
+        if (it == input.states.end()) {
+          throw std::invalid_argument(name + "_state_stale");
+        }
+        state = &it->second;
+      }
+      const Vec3 position = std::get<0>(stateInCommonFrame(*state, now));
+      if (name == member_) own_position = position;
+      const auto projection = projectPathProgress(
+          position, formation_selection_.waypoints,
+          formation_selection_.loop_path);
+      if (i == 0) {
+        path_length = projection.second;
+      } else if (std::abs(projection.second - path_length) > 1e-6) {
+        throw std::invalid_argument("inconsistent_column_path_length");
+      }
+      progresses.push_back(projection.first);
+      phases.push_back(projection.first - slot_offsets.at(name)[0]);
+    }
+    if (members.empty() || path_length <= 1e-6) {
+      throw std::invalid_argument("column_path_projection_unavailable");
+    }
+
+    double mean_phase = 0.0;
+    std::vector<double> aligned_phases = phases;
+    if (formation_selection_.loop_path) {
+      double anchor = std::fmod(phases.front(), path_length);
+      if (anchor < 0.0) anchor += path_length;
+      double sum = anchor;
+      aligned_phases.front() = anchor;
+      for (std::size_t i = 1; i < phases.size(); ++i) {
+        double phase = std::fmod(phases[i], path_length);
+        if (phase < 0.0) phase += path_length;
+        double delta = std::fmod(
+            phase - anchor + 0.5 * path_length, path_length);
+        if (delta < 0.0) delta += path_length;
+        delta -= 0.5 * path_length;
+        aligned_phases[i] = anchor + delta;
+        sum += aligned_phases[i];
+      }
+      mean_phase = sum / static_cast<double>(phases.size());
+    } else {
+      for (const double phase : phases) mean_phase += phase;
+      mean_phase /= static_cast<double>(phases.size());
+    }
+
+    const Vec3& own_offset = slot_offsets.at(member_);
+    const auto own_it = std::find(members.begin(), members.end(), member_);
+    const std::size_t own_index =
+        static_cast<std::size_t>(own_it - members.begin());
+    const double own_phase = aligned_phases.at(own_index);
+    const double phase_error = mean_phase - own_phase;
+    const auto correction = activeConsensusCorrection();
+    const double along_error = std::copysign(
+        std::max(0.0, std::abs(phase_error) - config_.catchup_deadband),
+        phase_error);
+    const double speed_adjustment = clampValue(
+        correction.first * along_error,
+        -config_.max_consensus_velocity, config_.max_consensus_velocity);
+    const double target_speed = std::max(
+        config_.fixedwing_min_speed,
+        config_.cruise_speed + speed_adjustment);
+    const double progress_offset =
+        mean_phase + own_offset[0] - progresses.at(own_index);
+    const PathResult route_reference = pathReferenceState(
+        own_position, formation_selection_.waypoints, config_.cruise_speed,
+        config_.lookahead, formation_selection_.loop_path, progress_offset);
+    const PathResult projection_reference = pathReferenceState(
+        own_position, formation_selection_.waypoints, config_.cruise_speed,
+        0.0, formation_selection_.loop_path);
+
+    const double projection_speed = std::hypot(
+        projection_reference.velocity[0], projection_reference.velocity[1]);
+    const double normal_x = projection_speed > 1e-6
+                                ? -projection_reference.velocity[1] /
+                                      projection_speed
+                                : 0.0;
+    const double normal_y = projection_speed > 1e-6
+                                ? projection_reference.velocity[0] /
+                                      projection_speed
+                                : 0.0;
+    const double cross_error =
+        (projection_reference.position[0] - own_position[0]) * normal_x +
+        (projection_reference.position[1] - own_position[1]) * normal_y;
+    const double lateral_adjustment = clampValue(
+        correction.first * cross_error,
+        -correction.second, correction.second);
+    const double speed_scale = target_speed /
+                               std::max(config_.cruise_speed, 1e-3);
+    Vec3 velocity{
+        route_reference.velocity[0] * speed_scale +
+            normal_x * lateral_adjustment,
+        route_reference.velocity[1] * speed_scale +
+            normal_y * lateral_adjustment,
+        route_reference.velocity[2] * speed_scale};
+    velocity = smoothCourseVelocity(velocity, now, own);
+    const double route_heading = std::atan2(
+        route_reference.velocity[1], route_reference.velocity[0]);
+    const Slot slot = slotTarget(route_reference.position, route_heading,
+                                 {0.0, 0.0, 0.0}, config_.yaw_offset);
+    const double target_altitude = altitude
+        ? *altitude
+        : route_reference.position[2] + own_offset[2];
+    auto target = positionTarget(
+        {slot[0], slot[1], target_altitude}, slot[3], now, velocity,
+        config_.common_frame, own);
+    target.type_mask |= mavros_msgs::PositionTarget::IGNORE_PX |
+                        mavros_msgs::PositionTarget::IGNORE_PY;
+    return target;
+  }
+
   const Geometry geometry = fixedwingConsensusGeometry(now, input, own);
   const auto slot_offsets = consensusSlotOffsets();
   const Vec3& consensus_offset = slot_offsets.at(member_);
@@ -1752,8 +1948,9 @@ mavros_msgs::PositionTarget Follower::consensusTarget(
   const auto centers = consensusCenters(now, input, own);
   const Vec3 center = std::get<0>(centers), mean = std::get<1>(centers);
   const auto center_points = teamCenterPoints(center, input);
-  const auto nominal = pathReferenceState(mean, config_.waypoints,
-      config_.cruise_speed, config_.lookahead, config_.loop_path);
+  const auto nominal = pathReferenceState(mean, formation_selection_.waypoints,
+      config_.cruise_speed, config_.lookahead,
+      formation_selection_.loop_path);
   double heading = std::atan2(nominal.velocity[1], nominal.velocity[0]);
   const double paced_speed = teamPacedSpeed(now, center_points, mean,
       nominal.velocity, heading, nominal.turn_rate, input, own);
@@ -1854,6 +2051,7 @@ bool Follower::setEnabled(bool enabled, std::string& message) {
   }
   if (enabled_) { message = "formation already active"; return true; }
   const ros::Time now = ros::Time::now();
+  refreshFormationSelection(now);
   if (last_external_reference_ &&
       (now - *last_external_reference_).toSec() < config_.external_quiet_time) {
     message = "another reference is active";
@@ -1920,6 +2118,7 @@ bool Follower::setEnabledService(std_srvs::SetBool::Request& request,
 void Follower::tick(const ros::TimerEvent&) {
   std::lock_guard<std::mutex> lock(mutex_);
   const ros::Time now = ros::Time::now();
+  refreshFormationSelection(now);
   const StateSnapshot input = snapshot();
   if (config_.mode == "consensus") {
     if (!enabled_) {
@@ -1983,13 +2182,39 @@ FormationRuntime::FormationRuntime(ros::NodeHandle nh, Config config,
       throw std::invalid_argument("consensus requires members and common_frame");
     geometry->slots = formationOffsets(config_.shape, config_.members.size(),
                                        config_.spacing);
-    for (std::size_t i = 0; i < config_.members.size(); ++i)
-      geometry->slot_offsets.emplace(config_.members[i], geometry->slots[i]);
-    config_.waypoints = roundedPath(config_.waypoints, config_.corner_radius,
-                                    config_.loop_path);
+    for (const auto& slot : geometry->slots) {
+      if (!std::isfinite(slot[0]) || !std::isfinite(slot[1]) ||
+          !std::isfinite(slot[2])) {
+        throw std::invalid_argument("consensus slot must be finite");
+      }
+    }
+    for (std::size_t i = 0; i < geometry->slots.size(); ++i) {
+      for (std::size_t j = i + 1; j < geometry->slots.size(); ++j) {
+        const double dx = geometry->slots[i][0] - geometry->slots[j][0];
+        const double dy = geometry->slots[i][1] - geometry->slots[j][1];
+        const double dz = geometry->slots[i][2] - geometry->slots[j][2];
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) <
+            config_.minimum_slot_distance) {
+          throw std::invalid_argument(
+              "consensus slots are closer than minimum separation");
+        }
+      }
+    }
+    if (!config_.waypoints_are_final) {
+      config_.waypoints = roundedPath(config_.waypoints,
+                                      config_.corner_radius,
+                                      config_.loop_path);
+      config_.waypoints_are_final = true;
+    }
     (void)pathReferenceState({0.0, 0.0, 0.0}, config_.waypoints,
                              config_.cruise_speed, config_.lookahead,
                              config_.loop_path);
+    FormationSelection selection;
+    selection.shape = config_.shape;
+    selection.waypoints = config_.waypoints;
+    selection.slots = geometry->slots;
+    selection.loop_path = config_.loop_path;
+    shared_->updateFormationSelection(std::move(selection));
   } else {
     geometry->member_offsets = config_.offsets;
     if (config_.shape != "manual") {
@@ -2162,6 +2387,44 @@ bool FormationRuntime::setMembers(bool enabled, std::string& message) {
   if (config_.mode == "consensus" && !enabled) clearAcquisitionPlan();
   message = enabled ? "team started" : "team stopped";
   return true;
+}
+
+bool FormationRuntime::updateFormationSelection(
+    const std::string& shape, const std::vector<Vec3>& waypoints,
+    bool loop_path, std::string& message) {
+  if (config_.mode != "consensus") {
+    message = "shape and path commands require consensus mode";
+    return false;
+  }
+  try {
+    FormationSelection selection;
+    selection.shape = shape;
+    selection.waypoints = waypoints;
+    selection.loop_path = loop_path;
+    selection.slots = formationOffsets(
+        shape, config_.members.size(), config_.spacing);
+    for (std::size_t i = 0; i < selection.slots.size(); ++i) {
+      for (std::size_t j = i + 1; j < selection.slots.size(); ++j) {
+        const double dx = selection.slots[i][0] - selection.slots[j][0];
+        const double dy = selection.slots[i][1] - selection.slots[j][1];
+        const double dz = selection.slots[i][2] - selection.slots[j][2];
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) <
+            config_.minimum_slot_distance) {
+          throw std::invalid_argument(
+              "selected formation slots are too close");
+        }
+      }
+    }
+    (void)pathReferenceState({0.0, 0.0, 0.0}, selection.waypoints,
+        config_.cruise_speed, config_.lookahead, selection.loop_path);
+    shared_->updateFormationSelection(std::move(selection));
+    clearAcquisitionPlan();
+    message = "shape and route selection updated";
+    return true;
+  } catch (const std::exception& error) {
+    message = error.what();
+    return false;
+  }
 }
 
 void FormationRuntime::clearAcquisitionPlan() {

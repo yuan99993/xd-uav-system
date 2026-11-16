@@ -1,6 +1,6 @@
 # xd_uav_formation
 
-本包提供领机跟随（`leader_follow`）和一致性编队（`consensus`）。默认 launch 启动一个 C++ 编队管理进程，由进程内的原生线程处理配置模式下所有成员的控制器；切换模式或停止队伍只启停参考输出，不再为每架飞机另起同一份节点代码。每种模式只订阅一份成员遥测，队内共享状态缓存、TF 缓存、只读参数和槽位几何；每架飞机只保留自己的控制状态、输出和服务状态。
+本包提供领机跟随（`leader_follow`）和一致性编队（`consensus`）。默认 launch 启动一个 C++ 编队管理进程；一致性编队每次根据服务请求中的 `members` 创建本次所选飞机的控制器和遥测订阅，不受 YAML 成员数量限制。切换成员集合时，管理器先停止旧队伍，再按新名单重建；未选飞机不进入该队的状态、中心和槽位计算。
 
 编队节点向各机的 `/<uav>/control/reference/setpoint` 发布位置和速度参考，不负责解锁、切换 OFFBOARD 或控制油门。领机跟随时，领机继续由自己的导航或轨迹输入控制。
 
@@ -10,12 +10,14 @@
 roslaunch xd_uav_formation formation.launch
 ```
 
-默认使用 `config/formation_10_fixedwing.yaml` 和 `config/common.yaml`。C++ 管理器会在启动时从 YAML 初始化配置的模式及所有成员控制器。启动服务就绪后，指定模式并启用即可发布参考：
+默认使用 `config/formation_10_fixedwing.yaml` 和 `config/common.yaml`。YAML 为模式提供控制参数；一致性编队的成员名单必须在每次启动请求中指定，可以多于配置文件以前列出的成员数量：
 
 ```bash
 rosservice call /formation/set_enabled "mode: 'leader_follow' enabled: true"
-rosservice call /formation/set_enabled "mode: 'consensus' enabled: true"
+rosservice call /formation/set_enabled "{mode: 'consensus', members: ['uav1', 'uav3', 'uav8'], enabled: true}"
 ```
+
+`consensus` 至少选择两架飞机，`members` 的顺序用于分配槽位。重新请求另一组成员时会先停止旧组再启动新组；停止当前所有编队仍可省略模式和成员。
 
 一次只启用一种模式。每架飞机仍有位于其命名空间下的编队状态服务和参考话题，但整个包只运行一个编队管理进程；不需要为每架飞机单独运行 `roslaunch`。C++ 管理器使用 ROS 原生异步线程池（至少 2 个线程，CPU 核数较多时使用约一半核心），定时控制和遥测回调不受 Python GIL 限制。停止当前所有编队控制器不需要指定模式或成员：
 
@@ -31,7 +33,7 @@ rosservice call /formation/stop "{}"
 
 ## 配置
 
-默认机队配置 [formation_10_fixedwing.yaml](config/formation_10_fixedwing.yaml) 同时包含 `leader_follow` 和 `consensus` 两节。领机跟随部分配置领机名称、僚机列表和相对领机航向的 `[前向, 左向, 上向]` 米制偏移；一致性部分配置成员、队形、间距和共同航线。按请求启动的模式以及该模式的飞机成员都由 YAML 决定。
+默认机队配置 [formation_10_fixedwing.yaml](config/formation_10_fixedwing.yaml) 同时包含 `leader_follow` 和 `consensus` 两节。领机跟随部分配置领机名称、僚机列表和相对领机航向的 `[前向, 左向, 上向]` 米制偏移；一致性部分配置队形形状、间距、共同航线和控制参数，不配置成员名单。`FormationControl.srv` 请求中的 `members` 是本次一致性编队的唯一成员来源。
 
 [common.yaml](config/common.yaml) 保存两种模式共用的控制周期、状态超时、固定翼速度限制、追赶增益等参数。机队文件中的同名参数会覆盖公共值。更换机型或队伍时，复制并修改机队 YAML，再通过 launch 参数加载：
 
@@ -43,6 +45,39 @@ roslaunch xd_uav_formation formation.launch \
 
 一致性编队中的 `common_frame`、航点和高度应按当前仿真/飞行场景修改。默认航线仅作演示，启动一致性模式前请替换为当前世界坐标系中的安全航线。领机跟随不使用一致性编队的航点。
 
+一致性编队的 `shape` 支持以下自动槽位布局，成员顺序按服务请求 `members` 中的顺序分配：
+
+| `shape` | 队形 | 槽位说明 |
+| --- | --- | --- |
+| `circle` | 圆形 | 成员均匀分布在环上 |
+| `rectangle_compact` | 紧凑矩形/网格 | 按成员数量生成紧凑网格 |
+| `line` | 一字横队 | 沿航向左右展开，首个成员位于左侧；`line_abreast` 是别名 |
+| `column` | 纵队 | 固定翼按航线弧长前后错开并共用同一路径，首个成员位于最前；`single_file` 是别名 |
+| `arrow` | 箭头/V形 | 首个成员位于尖端，其余成员从左侧开始交替分配到两翼；`vee`、`v_shape` 是别名 |
+
+这些布局由本次选中的成员数实时生成；脱队后剩余成员会重新分配对应数量的槽位。`manual` 仍只用于领机跟随的自定义偏移，不是可用于一致性编队的自动形状。
+
+### 运行时选择队形和航线
+
+管理器接收两路标准 ROS 消息，话题名称固定且不包含队形名：
+
+| 话题 | 消息类型 | 内容 |
+| --- | --- | --- |
+| `/formation/shape` | `std_msgs/String` | `circle`、`rectangle_compact`、`line`、`column` 或 `arrow`；也接受上表中的别名 |
+| `/formation/path` | `nav_msgs/Path` | 按顺序排列的航点；`header.frame_id` 指明坐标系，空的单点 frame 使用 Path 的 frame |
+
+例如，发送箭头队形：
+
+```bash
+rostopic pub -1 /formation/shape std_msgs/String "data: 'arrow'"
+```
+
+航点先变换到 `common_frame`，然后按收到的点列作为实际航线使用；该消息代表最终路径，不会再按 YAML 的 `corner_radius` 改写。`nav_msgs/Path` 本身没有循环标志，因此运行时路径沿用 YAML 配置的 `loop_path`；固定翼配置默认开启循环，管理器会在末点后自动接回首点，不要求发送端重复首点。若需要开放路径，应在 profile 中将 `loop_path` 设为 `false`。闭合航线应提供足够密集、转弯平滑的路径点。
+
+固定算法参数从 `common.yaml` 与当前 profile 读取；配置文件缺少必需的数值参数时，管理器会报出缺少的参数并停止启动，不再静默回退到代码默认值。航点仍可通过 `/formation/path` 在运行时更新。
+
+两条指令可以在启动一致性编队前发送，也可以在编队运行中发送。运行中收到有效更新后，所有成员会清除旧集结计划，并按新队形或航线重新集结。未发送指令时，继续使用 YAML 中的默认队形和航线。固定话题面向当前一致性编队管理器；形状名称不需要拼入话题名。
+
 `common.yaml` 列出了当前统一 launch 可调的共用参数和管理器参数：
 
 | 参数 | 用途 |
@@ -53,7 +88,7 @@ roslaunch xd_uav_formation formation.launch \
 | `future_stamp_tolerance` | 状态、编队中心和 TF 时间戳允许超前 ROS 当前时间的范围；当前配置为 30 秒 |
 | `tf_lookup_timeout`、`tf_buffer_cache_time` | TF 查询等待时间和缓存时长 |
 | `external_quiet_time` | 启动前等待外部参考静默的时间 |
-| `minimum_slot_distance`、`fixedwing_minimum_slot_distance` | 通用及固定翼最小槽位距离 |
+| `minimum_slot_distance`、`fixedwing_minimum_slot_distance` | 领机跟随时限制僚机槽位距领机的距离；一致性编队时检查成员槽位之间的最小间距 |
 | `fixedwing_min_speed`、`fixedwing_max_catchup_speed` | 固定翼参考速度下限，以及落后时最多增加的水平速度 |
 | `multirotor_max_speed` | 多旋翼参考水平速度上限 |
 | `fixedwing_min_groundspeed_for_course` | 固定翼地速低于此值时，若空速有效且安全，则用机头方向估算队形中心航向 |
@@ -74,7 +109,7 @@ roslaunch xd_uav_formation formation.launch \
 
 固定翼编队（包括处于固定翼前飞阶段的 VTOL）在集结时保持共享计划中的统一航向，先收拢队形，再合并高度并进入航线。各机直接根据同一组成员状态计算槽位误差：落后加速、超前减速、横向偏离则向槽位收拢；到位后追赶修正逐渐归零。每架机独立按自身误差计算修正量，避免所有落后成员统一使用最大追赶量导致反复超调。水平参考使用速度制导，高度仍使用位置反馈，避免后方槽位位置使超前飞机掉头追点。收到成员主动脱队状态后，该成员不再参与中心和速度计算；其余成员按剩余数量重新分配槽位并重组队形。
 
-一致性控制不设 6 架或 8 架的数量分支：新增成员使用同一套共享槽位、追赶和航线控制逻辑，按全队均值计算误差，不随成员数增加而改回环形邻居控制。成员数由 `consensus.members` 决定；领航跟随的协同等待也不再因总数超过 6 架而关闭。当前仍为单队控制，尚未实现分组编队。
+一致性控制不设 6 架或 8 架的数量分支：新增成员使用同一套共享槽位、追赶和航线控制逻辑，按全队均值计算误差，不随成员数增加而改回环形邻居控制。成员数和成员顺序由每次服务请求的 `members` 决定；领航跟随的协同等待也不再因总数超过 6 架而关闭。当前仍为单队控制，尚未实现分组编队。
 
 圆形队形的半径会随成员数增加而扩大；较大的队形需要更大的转弯空间和更宽的内外侧速度范围。每个节点仍接收所有成员状态，队伍规模增加也会增加总体通信和计算开销，因此取消代码数量限制不代表任意规模均能保持相同飞行效果。
 

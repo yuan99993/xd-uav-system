@@ -38,6 +38,7 @@ struct Config {
   std::string leader_name{"uav1"};
   std::string common_frame{"world"};
   std::string shape{"manual"};
+  bool waypoints_are_final{false};
   std::vector<std::string> members;
   std::map<std::string, Vec3> offsets;
   std::vector<Vec3> waypoints;
@@ -104,6 +105,7 @@ struct AcquisitionPlan {
   std::vector<double> tiers;
   double heading{0.0};
   double altitude{0.0};
+  std::uint64_t selection_revision{0};
 };
 
 using ControlStateMap =
@@ -124,6 +126,14 @@ struct SharedSnapshot {
   ReceivedTimeMap status_received;
 };
 
+struct FormationSelection {
+  std::string shape;
+  std::vector<Vec3> waypoints;
+  std::vector<Vec3> slots;
+  bool loop_path{true};
+  std::uint64_t revision{0};
+};
+
 struct SharedData : SharedSnapshot {
   std::mutex mutex;
   std::mutex acquisition_plan_mutex;
@@ -131,6 +141,19 @@ struct SharedData : SharedSnapshot {
   std::uint64_t snapshot_revision{0};
   std::shared_ptr<const SharedSnapshot> snapshot_cache;
   std::optional<AcquisitionPlan> acquisition_plan;
+  FormationSelection formation_selection;
+
+  FormationSelection formationSelection() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return formation_selection;
+  }
+
+  void updateFormationSelection(FormationSelection selection) {
+    std::lock_guard<std::mutex> lock(mutex);
+    selection.revision = formation_selection.revision + 1;
+    formation_selection = std::move(selection);
+    markChanged();
+  }
 
   void markChanged() { ++revision; }
 
@@ -175,7 +198,6 @@ class SnapshotMapView {
 struct FormationGeometry {
   std::map<std::string, Vec3> member_offsets;
   std::vector<Vec3> slots;
-  std::map<std::string, Vec3> slot_offsets;
 };
 
 class Follower {
@@ -351,6 +373,7 @@ class Follower {
       const ros::Time& now, const StateSnapshot& snapshot,
       const xd_uav_controller::ControlState& own);
   bool ownReadinessFailure(const std::string& reason) const;
+  void refreshFormationSelection(const ros::Time& now);
 
   ros::NodeHandle nh_;
   const Config& config_;
@@ -360,6 +383,7 @@ class Follower {
   Vec3 offset_;
   std::shared_ptr<SharedData> shared_;
   std::shared_ptr<const FormationGeometry> geometry_;
+  FormationSelection formation_selection_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> owned_tf_listener_;
   bool shared_inputs_{false};
@@ -430,6 +454,9 @@ class FormationRuntime {
                    bool external_telemetry = false);
   ~FormationRuntime();
   bool setMembers(bool enabled, std::string& message);
+  bool updateFormationSelection(const std::string& shape,
+                               const std::vector<Vec3>& waypoints,
+                               bool loop_path, std::string& message);
   void shutdown();
   void clearAcquisitionPlan();
   void stateCallback(const xd_uav_controller::ControlState::ConstPtr& message,

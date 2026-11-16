@@ -2,6 +2,7 @@
 """TCP-controlled launcher for the ROS processes used by the UAV stack."""
 
 import argparse
+import atexit
 import copy
 import fcntl
 import hashlib
@@ -26,6 +27,8 @@ import yaml
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _ARG_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_TERM_GRACE_SEC = 2.0
+_KILL_GRACE_SEC = 1.0
 
 
 def _read_yaml(path):
@@ -44,6 +47,53 @@ def _proc_info(pid):
         return int(fields[2]), fields[19]
     except (OSError, ValueError, IndexError):
         return None, None
+
+
+def _process_group_exists(pgid):
+    try:
+        os.killpg(int(pgid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _proc_snapshot():
+    """Return the live process tree fields needed for managed cleanup."""
+    snapshot = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "stat").read_text(encoding="utf-8")
+            fields = raw[raw.rfind(")") + 2:].split()
+            snapshot[int(entry.name)] = {
+                "ppid": int(fields[1]),
+                "pgid": int(fields[2]),
+                "start_time": fields[19],
+            }
+        except (OSError, ValueError, IndexError):
+            continue
+    return snapshot
+
+
+def _descendants(snapshot, root_pid):
+    children = {}
+    for pid, details in snapshot.items():
+        children.setdefault(details["ppid"], []).append(pid)
+
+    result = []
+    pending = list(children.get(root_pid, []))
+    seen = set()
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        result.append(pid)
+        pending.extend(children.get(pid, []))
+    return result
 
 
 def _expand_string(value, context):
@@ -134,8 +184,10 @@ class ProcessManager:
         os.replace(temp_path, self.registry_path)
 
     def _signal_records(self, records):
-        """Immediately SIGKILL all recorded groups after checking PID identity."""
-        signalled = set()
+        """Stop launch groups and ROS descendants; return groups still alive."""
+        snapshot = _proc_snapshot()
+        groups_by_record = {}
+        group_members = {}
         for record in records:
             try:
                 pid = int(record.get("pid", -1))
@@ -144,7 +196,7 @@ class ProcessManager:
             except (AttributeError, TypeError, ValueError):
                 self._log("skipping malformed process record")
                 continue
-            if pid <= 1 or pgid != pid or pgid in signalled:
+            if pid <= 1 or pgid != pid:
                 continue
 
             actual_pgid, actual_start = _proc_info(pid)
@@ -159,16 +211,79 @@ class ProcessManager:
                     continue
                 except PermissionError:
                     self._log("permission denied checking process group {}".format(pgid))
+                    groups_by_record[pid] = {pgid}
+                    group_members.setdefault(pgid, {})
                     continue
 
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-                signalled.add(pgid)
-            except ProcessLookupError:
-                continue
-            except PermissionError:
-                self._log("permission denied killing process group {}".format(pgid))
-        return signalled
+            owned_groups = {pgid}
+            group_members.setdefault(pgid, {})
+            if actual_start is not None:
+                group_members[pgid][pid] = expected_start
+            for child_pid in _descendants(snapshot, pid):
+                child = snapshot[child_pid]
+                child_pgid = child["pgid"]
+                if child_pgid <= 1:
+                    continue
+                expected_child_start = child["start_time"]
+                actual_child_pgid, actual_child_start = _proc_info(child_pid)
+                if (actual_child_pgid != child_pgid or
+                        actual_child_start != expected_child_start):
+                    continue
+                owned_groups.add(child_pgid)
+                group_members.setdefault(child_pgid, {})[child_pid] = expected_child_start
+            groups_by_record[pid] = owned_groups
+
+        def group_is_owned_and_alive(pgid):
+            members = group_members.get(pgid, {})
+            if not members:
+                return _process_group_exists(pgid)
+            for member_pid, expected_start in members.items():
+                actual_pgid, actual_start = _proc_info(member_pid)
+                if actual_pgid == pgid and actual_start == expected_start:
+                    return True
+            return False
+
+        # Ask roslaunch and its nodes to shut down cleanly first. ROS nodes can
+        # have their own process groups, so signal each owned group explicitly.
+        for pgid in group_members:
+            if group_is_owned_and_alive(pgid):
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    self._log("permission denied stopping process group {}".format(pgid))
+
+        deadline = time.monotonic() + _TERM_GRACE_SEC
+        while time.monotonic() < deadline:
+            if not any(group_is_owned_and_alive(pgid) for pgid in group_members):
+                break
+            time.sleep(0.05)
+
+        # Escalate only groups that survived the graceful shutdown window.
+        for pgid in group_members:
+            if group_is_owned_and_alive(pgid):
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    self._log("permission denied killing process group {}".format(pgid))
+
+        deadline = time.monotonic() + _KILL_GRACE_SEC
+        while time.monotonic() < deadline:
+            if not any(group_is_owned_and_alive(pgid) for pgid in group_members):
+                break
+            time.sleep(0.05)
+
+        remaining = {}
+        for pid, groups in groups_by_record.items():
+            survivors = {pgid for pgid in groups if group_is_owned_and_alive(pgid)}
+            if survivors:
+                remaining[pid] = survivors
+                self._log("process {} still has live group(s): {}".format(
+                    pid, ", ".join(str(group) for group in sorted(survivors))))
+        return remaining
 
     def _recover_previous_processes(self):
         registry = self._load_registry()
@@ -176,7 +291,12 @@ class ProcessManager:
         if isinstance(records, dict) and records:
             self._log("stopping {} process group(s) left by the previous manager".format(
                 len(records)))
-            self._signal_records(list(records.values()))
+            remaining = self._signal_records(list(records.values()))
+            if remaining:
+                raise RuntimeError(
+                    "could not stop all processes left by the previous manager; "
+                    "records were retained for recovery"
+                )
         self.registry_path.unlink(missing_ok=True)
         generated_root = self.runtime_dir / "generated"
         if generated_root.exists():
@@ -217,8 +337,6 @@ class ProcessManager:
         })
         files = profile.get("files", {})
         world_config = None
-        formation_config = None
-
         if "world_tf" in shared_launches:
             source = self._profile_path(files["world_tf_template"])
             world_config = _read_yaml(source)
@@ -243,42 +361,6 @@ class ProcessManager:
             world_config["vehicle_configs"] = new_vehicle_configs
             context["world_tf_config"] = self._write_generated_yaml(
                 "world_tf", world_config)
-
-        if "formation" in shared_launches:
-            if len(vehicles) < 2:
-                raise ValueError("formation task requires at least two vehicles")
-            source = self._profile_path(files["formation_template"])
-            formation_config = _read_yaml(source)
-            names = [vehicle["name"] for vehicle in vehicles]
-            formation_config["team_id"] = profile_name
-            for mode in ("leader_follow", "consensus"):
-                section = formation_config.get(mode)
-                if not isinstance(section, dict):
-                    continue
-                if mode == "consensus":
-                    section["team_id"] = profile_name + "_consensus"
-                    section["members"] = names
-                else:
-                    leader = section.get("leader_name", names[0])
-                    if leader not in names:
-                        leader = names[0]
-                        section["leader_name"] = leader
-                    members = [name for name in names if name != leader]
-                    section["members"] = members
-                    spacing = float(profile.get("formation_longitudinal_spacing", 80.0))
-                    lateral = float(profile.get("formation_lateral_offset", 40.0))
-                    configured_offsets = section.get("offsets", {})
-                    offsets = {name: copy.deepcopy(configured_offsets[name])
-                               for name in members if name in configured_offsets}
-                    for index, name in enumerate(members):
-                        if name in offsets:
-                            continue
-                        row = index // 2 + 1
-                        side = 1.0 if index % 2 == 0 else -1.0
-                        offsets[name] = [-spacing * row, side * lateral, 0.0]
-                    section["offsets"] = offsets
-            context["formation_config"] = self._write_generated_yaml(
-                "formation", formation_config)
 
         for type_name, path in files.get("tf_config_by_type", {}).items():
             context["tf_config_" + str(type_name)] = self._profile_path(path)
@@ -418,6 +500,8 @@ class ProcessManager:
             if not isinstance(params, dict):
                 raise ValueError("params for launch {} on {} must be a mapping".format(
                     launch_id, vehicle_name))
+            if spec.get("ignore_selection_params", False):
+                params = {}
             for key, value in params.items():
                 if not isinstance(key, str) or not _ARG_NAME_RE.fullmatch(key):
                     raise ValueError("invalid parameter name for launch {}: {}".format(
@@ -478,10 +562,19 @@ class ProcessManager:
         if len(set(raw_shared)) != len(raw_shared):
             raise ValueError("shared_launches contains duplicates")
         shared_specs = self.config.get("shared_launches", {})
+        required_shared = self.config.get("required_shared_launches", [])
+        if not isinstance(required_shared, list) or any(
+                not isinstance(value, str) or value not in shared_specs
+                for value in required_shared):
+            raise ValueError("required_shared_launches has an unknown launch id")
         unknown_shared = sorted(set(raw_shared) - set(shared_specs))
         if unknown_shared:
             raise ValueError("unknown shared launch(es): {}".format(
                 ", ".join(unknown_shared)))
+        effective_shared = []
+        for launch_id in required_shared + raw_shared:
+            if launch_id not in effective_shared:
+                effective_shared.append(launch_id)
 
         raw_vehicles = message.get("vehicles")
         if not isinstance(raw_vehicles, list) or not raw_vehicles:
@@ -531,7 +624,9 @@ class ProcessManager:
                 if not isinstance(track_sensor, str) or track_sensor not in sensor_by_id:
                     raise ValueError("track_sensor on {} must name one of its sensors".format(
                         name))
-                if not sensor_by_id[track_sensor]["params"].get("image_topic"):
+                if (sensor_by_id[track_sensor]["type"] not in
+                        ("front_gimbal_camera", "down_camera") and
+                        not sensor_by_id[track_sensor]["params"].get("image_topic")):
                     raise ValueError("track_sensor {} on {} needs image_topic".format(
                         track_sensor, name))
             params = item.get("params", {})
@@ -549,7 +644,7 @@ class ProcessManager:
                 "launches": launches,
                 "track_sensor": track_sensor,
             })
-        return session_id, profile_name, vehicles, raw_shared
+        return session_id, profile_name, vehicles, effective_shared
 
     def _command_argv(self, spec, context, label):
         argv = spec.get("argv")
@@ -585,7 +680,16 @@ class ProcessManager:
                 for sensor_key, launch_key in spec.get("sensor_param_map", {}).items():
                     if sensor_key in sensor["params"]:
                         launch_params[launch_key] = sensor["params"][sensor_key]
-            launch_params.update(_expand_tree(selection.get("params", {}), local_context))
+            selection_params = (
+                {} if spec.get("ignore_selection_params", False) else
+                _expand_tree(selection.get("params", {}), local_context))
+            selection_param_map = spec.get("selection_param_map", {})
+            for parameter, value in selection_params.items():
+                launch_params[selection_param_map.get(parameter, parameter)] = value
+            forced_params = _expand_tree(spec.get("forced_params", {}), local_context)
+            if not isinstance(forced_params, dict):
+                raise ValueError("forced_params for {} must be a mapping".format(label))
+            launch_params.update(forced_params)
             allowed_params = spec.get("allowed_params")
             if allowed_params is not None:
                 unknown = sorted(set(launch_params) - set(allowed_params))
@@ -626,6 +730,26 @@ class ProcessManager:
             if controller_path:
                 vehicle_context["controller_config"] = self._profile_path(controller_path)
 
+            for sensor in vehicle["sensors"]:
+                camera_config = {
+                    "front_gimbal_camera": ("FrontCamera", "front_camera"),
+                    "down_camera": ("DownCamera", "down_camera"),
+                }.get(sensor["type"])
+                if not camera_config:
+                    continue
+                camera_name, camera_topic_prefix = camera_config
+                sensor_params = sensor["params"]
+                sensor_params.setdefault("sim_image_topic",
+                                         sensor_params.get("image_topic", ""))
+                sensor_params.setdefault("sim_camera_info_topic",
+                                         sensor_params.get("camera_info_topic", ""))
+                sensor_params.setdefault(
+                    "camera_stream_name", "{}/{}".format(vehicle["drone"], camera_name))
+                sensor_params["image_topic"] = (
+                    "/{}/{}/image_raw".format(vehicle["name"], camera_topic_prefix))
+                sensor_params["camera_info_topic"] = (
+                    "/{}/{}/camera_info".format(vehicle["name"], camera_topic_prefix))
+
             sensor_by_id = {sensor["id"]: sensor for sensor in vehicle["sensors"]}
             sensor_contexts = {}
             for sensor_id, sensor in sensor_by_id.items():
@@ -650,9 +774,28 @@ class ProcessManager:
                 sensor = sensor_by_id[selection["sensor"]]
                 sensor_context = copy.deepcopy(sensor_contexts[sensor["id"]])
                 sensor_context.update(selection["params"])
-                instance_name = str(sensor_context.get("instance_name", sensor["id"]))
+                # Keep the SAR launch's established instance/topic/service names.
+                # UAV_NAME and camera input topics are the per-aircraft values.
+                instance_name = "smart"
                 topic_root = "sar_yolo_detector/{}".format(instance_name)
-                sensor_context.setdefault("instance_name", instance_name)
+                sensor_context["instance_name"] = instance_name
+                sensor_context.update({
+                    "tracked_detections_topic": topic_root + "/tracked_detections",
+                    "fusion_detections_topic": topic_root + "/tracked_detections/fusion",
+                    "fusion_observations_topic": topic_root + "/tracked_detections/observations",
+                    "selected_detections_topic": topic_root + "/selected_tracked_detections",
+                    "select_pixel_topic": topic_root + "/select_pixel",
+                    "auto_select_service": topic_root + "/auto_select",
+                    "auto_select_status_topic": topic_root + "/auto_select_status",
+                    "state_topic": topic_root + "/state",
+                    "annotated_image_topic": topic_root + "/annotated",
+                    "gimbal_detection_topic": topic_root + "/selected_tracked_detections",
+                    "bridge_input_topic": topic_root + "/selected_tracked_detections",
+                    "bridge_input_type": "tracked",
+                    "output_detections_topic": "track/selected_detections",
+                    "detect_bridge_enabled": "true",
+                    "detect_output_detections_topic": "detect/input/detections_2d",
+                })
                 sensor_context.setdefault("input_image_topic",
                                           sensor_context.get("image_topic", ""))
                 sensor_context.setdefault("camera_info_topic", "")
@@ -693,6 +836,19 @@ class ProcessManager:
                 })
                 sar_contexts[sensor["id"]] = sensor_context
 
+            for sensor_id, sensor in sensor_by_id.items():
+                sar_context = sar_contexts.get(sensor_id)
+                detection_topic = (
+                    sar_context.get("selected_detections_topic") if sar_context else None
+                ) or sensor["params"].get("detection_topic")
+                if not detection_topic:
+                    detection_topic = (
+                        "sar_yolo_detector/smart/selected_tracked_detections")
+                if not str(detection_topic).startswith("/"):
+                    detection_topic = "/{}/{}".format(
+                        vehicle["name"], str(detection_topic).lstrip("/"))
+                sensor_contexts[sensor_id]["automatic_detection_topic"] = detection_topic
+
             if vehicle["track_sensor"]:
                 selected_track_sensor = vehicle["track_sensor"]
                 selected_sar = sar_contexts.get(selected_track_sensor)
@@ -712,7 +868,29 @@ class ProcessManager:
             required_launches = self.config.get("required_vehicle_launches", [])
             selections = [{"id": launch_id, "sensor": None, "params": {}}
                           for launch_id in required_launches]
-            selections.extend(vehicle["launches"])
+            automatic_launches = []
+            for sensor in vehicle["sensors"]:
+                configured = self.config.get("automatic_sensor_launches", {}).get(
+                    sensor["type"], [])
+                for item in configured:
+                    if isinstance(item, str):
+                        launch_id, params = item, {}
+                    else:
+                        launch_id = item["id"]
+                        params = copy.deepcopy(item.get("params", {}))
+                    automatic_launches.append({
+                        "id": launch_id, "sensor": sensor["id"], "params": params})
+
+            explicit_by_identity = {
+                (item["id"], item["sensor"]): item for item in vehicle["launches"]}
+            automatic_identities = set()
+            for automatic in automatic_launches:
+                identity = (automatic["id"], automatic["sensor"])
+                automatic_identities.add(identity)
+                selections.append(explicit_by_identity.get(identity, automatic))
+            selections.extend(
+                item for item in vehicle["launches"]
+                if (item["id"], item["sensor"]) not in automatic_identities)
 
             for selection in selections:
                 launch_id = selection["id"]
@@ -779,18 +957,32 @@ class ProcessManager:
     def _stop_processes(self, keys):
         stopping = []
         for key in keys:
-            managed = self.active.pop(key, None)
+            managed = self.active.get(key)
             if managed:
                 stopping.append((key, managed))
         if not stopping:
             return
 
-        self._signal_records([managed["record"] for _, managed in stopping])
+        remaining_by_pid = self._signal_records(
+            [managed["record"] for _, managed in stopping])
         for key, managed in stopping:
             process = managed.get("process")
             if process is not None:
-                process.poll()
+                try:
+                    process.wait(timeout=_KILL_GRACE_SEC)
+                except subprocess.TimeoutExpired:
+                    pass
             record = managed["record"]
+            pid = int(record["pid"])
+            remaining_groups = remaining_by_pid.get(pid, set())
+            remaining_groups = {
+                pgid for pgid in remaining_groups if _process_group_exists(pgid)
+            }
+            if ((process is not None and process.poll() is None) or remaining_groups):
+                self._log("cleanup incomplete for {}; keeping its process record".format(
+                    record.get("label", key)))
+                continue
+            self.active.pop(key, None)
             self._log("stopped {} pid={}".format(record.get("label", key), record["pid"]))
 
     def _reconcile(self, desired):
@@ -810,12 +1002,14 @@ class ProcessManager:
 
     def _stop_all(self):
         self._stop_processes(list(self.active))
-        self.active.clear()
         old_generation = self.generation_dir
-        self.generation_dir = None
         self.session_id = None
+        if self.active:
+            self._log("retaining generated configuration for processes not yet stopped")
+        else:
+            self.generation_dir = None
         self._write_registry()
-        if old_generation and old_generation.exists():
+        if not self.active and old_generation and old_generation.exists():
             shutil.rmtree(old_generation, ignore_errors=True)
 
     def _check_auth(self, message):
@@ -968,8 +1162,10 @@ def main():
         print("[start-manager] startup error: {}".format(error),
               file=sys.stderr, flush=True)
         return 1
+    atexit.register(manager._stop_all)
     signal.signal(signal.SIGINT, manager.request_shutdown)
     signal.signal(signal.SIGTERM, manager.request_shutdown)
+    signal.signal(signal.SIGHUP, manager.request_shutdown)
     try:
         manager.serve_forever()
     except Exception as error:

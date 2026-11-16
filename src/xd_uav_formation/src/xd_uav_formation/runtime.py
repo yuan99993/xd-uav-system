@@ -20,7 +20,8 @@ from xd_uav_task_execute.msg import ExecuteTaskActionGoal
 from xd_uav_formation.core import (
     acquisition_slots, blocking_action, catchup_velocity,
     consensus_speed_targets, consensus_velocity,
-    formation_offsets, path_reference, path_reference_state,
+    formation_offsets, path_project_progress, path_reference,
+    path_reference_state,
     rounded_path,
     shared_center, slot_target,
     slot_velocity, validate_offset, virtual_center)
@@ -72,7 +73,13 @@ class FormationFollower:
             "~minimum_slot_distance", 2.0))
         shape = self._get_param(
             "~shape", "manual" if self._mode == "leader_follow" else "circle")
+        selection = (self._shared_data.get("selection")
+                     if self._shared_data is not None else None)
+        if selection is not None:
+            shape = selection["shape"]
         self._shape = shape
+        self._selection_revision = (
+            selection["revision"] if selection is not None else 0)
         member_list = self._get_param("~members", [follower])
         if self._config is not None:
             self._members = self._config.setdefault(
@@ -92,7 +99,9 @@ class FormationFollower:
                 raise rospy.ROSInitException(
                     "consensus members must be unique UAV namespace names")
             self._spacing = float(self._get_param("~spacing", 80.0))
-            if self._config is not None and "_runtime_slots" in self._config:
+            if selection is not None:
+                slots = selection["slots"]
+            elif self._config is not None and "_runtime_slots" in self._config:
                 slots = self._config["_runtime_slots"]
             else:
                 slots = formation_offsets(
@@ -100,16 +109,23 @@ class FormationFollower:
                 if self._config is not None:
                     self._config["_runtime_slots"] = slots
             self._slots = slots
-            if self._config is not None and \
-                    "_runtime_slot_offsets" in self._config:
-                self._slot_offsets = self._config["_runtime_slot_offsets"]
-            else:
-                self._slot_offsets = dict(zip(self._members, slots))
-                if self._config is not None:
-                    self._config["_runtime_slot_offsets"] = \
-                        self._slot_offsets
-            configured_offset = slots[self._members.index(follower)]
-            self._waypoints = self._get_param("~waypoints", [])
+            if not all(math.isfinite(float(value))
+                       for slot in slots for value in slot):
+                raise rospy.ROSInitException(
+                    "consensus slots must contain finite coordinates")
+            own_slot_index = self._members.index(follower)
+            configured_offset = slots[own_slot_index]
+            for index, other in enumerate(slots):
+                if index == own_slot_index:
+                    continue
+                separation = math.sqrt(sum(
+                    (float(configured_offset[axis]) - float(other[axis])) ** 2
+                    for axis in range(3)))
+                if separation < minimum_slot_distance:
+                    raise rospy.ROSInitException(
+                        "consensus slots are closer than minimum separation")
+            self._waypoints = (selection["waypoints"] if selection is not None
+                               else self._get_param("~waypoints", []))
             self._corner_radius = float(self._get_param("~corner_radius", 0.0))
             self._cruise_speed = float(self._get_param("~cruise_speed", 20.0))
             self._lookahead = float(self._get_param(
@@ -139,7 +155,8 @@ class FormationFollower:
             self._max_route_correction_velocity = float(self._get_param(
                 "~max_route_correction_velocity",
                 self._max_consensus_velocity))
-            self._loop_path = bool(self._get_param("~loop_path", True))
+            self._loop_path = (selection["loop_path"] if selection is not None
+                               else bool(self._get_param("~loop_path", True)))
             self._acquire_tolerance = float(self._get_param(
                 "~acquire_tolerance", max(2.0, self._spacing * 0.1)))
             self._acquire_height_tolerance = float(self._get_param(
@@ -152,7 +169,13 @@ class FormationFollower:
             if not self._common_frame:
                 raise rospy.ROSInitException("common_frame is empty")
             try:
-                if self._config is not None and \
+                if selection is not None:
+                    self._waypoints = selection["waypoints"]
+                elif bool(self._get_param("~waypoints_are_final", False)):
+                    self._waypoints = tuple(
+                        tuple(float(value) for value in point)
+                        for point in self._waypoints)
+                elif self._config is not None and \
                         "_runtime_rounded_waypoints" in self._config:
                     self._waypoints = self._config[
                         "_runtime_rounded_waypoints"]
@@ -180,8 +203,10 @@ class FormationFollower:
             if slot_index < 1 or slot_index > len(slots):
                 raise rospy.ROSInitException("slot_index is outside formation")
             configured_offset = slots[slot_index - 1]
-        self._offset = validate_offset(configured_offset,
-                                       minimum_slot_distance)
+        self._offset = (
+            tuple(float(value) for value in configured_offset)
+            if self._mode == "consensus" else
+            validate_offset(configured_offset, minimum_slot_distance))
         if self._mode == "leader_follow":
             configured_member_offsets = self._get_param(
                 "~member_offsets", self._get_param("~offsets", {}))
@@ -528,6 +553,34 @@ class FormationFollower:
         self._status_pub.publish(String(data=status))
         self._last_status_publish = now
 
+    def _refresh_selection(self, now):
+        if self._mode != "consensus" or self._shared_data is None:
+            return
+        selection = self._shared_data.get("selection")
+        if (selection is None or
+                selection["revision"] == self._selection_revision):
+            return
+        self._shape = selection["shape"]
+        self._slots = selection["slots"]
+        self._waypoints = selection["waypoints"]
+        self._loop_path = selection["loop_path"]
+        self._selection_revision = selection["revision"]
+        self._consensus_geometry_cache_key = None
+        self._consensus_geometry_cache = None
+        self._consensus_heading = None
+        self._consensus_heading_stamp = None
+        self._paced_speed = None
+        self._paced_speed_stamp = None
+        self._progress_error_filter.clear()
+        if self._enabled:
+            self._acquire_stage = "waiting_for_team"
+            self._acquire_started = now
+            self._acquire_heading = None
+            self._acquire_slots = None
+            self._acquire_tiers = None
+            self._reason = "acquiring_waiting_for_team"
+            self._publish_status()
+
     def _mark_peer_dropped(self, member, reason):
         if member == self._self_name or member in self._dropped_members:
             return
@@ -786,7 +839,20 @@ class FormationFollower:
         elif own.vehicle_type == ControlState.VEHICLE_FIXEDWING:
             if own.flight_regime != ControlState.REGIME_FORWARD_FLIGHT:
                 return "forward_flight_required"
-            if math.sqrt(sum(value * value for value in self._offset)) < \
+            if self._mode == "consensus":
+                offsets = self._consensus_slot_offsets()
+                own_offset = offsets.get(self._self_name)
+                if own_offset is None:
+                    return "missing_consensus_slot"
+                for name, other in offsets.items():
+                    if name == self._self_name:
+                        continue
+                    separation = math.sqrt(sum(
+                        (own_offset[axis] - other[axis]) ** 2
+                        for axis in range(3)))
+                    if separation < self._fixedwing_minimum_slot_distance:
+                        return "fixedwing_slot_too_close"
+            elif math.sqrt(sum(value * value for value in self._offset)) < \
                     self._fixedwing_minimum_slot_distance:
                 return "fixedwing_slot_too_close"
         else:
@@ -1549,6 +1615,7 @@ class FormationFollower:
             "members": list(self._members),
             "shape": self._shape,
             "spacing": self._spacing,
+            "selection_revision": self._selection_revision,
             "stamp": now.to_sec(),
             "initial_positions": [list(point) for point in positions],
             "slots": [list(slot) for slot in slots],
@@ -1560,6 +1627,18 @@ class FormationFollower:
     def _plan_acquisition(self, now):
         plan = (self._shared_data.get("acquisition_plan")
                 if self._shared_data is not None else None)
+        if (isinstance(plan, dict) and
+                plan.get("selection_revision") != self._selection_revision):
+            plan = None
+            if self._shared_data is not None:
+                self._shared_data["acquisition_plan"] = None
+        if (plan is None and
+                (self._self_name == self._members[0] or
+                 self._shared_data is not None)):
+            plan = self._build_acquisition_plan(now)
+            if self._shared_data is not None:
+                self._shared_data["acquisition_plan"] = plan
+            rospy.set_param(self._plan_param, plan)
         if plan is None:
             plan = rospy.get_param(self._plan_param, None)
         count = len(self._members)
@@ -1567,6 +1646,7 @@ class FormationFollower:
                 plan.get("members") != list(self._members) or
                 plan.get("shape") != self._shape or
                 plan.get("spacing") != self._spacing or
+                plan.get("selection_revision") != self._selection_revision or
                 len(plan.get("initial_positions", [])) != count or
                 len(plan.get("slots", [])) != count or
                 len(plan.get("tiers", [])) != count):
@@ -1687,6 +1767,11 @@ class FormationFollower:
 
     def _fixedwing_consensus_target(self, now, altitude=None):
         """Capture moving slots using signed errors, without point chasing."""
+        acquisition_stage = self._acquire_stage in (
+            "waiting_for_team", "separating", "gathering", "merging")
+        if (not acquisition_stage and
+                self._shape in ("column", "single_file")):
+            return self._fixedwing_column_target(now, altitude)
         geometry = self._fixedwing_consensus_geometry(now)
         consensus_offset = self._consensus_slot_offsets()[self._self_name]
         index = geometry["members"].index(self._self_name)
@@ -1757,6 +1842,101 @@ class FormationFollower:
         # position targets. A slot behind an ahead aircraft would then command
         # a U-turn despite the intended slowdown. Supply horizontal velocity
         # guidance only; keep altitude feedback active.
+        target.type_mask |= PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
+        return target
+
+    def _fixedwing_column_target(self, now, altitude=None):
+        """Keep fixed-wing column members at arc-length offsets on one route."""
+        members = self._active_members()
+        offsets = self._consensus_slot_offsets(members)
+        progresses = []
+        phases = []
+        path_length = 0.0
+        own_position = None
+        for index, member in enumerate(members):
+            state = (self._own_state if member == self._self_name else
+                     self._peer_states.get(member))
+            if state is None:
+                raise ValueError(member + "_state_stale")
+            position = self._state_in_common_frame(state, now)[0]
+            if member == self._self_name:
+                own_position = position
+            progress, length = path_project_progress(
+                position, self._waypoints, self._loop_path)
+            if index == 0:
+                path_length = length
+            elif abs(length - path_length) > 1e-6:
+                raise ValueError("inconsistent_column_path_length")
+            progresses.append(progress)
+            phases.append(progress - offsets[member][0])
+        if not members or path_length <= 1e-6 or own_position is None:
+            raise ValueError("column_path_projection_unavailable")
+
+        aligned_phases = phases
+        if self._loop_path:
+            anchor = phases[0] % path_length
+            unwrapped = [anchor]
+            for phase in phases[1:]:
+                delta = ((phase % path_length - anchor +
+                          0.5 * path_length) % path_length -
+                         0.5 * path_length)
+                unwrapped.append(anchor + delta)
+            aligned_phases = unwrapped
+            mean_phase = sum(unwrapped) / len(unwrapped)
+        else:
+            mean_phase = sum(phases) / len(phases)
+
+        own_index = members.index(self._self_name)
+        own_offset = offsets[self._self_name]
+        own_phase = aligned_phases[own_index]
+        phase_error = mean_phase - own_phase
+        gain, lateral_limit = self._active_consensus_correction()
+        along_error = math.copysign(
+            max(0.0, abs(phase_error) - self._catchup_deadband),
+            phase_error)
+        speed_adjustment = max(
+            -self._max_consensus_velocity,
+            min(self._max_consensus_velocity, gain * along_error))
+        target_speed = max(self._fixedwing_min_speed,
+                           self._cruise_speed + speed_adjustment)
+        progress_offset = (
+            mean_phase + own_offset[0] - progresses[own_index])
+        route_position, route_velocity, _ = path_reference_state(
+            own_position, self._waypoints, self._cruise_speed,
+            self._lookahead, self._loop_path, progress_offset)
+        projected_position, projected_velocity, _ = path_reference_state(
+            own_position, self._waypoints, self._cruise_speed,
+            0.0, self._loop_path)
+        projection_speed = math.hypot(projected_velocity[0],
+                                      projected_velocity[1])
+        if projection_speed > 1e-6:
+            normal = (-projected_velocity[1] / projection_speed,
+                      projected_velocity[0] / projection_speed)
+            cross_error = ((projected_position[0] - own_position[0]) *
+                           normal[0] +
+                           (projected_position[1] - own_position[1]) *
+                           normal[1])
+        else:
+            normal = (0.0, 0.0)
+            cross_error = 0.0
+        lateral_adjustment = max(
+            -lateral_limit,
+            min(lateral_limit, gain * cross_error))
+        speed_scale = target_speed / max(self._cruise_speed, 1e-3)
+        velocity = self._smooth_course_velocity(
+            (route_velocity[0] * speed_scale +
+             normal[0] * lateral_adjustment,
+             route_velocity[1] * speed_scale +
+             normal[1] * lateral_adjustment,
+             route_velocity[2] * speed_scale), now)
+        heading = math.atan2(route_velocity[1], route_velocity[0])
+        slot = slot_target(route_position, heading, (0.0, 0.0, 0.0),
+                           self._yaw_offset)
+        target_altitude = (altitude if altitude is not None else
+                           route_position[2] + own_offset[2])
+        target = self._position_target(
+            (slot[0], slot[1], target_altitude), slot[3], now,
+            velocity, self._common_frame)
         target.type_mask |= PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
         return target
 
@@ -1917,6 +2097,7 @@ class FormationFollower:
             if not request.data:
                 self._stop("stopped_by_service", hold=self._enabled)
                 return SetBoolResponse(True, "formation stopped")
+            self._refresh_selection(rospy.Time.now())
             if self._enabled:
                 return SetBoolResponse(True, "formation already active")
             now = rospy.Time.now()
@@ -1981,6 +2162,7 @@ class FormationFollower:
             return
         with self._lock:
             now = rospy.Time.now()
+            self._refresh_selection(now)
             if self._mode == "consensus":
                 if not self._enabled:
                     # Keep neighbor centers fresh enough for the start-service
@@ -2062,7 +2244,32 @@ class FormationRuntime:
             "statuses": {},
             "status_received": {},
             "acquisition_plan": None,
+            "selection": None,
         }
+        if mode == "consensus":
+            selection_shape = str(config.get("shape", "circle")).strip().lower()
+            selection_spacing = float(config.get("spacing", 80.0))
+            selection_loop = bool(config.get("loop_path", True))
+            waypoints = config.get("waypoints", [])
+            if not bool(config.get("waypoints_are_final", False)):
+                waypoints = rounded_path(
+                    waypoints, float(config.get("corner_radius", 0.0)),
+                    selection_loop)
+            waypoints = tuple(tuple(float(value) for value in point)
+                              for point in waypoints)
+            path_reference_state(
+                (0.0, 0.0, 0.0), waypoints,
+                float(config.get("cruise_speed", 20.0)),
+                float(config.get("lookahead_distance", 60.0)),
+                selection_loop)
+            self._shared["selection"] = {
+                "shape": selection_shape,
+                "slots": formation_offsets(
+                    selection_shape, len(self._members), selection_spacing),
+                "waypoints": waypoints,
+                "loop_path": selection_loop,
+                "revision": 1,
+            }
         self._followers = {}
         self._subscribers = []
         try:
@@ -2128,6 +2335,48 @@ class FormationRuntime:
                 rospy.Subscriber(
                     "/{}/formation/preempt".format(leader), String,
                     self._leader_preempt_callback, queue_size=10)))
+
+    def update_selection(self, shape=None, waypoints=None, loop_path=None):
+        """Atomically replace the active consensus shape or route."""
+        if self._mode != "consensus":
+            raise ValueError("shape and path commands require consensus mode")
+        current = self._shared["selection"]
+        selected_shape = (current["shape"] if shape is None else
+                          str(shape).strip().lower())
+        selected_waypoints = (current["waypoints"] if waypoints is None else
+                              tuple(tuple(float(value) for value in point)
+                                    for point in waypoints))
+        selected_loop = (current["loop_path"] if loop_path is None else
+                         bool(loop_path))
+        spacing = float(self._config.get("spacing", 80.0))
+        slots = formation_offsets(
+            selected_shape, len(self._members), spacing)
+        minimum_distance = float(self._config.get(
+            "minimum_slot_distance", 2.0))
+        for index, slot in enumerate(slots):
+            if not all(math.isfinite(value) for value in slot):
+                raise ValueError("consensus slot must be finite")
+            for other in slots[index + 1:]:
+                if math.dist(slot, other) < minimum_distance:
+                    raise ValueError("selected formation slots are too close")
+        path_reference_state(
+            (0.0, 0.0, 0.0), selected_waypoints,
+            float(self._config.get("cruise_speed", 20.0)),
+            float(self._config.get("lookahead_distance", 60.0)),
+            selected_loop)
+        self._shared["selection"] = {
+            "shape": selected_shape,
+            "slots": slots,
+            "waypoints": selected_waypoints,
+            "loop_path": selected_loop,
+            "revision": int(current["revision"]) + 1,
+        }
+        self._shared["acquisition_plan"] = None
+        try:
+            rospy.delete_param("/formation/{}/acquisition_plan".format(
+                self._config.get("team_id", "team1")))
+        except (KeyError, rospy.ROSException):
+            pass
 
     def _state_callback(self, message, member):
         now = rospy.Time.now()

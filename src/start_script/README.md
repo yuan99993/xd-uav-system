@@ -21,20 +21,30 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 
 示例里的 `/Sim/...` 相机和测距话题要按仿真实际发布的话题替换；管理器不会再假设所有仿真都使用同一组相机路径。
 
-- `shared_launches`：只放整支机队共用的程序。`world_tf` 会依据当前 `vehicles` 名称和数量生成临时配置；可选 `formation`。
-- `vehicles[].sensors`：声明传感器类型和本仿真的实际话题。声明传感器本身不会启动识别。
-- `vehicles[].launches`：只启动该架飞机列出的程序。启动项可以是字符串，也可以是带 `sensor` 和 `params` 的对象。
+- `shared_launches`：放仿真端选择的整支机队共用程序。`world_tf` 会依据当前 `vehicles` 名称和数量生成临时配置。编队管理器由 start 自动启动一次，不需要在 JSON 里重复列出。
+- `vehicles[].sensors`：沿用仿真端现有的传感器类型并声明实际话题。`front_gimbal_camera` 会自动启动云台姿态桥接、云台控制和目标定位；它仍然是一条前视相机记录。
+- `vehicles[].launches`：选择该架飞机的识别和其他可选程序。启动项可以是字符串，也可以是带 `sensor` 和 `params` 的对象；前视相机对应的云台程序由 start 自动加入。
 - `track_sensor`：选择 `track/phase_annotated` 使用的相机。若该传感器启用了 SAR YOLO，视频叠加使用 SAR 的 annotated 输出；否则直接使用传感器的 `image_topic`。
+
+`xd_uav_formation/formation.launch` 使用包内固定的机队配置，由 start 在每个会话中只启动一个管理进程，供整支机队使用。每架飞机不需要单独启动一份。
+
+相机只有前视和下视两路。保持仿真 JSON 现有的 `front_gimbal_camera`、`down_camera` 类型定义：`front_gimbal_camera` 表示前视这一路相机，它安装在云台上；云台不是额外的相机条目。云台相关启动项绑定到同一架飞机的前视相机 ID（示例中是 `front`）。
+
+`sar_yolo_detector` 沿用仓库现有 `xd_smart_tracker_fusion_integration.launch` 的默认命名和话题，只传入固定的 `instance_name:=smart`、识别模型参数以及该飞机的前视图像和 CameraInfo 话题。不同飞机通过 `UAV_NAME` 和各自相机输入话题区分；不会按传感器 ID 改写 `smart` 后缀或生成另一套 SAR 话题名。
 
 目前可选传感器类型：
 
-- `front_gimbal_camera`：前视光电云台相机，可带 `range_topic`、`gimbal_att_topic`。
+- `front_gimbal_camera`：现有 JSON 中的前视光电相机，安装在云台上；可提供 `range_topic`、`gimbal_att_topic`。
 - `down_camera`：下视相机。
 - `lidar`：点云或激光测距传感器。
 
-飞机启动项包括机型对应的 `localization`、`control`，以及可选的 `detect`、`sar_yolo_detector`、`gimbal_attitude_bridge`、`gimbal_control`、`target_geolocation`、`task_execute`。识别程序必须明确写入飞机的 `launches`，并绑定传感器；不需要识别时就省略 `detect` 和 `sar_yolo_detector`。`task_allocate` 不在板端启动清单中。
+机型对应的 `localization`、`control` 和 `task_execute`，以及视觉识别程序，都通过飞机自己的 `launches` 清单选择。识别程序必须明确选择 `detect` 或 `sar_yolo_detector` 并绑定相机；不需要识别时就省略它们。前视相机带来的三个云台/定位程序由 start 自动启动；若要覆盖默认参数，可以在 `launches` 里显式填写同名启动项。`task_allocate` 不在板端启动清单中。
 
-`gimbal_control` 的 `mode` 必填。`mode: tracking` 时还要显式给出 `detection_input` 与 `detection_topic`。`target_geolocation` 需要在其启动参数中指定 `detection_topic`，并在所绑定的前视传感器中给出 `range_topic` 和 `gimbal_att_topic`。
+自动启动的云台控制沿用 `tmux_start` 中的完整命令参数；只按飞机替换 UAV 名称和 `/uavN/` 话题前缀。仿真 JSON 中的 `front` 传感器 ID 或其启动参数不会改写云台控制参数。目标定位也固定连接同一个 `smart` 选择目标话题，前视传感器提供的测距和姿态话题仍按 JSON 配置。
+
+云台姿态桥接沿用原启动方式，只传 `_uav_ns:=/uavN`；脚本按该参数发布 `/uavN/gimbal/attitude` 和 `/uavN/track/gimbal_state`。
+
+`camera_stream_receiver` 是通用接收器，前视和下视都使用同一份启动定义；管理器按传感器类型给每个实例传入相机流名称和输出话题。默认接收 `DroneN/FrontCamera` 或 `DroneN/DownCamera`，分别发布到 `/uavN/front_camera/image_raw`、`/uavN/front_camera/camera_info` 和 `/uavN/down_camera/image_raw`、`/uavN/down_camera/camera_info`。如仿真相机流名称不同，可在对应 sensor 的 `params` 中设置 `camera_stream_name`。SAR YOLO、detect 和直接使用相机图像的 track 配置统一使用对应飞机的本地话题，输出话题始终保留 `/uavN/` 命名空间。
 
 ## 固定启动项与视频端口
 
@@ -64,6 +74,6 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 
 ## 临时配置与进程清理
 
-`world_tf` 和 `formation` 的运行配置、SAR 的传感器 overlay、以及每架飞机的 track 配置都写入 `~/.ros/xd_uav_start_manager/generated/`，不会改写 `src/` 下的源配置。world_tf 临时配置会按照本次 JSON 中的飞机列表更新 `vehicles` 和 `vehicle_configs`。
+`world_tf` 的运行配置、SAR 的传感器 overlay、以及每架飞机的 track 配置都写入 `~/.ros/xd_uav_start_manager/generated/`，不会改写 `src/` 下的源配置。world_tf 临时配置会按照本次 JSON 中的飞机列表更新 `vehicles` 和 `vehicle_configs`。编队包直接使用 `formation.launch` 中已设置的固定配置。
 
-每个启动项独立运行并记录 PID、进程组、启动时间、命令和日志。停止会话、连接断开或更新移除启动项时，管理器会先核对 PID 身份，再对目标进程组批量发送 `SIGKILL`，不逐个等待宽限期；日志位于 `~/.ros/xd_uav_start_manager/logs/`。
+每个启动项独立运行并记录 PID、进程组、启动时间、命令和日志。停止会话、连接断开或更新移除启动项时，管理器会核对 PID 身份，结束启动进程组并清理它派生的 ROS 节点进程（ROS 节点可能各自在独立进程组）；日志位于 `~/.ros/xd_uav_start_manager/logs/`。

@@ -4,7 +4,7 @@
        default="$(find xd_uav_formation)/config/formation_10_fixedwing.yaml"/>
   <arg name="common_config"
        default="$(find xd_uav_formation)/config/common.yaml"/>
-  <!-- One manager process hosts all configured member controllers on demand. -->
+  <!-- Python manager creates controllers and subscriptions for requested members. -->
   <node pkg="xd_uav_formation" type="formation_manager.py"
         name="formation_manager" output="screen" required="true"
         clear_params="true">

@@ -3,10 +3,12 @@
 #include <ros/master.h>
 #include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_listener.h>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <memory>
 #include <regex>
@@ -43,8 +45,45 @@ Vec3 readVec3(const YAML::Node& node, const std::string& what) {
   return {node[0].as<double>(), node[1].as<double>(), node[2].as<double>()};
 }
 
+void requireNumericParameters(const YAML::Node& node,
+                              const std::vector<std::string>& names,
+                              const std::string& mode) {
+  for (const auto& name : names) {
+    if (!node[name])
+      throw std::invalid_argument(mode + " configuration is missing numeric parameter: " + name);
+    try {
+      (void)node[name].as<double>();
+    } catch (const YAML::Exception&) {
+      throw std::invalid_argument(mode + " configuration parameter must be numeric: " + name);
+    }
+  }
+}
+
 Config parseConfig(const std::string& mode, const YAML::Node& node,
                    const std::string& root_team) {
+  const std::vector<std::string> common_numeric_parameters = {
+      "minimum_slot_distance", "fixedwing_minimum_slot_distance",
+      "fixedwing_min_speed", "fixedwing_max_catchup_speed",
+      "fixedwing_min_groundspeed_for_course", "multirotor_max_speed",
+      "catchup_gain", "catchup_ki", "catchup_kd", "catchup_deadband",
+      "catchup_integral_limit", "catchup_derivative_filter_time_constant",
+      "multirotor_max_catchup_speed", "yaw_offset", "rate",
+      "state_timeout", "mavros_timeout", "tf_max_age",
+      "future_stamp_tolerance", "tf_lookup_timeout",
+      "tf_buffer_cache_time", "external_quiet_time"};
+  requireNumericParameters(node, common_numeric_parameters, mode);
+  if (mode == "consensus") {
+    const std::vector<std::string> consensus_numeric_parameters = {
+        "spacing", "corner_radius", "cruise_speed", "lookahead_distance",
+        "consensus_gain", "convergence_time", "max_consensus_velocity",
+        "acquire_consensus_gain", "acquire_max_consensus_velocity",
+        "acquire_max_speed_adjustment", "formation_heading_rate_limit",
+        "formation_speed_slew_rate", "formation_course_slew_rate",
+        "route_correction_gain", "max_route_correction_velocity",
+        "acquire_tolerance", "acquire_height_tolerance",
+        "acquire_vertical_spacing", "acquire_timeout"};
+    requireNumericParameters(node, consensus_numeric_parameters, mode);
+  }
   Config config;
   config.mode = mode;
   config.team_id = value<std::string>(node, "team_id", root_team);
@@ -156,19 +195,22 @@ class FormationManager {
     YAML::Node profile = loadYaml(config_path);
     YAML::Node common = loadYaml(common_path);
     common = mergeMaps(common, profile["common"]);
-    service_timeout_ = private_nh_.param("service_timeout",
-        value<double>(common, "service_timeout", 3.0));
+    if (common["service_timeout"]) {
+      service_timeout_ = common["service_timeout"].as<double>();
+    } else if (!private_nh_.getParam("service_timeout", service_timeout_)) {
+      if (!config_path.empty() || !common_path.empty())
+        throw std::invalid_argument(
+            "formation configuration is missing numeric parameter: service_timeout");
+      service_timeout_ = 3.0;
+    }
     if (!std::isfinite(service_timeout_) || service_timeout_ <= 0.0)
       throw std::invalid_argument("service_timeout must be positive and finite");
     loadConfigs(profile, common);
 
     if (spawn_members_) {
       if (configs_.empty()) throw std::invalid_argument("formation config has no configured mode");
-      std::vector<std::string> members;
-      for (const auto& pair : configs_)
-        members.insert(members.end(), pair.second.members.begin(), pair.second.members.end());
-      std::sort(members.begin(), members.end());
-      members.erase(std::unique(members.begin(), members.end()), members.end());
+      // Keep only the shared TF cache here. Member controllers and telemetry
+      // subscriptions are created from the service request's members list.
       for (const auto& mode : {std::string("consensus"), std::string("leader_follow")}) {
         auto it = configs_.find(mode);
         if (it == configs_.end()) continue;
@@ -179,39 +221,19 @@ class FormationManager {
           tf_listener_.reset(new tf2_ros::TransformListener(*tf_buffer_));
         }
       }
-      for (const auto& pair : configs_) {
-        const auto services = existingServices();
-        for (const auto& member : pair.second.members) {
-          const std::string expected = serviceName(member, pair.first);
-          if (services.count(expected))
-            throw std::runtime_error(expected + " already exists; stop old formation nodes first");
-        }
-        auto runtime = std::make_unique<FormationRuntime>(nh_, pair.second,
-                                                          tf_buffer_, true);
-        runtimes_[pair.first] = std::move(runtime);
-      }
-      std::set<std::string> telemetry_names;
-      for (const auto& pair : configs_) {
-        telemetry_names.insert(pair.second.members.begin(), pair.second.members.end());
-        if (pair.first == "leader_follow") telemetry_names.insert(pair.second.leader_name);
-      }
-      for (const auto& name : telemetry_names) {
-        telemetry_subscribers_.push_back(nh_.subscribe<xd_uav_controller::ControlState>(
-            "/" + name + "/control_manager/state", 1,
-            [this, name](const xd_uav_controller::ControlState::ConstPtr& message) {
-              for (auto& runtime : runtimes_) runtime.second->stateCallback(message, name);
-            }));
-        telemetry_subscribers_.push_back(nh_.subscribe<mavros_msgs::State>(
-            "/" + name + "/mavros/state", 1,
-            [this, name](const mavros_msgs::State::ConstPtr& message) {
-              for (auto& runtime : runtimes_) runtime.second->mavrosCallback(message, name);
-            }));
-      }
     }
     set_service_ = nh_.advertiseService("/formation/set_enabled",
         &FormationManager::handleSet, this);
     stop_service_ = nh_.advertiseService("/formation/stop",
         &FormationManager::handleStop, this);
+    if (configs_.count("consensus")) {
+      shape_subscriber_ = nh_.subscribe<std_msgs::String>(
+          "/formation/shape", 1,
+          &FormationManager::shapeCommandCallback, this);
+      path_subscriber_ = nh_.subscribe<nav_msgs::Path>(
+          "/formation/path", 1,
+          &FormationManager::pathCommandCallback, this);
+    }
     ROS_INFO("[xd_uav_formation] C++ manager ready; modes=%zu; shared runtime=%s",
         configs_.size(), spawn_members_ ? "enabled" : "external nodes");
   }
@@ -241,15 +263,19 @@ class FormationManager {
       YAML::Node merged = mergeMaps(common, source.second);
       if (!merged["team_id"]) merged["team_id"] = root_team;
       Config config = parseConfig(source.first, merged, root_team);
-      if (config.members.empty()) throw std::invalid_argument(source.first + " config must contain members");
+      if (source.first == "consensus") {
+        // Consensus members come from each FormationControl request. Ignore
+        // any legacy members field in the YAML profile.
+        config.members.clear();
+      } else if (config.members.empty()) {
+        throw std::invalid_argument(source.first + " config must contain members");
+      }
       std::set<std::string> unique;
       for (const auto& member : config.members) {
         if (!simpleName(member)) throw std::invalid_argument("members must be simple UAV names");
         if (!unique.insert(member).second) throw std::invalid_argument("members contains duplicates");
       }
       if (!simpleName(config.team_id)) throw std::invalid_argument(source.first + " has invalid team_id");
-      if (source.first == "consensus" && config.members.size() < 2)
-        throw std::invalid_argument("consensus requires at least two members");
       if (source.first == "leader_follow") {
         if (!simpleName(config.leader_name) || unique.count(config.leader_name))
           throw std::invalid_argument("leader_follow requires an external leader");
@@ -260,7 +286,98 @@ class FormationManager {
       config.waypoints = source.first == "consensus"
           ? roundedPath(config.waypoints, config.corner_radius, config.loop_path)
           : config.waypoints;
+      config.waypoints_are_final = source.first == "consensus";
       configs_[source.first] = std::move(config);
+    }
+  }
+
+  void shapeCommandCallback(const std_msgs::String::ConstPtr& message) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto config_it = configs_.find("consensus");
+    if (config_it == configs_.end()) return;
+    std::string shape = message->data;
+    shape.erase(shape.begin(), std::find_if(shape.begin(), shape.end(),
+        [](unsigned char ch) { return !std::isspace(ch); }));
+    shape.erase(std::find_if(shape.rbegin(), shape.rend(),
+        [](unsigned char ch) { return !std::isspace(ch); }).base(),
+        shape.end());
+    std::transform(shape.begin(), shape.end(), shape.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    Config& config = config_it->second;
+    try {
+      const auto runtime_it = runtimes_.find("consensus");
+      if (runtime_it != runtimes_.end()) {
+        std::string error;
+        if (!runtime_it->second->updateFormationSelection(
+                shape, config.waypoints, config.loop_path, error)) {
+          ROS_WARN("[xd_uav_formation] rejected shape '%s': %s",
+                   shape.c_str(), error.c_str());
+          return;
+        }
+      } else {
+        (void)formationOffsets(shape, 2, config.spacing);
+      }
+      config.shape = shape;
+      ROS_INFO("[xd_uav_formation] selected formation shape: %s",
+               shape.c_str());
+    } catch (const std::exception& error) {
+      ROS_WARN("[xd_uav_formation] rejected shape '%s': %s",
+               shape.c_str(), error.what());
+    }
+  }
+
+  void pathCommandCallback(const nav_msgs::Path::ConstPtr& message) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto config_it = configs_.find("consensus");
+    if (config_it == configs_.end()) return;
+    Config& config = config_it->second;
+    try {
+      if (message->poses.size() < 2)
+        throw std::invalid_argument("path requires at least two poses");
+      std::string target_frame = config.common_frame;
+      while (!target_frame.empty() && target_frame.front() == '/')
+        target_frame.erase(target_frame.begin());
+      std::vector<Vec3> waypoints;
+      waypoints.reserve(message->poses.size());
+      for (const auto& source_pose : message->poses) {
+        geometry_msgs::PoseStamped pose = source_pose;
+        if (pose.header.frame_id.empty())
+          pose.header.frame_id = message->header.frame_id;
+        if (pose.header.stamp.isZero()) pose.header.stamp = message->header.stamp;
+        if (pose.header.frame_id.empty())
+          throw std::invalid_argument("path frame_id is empty");
+        while (!pose.header.frame_id.empty() &&
+               pose.header.frame_id.front() == '/')
+          pose.header.frame_id.erase(pose.header.frame_id.begin());
+        if (pose.header.frame_id != target_frame) {
+          if (!tf_buffer_)
+            throw std::invalid_argument("path transform buffer is unavailable");
+          pose = tf_buffer_->transform(pose, target_frame,
+              ros::Duration(config.tf_lookup_timeout));
+        }
+        waypoints.push_back({pose.pose.position.x, pose.pose.position.y,
+                             pose.pose.position.z});
+      }
+      // nav_msgs/Path has no loop flag. Keep the profile's configured
+      // behavior instead of inferring an open path from distinct endpoints.
+      const bool loop_path = config.loop_path;
+      (void)pathReferenceState({0.0, 0.0, 0.0}, waypoints,
+          config.cruise_speed, config.lookahead, loop_path);
+      const auto runtime_it = runtimes_.find("consensus");
+      if (runtime_it != runtimes_.end()) {
+        std::string error;
+        if (!runtime_it->second->updateFormationSelection(
+                config.shape, waypoints, loop_path, error))
+          throw std::invalid_argument(error);
+      }
+      config.waypoints = std::move(waypoints);
+      config.loop_path = loop_path;
+      config.waypoints_are_final = true;
+      ROS_INFO("[xd_uav_formation] accepted %zu route waypoint(s) in %s%s",
+          config.waypoints.size(), target_frame.c_str(),
+          loop_path ? " (closed)" : " (open)");
+    } catch (const std::exception& error) {
+      ROS_WARN("[xd_uav_formation] rejected route: %s", error.what());
     }
   }
 
@@ -276,15 +393,31 @@ class FormationManager {
     if (mode != "consensus" && mode != "leader_follow") {
       response.success = false; response.message = "mode must be consensus or leader_follow"; return true;
     }
+    if (spawn_members_ && !configs_.count(mode)) {
+      response.success = false;
+      response.message = "no configured " + mode + " mode";
+      return true;
+    }
+    std::vector<std::string> requested = request.members;
+    if (!request.enabled && requested.empty() && active_ &&
+        std::get<1>(*active_) == mode)
+      requested = std::get<2>(*active_);
+    if (spawn_members_ && !request.enabled &&
+        (!active_ || std::get<1>(*active_) != mode)) {
+      response.success = true;
+      response.message = "formation already stopped";
+      return true;
+    }
     std::vector<std::string> members;
     std::string team;
-    if (!resolve(mode, request.members, members, team, response.message)) {
+    if (!resolve(mode, requested, members, team, response.message)) {
       response.success = false; return true;
     }
     if (spawn_members_) {
-      auto runtime = runtimes_.find(mode);
-      if (runtime == runtimes_.end()) {
-        response.success = false; response.message = "no configured " + mode + " mode"; return true;
+      if (!request.enabled && std::get<2>(*active_) != members) {
+        response.success = false;
+        response.message = "members do not match the active formation";
+        return true;
       }
       if (active_ && (std::get<0>(*active_) != team || std::get<1>(*active_) != mode ||
                       std::get<2>(*active_) != members)) {
@@ -293,19 +426,70 @@ class FormationManager {
         if (old != runtimes_.end() && !old->second->setMembers(false, stop_message)) {
           response.success = false; response.message = "could not stop previous mode: " + stop_message; return true;
         }
+        if (old != runtimes_.end()) {
+          old->second->shutdown();
+          runtimes_.erase(old);
+        }
         active_.reset();
+      }
+      auto runtime = runtimes_.find(mode);
+      if (request.enabled && runtime != runtimes_.end() &&
+          runtime->second->config().members != members) {
+        runtime->second->shutdown();
+        runtimes_.erase(runtime);
+        runtime = runtimes_.end();
+      }
+      if (request.enabled && runtime == runtimes_.end()) {
+        try {
+          const auto services = existingServices();
+          for (const auto& member : members) {
+            const std::string expected = serviceName(member, mode);
+            if (services.count(expected))
+              throw std::runtime_error(expected +
+                  " already exists; stop old formation nodes first");
+          }
+          Config runtime_config = configs_.at(mode);
+          runtime_config.members = members;
+          const double startup_settle = std::max(
+              std::min(1.0, std::max(0.1, 2.0 / runtime_config.rate)),
+              mode == "consensus" ?
+                  std::min(1.0, 0.5 * runtime_config.state_timeout + 0.05) :
+                  0.0);
+          auto created = std::make_unique<FormationRuntime>(
+              nh_, std::move(runtime_config), tf_buffer_, false);
+          runtime = runtimes_.emplace(mode, std::move(created)).first;
+          ros::WallDuration(startup_settle).sleep();
+        } catch (const std::exception& error) {
+          response.success = false;
+          response.message = error.what();
+          return true;
+        }
+      }
+      if (runtime == runtimes_.end()) {
+        response.success = true;
+        response.message = "formation already stopped";
+        return true;
       }
       if (!runtime->second->setMembers(request.enabled, response.message)) {
         response.success = false;
-        if (request.enabled && mode == "consensus") runtime->second->clearAcquisitionPlan();
+        if (request.enabled && mode == "consensus") {
+          runtime->second->clearAcquisitionPlan();
+          runtime->second->shutdown();
+          runtimes_.erase(mode);
+        }
         return true;
       }
       if (request.enabled) active_ = std::make_tuple(team, mode, members);
-      else if (active_ && std::get<1>(*active_) == mode) active_.reset();
+      else active_.reset();
       response.success = true;
       return true;
     }
     response.success = callMembers(members, mode, request.enabled, response.message);
+    if (response.success && request.enabled)
+      active_ = std::make_tuple(team, mode, members);
+    else if (response.success && active_ && std::get<1>(*active_) == mode &&
+             std::get<2>(*active_) == members)
+      active_.reset();
     return true;
   }
 
@@ -320,14 +504,44 @@ class FormationManager {
                std::string& error) {
     auto configured = configs_.find(mode);
     if (configured != configs_.end()) {
-      members = configured->second.members; team = configured->second.team_id;
-      if (!requested.empty() && requested != members) {
-        error = "members are defined by the loaded YAML profile"; return false;
+      team = configured->second.team_id;
+      if (mode == "consensus") {
+        members = requested;
+      } else {
+        members = configured->second.members;
+        if (!requested.empty() && requested != members) {
+          error = "leader_follow members are defined by the loaded YAML profile";
+          return false;
+        }
       }
     } else {
       members = requested;
-      if (members.empty()) { error = "members must be specified when no profile is loaded"; return false; }
       team.clear();
+    }
+    if (members.empty()) {
+      error = mode == "consensus" ?
+          "consensus members must be specified in the service request" :
+          "members must be specified";
+      return false;
+    }
+    if (members.size() < (mode == "consensus" ? 2u : 1u)) {
+      error = mode == "consensus" ? "consensus requires at least two members" :
+          "members are required";
+      return false;
+    }
+    std::set<std::string> unique;
+    for (const auto& member : members) {
+      if (!simpleName(member)) {
+        error = "members must contain valid UAV namespace names";
+        return false;
+      }
+      if (!unique.insert(member).second) {
+        error = "members contains duplicates";
+        return false;
+      }
+    }
+
+    if (!spawn_members_) {
       std::set<std::string> leaders;
       for (const auto& member : members) {
         const std::string ns = "/" + member + (mode == "consensus" ? "/formation_consensus" : "/formation_follower");
@@ -353,14 +567,6 @@ class FormationManager {
       if (mode == "leader_follow" && leaders.size() != 1) {
         error = "all leader-follow members must use the same leader"; return false;
       }
-    }
-    if (members.empty() || (mode == "consensus" && members.size() < 2)) {
-      error = mode == "consensus" ? "consensus requires at least two members" : "members are required"; return false;
-    }
-    std::set<std::string> unique;
-    for (const auto& member : members) {
-      if (!simpleName(member)) { error = "members must contain valid UAV namespace names"; return false; }
-      if (!unique.insert(member).second) { error = "members contains duplicates"; return false; }
     }
     return true;
   }
@@ -443,7 +649,8 @@ class FormationManager {
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   ros::ServiceServer set_service_;
   ros::ServiceServer stop_service_;
-  std::vector<ros::Subscriber> telemetry_subscribers_;
+  ros::Subscriber shape_subscriber_;
+  ros::Subscriber path_subscriber_;
   std::optional<std::tuple<std::string, std::string, std::vector<std::string>>> active_;
 };
 

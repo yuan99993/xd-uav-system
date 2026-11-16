@@ -17,7 +17,7 @@ def validate_offset(offset, minimum_distance):
 
 
 def formation_offsets(shape, follower_count, spacing):
-    """Return leader-frame slots following swiftwing's circle/grid layouts.
+    """Return leader-frame slots for the supported formation layouts.
 
     The original circle radius scales with team size.  We also keep every
     slot at least one spacing unit from the leader, including a one-follower
@@ -43,7 +43,29 @@ def formation_offsets(shape, follower_count, spacing):
                 slots.append((column * gap, -row * gap, 0.0))
                 if len(slots) == count:
                     return tuple(slots)
-    raise ValueError("shape must be circle or rectangle_compact")
+    if shape in ("line", "line_abreast"):
+        center = 0.5 * (count - 1)
+        return tuple((0.0, (center - index) * gap, 0.0)
+                     for index in range(count))
+    if shape in ("column", "single_file"):
+        center = 0.5 * (count - 1)
+        return tuple(((center - index) * gap, 0.0, 0.0)
+                     for index in range(count))
+    if shape in ("arrow", "vee", "v_shape"):
+        slots = [(0.0, 0.0, 0.0)]
+        leg_step = gap / math.sqrt(2.0)
+        index = 1
+        while len(slots) < count:
+            row = (index + 1) // 2
+            side = 1.0 if index % 2 == 1 else -1.0
+            slots.append((-row * leg_step, side * row * leg_step, 0.0))
+            index += 1
+        mean_x = sum(slot[0] for slot in slots) / len(slots)
+        mean_y = sum(slot[1] for slot in slots) / len(slots)
+        return tuple((x - mean_x, y - mean_y, z)
+                     for x, y, z in slots)
+    raise ValueError(
+        "shape must be circle, rectangle_compact, line, column, or arrow")
 
 
 def slot_target(leader_position, leader_yaw, offset, yaw_offset=0.0):
@@ -275,7 +297,39 @@ def rounded_path(waypoints, radius, loop):
     return tuple(result)
 
 
-def path_reference_state(center, waypoints, speed, lookahead, loop):
+def project_path_progress(position, waypoints, loop):
+    """Project a point to a path and return its progress and total length."""
+    points = tuple(tuple(float(value) for value in point)
+                   for point in waypoints)
+    if len(points) < 2 or any(len(point) != 3 for point in points):
+        raise ValueError("path requires at least two XYZ waypoints")
+    if (not all(math.isfinite(float(value)) for value in position) or
+            not all(math.isfinite(value) for point in points for value in point)):
+        raise ValueError("path projection input is non-finite")
+    if loop and points[-1] != points[0]:
+        points += (points[0],)
+    total = 0.0
+    nearest_distance_squared = float("inf")
+    nearest_s = 0.0
+    for start, end in zip(points[:-1], points[1:]):
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length < 1e-3:
+            raise ValueError("path has a zero-length horizontal segment")
+        fraction = max(0.0, min(1.0,
+            ((position[0] - start[0]) * dx +
+             (position[1] - start[1]) * dy) / (length * length)))
+        px, py = start[0] + fraction * dx, start[1] + fraction * dy
+        distance_squared = (position[0] - px) ** 2 + (position[1] - py) ** 2
+        if distance_squared < nearest_distance_squared:
+            nearest_distance_squared = distance_squared
+            nearest_s = total + fraction * length
+        total += length
+    return nearest_s, total
+
+
+def path_reference_state(center, waypoints, speed, lookahead, loop,
+                         progress_offset=0.0):
     """Return a path preview, its velocity, and its local turn rate."""
     points = tuple(tuple(float(value) for value in point) for point in waypoints)
     if len(points) < 2 or any(len(point) != 3 for point in points):
@@ -283,7 +337,8 @@ def path_reference_state(center, waypoints, speed, lookahead, loop):
     if not all(math.isfinite(value) for point in points for value in point):
         raise ValueError("path waypoint is non-finite")
     if (not all(math.isfinite(value) for value in (*center, speed, lookahead))
-            or speed <= 0 or lookahead < 0):
+            or not math.isfinite(progress_offset) or
+            speed <= 0 or lookahead < 0):
         raise ValueError("invalid path speed, preview or center")
     if loop and points[-1] != points[0]:
         points += (points[0],)
@@ -307,11 +362,11 @@ def path_reference_state(center, waypoints, speed, lookahead, loop):
         if distance_squared < nearest_distance_squared:
             nearest_distance_squared = distance_squared
             nearest_s = beginning + fraction * length
-    target_s = nearest_s + lookahead
+    target_s = nearest_s + lookahead + progress_offset
     if loop:
         target_s %= length_so_far
     else:
-        target_s = min(target_s, length_so_far)
+        target_s = max(0.0, min(target_s, length_so_far))
     for index, (start, end, dx, dy, length, beginning) in enumerate(segments):
         if target_s <= beginning + length or index == len(segments) - 1:
             fraction = max(0.0, min(1.0, (target_s - beginning) / length))

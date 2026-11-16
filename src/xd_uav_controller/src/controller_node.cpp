@@ -868,9 +868,36 @@ class ControllerNode {
           "fixedwing/modes/loiter/max_course_correction",
           "fixedwing/loiter/max_course_correction",
           &fixedwing_loiter_max_course_correction_, 0.70);
+      private_nh_.param(
+          "fixedwing/modes/vtol_back_transition/maximum_roll",
+          vtol_back_transition_max_roll_, 0.25);
+      private_nh_.param(
+          "fixedwing/modes/vtol_back_transition/maximum_roll_rate",
+          vtol_back_transition_max_roll_rate_, 0.35);
+      private_nh_.param(
+          "fixedwing/modes/vtol_back_transition/maximum_pitch",
+          vtol_back_transition_max_pitch_, 0.25);
+      private_nh_.param(
+          "fixedwing/modes/vtol_back_transition/maximum_pitch_rate",
+          vtol_back_transition_max_pitch_rate_, 0.35);
       if (fixedwing_loiter_radius_ < 5.0) {
         throw std::runtime_error(
             "fixedwing/modes/loiter/radius必须不小于5米");
+      }
+      if (!std::isfinite(vtol_back_transition_max_roll_) ||
+          vtol_back_transition_max_roll_ <= 0.0 ||
+          vtol_back_transition_max_roll_ > max_roll_ ||
+          !std::isfinite(vtol_back_transition_max_roll_rate_) ||
+          vtol_back_transition_max_roll_rate_ <= 0.0 ||
+          vtol_back_transition_max_roll_rate_ > maximum_body_rate_[0] ||
+          !std::isfinite(vtol_back_transition_max_pitch_) ||
+          vtol_back_transition_max_pitch_ <= 0.0 ||
+          vtol_back_transition_max_pitch_ > max_pitch_ ||
+          !std::isfinite(vtol_back_transition_max_pitch_rate_) ||
+          vtol_back_transition_max_pitch_rate_ <= 0.0 ||
+          vtol_back_transition_max_pitch_rate_ > maximum_body_rate_[1]) {
+        throw std::runtime_error(
+            "VTOL回旋翼滚转/俯仰角及角速度限制必须为正且不超过固定翼上限");
       }
       if (fixedwing_guidance_lookahead_distance_ < 5.0) {
         throw std::runtime_error(
@@ -1822,6 +1849,44 @@ class ControllerNode {
     state_ = *message;
     last_state_receive_ = ros::Time::now();
     have_state_ = true;
+    const auto flight_regime =
+        static_cast<xd_uav_controller::FlightRegime>(
+            state_.flight_regime);
+    const bool vtol_back_transition =
+        xd_uav_controller::isVtolAirframe(
+            static_cast<xd_uav_controller::AirframeType>(
+                state_.airframe_type)) &&
+        (flight_regime ==
+             xd_uav_controller::FlightRegime::kTransitionToHover ||
+         (state_.transition_pending &&
+          state_.requested_regime ==
+              xd_uav_controller::ControlState::REQUESTED_HOVER));
+    if (vtol_back_transition &&
+        !vtol_back_transition_hold_altitude_valid_ &&
+        std::isfinite(state_.position_odom.z)) {
+      vtol_back_transition_hold_altitude_ = state_.position_odom.z;
+      vtol_back_transition_hold_altitude_valid_ = true;
+      vtol_back_transition_heading_hold_active_ = true;
+      vtol_back_transition_initial_course_ = currentFixedwingCourse();
+      resetFixedwingControlState();
+      ROS_INFO(
+          "[xd_uav_controller] 回旋翼转换开始，沿当前航向直飞并保持高度 %.2f m；"
+          "滚转/俯仰限制 %.2f/%.2f rad，角速度限制 %.2f/%.2f rad/s",
+          vtol_back_transition_hold_altitude_,
+          vtol_back_transition_max_roll_,
+          vtol_back_transition_max_pitch_,
+          vtol_back_transition_max_roll_rate_,
+          vtol_back_transition_max_pitch_rate_);
+    } else if (!state_.transition_pending &&
+               (flight_regime ==
+                    xd_uav_controller::FlightRegime::kHover ||
+                flight_regime ==
+                    xd_uav_controller::FlightRegime::kForwardFlight ||
+                flight_regime ==
+                    xd_uav_controller::FlightRegime::kTransitionToForward)) {
+      vtol_back_transition_hold_altitude_valid_ = false;
+      vtol_back_transition_heading_hold_active_ = false;
+    }
     const xd_uav_controller::BackendId selected_backend =
         activeBackend();
     if (selected_backend != xd_uav_controller::BackendId::kNone &&
@@ -4085,13 +4150,11 @@ class ControllerNode {
         0.0, 1.0);
   }
 
-  void startFixedwingLoiter(
-      const double altitude,
-      const std::string& reason) {
+  void setFixedwingLoiterCenterTangentToCurrentCourse(
+      const double altitude) {
     const double course = currentFixedwingCourse();
     const double direction =
         static_cast<double>(fixedwing_loiter_direction_);
-
     // Put the circle centre to the left for a CCW orbit and to the
     // right for a CW orbit. The current position/course is therefore
     // tangent to the new circle and entering loiter does not require
@@ -4105,6 +4168,12 @@ class ControllerNode {
         direction * fixedwing_loiter_radius_ *
             std::cos(course);
     fixedwing_loiter_center_.z() = altitude;
+  }
+
+  void startFixedwingLoiter(
+      const double altitude,
+      const std::string& reason) {
+    setFixedwingLoiterCenterTangentToCurrentCourse(altitude);
     fixedwing_loiter_active_ = true;
     takeoff_active_ = false;
     internal_reference_active_ = true;
@@ -5235,7 +5304,8 @@ class ControllerNode {
         !internal_reference_active_ &&
         !idle_reference_active_ &&
         !landing_active_ &&
-        !fixedwing_loiter_active_;
+        !fixedwing_loiter_active_ &&
+        !vtol_back_transition_heading_hold_active_;
     const bool external_setpoint =
         external_reference && !reference.trajectory_reference &&
         !reference.path_reference;
@@ -5413,6 +5483,20 @@ class ControllerNode {
     target.enable_altitude_integrator =
         target.use_altitude_feedback &&
         !takeoff_active_ && !landing_active_;
+    if (vtol_back_transition_hold_altitude_valid_ &&
+        std::isfinite(vtol_back_transition_hold_altitude_) &&
+        std::isfinite(state_.position_odom.z)) {
+      // Keep following the active fixed-wing XY reference, but pin the
+      // altitude loop to the height measured when PX4 began back-transition.
+      target.use_altitude_feedback = true;
+      target.altitude_error =
+          vtol_back_transition_hold_altitude_ -
+          state_.position_odom.z;
+      target.climb_rate_feedforward = 0.0;
+      target.vertical_acceleration_feedforward = 0.0;
+      target.enable_altitude_integrator =
+          !takeoff_active_ && !landing_active_;
+    }
     return target;
   }
 
@@ -5452,9 +5536,14 @@ class ControllerNode {
     }
     last_fixedwing_control_time_ = now;
 
-    const FixedwingControlTarget target =
+    FixedwingControlTarget target =
         makeFixedwingControlTarget(
             reference, current_course, yaw, dt);
+    if (vtol_back_transition_heading_hold_active_) {
+      target.course = vtol_back_transition_initial_course_;
+      target.course_rate_feedforward = 0.0;
+      target.enable_course_integrator = false;
+    }
 
     const double airspeed =
         std::max(minimum_airspeed_, state_.airspeed);
@@ -5496,6 +5585,12 @@ class ControllerNode {
     double desired_roll = clamp(
         -std::atan2(airspeed * desired_course_rate, gravity_),
         -max_roll_, max_roll_);
+    if (vtol_back_transition_heading_hold_active_) {
+      desired_roll = clamp(
+          desired_roll,
+          -vtol_back_transition_max_roll_,
+          vtol_back_transition_max_roll_);
+    }
     if ((reference.trajectory_reference || reference.path_reference) &&
         std::abs(target.course_rate_feedforward) > 0.03) {
       ROS_INFO_THROTTLE(
@@ -5518,9 +5613,27 @@ class ControllerNode {
         minimum_airspeed_ * std::sqrt(load_factor) +
             bank_airspeed_margin_,
         minimum_airspeed_, maximum_airspeed_);
+    const bool vtol_back_transition =
+        xd_uav_controller::isVtolAirframe(
+            static_cast<xd_uav_controller::AirframeType>(
+                state_.airframe_type)) &&
+        (static_cast<xd_uav_controller::FlightRegime>(
+             state_.flight_regime) ==
+             xd_uav_controller::FlightRegime::kTransitionToHover ||
+         (state_.transition_pending &&
+          state_.requested_regime ==
+              xd_uav_controller::ControlState::REQUESTED_HOVER));
     if (takeoff_active_ || landing_active_) {
       // Dedicated takeoff and landing laws deliberately pass through low
       // airspeed and must not latch the normal airborne recovery mode.
+      fixedwing_underspeed_active_ = false;
+    } else if (vtol_back_transition) {
+      // Back-transition deliberately reduces airspeed. The fixed-wing
+      // underspeed recovery law commands maximum throttle and, below the
+      // configured minimum airspeed, nose-down pitch. That fights the PX4
+      // transition and can trade away altitude before the MC backend takes
+      // over. Keep the altitude controller active and leave speed recovery
+      // disabled until PX4 reports a stable flight regime again.
       fixedwing_underspeed_active_ = false;
     } else if (!fixedwing_underspeed_active_ &&
                state_.airspeed < bank_protected_airspeed) {
@@ -5619,15 +5732,19 @@ class ControllerNode {
         -vertical_acceleration_pitch_rate_gain_ *
         target.vertical_acceleration_feedforward /
         std::max(minimum_airspeed_, airspeed);
+    const double fixedwing_energy_throttle =
+        vtol_back_transition
+            ? trim_throttle_
+            : trim_throttle_ +
+                  airspeed_throttle_gain_ *
+                      (std::max(target.airspeed,
+                                bank_protected_airspeed) -
+                       state_.airspeed) +
+                  turn_load_factor_throttle_gain_ *
+                      (load_factor - 1.0);
     double throttle = clamp(
-        trim_throttle_ +
-            airspeed_throttle_gain_ *
-                (std::max(target.airspeed,
-                          bank_protected_airspeed) -
-                 state_.airspeed) +
-            climb_rate_throttle_gain_ * desired_climb_rate +
-            turn_load_factor_throttle_gain_ *
-                (load_factor - 1.0),
+        fixedwing_energy_throttle +
+            climb_rate_throttle_gain_ * desired_climb_rate,
         minimum_throttle_, maximum_throttle_);
 
     if (takeoff_active_) {
@@ -5698,15 +5815,36 @@ class ControllerNode {
           load_factor);
     }
 
+    if (vtol_back_transition_heading_hold_active_) {
+      desired_roll = clamp(
+          desired_roll,
+          -vtol_back_transition_max_roll_,
+          vtol_back_transition_max_roll_);
+      desired_pitch = clamp(
+          desired_pitch,
+          -vtol_back_transition_max_pitch_,
+          vtol_back_transition_max_pitch_);
+    }
+
+    const double roll_body_rate_limit =
+        vtol_back_transition_heading_hold_active_
+            ? std::min(maximum_body_rate_[0],
+                       vtol_back_transition_max_roll_rate_)
+            : maximum_body_rate_[0];
+    const double pitch_body_rate_limit =
+        vtol_back_transition_heading_hold_active_
+            ? std::min(maximum_body_rate_[1],
+                       vtol_back_transition_max_pitch_rate_)
+            : maximum_body_rate_[1];
     result.body_rate.x() = clamp(
         (desired_roll - roll) /
             std::max(0.1, roll_time_constant_),
-        -maximum_body_rate_[0], maximum_body_rate_[0]);
+        -roll_body_rate_limit, roll_body_rate_limit);
     result.body_rate.y() = clamp(
         (desired_pitch - pitch) /
                 std::max(0.1, pitch_time_constant_) +
             pitch_rate_feedforward,
-        -maximum_body_rate_[1], maximum_body_rate_[1]);
+        -pitch_body_rate_limit, pitch_body_rate_limit);
     result.body_rate.z() = clamp(
         -gravity_ * std::tan(desired_roll) / airspeed,
         -maximum_body_rate_[2], maximum_body_rate_[2]);
@@ -5937,7 +6075,9 @@ class ControllerNode {
             ? (path_active_ ? "path_finite_horizon_mpc_so3"
                             : "finite_horizon_mpc_so3")
             : backend == xd_uav_controller::BackendId::kFixedWing
-            ? (landing_active_
+            ? (vtol_back_transition_heading_hold_active_
+                   ? "fixedwing_vtol_backtransition_heading_hold"
+                   : landing_active_
                    ? "fixedwing_course_energy_landing"
                    : fixedwing_loiter_active_
                    ? "fixedwing_course_energy_loiter"
@@ -5992,6 +6132,16 @@ class ControllerNode {
     Reference reference;
     if (landing_active_) {
       reference = makeLandingReference();
+    } else if (backend == xd_uav_controller::BackendId::kFixedWing &&
+               vtol_back_transition_heading_hold_active_) {
+      reference.type = xd_uav_controller::ReferenceType::kIdle;
+      reference.source = "vtol_back_transition_heading_hold";
+      reference.header.stamp = now;
+      reference.header.frame_id = state_.header.frame_id;
+      reference.position.z = vtol_back_transition_hold_altitude_;
+      reference.yaw = vtol_back_transition_initial_course_;
+      reference.use_position[2] = true;
+      reference.use_yaw = true;
     } else if (internal_reference_active_) {
       reference = makeTakeoffReference();
     } else if (idle_reference_active_) {
@@ -6399,6 +6549,10 @@ class ControllerNode {
   double underspeed_max_nose_up_pitch_{0.05};
   bool fixedwing_underspeed_active_{false};
   double fixedwing_altitude_integral_climb_rate_{0.0};
+  double vtol_back_transition_hold_altitude_{0.0};
+  bool vtol_back_transition_hold_altitude_valid_{false};
+  bool vtol_back_transition_heading_hold_active_{false};
+  double vtol_back_transition_initial_course_{0.0};
   double filtered_climb_rate_{0.0};
   bool filtered_climb_rate_initialized_{false};
   ros::Time last_fixedwing_control_time_;
@@ -6412,6 +6566,10 @@ class ControllerNode {
   int fixedwing_loiter_direction_{1};
   double fixedwing_loiter_radial_gain_{1.0};
   double fixedwing_loiter_max_course_correction_{0.70};
+  double vtol_back_transition_max_roll_{0.25};
+  double vtol_back_transition_max_roll_rate_{0.35};
+  double vtol_back_transition_max_pitch_{0.25};
+  double vtol_back_transition_max_pitch_rate_{0.35};
   double fixedwing_path_curvature_distance_{10.0};
   double fixedwing_path_curvature_preview_time_{0.30};
   double fixedwing_path_completion_radius_{20.0};

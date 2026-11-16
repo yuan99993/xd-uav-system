@@ -1,6 +1,5 @@
-# Shared profile for 30 fixed-wing aircraft.
-# The unified launch starts nodes for every configured mode; the service's
-# `mode` selects which group publishes references.
+# Shared parameters for fixed-wing formation modes. Consensus members are
+# selected in each /formation/set_enabled request; leader_follow is static.
 team_id: fixedwing_30
 
 leader_follow:
@@ -20,9 +19,13 @@ leader_follow:
 
 consensus:
   team_id: fixedwing_30_consensus
-  members: [uav1, uav2, uav3, uav4, uav5, uav6]
   common_frame: world
-  shape: circle
+  # line：一字横队
+  # column：纵队
+  # arrow：箭头/V形
+  # circle 圆形
+  # rectangle_compact 网格
+  shape: column
   spacing: 100.0
   acquire_tolerance: 20.0
   acquire_height_tolerance: 5.0
@@ -39,7 +42,7 @@ consensus:
   cruise_speed: 20.0
   lookahead_distance: 50.0
   consensus_gain: 0.4
-  max_consensus_velocity: 4.0  # m/s, slot correction limit during route flight
+  max_consensus_velocity: 8.0  # m/s, slot correction limit during route flight
   # Capture-stage settings: lateral gain and independent velocity limits (m/s).
   acquire_consensus_gain: 0.8
   acquire_max_consensus_velocity: 10.0

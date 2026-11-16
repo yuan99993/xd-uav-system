@@ -25,17 +25,23 @@ required_vehicle_launches:
   - track
   - h264_sender
 
+# One formation manager owns the whole fleet and uses the fixed config in
+# formation.launch. Start it once per simulation session.
+required_shared_launches:
+  - formation
+
 sensor_types:
   front_gimbal_camera:
-    description: Front EO camera on the gimbal, with range sensor topics.
+    description: Existing front-view camera entry; it is mounted on the EO gimbal.
   down_camera:
     description: Downward camera.
   lidar:
     description: Point cloud or laser range sensor.
 
 parameters:
-  gimbal_attitude_bridge_script: "{workspace}/src/bridge/gimbal_attitude_bridge.py"
-  gimbal_control_script: "{workspace}/src/bridge/gimbal_control.py"
+  gimbal_attitude_bridge_script: /home/nvidia/image_compress/gimbal_attitude_bridge.py
+  gimbal_control_script: /home/nvidia/image_compress/gimbal_control.py
+  video_stream_receiver_script: "{workspace}/src/bridge/video_stream_receiver.py"
   h264_sender_script: "{workspace}/src/bridge/h264_nal_multicast_sender.py"
   airsim_scene: SceneBasicDrone
 
@@ -99,7 +105,6 @@ vehicle_launches:
       - xd_uav_track
       - track.launch
       - "UAV_NAME:={name}"
-      - "config:={track_config}"
 
   h264_sender:
     argv:
@@ -116,8 +121,6 @@ vehicle_launches:
     sensor_required: true
     sensor_types: [front_gimbal_camera, down_camera, lidar]
     required_sensor_params:
-      front_gimbal_camera: [image_topic, camera_info_topic]
-      down_camera: [image_topic, camera_info_topic]
       lidar: [point_cloud_topic]
     sensor_param_map:
       image_topic: image_topic
@@ -138,93 +141,72 @@ vehicle_launches:
       - task_execute.launch
       - "UAV_NAME:={name}"
 
+  camera_stream_receiver:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera, down_camera]
+    ignore_selection_params: true
+    argv:
+      - python3
+      - "{video_stream_receiver_script}"
+      - "--camera"
+      - "{camera_stream_name}"
+      - --no-display
+      - --ros-image-topic
+      - "{image_topic}"
+      - --ros-camera-info-output-topic
+      - "{camera_info_topic}"
+
   sar_yolo_detector:
     sensor_required: true
     sensor_types: [front_gimbal_camera, down_camera]
-    required_sensor_params:
-      front_gimbal_camera: [image_topic, camera_info_topic]
-      down_camera: [image_topic, camera_info_topic]
     argv:
       - roslaunch
       - sar_yolo_detector
       - xd_smart_tracker_fusion_integration.launch
       - "UAV_NAME:={name}"
-      - "instance_name:={instance_name}"
-      - "tracking_mode:={tracking_mode}"
-      - "config:={config}"
-      - "vehicle_config:={vehicle_config}"
-      - "fusion_config:={fusion_config}"
       - "input_image_topic:={input_image_topic}"
       - "camera_info_topic:={camera_info_topic}"
-      - "camera_motion_fixed_frame:={camera_motion_fixed_frame}"
-      - "image_width:={image_width}"
-      - "image_height:={image_height}"
-      - "tracked_detections_topic:={tracked_detections_topic}"
-      - "fusion_detections_topic:={fusion_detections_topic}"
-      - "fusion_observations_topic:={fusion_observations_topic}"
-      - "selected_detections_topic:={selected_detections_topic}"
-      - "select_pixel_topic:={select_pixel_topic}"
-      - "auto_select_service:={auto_select_service}"
-      - "auto_select_status_topic:={auto_select_status_topic}"
-      - "state_topic:={state_topic}"
-      - "annotated_image_topic:={annotated_image_topic}"
-      - "gimbal_detection_topic:={gimbal_detection_topic}"
-      - "bridge_input_topic:={bridge_input_topic}"
-      - "bridge_input_type:={bridge_input_type}"
-      - "output_detections_topic:={output_detections_topic}"
-      - "detect_bridge_enabled:={detect_bridge_enabled}"
-      - "detect_output_detections_topic:={detect_output_detections_topic}"
-      - "model_path:={model_path}"
-      - "model_sha256:={model_sha256}"
-      - "python_executable:={python_executable}"
-      - "use_gpu:={use_gpu}"
-      - "shared_inference:={shared_inference}"
-      - "maximum_batch_size:={maximum_batch_size}"
-      - "inference_max_fps:={inference_max_fps}"
-      - "maximum_capture_age_sec:={maximum_capture_age_sec}"
-      - "publish_annotated_image:={publish_annotated_image}"
-      - "image_source:={image_source}"
-      - "sensor_id:={sensor_id}"
 
   gimbal_attitude_bridge:
     sensor_required: true
     sensor_types: [front_gimbal_camera]
-    parameter_prefix: "_"
-    sensor_param_map:
-      track_gimbal_state_topic: track_gimbal_state_topic
-    default_params:
-      uav_ns: "/{name}"
-      track_gimbal_state_topic: "/{name}/track/gimbal_state"
     argv:
       - python3
       - "{gimbal_attitude_bridge_script}"
+      - "_uav_ns:=/{name}"
 
   gimbal_control:
     sensor_required: true
     sensor_types: [front_gimbal_camera]
-    required_params: [mode]
-    parameter_choices:
-      mode: [tracking, manual, simulate]
-      detection_input: [tracked, bbox2d]
-    conditional_required_params:
-      mode:
-        tracking: [detection_input, detection_topic]
-    parameter_prefix: "_"
-    sensor_param_map:
-      image_width: image_width
-      image_height: image_height
-    default_params:
-      uav_name: "{name}"
+    ignore_selection_params: true
     argv:
       - python3
       - "{gimbal_control_script}"
+      - "_uav_name:={name}"
+      - "_mode:=tracking"
+      - "_stabilize:=true"
+      - "_detection_topic:=/{name}/sar_yolo_detector/smart/selected_tracked_detections"
+      - "_image_width:=1280"
+      - "_image_height:=720"
+      - "_fov_x_deg:=45"
+      - "_kp_yaw:=0.05"
+      - "_kp_pitch:=0.02"
+      - "_ki_yaw:=0.05"
+      - "_ki_pitch:=0.03"
+      - "_ff_alpha:=0.0"
+      - "_max_slew_yaw:=15"
+      - "_max_slew_pitch:=8"
+      - "_filter_alpha:=0.3"
+      - "_deadzone_px:=8"
 
   target_geolocation:
     sensor_required: true
     sensor_types: [front_gimbal_camera]
     required_params: [detection_topic]
-    required_sensor_params:
-      front_gimbal_camera: [range_topic, gimbal_att_topic]
+    selection_param_map:
+      detection_topic: det_topic
+    forced_params:
+      det_topic: "/{name}/sar_yolo_detector/smart/selected_tracked_detections"
     sensor_param_map:
       range_topic: range_topic
       gimbal_att_topic: gimbal_att_topic
@@ -237,8 +219,21 @@ vehicle_launches:
       - "airsim_scene:={airsim_scene}"
       - "airsim_drone:={drone}"
       - "node_name:=target_geolocation_{name}"
-      - "det_topic:={detection_topic}"
       - "det_sensor_id:={sensor_id}"
+
+# Existing front_gimbal_camera entries all refer to the one front camera on
+# the EO gimbal. Starting that sensor starts its three gimbal programs once.
+# Explicit entries in a vehicle's launches list override these defaults.
+automatic_sensor_launches:
+  front_gimbal_camera:
+    - id: camera_stream_receiver
+    - id: gimbal_attitude_bridge
+    - id: gimbal_control
+    - id: target_geolocation
+      params:
+        detection_topic: "{automatic_detection_topic}"
+  down_camera:
+    - id: camera_stream_receiver
 
 shared_launches:
   world_tf:
@@ -253,8 +248,6 @@ shared_launches:
       - roslaunch
       - xd_uav_formation
       - formation.launch
-      - "config:={formation_config}"
-      - "common_config:={formation_common_config}"
 
 profiles:
   vtol:
@@ -266,7 +259,7 @@ profiles:
       sar_python: /home/nvidia/xd-uavsystem-test/.venv-sar/bin/python
       tracking_mode: FusionTracker
       bridge_input_type: tracked
-      detect_bridge_enabled: "false"
+      detect_bridge_enabled: "true"
       use_gpu: "true"
       shared_inference: "true"
       maximum_batch_size: 1
@@ -279,8 +272,6 @@ profiles:
       image_height: 720
     files:
       world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
-      formation_template: /home/nvidia/xd-uavsystem-test/src/start_script/templates/formation_template.yaml
-      formation_common_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_formation/config/common.yaml
       track_config_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
       sar_base_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker.yaml
       sar_vehicle_config_template: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml
@@ -292,8 +283,6 @@ profiles:
       controller_config_by_type:
         fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/fixedwing_projectairsim.yaml
         multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/multirotor.yaml
-    formation_longitudinal_spacing: 80.0
-    formation_lateral_offset: 40.0
 
   fixedwing:
     parameters:
@@ -304,7 +293,7 @@ profiles:
       sar_python: /home/nvidia/xd-uavsystem-test/.venv-sar/bin/python
       tracking_mode: FusionTracker
       bridge_input_type: tracked
-      detect_bridge_enabled: "false"
+      detect_bridge_enabled: "true"
       use_gpu: "true"
       shared_inference: "true"
       maximum_batch_size: 1
@@ -317,8 +306,6 @@ profiles:
       image_height: 720
     files:
       world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
-      formation_template: /home/nvidia/xd-uavsystem-test/src/start_script/templates/formation_template.yaml
-      formation_common_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_formation/config/common.yaml
       track_config_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
       sar_base_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker.yaml
       sar_vehicle_config_template: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml
@@ -330,8 +317,6 @@ profiles:
       controller_config_by_type:
         fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/fixedwing_projectairsim.yaml
         multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/multirotor.yaml
-    formation_longitudinal_spacing: 80.0
-    formation_lateral_offset: 40.0
 
   multirotor:
     parameters:
@@ -342,7 +327,7 @@ profiles:
       sar_python: /home/nvidia/xd-uavsystem-test/.venv-sar/bin/python
       tracking_mode: FusionTracker
       bridge_input_type: tracked
-      detect_bridge_enabled: "false"
+      detect_bridge_enabled: "true"
       use_gpu: "true"
       shared_inference: "true"
       maximum_batch_size: 1
@@ -355,8 +340,6 @@ profiles:
       image_height: 720
     files:
       world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
-      formation_template: /home/nvidia/xd-uavsystem-test/src/start_script/templates/formation_template.yaml
-      formation_common_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_formation/config/common.yaml
       track_config_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
       sar_base_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker.yaml
       sar_vehicle_config_template: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml
@@ -368,5 +351,3 @@ profiles:
       controller_config_by_type:
         fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/fixedwing_projectairsim.yaml
         multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/multirotor.yaml
-    formation_longitudinal_spacing: 80.0
-    formation_lateral_offset: 40.0

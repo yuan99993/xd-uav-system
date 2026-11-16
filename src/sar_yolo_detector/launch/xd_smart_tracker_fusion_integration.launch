@@ -6,7 +6,7 @@
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
   <!-- Unique suffix for a second (for example gimbal) camera instance. -->
   <arg name="instance_name" default="smart" /> 
-  <arg name="tracking_mode" default="" />
+  <arg name="tracking_mode" default="FusionTracker" />
   <arg name="fusion_config" default="$(find sar_yolo_detector)/config/fusion_tracker.yaml" />
   <!-- 不要改这个instancename -->
   <arg name="config"
@@ -14,10 +14,10 @@
   <arg name="vehicle_config"
        default="$(find sar_yolo_detector)/config/smart_tracker_xd_vehicle.yaml" />
   <arg name="model_path"
-       default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7.pt" />
+       default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine" />
   <arg name="model_sha256"
-       default="8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54" />
-  <arg name="python_executable" default="" />
+       default="471011311fa9fa6a4067c9cae2fb7e29215fb32956c36a3ea3112c06e75b784e" />
+  <arg name="python_executable" default="/home/nvidia/xd-uavsystem-test/.venv-sar/bin/python" />
   <arg name="use_gpu" default="true" />
   <!-- One elected process per model hash owns the GPU model. Every UAV
        tracker remains independent and calls that process for detections. -->
@@ -26,7 +26,7 @@
        only when the cached dynamic-batch engine has already been built. -->
   <arg name="maximum_batch_size" default="1" />
   <!-- Drop frames that have already waited too long, keeping image updates fresh. -->
-  <arg name="inference_max_fps" default="10.0" />
+  <arg name="inference_max_fps" default="20.0" />
   <arg name="maximum_capture_age_sec" default="2.0" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
   <arg name="camera_info_topic" default="down_camera/camera_info" />
@@ -61,7 +61,7 @@
   <arg name="bridge_input_type" default="tracked" />
   <!-- Optionally route the same selected box through a second bridge into
        xd_uav_detect, while preserving the selected-box track-controller path. -->
-  <arg name="detect_bridge_enabled" default="false" />
+  <arg name="detect_bridge_enabled" default="true" />
   <arg name="detect_output_detections_topic"
        default="detect/input/detections_2d" />
   <arg name="publish_annotated_image" default="true" />

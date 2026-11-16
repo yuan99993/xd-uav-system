@@ -64,8 +64,8 @@ fixedwing:
 
   energy_control:
     cruise_airspeed: 20.0
-    minimum_airspeed: 10.0
-    maximum_airspeed: 40.0
+    minimum_airspeed: 8.0
+    maximum_airspeed: 50.0
     trim_throttle: 0.25
     airspeed_throttle_gain: 0.08
     # 爬升时同步补油以维持空速。
@@ -101,6 +101,13 @@ fixedwing:
       direction: 1
       radial_gain: 1.0
       max_course_correction: 0.70
+
+    vtol_back_transition:
+      # 回旋翼期间沿转换开始时的航向直飞并保持高度，限制角度与角速度。
+      maximum_roll: 0.25
+      maximum_roll_rate: 0.35
+      maximum_pitch: 0.25
+      maximum_pitch_rate: 0.35
 
   takeoff:
     default_altitude: 30.0

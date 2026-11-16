@@ -2,6 +2,7 @@
   <node pkg="xd_uav_formation" type="formation_manager_cpp"
         name="formation_manager" output="screen" required="true">
     <param name="config" value="$(find xd_uav_formation)/test/cpp_fixedwing.yaml"/>
+    <param name="common_config" value="$(find xd_uav_formation)/config/common.yaml"/>
     <param name="spawn_members" value="true"/>
   </node>
   <test test-name="formation_cpp_fixedwing" pkg="xd_uav_formation"

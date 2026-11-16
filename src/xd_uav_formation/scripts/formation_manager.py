@@ -11,8 +11,13 @@ import time
 import rospy
 import tf2_ros
 import yaml
+from nav_msgs.msg import Path
+from std_msgs.msg import String
 from std_srvs.srv import SetBool, Trigger, TriggerResponse
+from tf2_geometry_msgs.tf2_geometry_msgs import do_transform_pose
 
+from xd_uav_formation.core import (
+    formation_offsets, path_reference_state, rounded_path)
 from xd_uav_formation.runtime import FormationRuntime
 from xd_uav_formation.srv import FormationControl, FormationControlResponse
 
@@ -21,6 +26,44 @@ _SIMPLE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 _FORMATION_SERVICE = re.compile(
     r"^/([A-Za-z0-9_-]+)/formation_(consensus|follower)/set_enabled$")
 _MODES = ("leader_follow", "consensus")
+_COMMON_NUMERIC_CONFIG_KEYS = (
+    "minimum_slot_distance", "fixedwing_minimum_slot_distance",
+    "fixedwing_min_speed", "fixedwing_max_catchup_speed",
+    "fixedwing_min_groundspeed_for_course", "multirotor_max_speed",
+    "catchup_gain", "catchup_ki", "catchup_kd", "catchup_deadband",
+    "catchup_integral_limit", "catchup_derivative_filter_time_constant",
+    "multirotor_max_catchup_speed", "yaw_offset", "rate",
+    "state_timeout", "mavros_timeout", "tf_max_age",
+    "future_stamp_tolerance", "tf_lookup_timeout",
+    "tf_buffer_cache_time", "external_quiet_time")
+_CONSENSUS_NUMERIC_CONFIG_KEYS = (
+    "spacing", "corner_radius", "cruise_speed", "lookahead_distance",
+    "consensus_gain", "convergence_time", "max_consensus_velocity",
+    "acquire_consensus_gain", "acquire_max_consensus_velocity",
+    "acquire_max_speed_adjustment", "formation_heading_rate_limit",
+    "formation_speed_slew_rate", "formation_course_slew_rate",
+    "route_correction_gain", "max_route_correction_velocity",
+    "acquire_tolerance", "acquire_height_tolerance",
+    "acquire_vertical_spacing", "acquire_timeout")
+
+
+def _require_numeric_config(config, keys, mode):
+    for key in keys:
+        value = config.get(key)
+        if isinstance(value, bool) or value is None:
+            raise ValueError(
+                "{} configuration is missing numeric parameter: {}".
+                format(mode, key))
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "{} configuration parameter must be numeric: {}".
+                format(mode, key))
+        if not math.isfinite(number):
+            raise ValueError(
+                "{} configuration parameter must be finite: {}".
+                format(mode, key))
 
 
 def _load_yaml(path):
@@ -49,12 +92,30 @@ class FormationManager:
         self._profile = _load_yaml(config_path)
         common_parameters = _load_yaml(common_config_path)
         common_parameters.update(self._profile.get("common", {}) or {})
-        self._service_timeout = float(rospy.get_param(
-            "~service_timeout", common_parameters.get("service_timeout", 3.0)))
+        if "service_timeout" in common_parameters:
+            service_timeout = common_parameters["service_timeout"]
+        elif rospy.has_param("~service_timeout"):
+            service_timeout = rospy.get_param("~service_timeout")
+        elif config_path or common_config_path:
+            raise ValueError(
+                "formation configuration is missing numeric parameter: "
+                "service_timeout")
+        else:
+            service_timeout = 3.0
+        self._service_timeout = float(service_timeout)
         if not math.isfinite(self._service_timeout) or \
                 self._service_timeout <= 0:
             raise ValueError("service_timeout must be a positive finite number")
         self._load_mode_configs(self._profile, common_parameters)
+        self._selection_subscribers = []
+        if "consensus" in self._configured_modes:
+            self._selection_subscribers.extend((
+                rospy.Subscriber("/formation/shape", String,
+                                 self._shape_command_callback,
+                                 queue_size=1),
+                rospy.Subscriber("/formation/path", Path,
+                                 self._path_command_callback,
+                                 queue_size=1)))
 
         self._spawn_members = bool(rospy.get_param("~spawn_members", False))
         if self._spawn_members:
@@ -104,14 +165,18 @@ class FormationManager:
             config = self._normalise_mode_config(
                 raw_config, common_parameters, profile)
             members = config.get("members")
-            if not isinstance(members, list) or not members or any(
-                    not self._valid_name(member) for member in members):
-                raise ValueError(
-                    "{} config must contain valid members".format(mode))
-            if len(set(members)) != len(members):
-                raise ValueError("{} members contains duplicates".format(mode))
-            if mode == "consensus" and len(members) < 2:
-                raise ValueError("consensus requires at least two members")
+            if mode == "consensus":
+                # The YAML supplies algorithm parameters only. The service
+                # request supplies the members for each consensus run.
+                config["members"] = []
+                members = []
+            else:
+                if not isinstance(members, list) or not members or any(
+                        not self._valid_name(member) for member in members):
+                    raise ValueError(
+                        "{} config must contain valid members".format(mode))
+                if len(set(members)) != len(members):
+                    raise ValueError("{} members contains duplicates".format(mode))
             if mode == "leader_follow":
                 leader = config.get("leader_name", "")
                 offsets = config.get("offsets")
@@ -129,7 +194,98 @@ class FormationManager:
             if not self._valid_name(team_id):
                 raise ValueError("{} has invalid team_id".format(mode))
             config["mode"] = mode
+            required_numeric = list(_COMMON_NUMERIC_CONFIG_KEYS)
+            if mode == "consensus":
+                required_numeric.extend(_CONSENSUS_NUMERIC_CONFIG_KEYS)
+            _require_numeric_config(config, required_numeric, mode)
+            if mode == "consensus":
+                config["shape"] = str(config.get("shape", "circle")).strip().lower()
+                config["spacing"] = float(config.get("spacing", 80.0))
+                config["loop_path"] = bool(config.get("loop_path", True))
+                config["waypoints"] = rounded_path(
+                    config.get("waypoints", []),
+                    float(config.get("corner_radius", 0.0)),
+                    config["loop_path"])
+                path_reference_state(
+                    (0.0, 0.0, 0.0), config["waypoints"],
+                    float(config.get("cruise_speed", 20.0)),
+                    float(config.get("lookahead_distance", 60.0)),
+                    config["loop_path"])
+                config["waypoints_are_final"] = True
+                formation_offsets(config["shape"], 2, config["spacing"])
             self._configured_modes[mode] = config
+
+    def _shape_command_callback(self, message):
+        shape = message.data.strip().lower()
+        with self._lock:
+            config = self._configured_modes.get("consensus")
+            if config is None:
+                return
+            try:
+                formation_offsets(shape, 2, config["spacing"])
+                runtime = self._mode_runtimes.get("consensus")
+                if runtime is not None:
+                    runtime.update_selection(shape=shape)
+                config["shape"] = shape
+                rospy.loginfo(
+                    "[xd_uav_formation] selected formation shape: %s", shape)
+            except (TypeError, ValueError) as error:
+                rospy.logwarn(
+                    "[xd_uav_formation] rejected shape '%s': %s",
+                    shape, error)
+
+    def _path_command_callback(self, message):
+        with self._lock:
+            config = self._configured_modes.get("consensus")
+            if config is None:
+                return
+            try:
+                if len(message.poses) < 2:
+                    raise ValueError("path requires at least two poses")
+                target_frame = str(config.get("common_frame", "world")).strip("/")
+                waypoints = []
+                for source_pose in message.poses:
+                    pose = copy.deepcopy(source_pose)
+                    frame = (pose.header.frame_id or
+                             message.header.frame_id).strip("/")
+                    if not frame:
+                        raise ValueError("path frame_id is empty")
+                    pose.header.frame_id = frame
+                    if pose.header.stamp == rospy.Time():
+                        pose.header.stamp = message.header.stamp
+                    if frame != target_frame:
+                        transform = self._shared_tf_buffer().lookup_transform(
+                            target_frame, frame, pose.header.stamp,
+                            rospy.Duration(float(config.get(
+                                "tf_lookup_timeout", 0.05))))
+                        pose = do_transform_pose(pose, transform)
+                    point = pose.pose.position
+                    waypoints.append((point.x, point.y, point.z))
+                # nav_msgs/Path has no loop flag. Keep the profile's
+                # configured behavior instead of inferring an open path from
+                # distinct endpoints.
+                loop_path = bool(config.get("loop_path", True))
+                path_reference_state(
+                    (0.0, 0.0, 0.0), waypoints,
+                    float(config.get("cruise_speed", 20.0)),
+                    float(config.get("lookahead_distance", 60.0)),
+                    loop_path)
+                runtime = self._mode_runtimes.get("consensus")
+                if runtime is not None:
+                    runtime.update_selection(
+                        waypoints=waypoints, loop_path=loop_path)
+                config["waypoints"] = tuple(waypoints)
+                config["loop_path"] = loop_path
+                config["waypoints_are_final"] = True
+                config.pop("_runtime_rounded_waypoints", None)
+                rospy.loginfo(
+                    "[xd_uav_formation] accepted %d route waypoint(s) in %s (%s)",
+                    len(waypoints), target_frame,
+                    "closed" if loop_path else "open")
+            except (TypeError, ValueError, rospy.ROSException,
+                    tf2_ros.TransformException) as error:
+                rospy.logwarn(
+                    "[xd_uav_formation] rejected route: %s", error)
 
     @staticmethod
     def _node_namespace(member, mode):
@@ -162,13 +318,19 @@ class FormationManager:
         self._tf_listener = None
         self._tf_buffer = None
 
-    def _start_configured_members(self, mode):
+    def _start_configured_members(self, mode, members):
         """Create one shared runtime with per-member controllers."""
-        if mode in self._mode_runtimes:
-            return
-        config = self._configured_modes.get(mode)
-        if config is None:
+        template = self._configured_modes.get(mode)
+        if template is None:
             raise RuntimeError("no configured {} mode to launch".format(mode))
+        members = tuple(members)
+        current = self._mode_runtimes.get(mode)
+        if current is not None and current._members == members:
+            return
+        if current is not None:
+            self._shutdown_mode_runtime(mode)
+        config = copy.deepcopy(template)
+        config["members"] = list(members)
 
         code, message, state = rospy.get_master().getSystemState()
         if code != 1:
@@ -277,7 +439,13 @@ class FormationManager:
         if mode not in _MODES:
             return None, "mode must be consensus or leader_follow"
 
-        if self._configured_modes:
+        if mode == "consensus":
+            members = requested_members
+            if not members:
+                return None, "consensus members must be specified in the service request"
+            if self._spawn_members and mode not in self._configured_modes:
+                return None, "loaded profile does not configure consensus parameters"
+        elif self._configured_modes:
             config = self._configured_modes.get(mode)
             if config is None:
                 return None, (
@@ -304,7 +472,7 @@ class FormationManager:
     def _validate_member_configuration(self, mode, members):
         if self._spawn_members and mode in self._configured_modes:
             config = self._configured_modes[mode]
-            if list(config["members"]) != list(members):
+            if mode != "consensus" and list(config["members"]) != list(members):
                 return None, "members do not match the loaded YAML profile"
             return config["team_id"], ""
 
@@ -461,18 +629,30 @@ class FormationManager:
             success, message = self._stop_all()
             return FormationControlResponse(success, message)
 
+        requested_mode = (request.mode or "").strip().lower()
+        if not request.enabled and self._spawn_members and \
+                requested_mode in _MODES and \
+                (self._active_group is None or
+                 self._active_group[1] != requested_mode):
+            return FormationControlResponse(True, "formation already stopped")
+
+        if not request.enabled and (request.mode or "").strip() and \
+                not request.members and self._active_group is not None and \
+                self._active_group[1] == requested_mode:
+            request = copy.copy(request)
+            request.members = list(self._active_group[2])
+
         validated, error = self._resolve_request(request)
         if error:
             return FormationControlResponse(False, error)
         mode, members = validated
-        if request.enabled and self._spawn_members:
-            try:
-                self._start_configured_members(mode)
-            except Exception as error:
-                return FormationControlResponse(False, str(error))
-        elif not request.enabled and self._spawn_members and \
-                mode not in self._mode_runtimes:
+        if not request.enabled and self._spawn_members and \
+                (self._active_group is None or self._active_group[1] != mode):
             return FormationControlResponse(True, "formation already stopped")
+        if not request.enabled and self._spawn_members and \
+                self._active_group[2] != members:
+            return FormationControlResponse(
+                False, "members do not match the active formation")
 
         team_id, error = self._validate_member_configuration(mode, members)
         if error:
@@ -496,6 +676,15 @@ class FormationManager:
                     return FormationControlResponse(
                         False, "could not stop previous mode: {}".format(
                             stop_error))
+
+        if request.enabled and self._spawn_members:
+            try:
+                self._start_configured_members(mode, members)
+            except Exception as error:
+                return FormationControlResponse(False, str(error))
+        elif not request.enabled and self._spawn_members and \
+                mode not in self._mode_runtimes:
+            return FormationControlResponse(True, "formation already stopped")
 
         try:
             message = self._set_members(

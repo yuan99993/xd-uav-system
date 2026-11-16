@@ -1,6 +1,5 @@
-# Shared profile for the current three fixed-wing aircraft.
-# The unified launch starts nodes for every configured mode; the service's
-# `mode` selects which group publishes references.
+# Shared parameters for the current fixed-wing formation modes. Consensus
+# members are selected in each /formation/set_enabled request.
 team_id: fixedwing_three
 
 leader_follow:
@@ -15,8 +14,6 @@ leader_follow:
 
 consensus:
   team_id: fixedwing_three_consensus
-  members: [uav1, uav2, uav3]
-  # members: [uav1, uav2, uav3, uav4, uav5]
   common_frame: world
   shape: circle
   spacing: 50.0

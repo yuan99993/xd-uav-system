@@ -43,9 +43,12 @@ std::vector<std::string> ringNeighbors(
     const std::vector<std::string>& members, const std::string& own_name);
 std::vector<Vec3> roundedPath(const std::vector<Vec3>& waypoints,
                               double radius, bool loop);
+std::pair<double, double> projectPathProgress(
+    const Vec3& position, const std::vector<Vec3>& waypoints, bool loop);
 PathResult pathReferenceState(const Vec3& center,
                               const std::vector<Vec3>& waypoints,
-                              double speed, double lookahead, bool loop);
+                              double speed, double lookahead, bool loop,
+                              double progress_offset = 0.0);
 Vec3 consensusVelocity(const Vec3& path_velocity,
                        const Vec3& desired_center,
                        const Vec3& own_center,

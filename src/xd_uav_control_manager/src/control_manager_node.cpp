@@ -1397,6 +1397,7 @@ class ControlManagerNode {
     forward_transition_requested_ = false;
     forward_preparation_airspeed_since_ = ros::Time();
     forward_preparation_detail_ = "standby";
+    vtol_transition_offboard_recovery_ = false;
     transition_error_active_ = false;
     ++action_generation_;
     invalid_since_ = ros::Time();
@@ -1643,18 +1644,9 @@ class ControlManagerNode {
     return startLanding(true, response);
   }
 
-  bool requestVtolTransition(
+  bool sendVtolTransitionCommand(
       const xd_uav_controller::RequestedRegime target,
-      const ros::Time& now, std::string* reason) {
-    const bool was_pending = vtol_adapter_->transitionStatus().pending;
-    if (!vtol_adapter_->beginTransition(target, now, reason)) {
-      return false;
-    }
-    transition_error_active_ = false;
-    if (!vtol_adapter_->transitionStatus().pending || was_pending) {
-      return true;
-    }
-
+      std::string* reason) {
     mavros_msgs::CommandVtolTransition service;
     service.request.state =
         target == xd_uav_controller::RequestedRegime::kForwardFlight
@@ -1676,8 +1668,27 @@ class ControlManagerNode {
       return false;
     }
     vtol_adapter_->recordServiceAccepted(service.response.result);
-    *reason = "转换请求已接受，等待PX4确认实际飞行形态";
+    vtol_transition_offboard_recovery_ = true;
+    *reason =
+        target == xd_uav_controller::RequestedRegime::kHover
+            ? "回旋翼请求已接受：沿当前航向直飞并保持转换开始时的高度"
+            : "转换请求已接受，等待PX4确认实际飞行形态";
     return true;
+  }
+
+  bool requestVtolTransition(
+      const xd_uav_controller::RequestedRegime target,
+      const ros::Time& now, std::string* reason) {
+    const bool was_pending = vtol_adapter_->transitionStatus().pending;
+    if (!vtol_adapter_->beginTransition(target, now, reason)) {
+      return false;
+    }
+    transition_error_active_ = false;
+    if (!vtol_adapter_->transitionStatus().pending || was_pending) {
+      return true;
+    }
+
+    return sendVtolTransitionCommand(target, reason);
   }
 
   bool beginForwardPreparation(const ros::Time& now,
@@ -2409,6 +2420,32 @@ class ControlManagerNode {
           xd_uav_control_manager::TransitionResult::kCompleted) {
         transition_error_active_ = false;
       }
+      const bool timed_out_target_reached =
+          (vtol_adapter_->transitionStatus().last_target ==
+               xd_uav_controller::RequestedRegime::kHover &&
+           observed_regime ==
+               xd_uav_controller::FlightRegime::kHover) ||
+          (vtol_adapter_->transitionStatus().last_target ==
+               xd_uav_controller::RequestedRegime::kForwardFlight &&
+           observed_regime ==
+               xd_uav_controller::FlightRegime::kForwardFlight);
+      if (vtol_adapter_->transitionStatus().last_result ==
+              xd_uav_control_manager::TransitionResult::kTimedOut &&
+          timed_out_target_reached && mavrosStateFresh(now) &&
+          mavros_state_.mode == offboard_mode_) {
+        transition_error_active_ = false;
+      }
+      const bool stable_vtol_regime =
+          observed_regime == xd_uav_controller::FlightRegime::kHover ||
+          observed_regime ==
+              xd_uav_controller::FlightRegime::kForwardFlight;
+      if (vtol_transition_offboard_recovery_ &&
+          !vtol_adapter_->transitionStatus().pending &&
+          stable_vtol_regime &&
+          mavrosStateFresh(now) &&
+          mavros_state_.mode == offboard_mode_) {
+        vtol_transition_offboard_recovery_ = false;
+      }
       if (vtol_adapter_->transitionStatus().last_result ==
           xd_uav_control_manager::TransitionResult::kAborted) {
         transition_error_active_ = true;
@@ -2433,7 +2470,23 @@ class ControlManagerNode {
             observed_regime == xd_uav_controller::FlightRegime::kHover ||
             observed_regime ==
                 xd_uav_controller::FlightRegime::kForwardFlight;
-        if (state_machine_state_ == State::kWaitState &&
+        const bool transition_phase_active =
+            observed_regime ==
+                xd_uav_controller::FlightRegime::kTransitionToForward ||
+            observed_regime ==
+                xd_uav_controller::FlightRegime::kTransitionToHover;
+        const bool active_armed_transition =
+            (state_machine_state_ == State::kActive ||
+             state_machine_state_ == State::kLanding ||
+             state_machine_state_ == State::kRequestOffboard) &&
+            mavrosStateFresh(now) && mavros_state_.armed;
+        if (transition_phase_active && active_armed_transition) {
+          ROS_ERROR_THROTTLE(
+              1.0,
+              "[xd_uav_control_manager] VTOL转换超过监督时限但PX4仍在转换；"
+              "继续维持OFFBOARD设定点和源backend: %s",
+              vtol_adapter_->transitionStatus().detail.c_str());
+        } else if (state_machine_state_ == State::kWaitState &&
             vtol_takeoff_.waitingForHover()) {
           vtol_takeoff_.fail(vtol_adapter_->transitionStatus().detail);
           transition(State::kFailsafe,
@@ -2568,8 +2621,17 @@ class ControlManagerNode {
             transition(State::kActive,
                        "OFFBOARD持续维持中");
           }
+        } else if (vtol_transition_offboard_recovery_ &&
+                   vtol_adapter_ &&
+                   !vtol_adapter_->transitionStatus().pending) {
+          transition(
+              State::kPrestream,
+              "VTOL形态转换已结束，重新预发送设定点后恢复OFFBOARD");
         } else if ((now - state_entered_).toSec() >
-                   request_timeout_) {
+                       request_timeout_ &&
+                   !(vtol_transition_offboard_recovery_ &&
+                     vtol_adapter_ &&
+                     vtol_adapter_->transitionStatus().pending)) {
           transition(State::kFailsafe,
                      "进入OFFBOARD超时；PX4当前模式=" +
                          mavros_state_.mode);
@@ -2601,11 +2663,26 @@ class ControlManagerNode {
         break;
 
       case State::kActive:
+        if (vtol_adapter_ &&
+            observedFlightRegime(now) ==
+                xd_uav_controller::FlightRegime::kTransitionToHover) {
+          // Keep the controller's horizontal guidance active. The controller
+          // pins its vertical target to the altitude captured at transition
+          // request/phase entry.
+          vtol_transition_offboard_recovery_ = true;
+        }
         if (!publishWithInputGrace(
                 now, active_inputs_healthy)) {
           break;
         }
         if (mavros_state_.mode != offboard_mode_) {
+          if (vtol_transition_offboard_recovery_ &&
+              mavros_state_.armed) {
+            transition(
+                State::kRequestOffboard,
+                "VTOL转换期间PX4离开OFFBOARD，继续发送设定点并重新请求OFFBOARD");
+            break;
+          }
           enterStandby(
               "检测到人工切出OFFBOARD，停止外部控制");
           break;
@@ -2619,6 +2696,13 @@ class ControlManagerNode {
 
       case State::kLanding: {
         if (mavros_state_.mode != offboard_mode_) {
+          if (vtol_transition_offboard_recovery_ &&
+              mavros_state_.armed) {
+            transition(
+                State::kRequestOffboard,
+                "VTOL降落转换期间PX4离开OFFBOARD，重新请求OFFBOARD");
+            break;
+          }
           enterStandby(
               "降落期间人工切出OFFBOARD，停止外部控制");
           break;
@@ -2867,6 +2951,7 @@ class ControlManagerNode {
   xd_uav_control_manager::VtolTakeoffCoordinator vtol_takeoff_;
   xd_uav_control_manager::VtolLandingCoordinator vtol_landing_;
   bool transition_error_active_{false};
+  bool vtol_transition_offboard_recovery_{false};
   bool vtol_vertical_descent_commanded_{false};
   double pending_takeoff_altitude_{0.0};
   xd_uav_controller::BackendId last_active_backend_{

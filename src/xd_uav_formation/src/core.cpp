@@ -87,7 +87,52 @@ std::vector<Vec3> formationOffsets(const std::string& shape,
       }
     }
   }
-  throw std::invalid_argument("shape must be circle or rectangle_compact");
+  if (shape == "line" || shape == "line_abreast") {
+    const double center =
+        0.5 * (static_cast<double>(follower_count) - 1.0);
+    std::vector<Vec3> slots;
+    slots.reserve(follower_count);
+    for (std::size_t i = 0; i < follower_count; ++i) {
+      slots.push_back({0.0,
+                       (center - static_cast<double>(i)) * spacing,
+                       0.0});
+    }
+    return slots;
+  }
+  if (shape == "column" || shape == "single_file") {
+    const double center =
+        0.5 * (static_cast<double>(follower_count) - 1.0);
+    std::vector<Vec3> slots;
+    slots.reserve(follower_count);
+    for (std::size_t i = 0; i < follower_count; ++i) {
+      slots.push_back({(center - static_cast<double>(i)) * spacing,
+                       0.0, 0.0});
+    }
+    return slots;
+  }
+  if (shape == "arrow" || shape == "vee" || shape == "v_shape") {
+    std::vector<Vec3> slots;
+    slots.reserve(follower_count);
+    slots.push_back({0.0, 0.0, 0.0});
+    const double leg_step = spacing / std::sqrt(2.0);
+    for (std::size_t i = 1; slots.size() < follower_count; ++i) {
+      const double row = static_cast<double>((i + 1) / 2);
+      const double side = i % 2 == 1 ? 1.0 : -1.0;
+      slots.push_back({-row * leg_step, side * row * leg_step, 0.0});
+    }
+    Vec3 mean{0.0, 0.0, 0.0};
+    for (const auto& slot : slots) {
+      mean[0] += slot[0] / static_cast<double>(slots.size());
+      mean[1] += slot[1] / static_cast<double>(slots.size());
+    }
+    for (auto& slot : slots) {
+      slot[0] -= mean[0];
+      slot[1] -= mean[1];
+    }
+    return slots;
+  }
+  throw std::invalid_argument(
+      "shape must be circle, rectangle_compact, line, column, or arrow");
 }
 
 Slot slotTarget(const Vec3& position, double yaw, const Vec3& offset,
@@ -343,12 +388,57 @@ std::vector<Vec3> roundedPath(const std::vector<Vec3>& input,
   return result;
 }
 
+std::pair<double, double> projectPathProgress(
+    const Vec3& position, const std::vector<Vec3>& input, bool loop) {
+  std::vector<Vec3> points = input;
+  if (points.size() < 2) {
+    throw std::invalid_argument("path requires at least two XYZ waypoints");
+  }
+  requireFinite({position[0], position[1], position[2]},
+                "invalid path projection position");
+  for (const auto& point : points) {
+    requireFinite({point[0], point[1], point[2]},
+                  "path waypoint is non-finite");
+  }
+  if (loop && points.back() != points.front()) points.push_back(points.front());
+  double total = 0.0;
+  double nearest_squared = std::numeric_limits<double>::infinity();
+  double nearest_s = 0.0;
+  for (std::size_t i = 0; i + 1 < points.size(); ++i) {
+    const Vec3& start = points[i];
+    const Vec3& end = points[i + 1];
+    const double dx = end[0] - start[0];
+    const double dy = end[1] - start[1];
+    const double length = std::hypot(dx, dy);
+    if (length < 1e-3) {
+      throw std::invalid_argument("path has a zero-length horizontal segment");
+    }
+    const double fraction = clamp(
+        ((position[0] - start[0]) * dx +
+         (position[1] - start[1]) * dy) /
+            (length * length),
+        0.0, 1.0);
+    const double px = start[0] + fraction * dx;
+    const double py = start[1] + fraction * dy;
+    const double ex = position[0] - px;
+    const double ey = position[1] - py;
+    const double distance_squared = ex * ex + ey * ey;
+    if (distance_squared < nearest_squared) {
+      nearest_squared = distance_squared;
+      nearest_s = total + fraction * length;
+    }
+    total += length;
+  }
+  return {nearest_s, total};
+}
+
 PathResult pathReferenceState(const Vec3& center,
                               const std::vector<Vec3>& input,
-                              double speed, double lookahead, bool loop) {
+                              double speed, double lookahead, bool loop,
+                              double progress_offset) {
   std::vector<Vec3> points = input;
   if (points.size() < 2 || !finite(speed) || !finite(lookahead) ||
-      speed <= 0.0 || lookahead < 0.0) {
+      !finite(progress_offset) || speed <= 0.0 || lookahead < 0.0) {
     throw std::invalid_argument("invalid path speed, preview or center");
   }
   requireFinite({center[0], center[1], center[2]},
@@ -386,9 +476,13 @@ PathResult pathReferenceState(const Vec3& center,
       nearest_s = segment.beginning + fraction * segment.length;
     }
   }
-  double target_s = nearest_s + lookahead;
-  if (loop) target_s = std::fmod(target_s, total);
-  else target_s = std::min(target_s, total);
+  double target_s = nearest_s + lookahead + progress_offset;
+  if (loop) {
+    target_s = std::fmod(target_s, total);
+    if (target_s < 0.0) target_s += total;
+  } else {
+    target_s = clamp(target_s, 0.0, total);
+  }
   for (std::size_t i = 0; i < segments.size(); ++i) {
     const auto& segment = segments[i];
     if (target_s <= segment.beginning + segment.length ||
