@@ -24,13 +24,12 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 - `shared_launches`：放仿真端选择的整支机队共用程序。`world_tf` 会依据当前 `vehicles` 名称和数量生成临时配置。编队管理器由 start 自动启动一次，不需要在 JSON 里重复列出。
 - `vehicles[].sensors`：沿用仿真端现有的传感器类型并声明实际话题。`front_gimbal_camera` 会自动启动云台姿态桥接、云台控制和目标定位；它仍然是一条前视相机记录。
 - `vehicles[].launches`：选择该架飞机的识别和其他可选程序。启动项可以是字符串，也可以是带 `sensor` 和 `params` 的对象；前视相机对应的云台程序由 start 自动加入。
-- `track_sensor`：选择 `track/phase_annotated` 使用的相机。若该传感器启用了 SAR YOLO，视频叠加使用 SAR 的 annotated 输出；否则直接使用传感器的 `image_topic`。
 
 `xd_uav_formation/formation.launch` 使用包内固定的机队配置，由 start 在每个会话中只启动一个管理进程，供整支机队使用。每架飞机不需要单独启动一份。
 
 相机只有前视和下视两路。保持仿真 JSON 现有的 `front_gimbal_camera`、`down_camera` 类型定义：`front_gimbal_camera` 表示前视这一路相机，它安装在云台上；云台不是额外的相机条目。云台相关启动项绑定到同一架飞机的前视相机 ID（示例中是 `front`）。
 
-`sar_yolo_detector` 沿用仓库现有 `xd_smart_tracker_fusion_integration.launch` 的默认命名和话题，只传入固定的 `instance_name:=smart`、识别模型参数以及该飞机的前视图像和 CameraInfo 话题。不同飞机通过 `UAV_NAME` 和各自相机输入话题区分；不会按传感器 ID 改写 `smart` 后缀或生成另一套 SAR 话题名。
+`sar_yolo_detector` 沿用仓库现有 `xd_smart_tracker_fusion_integration.launch` 的默认命名和话题。管理器只传入 `UAV_NAME`、图像话题和 CameraInfo 话题；模型、推理和输出话题采用该 launch 文件自身的默认值。不同飞机通过 `UAV_NAME` 和各自相机输入话题区分，不按传感器 ID 改写 `smart` 后缀。
 
 目前可选传感器类型：
 
@@ -44,7 +43,7 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 
 云台姿态桥接沿用原启动方式，只传 `_uav_ns:=/uavN`；脚本按该参数发布 `/uavN/gimbal/attitude` 和 `/uavN/track/gimbal_state`。
 
-`camera_stream_receiver` 是通用接收器，前视和下视都使用同一份启动定义；管理器按传感器类型给每个实例传入相机流名称和输出话题。默认接收 `DroneN/FrontCamera` 或 `DroneN/DownCamera`，分别发布到 `/uavN/front_camera/image_raw`、`/uavN/front_camera/camera_info` 和 `/uavN/down_camera/image_raw`、`/uavN/down_camera/camera_info`。如仿真相机流名称不同，可在对应 sensor 的 `params` 中设置 `camera_stream_name`。SAR YOLO、detect 和直接使用相机图像的 track 配置统一使用对应飞机的本地话题，输出话题始终保留 `/uavN/` 命名空间。
+`camera_stream_receiver` 是通用接收器，前视和下视都使用同一份启动定义；管理器按传感器类型给每个实例传入相机流名称和输出话题。默认接收 `DroneN/FrontCamera` 或 `DroneN/DownCamera`，分别发布到 `/uavN/front_camera/image_raw`、`/uavN/front_camera/camera_info` 和 `/uavN/down_camera/image_raw`、`/uavN/down_camera/camera_info`。仿真相机流名称不同时，可在对应 sensor 的 `params` 中设置 `camera_stream_name`。接收器会在视频服务暂未就绪时重试订阅。SAR YOLO 和 detect 使用对应飞机的本地相机话题；track 叠加沿用 `xd_uav_track/config/track.yaml` 的现有设置。
 
 ## 固定启动项与视频端口
 
@@ -74,6 +73,6 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 
 ## 临时配置与进程清理
 
-`world_tf` 的运行配置、SAR 的传感器 overlay、以及每架飞机的 track 配置都写入 `~/.ros/xd_uav_start_manager/generated/`，不会改写 `src/` 下的源配置。world_tf 临时配置会按照本次 JSON 中的飞机列表更新 `vehicles` 和 `vehicle_configs`。编队包直接使用 `formation.launch` 中已设置的固定配置。
+只有 `world_tf` 的运行配置写入 `~/.ros/xd_uav_start_manager/generated/`，不会改写 `src/` 下的源配置。配置会按照本次 JSON 中的飞机列表更新 `vehicles` 和 `vehicle_configs`。track 沿用 `track.launch` 默认加载的包内配置；编队包直接使用 `formation.launch` 中已设置的固定配置。
 
-每个启动项独立运行并记录 PID、进程组、启动时间、命令和日志。停止会话、连接断开或更新移除启动项时，管理器会核对 PID 身份，结束启动进程组并清理它派生的 ROS 节点进程（ROS 节点可能各自在独立进程组）；日志位于 `~/.ros/xd_uav_start_manager/logs/`。
+每个启动项独立运行并记录 PID、进程组、启动时间、命令和日志。同一启动项重启时继续写入同一个日志文件，并用启动时间分隔；追加前会修复已有的非法 UTF-8 字节。日志位于 `~/.ros/xd_uav_start_manager/logs/`，当前路径记录在进程状态中。停止会话、连接断开或更新移除启动项时，管理器会核对 PID 身份，结束启动进程组并清理它派生的 ROS 节点进程（ROS 节点可能各自在独立进程组）。

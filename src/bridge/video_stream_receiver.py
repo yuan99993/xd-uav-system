@@ -37,7 +37,9 @@ packets and FU-A fragmentation.  SPS/PPS are sent ahead of every IDR frame.
 
 Requirements
 ------------
-    pip install av            # PyAV, decodes H.264
+    # Jetson default: GStreamer with nvv4l2decoder/nvvidconv (hardware decode)
+    # Optional software fallback:
+    pip install av            # then pass --decoder software
     pip install opencv-python # optional, only needed to open a window
     # Optional ROS publishing also requires ROS1 rospy + sensor_msgs.
 
@@ -123,14 +125,14 @@ class ControlClient:
         return data.decode("ascii", "replace").strip()
 
     def subscribe(self):
-        """Returns (group, port) on success, None on failure."""
+        """Returns (group, port), None on timeout, or False if rejected."""
         reply = self._command("SUBSCRIBE")
         if reply is None:
             print("[ctrl] no reply to SUBSCRIBE (is the sim running?)", file=sys.stderr)
             return None
         if not reply.startswith("OK"):
             print("[ctrl] SUBSCRIBE rejected: %s" % reply, file=sys.stderr)
-            return None
+            return False
 
         parts = reply.split()
         if len(parts) >= 3:
@@ -141,7 +143,7 @@ class ControlClient:
         return "", 0  # server accepted but did not report an endpoint
 
     def heartbeat(self):
-        self._command("HEARTBEAT")
+        return self._command("HEARTBEAT")
 
     def request_keyframe(self):
         self._command("KEYFRAME", with_client=False)
@@ -151,6 +153,142 @@ class ControlClient:
 
     def close(self):
         self.sock.close()
+
+
+# ---------------------------------------------------------------------------
+# H.264 decoders
+# ---------------------------------------------------------------------------
+
+
+class BgrVideoFrame:
+    """Small adapter so GStreamer frames match the existing frame API."""
+
+    def __init__(self, image):
+        self.image = image
+
+    def to_ndarray(self, format="bgr24"):
+        if format not in ("bgr24", "bgr"):
+            raise ValueError("GStreamer frames are available as BGR only")
+        return self.image
+
+
+class GStreamerH264Decoder:
+    """Decode Annex-B H.264 with Jetson's NVIDIA V4L2 decoder."""
+
+    def __init__(self):
+        try:
+            import gi
+            gi.require_version("Gst", "1.0")
+            gi.require_version("GstVideo", "1.0")
+            from gi.repository import Gst, GstVideo
+        except Exception as exc:
+            raise RuntimeError("PyGObject GStreamer bindings are unavailable: {}".format(
+                exc)) from exc
+
+        Gst.init(None)
+        self.Gst = Gst
+        self.GstVideo = GstVideo
+        self.pipeline = Gst.Pipeline.new("jetson-h264-decoder")
+        self.appsrc = Gst.ElementFactory.make("appsrc", "h264-input")
+        self.parser = Gst.ElementFactory.make("h264parse", "h264-parser")
+        self.decoder = Gst.ElementFactory.make("nvv4l2decoder", "h264-hardware-decoder")
+        self.converter = Gst.ElementFactory.make("nvvidconv", "video-converter")
+        self.output_caps = Gst.ElementFactory.make("capsfilter", "bgrx-caps")
+        self.appsink = Gst.ElementFactory.make("appsink", "decoded-frame-output")
+
+        elements = (
+            self.appsrc, self.parser, self.decoder, self.converter,
+            self.output_caps, self.appsink,
+        )
+        names = ("appsrc", "h264parse", "nvv4l2decoder", "nvvidconv",
+                 "capsfilter", "appsink")
+        missing = [name for name, element in zip(names, elements) if element is None]
+        if missing:
+            raise RuntimeError("missing GStreamer element(s): {}".format(
+                ", ".join(missing)))
+
+        self.appsrc.set_property(
+            "caps",
+            Gst.Caps.from_string(
+                "video/x-h264,stream-format=byte-stream,alignment=au"),
+        )
+        self.appsrc.set_property("format", Gst.Format.TIME)
+        self.appsrc.set_property("is-live", True)
+        self.appsrc.set_property("do-timestamp", True)
+        self.appsrc.set_property("block", False)
+        self.parser.set_property("config-interval", -1)
+        self.output_caps.set_property(
+            "caps", Gst.Caps.from_string("video/x-raw,format=BGRx"))
+        self.appsink.set_property("emit-signals", False)
+        self.appsink.set_property("sync", False)
+        self.appsink.set_property("max-buffers", 1)
+        self.appsink.set_property("drop", True)
+
+        for element in elements:
+            self.pipeline.add(element)
+        for left, right in zip(elements, elements[1:]):
+            if not left.link(right):
+                self.pipeline.set_state(Gst.State.NULL)
+                raise RuntimeError("could not link GStreamer H.264 decoder pipeline")
+
+        if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            self.pipeline.set_state(Gst.State.NULL)
+            raise RuntimeError("could not start nvv4l2decoder pipeline")
+        print("[decode] using NVIDIA nvv4l2decoder hardware decoding", flush=True)
+
+    def decode_access_unit(self, data):
+        buffer = self.Gst.Buffer.new_allocate(None, len(data), None)
+        buffer.fill(0, data)
+        flow = self.appsrc.emit("push-buffer", buffer)
+        if flow != self.Gst.FlowReturn.OK:
+            raise RuntimeError("GStreamer appsrc rejected H.264 data: {}".format(flow))
+
+        frames = []
+        while True:
+            sample = self.appsink.emit("try-pull-sample", 0)
+            if sample is None:
+                break
+            frames.append(self._sample_to_frame(sample))
+        return frames
+
+    def _sample_to_frame(self, sample):
+        info = self.GstVideo.VideoInfo()
+        if not info.from_caps(sample.get_caps()):
+            raise RuntimeError("could not read decoded video frame dimensions")
+        width = int(info.width)
+        height = int(info.height)
+        stride = int(info.stride[0])
+        buffer = sample.get_buffer()
+        mapped, map_info = buffer.map(self.Gst.MapFlags.READ)
+        if not mapped:
+            raise RuntimeError("could not map decoded video frame")
+        try:
+            import numpy as np
+            raw = np.frombuffer(map_info.data, dtype=np.uint8)
+            rows = raw[:stride * height].reshape((height, stride))
+            bgrx = rows[:, :width * 4].reshape((height, width, 4))
+            return BgrVideoFrame(bgrx[:, :, :3].copy())
+        finally:
+            buffer.unmap(map_info)
+
+    def close(self):
+        self.pipeline.set_state(self.Gst.State.NULL)
+
+
+def create_h264_decoder(mode):
+    if mode == "hardware":
+        return GStreamerH264Decoder()
+
+    try:
+        import av
+    except ImportError as exc:
+        raise RuntimeError("software decoding requires PyAV: pip install av") from exc
+    try:
+        av.logging.set_level(av.logging.ERROR)
+    except Exception:  # noqa: BLE001
+        pass
+    print("[decode] using PyAV software H.264 decoding", flush=True)
+    return av.CodecContext.create("h264", "r")
 
 
 # ---------------------------------------------------------------------------
@@ -259,17 +397,28 @@ class H264Depacketizer:
                 pass
 
         try:
-            for packet in self.decoder.parse(data):
-                for frame in self.decoder.decode(packet):
-                    self.decoded_frames += 1
-                    self.frames_this_second += 1
-                    self.on_frame(frame)
-        except Exception:  # noqa: BLE001 - any decoder error means "resync"
+            if hasattr(self.decoder, "decode_access_unit"):
+                frames = self.decoder.decode_access_unit(data)
+            else:
+                frames = []
+                for packet in self.decoder.parse(data):
+                    frames.extend(self.decoder.decode(packet))
+        except Exception as exc:  # noqa: BLE001 - decoder errors mean "resync"
+            print("[decode] H.264 decode failed: %s" % exc, file=sys.stderr)
             self.on_corrupt()
             try:
                 self.decoder.flush_buffers()
             except Exception:  # noqa: BLE001
                 pass
+            return
+
+        for frame in frames:
+            self.decoded_frames += 1
+            self.frames_this_second += 1
+            try:
+                self.on_frame(frame)
+            except Exception as exc:  # noqa: BLE001 - keep callback errors visible
+                print("[frame] output callback failed: %s" % exc, file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +588,9 @@ def parse_args(argv=None):
                         help="decode without opening a window")
     parser.add_argument("--scale", type=float, default=1.0,
                         help="display scale factor")
+    parser.add_argument("--decoder", choices=("hardware", "software"),
+                        default="hardware",
+                        help="H.264 decoder backend (Jetson hardware by default)")
     parser.add_argument("--dump", default=None,
                         help="append the received H.264 Annex-B stream to this file")
     parser.add_argument("--ros-image-topic", default=None,
@@ -449,11 +601,17 @@ def parse_args(argv=None):
                         help="ROS topic for relayed CameraInfo; inferred from --ros-image-topic")
     parser.add_argument("--ros-node-name", default="airsim_video_receiver",
                         help="base name for the optional ROS node")
-    parser.add_argument("--timeout", type=float, default=0.0,
-                        help="exit after this many seconds without packets (0 = never)")
+    parser.add_argument("--timeout", type=float, default=5.0,
+                        help="reconnect after this many seconds without RTP packets (0 disables inactivity detection)")
+    parser.add_argument("--subscribe-retry-sec", type=float, default=2.0,
+                        help="wait this many seconds before retrying a timed-out SUBSCRIBE")
     args = parser.parse_args(argv)
     if (args.ros_camera_info_topic or args.ros_camera_info_output_topic) and not args.ros_image_topic:
         parser.error("CameraInfo ROS options require --ros-image-topic")
+    if args.subscribe_retry_sec <= 0:
+        parser.error("--subscribe-retry-sec must be greater than zero")
+    if args.timeout < 0:
+        parser.error("--timeout cannot be negative")
     return args
 
 
@@ -482,21 +640,6 @@ def camera_info_output_topic_for_image(image_topic):
 def main(argv=None):
     args = parse_args(argv)
 
-    try:
-        import av  # noqa: WPS433 (optional dependency, checked late for a clean error)
-    except ImportError:
-        print(
-            "PyAV is required to decode H.264: pip install av",
-            file=sys.stderr,
-        )
-        return 2
-
-    try:
-        av.logging.set_level(av.logging.ERROR)
-    except Exception:  # noqa: BLE001
-        pass
-
-    decoder = av.CodecContext.create("h264", "r")
     display = FrameDisplay(not args.no_display, args.scale, "ProjectAirSim " + args.camera)
 
     ros_publisher = None
@@ -525,94 +668,144 @@ def main(argv=None):
             ros_publisher.publish(frame)
         display.show(frame)
 
-    control = ControlClient(args.server, args.control_port, args.camera, args.image_type)
-    print("[ctrl] client id %s" % control.client_id)
-
-    endpoint = control.subscribe()
-    if endpoint is None:
-        control.close()
-        return 1
-
-    reply_group, reply_port = endpoint
-    group = args.group if args.group is not None else reply_group
-    port = args.port if args.port is not None else reply_port
-
-    if not port:
-        print(
-            "[ctrl] the simulator did not report a video endpoint; pass "
-            "--group/--port explicitly",
-            file=sys.stderr,
-        )
-        control.unsubscribe()
-        control.close()
-        return 1
-
-    video = open_video_socket(group, port, args.local_ip)
-
-    state = {"last_keyframe_request": 0.0}
-
-    def request_keyframe():
-        now = time.time()
-        if now - state["last_keyframe_request"] < 1.0:
-            return
-        state["last_keyframe_request"] = now
-        control.request_keyframe()
-
-    depacketizer = H264Depacketizer(
-        decoder=decoder,
-        on_frame=on_frame,
-        on_corrupt=request_keyframe,
-        dump_path=args.dump,
-    )
-
-    print("[video] waiting for H.264 packets from %s (%s)..."
-          % (args.camera, args.image_type))
-
-    last_heartbeat = 0.0
-    last_packet = time.time()
-    last_stats = time.time()
+    retry_delay = args.subscribe_retry_sec
+    print("[video] persistent reconnect enabled (retry delay %.1fs)" % retry_delay,
+          flush=True)
 
     try:
         while True:
-            now = time.time()
-
-            if now - last_heartbeat >= 1.0:
-                last_heartbeat = now
-                control.heartbeat()
-
-            if args.timeout > 0 and (now - last_packet) > args.timeout:
-                print("[video] no packets for %.1fs, giving up" % args.timeout,
-                      file=sys.stderr)
-                break
-
+            control = None
+            video = None
+            decoder = None
+            subscribed = False
             try:
-                packet, _ = video.recvfrom(MAX_DATAGRAM)
-            except socket.timeout:
-                continue
+                control = ControlClient(
+                    args.server, args.control_port, args.camera, args.image_type)
+                print("[ctrl] client id %s" % control.client_id, flush=True)
 
-            last_packet = time.time()
-            depacketizer.push(packet)
+                while True:
+                    endpoint = control.subscribe()
+                    if endpoint is not None and endpoint is not False:
+                        subscribed = True
+                        break
+                    print("[ctrl] retrying SUBSCRIBE in %.1fs" % retry_delay,
+                          flush=True)
+                    time.sleep(retry_delay)
 
-            if time.time() - last_stats >= 1.0:
-                fps = depacketizer.frames_this_second
-                depacketizer.frames_this_second = 0
-                last_stats = time.time()
-                print(
-                    "[stats] %.1f fps | packets %d | lost %d | frames %d"
-                    % (
-                        fps,
-                        depacketizer.received_packets,
-                        depacketizer.lost_packets,
-                        depacketizer.decoded_frames,
-                    ),
-                    flush=True,
+                reply_group, reply_port = endpoint
+                group = args.group if args.group is not None else reply_group
+                port = args.port if args.port is not None else reply_port
+                if not port:
+                    raise RuntimeError(
+                        "simulator did not report a video endpoint; pass "
+                        "--group/--port explicitly")
+
+                # Socket bind and decoder startup can fail transiently too; both
+                # stay inside the reconnect loop so the process remains alive.
+                video = open_video_socket(group, port, args.local_ip)
+                decoder = create_h264_decoder(args.decoder)
+
+                state = {"last_keyframe_request": 0.0}
+
+                def request_keyframe():
+                    now = time.monotonic()
+                    if now - state["last_keyframe_request"] < 1.0:
+                        return
+                    state["last_keyframe_request"] = now
+                    control.request_keyframe()
+
+                depacketizer = H264Depacketizer(
+                    decoder=decoder,
+                    on_frame=on_frame,
+                    on_corrupt=request_keyframe,
+                    dump_path=args.dump,
                 )
+
+                print("[video] receiving H.264 from %s (%s) on UDP %s:%d"
+                      % (args.camera, args.image_type, group or "unicast", port),
+                      flush=True)
+
+                last_heartbeat = 0.0
+                last_packet = time.monotonic()
+                last_stats = last_packet
+                missed_heartbeats = 0
+
+                while True:
+                    now = time.monotonic()
+                    if now - last_heartbeat >= 1.0:
+                        last_heartbeat = now
+                        heartbeat_reply = control.heartbeat()
+                        if heartbeat_reply is None or not heartbeat_reply.startswith("OK"):
+                            missed_heartbeats += 1
+                            print("[ctrl] HEARTBEAT failed (%d/3): %s"
+                                  % (missed_heartbeats, heartbeat_reply),
+                                  file=sys.stderr, flush=True)
+                            if missed_heartbeats >= 3:
+                                raise ConnectionError(
+                                    "three consecutive HEARTBEAT failures")
+                        else:
+                            missed_heartbeats = 0
+
+                    if args.timeout > 0 and now - last_packet > args.timeout:
+                        raise TimeoutError(
+                            "no RTP packets for %.1fs" % args.timeout)
+
+                    try:
+                        packet, _ = video.recvfrom(MAX_DATAGRAM)
+                    except socket.timeout:
+                        continue
+
+                    last_packet = time.monotonic()
+                    depacketizer.push(packet)
+
+                    if last_packet - last_stats >= 1.0:
+                        fps = depacketizer.frames_this_second
+                        depacketizer.frames_this_second = 0
+                        last_stats = last_packet
+                        print(
+                            "[stats] %.1f fps | packets %d | lost %d | frames %d"
+                            % (
+                                fps,
+                                depacketizer.received_packets,
+                                depacketizer.lost_packets,
+                                depacketizer.decoded_frames,
+                            ),
+                            flush=True,
+                        )
+            except KeyboardInterrupt:
+                print("\n[video] stopping")
+                break
+            except Exception as exc:  # noqa: BLE001 - runtime failures are recoverable
+                print("[video] session failed: %s; retrying in %.1fs"
+                      % (exc, retry_delay), file=sys.stderr, flush=True)
+            finally:
+                if control is not None:
+                    if subscribed:
+                        try:
+                            control.unsubscribe()
+                        except Exception:
+                            pass
+                    try:
+                        control.close()
+                    except Exception:
+                        pass
+                if video is not None:
+                    try:
+                        video.close()
+                    except Exception:
+                        pass
+                if decoder is not None:
+                    close_decoder = getattr(decoder, "close", None)
+                    if close_decoder is not None:
+                        try:
+                            close_decoder()
+                        except Exception:
+                            pass
+
+            time.sleep(retry_delay)
     except KeyboardInterrupt:
         print("\n[video] stopping")
     finally:
-        control.unsubscribe()
-        control.close()
-        video.close()
         display.close()
 
     return 0

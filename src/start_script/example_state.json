@@ -7,7 +7,6 @@
     {
       "name": "uav1",
       "type": "vtol",
-      "track_sensor": "front",
       "sensors": [
         {
           "id": "front",
@@ -16,8 +15,6 @@
             "sensor_id": "front_gimbal",
             "image_topic": "/uav1/front_camera/image_raw",
             "camera_info_topic": "/uav1/front_camera/camera_info",
-            "image_width": 1280,
-            "image_height": 720,
             "range_topic": "/Sim/SceneBasicDrone/robots/Drone1/sensors/FrontDistance/distance_sensor",
             "gimbal_att_topic": "/uav1/gimbal/attitude"
           }
@@ -27,9 +24,7 @@
           "type": "down_camera",
           "params": {
             "image_topic": "/uav1/down_camera/image_raw",
-            "camera_info_topic": "/uav1/down_camera/camera_info",
-            "image_width": 1280,
-            "image_height": 720
+            "camera_info_topic": "/uav1/down_camera/camera_info"
           }
         }
       ],
@@ -42,7 +37,6 @@
     {
       "name": "uav2",
       "type": "vtol",
-      "track_sensor": "front",
       "sensors": [
         {
           "id": "front",
@@ -51,8 +45,6 @@
             "sensor_id": "front_gimbal",
             "image_topic": "/uav2/front_camera/image_raw",
             "camera_info_topic": "/uav2/front_camera/camera_info",
-            "image_width": 1280,
-            "image_height": 720,
             "range_topic": "/Sim/SceneBasicDrone/robots/Drone2/sensors/FrontDistance/distance_sensor",
             "gimbal_att_topic": "/uav2/gimbal/attitude"
           }

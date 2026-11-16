@@ -74,7 +74,7 @@ roslaunch sar_yolo_detector xd_smart_tracker_fusion_integration.launch \
   python_executable:=/home/promise/mrs_test/sar_fusion_experiment.wlpAs3/.venv-fusion/bin/python
 ```
 
-包须解析到实验副本。旧入口位于 archive/launch，原样保留；新增唯一命名入口避免同名 launch 冲突。
+历史实验期间旧入口位于 archive/launch；当前精简包已删除归档目录，只保留融合入口。启动时仍须确认 rospack 解析到本工作区副本。
 只有新融合入口显式启用 enable_fusion_mode；旧归档入口仍运行原三模式，拒绝切入融合，避免旧 tracked 桥接把视觉辅助误当 YOLO。
 按 UE 相机实际宽高、话题、frame 和时间配置；使用 /clock 时同步 use_sim_time。
 入口只启动 SAR 和桥接，不启动飞行、定位、XD tracker 或云台设备控制器。默认把 UI 选中的单框转成

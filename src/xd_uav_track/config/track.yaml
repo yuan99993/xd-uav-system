@@ -10,6 +10,11 @@ runtime:
   state_timeout_sec: 0.30
   # true：直接接 xd_uav_controller；false：只观察 track 下的诊断输出。
   publish_control_reference: true
+  profiles:
+    # Fixed-wing metric guidance uses the world-frame odometry stream and a
+    # slower controller loop with a longer estimator grace period.
+    fw_metric_pursuit: {publish_rate_hz: 30.0, state_timeout_sec: 1.0}
+    fw_metric_orbit: {publish_rate_hz: 30.0, state_timeout_sec: 1.0}
 
 # 2. ROS接口（相对名称会自动解析到 /UAV_NAME/...） ---------------------------
 interfaces:
@@ -21,6 +26,15 @@ interfaces:
     gimbal_status: "track/gimbal_status"
     # Shared world-frame target hand-off used by fw_metric_* profiles.
     metric_target: "track/metric_target"
+  profiles:
+    fw_metric_pursuit:
+      input:
+        detections: "detect/detections"
+        vehicle_state: "state_estimator/main/frames/world/odom"
+    fw_metric_orbit:
+      input:
+        detections: "detect/detections"
+        vehicle_state: "state_estimator/main/frames/world/odom"
   output:
     # 真正送给现有控制器的速度参考。
     control_reference: "control/reference/setpoint"
@@ -57,6 +71,30 @@ tracker:
   input_timeout_sec: 0.25
   minimum_confidence: 0.10
   confidence_hysteresis: 0.05
+  profiles:
+    fw_metric_pursuit: {input_timeout_sec: 0.30, minimum_confidence: 0.20}
+    fw_metric_orbit: {input_timeout_sec: 0.25, minimum_confidence: 0.20}
+
+  # Shared multi-source identity and handover settings used by fixed-wing
+  # metric pursuit/orbit. The long removal window keeps the public target ID
+  # available through a full orbit and subsequent visual reacquisition.
+  source_policy: "auto_handover"
+  source_handover_timeout_sec: 0.75
+  source_quality_handover:
+    enabled: true
+    min_active_quality: 0.25
+    min_incoming_quality: 0.55
+    quality_margin: 0.10
+    cooldown_sec: 1.0
+  source_aware: true
+  source_cross_class_reject: true
+  source_identity_max_age_sec: 0.50
+  source_handover_distance_m: 25.0
+  source_track_timeout_sec: 40.0
+  select_capture_tolerance_sec: 0.10
+  reject_out_of_order_timestamps: true
+  source_clock_reset_jump_sec: 5.0
+  emit_candidates: false
 
   # 选中轨迹进入 follower 前的轻量平滑。
   position_filter_alpha: 0.40
@@ -120,12 +158,12 @@ tracker:
   lifecycle:
     confirmation_hits: 2
     occlusion_frames: 5            # 该阶段允许 Kalman 预测继续短时控制
-    removal_frames: 30
+    removal_frames: 1200
     reference_fps: 30.0
     # PixEagle-compatible time lifecycle; keep frame fields for older launch
     # configs while all runtime decisions use source timestamps when available.
     occlusion_timeout_sec: 0.35
-    removal_timeout_sec: 5.0
+    removal_timeout_sec: 40.0
     reacquisition_after_sec: 0.35
     reacquisition_confirm_hits: 3
     reacquisition_mode: "balanced" # changed detector ID needs appearance evidence after long loss
@@ -137,6 +175,7 @@ tracker:
   association:
     iou_threshold: 0.20
     center_distance: 1.50
+    metric_distance_m: 35.0
     ambiguity_margin: 0.08
     flexible_class_matching: true
     # All train7 labels are vehicle subclasses. A YOLO class flip must not
@@ -169,7 +208,7 @@ follower:
   # gmfw_velocity_vector: 固定翼云台相机，向量跟踪
   # fw_metric_pursuit: 固定翼目标跟踪
   # fw_metric_orbit: 固定翼到目标附近盘旋
-  profile: "gm_velocity_chase"
+  profile: "gmfw_velocity_vector"
   lateral_guidance_mode: "coordinated_turn"  # coordinated_turn | sideslip
   enable_vertical_control: true
   distance_enable_yaw: true
@@ -274,18 +313,158 @@ follower:
     maximum_course_offset: 0.70
     maximum_climb_rate: 3.0
 
+  # Fixed-wing world-frame metric guidance. The selected follower/profile
+  # chooses pursuit or orbit while each profile keeps its own airspeed limits.
+  fw_metric_pursuit:
+    enable_vertical_control: false
+    airspeed: 15.0
+    maximum_course_offset: 0.70
+    maximum_climb_rate: 3.0
+
+  fw_metric_orbit:
+    enable_vertical_control: false
+    airspeed: 15.0
+    maximum_course_offset: 0.70
+    maximum_course_rate_radps: 0.35
+    maximum_climb_rate: 3.0
+
+  # Metric settings are read for either fw_metric_* profile. The tracker
+  # enables this block automatically when one of those profiles is selected.
+  target_guidance:
+    enabled: false
+    mode: "metric_orbit"
+    source_policy:
+      enabled: true
+      fixed_camera_token: "fixed"
+      gimbal_token: "gimbal"
+      unknown_as_fixed_camera: true
+    observation:
+      policy: "metric_required"
+      metric_timeout_sec: 0.30
+      max_position_sigma_m: 12.0
+    orbit:
+      radius_m: 80.0
+      direction: "auto"
+      capture_hysteresis_m: 12.0
+      minimum_turn_radius_m: 45.0
+      radial_gain: 0.40
+      radial_damping: 0.30
+      target_velocity_feedforward: true
+      publish_course_rate_feedforward: true
+      publish_position_reference: true
+    maximum_course_offset: 1.20
+    fixed_camera:
+      fov_constraint_enabled: true
+      fov_margin_ratio: 0.10
+      preserve_orbit_on_fov_loss: true
+      visibility_direction_selection_enabled: true
+    gimbal:
+      dynamic_fov_enabled: true
+      dynamic_fov_margin_ratio: 0.12
+      min_fov_rad: 0.10
+      zoom_reference_ratio: 1.0
+      zoom_margin_gain: 0.05
+    predictive_fov:
+      enabled: true
+      fx: 46.9882335
+      fy: 46.9882335
+      cx: 320.5
+      cy: 240.5
+      width: 640.0
+      height: 480.0
+      horizon_sec: 0.6
+      optical_to_body_rpy: [3.14159265359, 0.0, -1.57079632679]
+      translation: [0.0, 0.0, 0.2]
+    fixed_wing:
+      kinematics_enabled: true
+      airspeed_mps: 15.0
+      maximum_bank_angle_deg: 35.0
+      gravity_mps2: 9.81
+      entry_altitude_hold_enabled: true
+      entry_altitude_offset_m: 0.0
+      entry_altitude_reference_m: 35.0
+      entry_target_down_m: 0.0
+      altitude_gain: 0.35
+    maximum_course_rate_radps: 0.35
+    target_loss:
+      coast_time_sec: 2.0
+      # One orbit at 15 m/s on an 80 m radius takes about 34 s. The pursuit
+      # profile shortens this with the per-profile value below.
+      orbit_time_sec: 35.0
+      hold_process_sigma_mps: 0.20
+      center_hold_enabled: true
+      center_hold_time_sec: 85.0
+      center_hold_process_sigma_mps: 0.05
+      inertial_coast_state_timeout_sec: 1.0
+    metric_velocity_estimation:
+      enabled: true
+      position_filter_enabled: true
+      position_filter_alpha: 0.30
+      position_maximum_innovation_m: 18.0
+      filter_alpha: 0.35
+      maximum_speed_mps: 40.0
+      stddev_mps: 3.0
+      world_filter_enabled: true
+      world_filter_model: "imm"
+      world_filter_process_accel_stddev_mps2: 1.5
+      world_filter_mahalanobis_gate: 16.27
+      world_filter_imm_static_accel_stddev_mps2: 0.20
+      world_filter_imm_maneuver_accel_stddev_mps2: 4.0
+      world_filter_imm_min_probability: 0.02
+      world_filter_imm_turn_rate_stddev_radps2: 0.35
+      world_filter_imm_static_persistence: 0.96
+      world_filter_imm_cv_persistence: 0.92
+      world_filter_imm_turn_persistence: 0.90
+      world_filter_imm_max_turn_rate_radps: 1.20
+      world_filter_oosm_enabled: true
+      world_filter_oosm_window_sec: 0.50
+      world_filter_oosm_covariance_inflation: 4.0
+      world_filter_pose_history_sec: 2.0
+      multi_source_fusion_enabled: true
+      multi_source_max_age_sec: 0.50
+    profiles:
+      fw_metric_pursuit:
+        maximum_course_offset: 0.70
+        fixed_camera:
+          fov_constraint_enabled: false
+          preserve_orbit_on_fov_loss: false
+          visibility_direction_selection_enabled: false
+        predictive_fov:
+          enabled: false
+        orbit:
+          publish_course_rate_feedforward: false
+          publish_position_reference: false
+        fixed_wing:
+          entry_altitude_hold_enabled: false
+          entry_altitude_reference_m: -1.0
+        target_loss:
+          orbit_time_sec: 10.0
+          center_hold_enabled: false
+          center_hold_time_sec: 0.0
+        metric_velocity_estimation:
+          enabled: false
+          world_filter_enabled: false
+          world_filter_model: "cv"
+          world_filter_oosm_enabled: false
+          multi_source_fusion_enabled: false
+      fw_metric_orbit:
+        target_loss:
+          orbit_time_sec: 35.0
+
   gmfw_velocity_vector:
     # 云台状态没有实时 FOV 时使用以下标定值；有实时 FOV 时优先使用实时值。
     gimbal_horizontal_fov_rad: 1.0
     gimbal_vertical_fov_rad: 0.75
     # 云台横向偏角减小到此范围内后，逐渐加入图像偏差。
     gimbal_image_alignment_rad: 0.35
+    # 图像误差只补充云台视线角；云台角度保持全权重，图像修正权重为 0.30。
+    image_error_weight: 0.30
     pid:
-      course:     {kp: 1.2, ki: 0.05, kd: 0.10, integral_limit: 0.35}
-      climb_rate: {kp: 2.0, ki: 0.05, kd: 0.10, integral_limit: 0.8}
-    airspeed: 15.0
+      course:     {kp: 3.0, ki: 0.05, kd: 0.10, integral_limit: 0.35}
+      climb_rate: {kp: 20.0, ki: 0.05, kd: 0.10, integral_limit: 0.8}
+    airspeed: 18.0
     maximum_course_offset: 0.70
-    maximum_climb_rate: 3.0
+    maximum_climb_rate: 8.0
 
 # 5. 跨模块安全策略 -----------------------------------------------------------
 safety:

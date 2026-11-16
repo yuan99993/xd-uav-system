@@ -372,41 +372,6 @@ class ProcessManager:
                 context[key] = self._profile_path(value)
         return context
 
-    def _generate_sar_overlay(self, context):
-        template = context.get("sar_vehicle_config_template")
-        if not template:
-            raise ValueError("selected profile has no sar_vehicle_config_template")
-        overlay = _read_yaml(template)
-        dynamic_values = (
-            "input_image_topic", "camera_info_topic", "tracked_detections_topic",
-            "fusion_detections_topic", "fusion_observations_topic", "state_topic",
-            "annotated_image_topic", "selected_detections_topic", "select_pixel_topic",
-            "auto_select_service", "auto_select_status_topic", "gimbal_detection_topic",
-            "bridge_input_topic", "bridge_input_type", "output_detections_topic",
-            "detect_bridge_enabled", "detect_output_detections_topic", "uav_id",
-            "sensor_id", "profile", "model_version", "calibration_version",
-            "image_source", "camera_motion_fixed_frame", "image_width", "image_height",
-        )
-        for key in dynamic_values:
-            if key in context:
-                overlay[key] = context[key]
-        return self._write_generated_yaml(
-            "sar-{}-{}".format(context["name"], context["sensor_instance"]), overlay)
-
-    def _generate_track_config(self, template_path, vehicle_name, sar_sensor_context,
-                               fallback_image_topic=None):
-        track_config = _read_yaml(template_path)
-        overlay = track_config.setdefault("phase_overlay", {})
-        if sar_sensor_context:
-            overlay["input_image_topic"] = sar_sensor_context["annotated_image_topic"]
-            overlay["input_detections_topic"] = "track/selected_detections"
-        elif fallback_image_topic:
-            overlay["enabled"] = True
-            overlay["input_image_topic"] = fallback_image_topic
-        else:
-            overlay["enabled"] = False
-        return self._write_generated_yaml("track-{}".format(vehicle_name), track_config)
-
     def _vehicle_launch_spec(self, vehicle_type, launch_id):
         type_specs = self.config.get("aircraft_types", {}).get(
             vehicle_type, {}).get("launches", [])
@@ -618,17 +583,6 @@ class ProcessManager:
                         sensor["type"], name))
             launches = self._normalise_vehicle_launches(
                 item.get("launches", []), type_name, vehicle_sensors, name)
-            track_sensor = item.get("track_sensor")
-            if track_sensor is not None:
-                sensor_by_id = {sensor["id"]: sensor for sensor in vehicle_sensors}
-                if not isinstance(track_sensor, str) or track_sensor not in sensor_by_id:
-                    raise ValueError("track_sensor on {} must name one of its sensors".format(
-                        name))
-                if (sensor_by_id[track_sensor]["type"] not in
-                        ("front_gimbal_camera", "down_camera") and
-                        not sensor_by_id[track_sensor]["params"].get("image_topic")):
-                    raise ValueError("track_sensor {} on {} needs image_topic".format(
-                        track_sensor, name))
             params = item.get("params", {})
             if not isinstance(params, dict):
                 raise ValueError("vehicle params for {} must be a mapping".format(name))
@@ -642,7 +596,6 @@ class ProcessManager:
                 "params": params,
                 "sensors": vehicle_sensors,
                 "launches": launches,
-                "track_sensor": track_sensor,
             })
         return session_id, profile_name, vehicles, effective_shared
 
@@ -774,66 +727,17 @@ class ProcessManager:
                 sensor = sensor_by_id[selection["sensor"]]
                 sensor_context = copy.deepcopy(sensor_contexts[sensor["id"]])
                 sensor_context.update(selection["params"])
-                # Keep the SAR launch's established instance/topic/service names.
-                # UAV_NAME and camera input topics are the per-aircraft values.
-                instance_name = "smart"
-                topic_root = "sar_yolo_detector/{}".format(instance_name)
-                sensor_context["instance_name"] = instance_name
-                sensor_context.update({
-                    "tracked_detections_topic": topic_root + "/tracked_detections",
-                    "fusion_detections_topic": topic_root + "/tracked_detections/fusion",
-                    "fusion_observations_topic": topic_root + "/tracked_detections/observations",
-                    "selected_detections_topic": topic_root + "/selected_tracked_detections",
-                    "select_pixel_topic": topic_root + "/select_pixel",
-                    "auto_select_service": topic_root + "/auto_select",
-                    "auto_select_status_topic": topic_root + "/auto_select_status",
-                    "state_topic": topic_root + "/state",
-                    "annotated_image_topic": topic_root + "/annotated",
-                    "gimbal_detection_topic": topic_root + "/selected_tracked_detections",
-                    "bridge_input_topic": topic_root + "/selected_tracked_detections",
-                    "bridge_input_type": "tracked",
-                    "output_detections_topic": "track/selected_detections",
-                    "detect_bridge_enabled": "true",
-                    "detect_output_detections_topic": "detect/input/detections_2d",
-                })
+                # The SAR launch command consumes these camera inputs. The
+                # selected/annotated topics below keep the other auto-starts
+                # aligned with the launch defaults; model options also use
+                # xd_smart_tracker_fusion_integration.launch defaults.
+                topic_root = "sar_yolo_detector/smart"
                 sensor_context.setdefault("input_image_topic",
                                           sensor_context.get("image_topic", ""))
                 sensor_context.setdefault("camera_info_topic", "")
-                sensor_context.setdefault(
-                    "tracked_detections_topic", topic_root + "/tracked_detections")
-                sensor_context.setdefault(
-                    "fusion_detections_topic",
-                    sensor_context["tracked_detections_topic"] + "/fusion")
-                sensor_context.setdefault(
-                    "fusion_observations_topic",
-                    sensor_context["tracked_detections_topic"] + "/observations")
-                sensor_context.setdefault(
-                    "selected_detections_topic",
+                sensor_context["selected_detections_topic"] = (
                     topic_root + "/selected_tracked_detections")
-                sensor_context.setdefault("select_pixel_topic", topic_root + "/select_pixel")
-                sensor_context.setdefault("auto_select_service", topic_root + "/auto_select")
-                sensor_context.setdefault(
-                    "auto_select_status_topic", topic_root + "/auto_select_status")
-                sensor_context.setdefault("state_topic", topic_root + "/state")
-                sensor_context.setdefault("annotated_image_topic", topic_root + "/annotated")
-                sensor_context.setdefault("gimbal_detection_topic",
-                                          sensor_context["selected_detections_topic"])
-                sensor_context.setdefault("bridge_input_topic",
-                                          sensor_context["selected_detections_topic"])
-                sensor_context.setdefault("bridge_input_type", "tracked")
-                sensor_context.setdefault("output_detections_topic", "track/selected_detections")
-                sensor_context.setdefault("detect_output_detections_topic",
-                                          "detect/{}/input/detections_2d".format(sensor["id"]))
-                sensor_context["sar_vehicle_config"] = self._generate_sar_overlay(
-                    sensor_context)
-                sensor_context.update({
-                    "config": sensor_context.get("sar_base_config", ""),
-                    "vehicle_config": sensor_context["sar_vehicle_config"],
-                    "fusion_config": sensor_context.get("sar_fusion_config", ""),
-                    "model_path": sensor_context.get("smart_model_path", ""),
-                    "model_sha256": sensor_context.get("smart_model_sha256", ""),
-                    "python_executable": sensor_context.get("sar_python", ""),
-                })
+                sensor_context["annotated_image_topic"] = topic_root + "/annotated"
                 sar_contexts[sensor["id"]] = sensor_context
 
             for sensor_id, sensor in sensor_by_id.items():
@@ -848,22 +752,6 @@ class ProcessManager:
                     detection_topic = "/{}/{}".format(
                         vehicle["name"], str(detection_topic).lstrip("/"))
                 sensor_contexts[sensor_id]["automatic_detection_topic"] = detection_topic
-
-            if vehicle["track_sensor"]:
-                selected_track_sensor = vehicle["track_sensor"]
-                selected_sar = sar_contexts.get(selected_track_sensor)
-                fallback_image_topic = sensor_by_id[selected_track_sensor]["params"].get(
-                    "image_topic")
-            else:
-                selected_sar = next(iter(sar_contexts.values()), None)
-                fallback_image_topic = next((sensor["params"].get("image_topic")
-                                             for sensor in vehicle["sensors"]
-                                             if sensor["params"].get("image_topic")), None)
-            track_template = context.get("track_config_template")
-            if not track_template:
-                raise ValueError("selected profile has no track_config_template")
-            vehicle_context["track_config"] = self._generate_track_config(
-                track_template, vehicle["name"], selected_sar, fallback_image_topic)
 
             required_launches = self.config.get("required_vehicle_launches", [])
             selections = [{"id": launch_id, "sensor": None, "params": {}}
@@ -924,7 +812,18 @@ class ProcessManager:
         log_dir.mkdir(mode=0o700, exist_ok=True)
         log_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", key)[:180] + ".log"
         log_path = log_dir / log_name
+        if log_path.exists():
+            previous = log_path.read_bytes()
+            try:
+                previous.decode("utf-8")
+            except UnicodeDecodeError:
+                repaired_path = log_path.with_suffix(".log.repair")
+                repaired_path.write_bytes(
+                    previous.decode("utf-8", errors="replace").encode("utf-8"))
+                os.replace(repaired_path, log_path)
         log_stream = open(log_path, "ab", buffering=0)
+        log_stream.write(("\n\n===== launch started {} =====\n".format(
+            time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
         argv = self._wrapped_argv(spec["argv"])
         process = subprocess.Popen(
             argv,

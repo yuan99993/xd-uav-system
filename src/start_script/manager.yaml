@@ -148,6 +148,8 @@ vehicle_launches:
     argv:
       - python3
       - "{video_stream_receiver_script}"
+      - --decoder
+      - hardware
       - "--camera"
       - "{camera_stream_name}"
       - --no-display
@@ -159,6 +161,7 @@ vehicle_launches:
   sar_yolo_detector:
     sensor_required: true
     sensor_types: [front_gimbal_camera, down_camera]
+    allowed_params: [input_image_topic, camera_info_topic]
     argv:
       - roslaunch
       - sar_yolo_detector
@@ -254,28 +257,8 @@ profiles:
     parameters:
       detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml
       lidar_detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/lidar_camera.yaml
-      smart_model_path: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine
-      smart_model_sha256: 471011311fa9fa6a4067c9cae2fb7e29215fb32956c36a3ea3112c06e75b784e
-      sar_python: /home/nvidia/xd-uavsystem-test/.venv-sar/bin/python
-      tracking_mode: FusionTracker
-      bridge_input_type: tracked
-      detect_bridge_enabled: "true"
-      use_gpu: "true"
-      shared_inference: "true"
-      maximum_batch_size: 1
-      inference_max_fps: 10.0
-      maximum_capture_age_sec: 2.0
-      publish_annotated_image: "true"
-      image_source: fixed_rgb
-      camera_motion_fixed_frame: world
-      image_width: 1280
-      image_height: 720
     files:
       world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
-      track_config_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
-      sar_base_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker.yaml
-      sar_vehicle_config_template: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml
-      sar_fusion_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/fusion_tracker.yaml
       tf_config_by_type:
         vtol: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
         fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
@@ -288,28 +271,8 @@ profiles:
     parameters:
       detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_front_detect.yaml
       lidar_detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/lidar_camera.yaml
-      smart_model_path: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine
-      smart_model_sha256: 471011311fa9fa6a4067c9cae2fb7e29215fb32956c36a3ea3112c06e75b784e
-      sar_python: /home/nvidia/xd-uavsystem-test/.venv-sar/bin/python
-      tracking_mode: FusionTracker
-      bridge_input_type: tracked
-      detect_bridge_enabled: "true"
-      use_gpu: "true"
-      shared_inference: "true"
-      maximum_batch_size: 1
-      inference_max_fps: 10.0
-      maximum_capture_age_sec: 2.0
-      publish_annotated_image: "true"
-      image_source: fixed_rgb
-      camera_motion_fixed_frame: world
-      image_width: 1280
-      image_height: 720
     files:
       world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
-      track_config_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
-      sar_base_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker.yaml
-      sar_vehicle_config_template: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml
-      sar_fusion_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/fusion_tracker.yaml
       tf_config_by_type:
         vtol: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
         fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
@@ -322,28 +285,8 @@ profiles:
     parameters:
       detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml
       lidar_detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/lidar_camera.yaml
-      smart_model_path: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine
-      smart_model_sha256: 471011311fa9fa6a4067c9cae2fb7e29215fb32956c36a3ea3112c06e75b784e
-      sar_python: /home/nvidia/xd-uavsystem-test/.venv-sar/bin/python
-      tracking_mode: FusionTracker
-      bridge_input_type: tracked
-      detect_bridge_enabled: "true"
-      use_gpu: "true"
-      shared_inference: "true"
-      maximum_batch_size: 1
-      inference_max_fps: 10.0
-      maximum_capture_age_sec: 2.0
-      publish_annotated_image: "true"
-      image_source: fixed_rgb
-      camera_motion_fixed_frame: world
-      image_width: 1280
-      image_height: 720
     files:
       world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
-      track_config_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_track/config/track.yaml
-      sar_base_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker.yaml
-      sar_vehicle_config_template: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/smart_tracker_xd_vehicle.yaml
-      sar_fusion_config: /home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/config/fusion_tracker.yaml
       tf_config_by_type:
         vtol: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
         fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml

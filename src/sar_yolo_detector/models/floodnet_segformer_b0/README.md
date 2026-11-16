@@ -1,8 +1,12 @@
-# FloodNet SegFormer-B0 profile
+# FloodNet SegFormer-B0 pilot (retained artifact)
 
-This directory is the unified `sar_yolo_detector` copy of the FloodNet pilot
-artifact. It is selected as `profile:=floodnet` from
-`launch/rescue_profile.launch`.
+The trimmed runtime package no longer builds the FloodNet inference and region
+extraction nodes. These files are kept as model artifacts and historical
+training records; they are not used by the current SmartTracker Fusion launch.
+
+This directory retains the FloodNet pilot artifacts from the former rescue
+profile. The profile launch and its inference nodes were removed from the
+trimmed runtime package.
 
 The packaged checkpoint is a PyTorch research artifact:
 
@@ -32,23 +36,6 @@ random-input benchmark measured about 46.99 ms GPU compute per 1024 crop
 camera copy, preprocessing, argmax and mask resizing are not included, and
 clock throttling explains occasional tail latency.
 
-Re-export after changing the checkpoint with the packaged helper:
-
-```bash
-VENV=/path/to/.venv-sar-flood
-PKG=/path/to/catkin_ws/src/sar_yolo_detector
-CKPT="$PKG/models/floodnet_segformer_b0/floodnet_segformer_b0_pilot_10e_best.pt"
-OUT=${CKPT%.pt}.onnx
-$VENV/bin/python "$PKG/training/export_floodnet_onnx.py" \
-  --checkpoint "$CKPT" --output "$OUT" --input-size 1024
-/usr/src/tensorrt/bin/trtexec --onnx="$OUT" \
-  --saveEngine="${CKPT%.pt}_fp16.engine" --fp16 \
-  --memPoolSize=workspace:2048 \
-  --inputIOFormats=fp16:chw --outputIOFormats=fp16:chw
-```
-The package now includes `sar_segformer_inference`, which preprocesses RGB
-using ImageNet mean/std, runs FP16/FP32 TensorRT, argmaxes the ten logits,
-resizes the class mask with nearest-neighbour sampling, and preserves the
-capture timestamp. `rescue_profile.launch profile:=floodnet` starts it together
-with the region extractor. Topics are relative and resolve under the selected
-aircraft namespace; neither node sends flight commands.
+The former deployment path used `sar_segformer_inference` to preprocess RGB,
+run FP16/FP32 TensorRT, produce a class mask, and preserve the capture
+timestamp. That runtime path is not included in the trimmed package.

@@ -136,6 +136,9 @@ struct TrackControllerConfig {
   double gmfw_horizontal_fov_rad{1.0};
   double gmfw_vertical_fov_rad{0.75};
   double gmfw_image_alignment_rad{0.35};
+  // Image-ray correction is blended into the full gimbal LOS ray. A value
+  // below 1 gives gimbal angles more authority than image-box displacement.
+  double gmfw_image_error_weight{0.30};
 
   // Track-quality safety. Kalman covariance is expressed in normalized image
   // coordinates, so these limits are independent of camera resolution.

@@ -1,5 +1,4 @@
-# Legacy generic PixEagle SmartTracker profile. The primary scout-aircraft
-# entry point uses smart_tracker_aircraft.yaml via scout_perception.launch.
+# Base PixEagle SmartTracker profile for xd_smart_tracker_fusion_integration.launch.
 input_image_topic: camera/image_raw
 tracked_detections_topic: sar_yolo_detector/smart/tracked_detections
 state_topic: sar_yolo_detector/smart/state

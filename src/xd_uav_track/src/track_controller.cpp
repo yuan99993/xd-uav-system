@@ -360,6 +360,8 @@ TrackController::TrackController(const TrackControllerConfig& requested)
       config_.gmfw_vertical_fov_rad, 0.01, 3.0);
   config_.gmfw_image_alignment_rad = std::max(
       0.01, config_.gmfw_image_alignment_rad);
+  config_.gmfw_image_error_weight = clamp(
+      config_.gmfw_image_error_weight, 0.0, 1.0);
   config_.uncertainty_nominal_sigma = std::max(
       1e-6, config_.uncertainty_nominal_sigma);
   config_.uncertainty_slow_ratio = std::max(
@@ -2051,9 +2053,14 @@ TrackVelocity TrackController::compute(const double now) {
             : config_.gmfw_vertical_fov_rad;
         // Convert the normalized box offset into a ray in the gimbal frame.
         // Gimbal roll rotates the image axes relative to the aircraft.
-        const double image_weight = clamp(
+        const double image_alignment_weight = clamp(
             1.0 - std::abs(yaw) / config_.gmfw_image_alignment_rad,
             0.0, 1.0);
+        // Keep the gimbal LOS at full authority. The image ray is a weaker
+        // correction, so a centered box still leaves gimbal pitch available
+        // to command climb or descent.
+        const double image_weight = image_alignment_weight *
+            config_.gmfw_image_error_weight;
         const double image_right = image_weight * std::atan(
             error_x * std::tan(0.5 * clamp(hfov, 0.01, 3.0)));
         const double image_down = image_weight * std::atan(

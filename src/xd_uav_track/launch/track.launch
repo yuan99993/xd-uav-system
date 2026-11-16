@@ -3,6 +3,9 @@
   <arg name="body_frame" default="$(arg UAV_NAME)/base_link"/>
   <arg name="body_frd_frame" default="$(arg UAV_NAME)/base_link_frd"/>
   <arg name="config" default="$(find xd_uav_track)/config/track.yaml"/>
+  <!-- Empty keeps follower/profile from the YAML. Set fw_metric_pursuit or
+       fw_metric_orbit here to override it for this launch only. -->
+  <arg name="follower_profile" default=""/>
 
   <group ns="$(arg UAV_NAME)">
     <node pkg="xd_uav_track"
@@ -11,6 +14,8 @@
           output="screen"
           clear_params="true">
       <rosparam command="load" file="$(arg config)"/>
+      <param if="$(eval arg('follower_profile') != '')"
+             name="follower/profile" value="$(arg follower_profile)"/>
       <param name="frames/body" value="$(arg body_frame)"/>
       <param name="frames/body_frd" value="$(arg body_frd_frame)"/>
     </node>

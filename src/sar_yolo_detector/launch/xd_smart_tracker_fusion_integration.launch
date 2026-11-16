@@ -131,7 +131,7 @@
            value="$(arg gimbal_detection_topic)" />
   </group>
 
-  <include file="$(find sar_yolo_detector)/archive/launch/xd_detection_bridge.launch">
+  <include file="$(find sar_yolo_detector)/launch/xd_detection_bridge.launch">
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="node_name" value="vision_to_xd_bridge_$(arg instance_name)" />
     <arg name="input_detections_topic"
@@ -149,7 +149,7 @@
   </include>
 
   <group if="$(arg detect_bridge_enabled)">
-    <include file="$(find sar_yolo_detector)/archive/launch/xd_detection_bridge.launch">
+    <include file="$(find sar_yolo_detector)/launch/xd_detection_bridge.launch">
       <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
       <arg name="node_name" value="vision_to_xd_detect_bridge_$(arg instance_name)" />
       <arg name="input_detections_topic" value="$(arg bridge_input_topic)" />

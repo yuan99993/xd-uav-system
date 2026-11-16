@@ -120,7 +120,7 @@ install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
-install(DIRECTORY config launch models docs worlds web
+install(DIRECTORY config launch models docs worlds
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
@@ -130,37 +130,19 @@ install(FILES requirements-reid-onnx-cuda12.txt
 
 catkin_install_python(PROGRAMS
   scripts/configure_px4_sitl.py
-  scripts/record_tracking_decisions.py
   scripts/render_plane_catapult_sdf.py
-  scripts/replay_tracking_faults.py
   scripts/run_px4_sitl.py
   scripts/run_with_config_preflight.py
   scripts/sitl_metric_input.py
   scripts/validate_tracking_config.py
   scripts/verify_fixedwing_sitl.py
-  scripts/tracking_benchmark_driver.py
-  scripts/check_tracking_benchmark_baseline.py
   scripts/tracking_overlay_node.py
   scripts/tracking_phase_overlay_node.py
   scripts/combined_tracking_view_node.py
-  scripts/video_replay_node.py
-  scripts/video_tracking_record_node.py
-  scripts/evaluate_video_tracking.py
   scripts/moving_uav_search_driver.py
   scripts/gimbal_tracking_metrics.py
   scripts/perception_mode_manager.py
   scripts/perception_overlay_node.py
-  scripts/serve_perception_web.py
-  scripts/bound_rosbridge_websocket.py
-  scripts/validate_perception_web_runtime.py
-  scripts/reid_encoder_node.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-
-install(FILES scripts/benchmark_trajectories.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
-install(PROGRAMS scripts/xd_uav_reid_encoder
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -182,17 +164,12 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_perception_frame_selection.py)
   catkin_add_nosetests(test/test_perception_loss_display.py)
   catkin_add_nosetests(test/test_perception_video.py)
-  catkin_add_nosetests(test/test_perception_web_http.py)
   catkin_add_nosetests(test/test_perception_position_metadata.py)
   catkin_add_nosetests(test/test_perception_trajectory.py)
   catkin_add_nosetests(test/test_perception_model_transaction.py)
   catkin_add_nosetests(test/test_perception_command_queue.py)
-  catkin_add_nosetests(test/test_video_tracking_eval.py)
-  catkin_add_nosetests(test/test_benchmark_trajectories.py)
   catkin_add_nosetests(test/test_moving_uav_search_dynamics.py)
   catkin_add_nosetests(test/test_vehicle_perception_launch.py)
-  catkin_add_nosetests(test/test_perception_deployment.py)
-  catkin_add_nosetests(test/test_benchmark_baseline.py)
   catkin_add_gtest(test_track_controller
     test/test_track_controller.cpp
   )

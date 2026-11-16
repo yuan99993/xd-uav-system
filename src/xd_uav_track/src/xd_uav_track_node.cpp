@@ -87,9 +87,10 @@ bool loadDoubleArray(const ros::NodeHandle& nh, const std::string& key,
 }
 
 void loadTargetGuidance(const ros::NodeHandle& nh,
-                        xd_uav_track::TargetGuidanceConfig* config) {
+                        xd_uav_track::TargetGuidanceConfig* config,
+                        const std::string& prefix) {
   if (config == nullptr) return;
-  const std::string p = "follower/target_guidance/";
+  const std::string p = prefix;
   nh.param(p + "enabled", config->enabled, config->enabled);
   std::string mode = xd_uav_track::targetGuidanceModeName(config->mode);
   nh.param(p + "mode", mode, mode);
@@ -316,6 +317,16 @@ class XdUavTrackNode {
                profile_name.c_str());
       config.profile = xd_uav_track::FollowerProfile::kVelocityChase;
     }
+    if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
+      const std::string profile_key =
+          xd_uav_track::followerProfileName(config.profile);
+      const std::string tracker_profile_prefix =
+          "tracker/profiles/" + profile_key + "/";
+      private_nh_.param(tracker_profile_prefix + "input_timeout_sec",
+                        config.input_timeout_sec, config.input_timeout_sec);
+      private_nh_.param(tracker_profile_prefix + "minimum_confidence",
+                        config.minimum_confidence, config.minimum_confidence);
+    }
     std::string guidance_name{
         xd_uav_track::lateralGuidanceModeName(config.lateral_guidance)};
     private_nh_.param("follower/lateral_guidance_mode", guidance_name,
@@ -541,6 +552,9 @@ class XdUavTrackNode {
     private_nh_.param("follower/gmfw_velocity_vector/gimbal_image_alignment_rad",
                       config.gmfw_image_alignment_rad,
                       config.gmfw_image_alignment_rad);
+    private_nh_.param("follower/gmfw_velocity_vector/image_error_weight",
+                      config.gmfw_image_error_weight,
+                      config.gmfw_image_error_weight);
     // Allow the registered metric profiles to carry their own fixed-wing
     // limits while retaining fw_velocity_vector as the common fallback.
     if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
@@ -559,6 +573,9 @@ class XdUavTrackNode {
       private_nh_.param(profile_prefix + "/maximum_climb_rate",
                         config.fw_maximum_climb_rate,
                         config.fw_maximum_climb_rate);
+      private_nh_.param(profile_prefix + "/enable_vertical_control",
+                        config.enable_vertical_control,
+                        config.enable_vertical_control);
     }
     private_nh_.param("safety/uncertainty/enabled", config.uncertainty_control_enabled,
                       config.uncertainty_control_enabled);
@@ -597,8 +614,14 @@ class XdUavTrackNode {
     private_nh_.param("follower/relative_state/maximum_correction_mps",
                       config.relative_maximum_correction,
                       config.relative_maximum_correction);
-    loadTargetGuidance(private_nh_, &config.target_guidance);
+    loadTargetGuidance(private_nh_, &config.target_guidance,
+                       "follower/target_guidance/");
     if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
+      const std::string guidance_profile_prefix =
+          std::string("follower/target_guidance/profiles/") +
+          xd_uav_track::followerProfileName(config.profile) + "/";
+      loadTargetGuidance(private_nh_, &config.target_guidance,
+                         guidance_profile_prefix);
       config.target_guidance.enabled = true;
       config.target_guidance.mode =
           xd_uav_track::targetGuidanceModeForFollowerProfile(config.profile);
@@ -912,6 +935,15 @@ class XdUavTrackNode {
     private_nh_.param("runtime/state_timeout_sec", state_timeout_sec_, 0.30);
     private_nh_.param("runtime/publish_control_reference",
                       publish_control_reference_, true);
+    if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
+      const std::string runtime_profile_prefix =
+          std::string("runtime/profiles/") +
+          xd_uav_track::followerProfileName(config.profile) + "/";
+      private_nh_.param(runtime_profile_prefix + "publish_rate_hz",
+                        publish_rate_, publish_rate_);
+      private_nh_.param(runtime_profile_prefix + "state_timeout_sec",
+                        state_timeout_sec_, state_timeout_sec_);
+    }
     private_nh_.param("tracker/enabled_at_startup", tracker_active_, false);
     private_nh_.param("runtime/perception_only", perception_only_, false);
     if (perception_only_) {
@@ -965,6 +997,15 @@ class XdUavTrackNode {
                       metric_target_topic);
     private_nh_.param("interfaces/output/status", status_topic, status_topic);
     private_nh_.param("interfaces/input/vehicle_state", state_topic, state_topic);
+    if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
+      const std::string interface_profile_prefix =
+          std::string("interfaces/profiles/") +
+          xd_uav_track::followerProfileName(config.profile) + "/input/";
+      private_nh_.param(interface_profile_prefix + "detections",
+                        detections_topic, detections_topic);
+      private_nh_.param(interface_profile_prefix + "vehicle_state",
+                        state_topic, state_topic);
+    }
     private_nh_.param("interfaces/output/control_reference", reference_topic,
                       reference_topic);
 

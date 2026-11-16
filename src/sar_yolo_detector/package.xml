@@ -3,10 +3,8 @@
   <name>sar_yolo_detector</name>
   <version>0.4.0</version>
   <description>
-    Scout-side PixEagle SmartTracker and search-and-rescue perception frontend.
-    Stable tracked detections are localized into planner-facing task candidates;
-    role-separated gateways connect scout perception and worker executors without
-    depending on Pod, Follower, MRS, PX4, or other flight-control packages.
+    PixEagle SmartTracker Fusion launch, shared model inference service, and XD
+    detection bridge, with ROS message and service compatibility interfaces.
   </description>
 
   <maintainer email="maintainers@example.com">SAR Perception Team</maintainer>
@@ -21,8 +19,6 @@
   <depend>geometry_msgs</depend>
   <depend>image_geometry</depend>
   <depend>image_transport</depend>
-  <depend>libssl-dev</depend>
-  <depend>libsqlite3-dev</depend>
   <depend>roscpp</depend>
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
@@ -42,7 +38,6 @@
   <exec_depend>python3-rospkg</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
 
-  <test_depend>gtest</test_depend>
   <test_depend>python3-nose</test_depend>
   <test_depend>rostest</test_depend>
 
