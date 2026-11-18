@@ -93,6 +93,10 @@ class SharedInferenceServer:
             "~maximum_capture_age_sec", 0.5)))
         self._request_count = 0
         self._failure_count = 0
+        self._batch_counts = [0] * 9
+        self._batch_stats_requests = 0
+        self._batch_inference_ms_total = 0.0
+        self._batch_stats_started = time.monotonic()
         self._batch_wait_sec = max(0.0, min(0.010, float(rospy.get_param(
             "~batch_wait_ms", 4.0)) / 1000.0))
         requested_batch = max(1, min(8, int(rospy.get_param("~maximum_batch_size", 2))))
@@ -420,6 +424,9 @@ class SharedInferenceServer:
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
                 if len(results) != len(fresh):
                     raise RuntimeError("shared backend returned an incomplete batch")
+                self._batch_counts[len(fresh)] += 1
+                self._batch_stats_requests += len(fresh)
+                self._batch_inference_ms_total += elapsed_ms
                 for pending, (_mode, detections) in zip(fresh, results):
                     response = RunSharedInferenceResponse()
                     response.success = True
@@ -427,6 +434,28 @@ class SharedInferenceServer:
                     response.detections = [self._to_message(item) for item in detections]
                     self._complete(pending, response)
                     self._request_count += 1
+                now = time.monotonic()
+                if now - self._batch_stats_started >= 10.0:
+                    stats_duration = now - self._batch_stats_started
+                    batch_mix = ",".join(
+                        "%d:%d" % (size, self._batch_counts[size])
+                        for size in range(1, len(self._batch_counts))
+                    )
+                    batches = sum(self._batch_counts)
+                    average_ms = (self._batch_inference_ms_total / batches
+                                  if batches else 0.0)
+                    rospy.loginfo(
+                        "shared YOLO perf: requests=%d requests_per_sec=%.2f "
+                        "batches=%d batch_mix=%s batch_inference_ms_avg=%.2f max_batch=%d",
+                        self._batch_stats_requests,
+                        self._batch_stats_requests / stats_duration,
+                        batches, batch_mix, average_ms,
+                        self._maximum_batch_size,
+                    )
+                    self._batch_counts = [0] * 9
+                    self._batch_stats_requests = 0
+                    self._batch_inference_ms_total = 0.0
+                    self._batch_stats_started = now
             except Exception as exc:
                 message = "%s: %s" % (type(exc).__name__, exc)
                 rospy.logerr_throttle(2.0, "shared YOLO inference failed: %s", message)

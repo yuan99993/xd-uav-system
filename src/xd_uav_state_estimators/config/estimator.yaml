@@ -14,19 +14,19 @@ frame_lookup_timeout: 10.0
 # 初期抖动；若观测持续移动、时间戳重复或出现坐标系切换，则重新计时。
 startup_initialization:
   enabled: true
-  stable_duration: 5.0
+  stable_duration: 3.0
   min_samples: 10
   max_sample_gap: 1.0
-  position_xy_tolerance: 50.0
-  position_z_tolerance: 30.0
-  velocity_xy_tolerance: 5.0
-  velocity_z_tolerance: 3.0
-  heading_tolerance: 0.7
-  yaw_rate_tolerance: 0.75
+  position_xy_tolerance: 80.0
+  position_z_tolerance: 50.0
+  velocity_xy_tolerance: 10.0
+  velocity_z_tolerance: 5.0
+  heading_tolerance: 1.5
+  yaw_rate_tolerance: 1.5
   # 在地面初始化时限制明显的滑行/爬升速度，避免把运动状态当作静止初值。
-  velocity_xy_max_speed: 1.5
-  velocity_z_max_speed: 0.75
-  yaw_rate_max: 0.75
+  velocity_xy_max_speed: 3.0
+  velocity_z_max_speed: 1.5
+  yaw_rate_max: 1.5
 
 # 主估计结果除标准odom坐标系外，还可重发布到以下坐标系。
 # 对应话题为state_estimator/main/frames/<坐标系>/odom。

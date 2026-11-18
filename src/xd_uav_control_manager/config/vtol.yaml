@@ -11,9 +11,9 @@ vtol:
     # 空速遥测作为转换期间的输入有效性门槛。正数最小空速仍会强制要求空速。
     require_airspeed_during_transition: false
     # Standard VTOL从悬停开始转换时空速为0；设为0交给PX4完成加速与保护。
-    minimum_forward_airspeed: 4.0
+    minimum_forward_airspeed: 1.0
     prepare_forward_transition: true
-    preparation_groundspeed: 15.0
+    preparation_groundspeed: 12.0
     preparation_max_distance: 200.0
     preparation_timeout: 30.0
     preparation_stable_time: 0.5

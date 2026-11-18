@@ -67,6 +67,7 @@ struct Config {
   double acquire_timeout{180.0};
   double fixedwing_minimum_slot_distance{30.0};
   double fixedwing_min_speed{11.0};
+  double fixedwing_max_speed{24.0};
   double fixedwing_max_catchup_speed{4.0};
   double fixedwing_min_groundspeed_for_course{2.0};
   double multirotor_max_speed{5.0};

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import rospy
 from sensor_msgs.msg import Image
@@ -64,12 +65,34 @@ class SharedRemoteBackend(DetectionBackend):
         self._labels: Dict[int, str] = {}
         self._task = "detect"
         self._stale_frames_dropped = 0
+        self._last_inference_ms = 0.0
         self._loaded = False
         self._info_proxy = None
         self._detect_proxy = None
         self.tracker_type_str = str(self._config.get("TRACKER_TYPE", "botsort")).lower()
         self.use_custom_reid = False
         self.tracker_args = {"persist": False, "verbose": False}
+        self._configured_image_size = int(
+            self._config.get("SMART_TRACKER_INFERENCE_IMAGE_SIZE", 640)
+        )
+        if (self._configured_image_size < 320 or
+                self._configured_image_size > 1536 or
+                self._configured_image_size % 32):
+            raise ValueError(
+                "SMART_TRACKER_INFERENCE_IMAGE_SIZE must be a multiple of 32 "
+                "within 320..1536"
+            )
+        self._shared_input_max_side = int(self._config.get(
+            "SMART_TRACKER_SHARED_INPUT_MAX_SIDE", self._configured_image_size
+        ))
+        if (self._shared_input_max_side != 0 and
+                (self._shared_input_max_side < 320 or
+                 self._shared_input_max_side > 1536 or
+                 self._shared_input_max_side % 32)):
+            raise ValueError(
+                "SMART_TRACKER_SHARED_INPUT_MAX_SIDE must be 0 or a multiple "
+                "of 32 within 320..1536"
+            )
 
     @property
     def is_available(self) -> bool:
@@ -86,6 +109,11 @@ class SharedRemoteBackend(DetectionBackend):
     @property
     def stale_frames_dropped(self) -> int:
         return self._stale_frames_dropped
+
+    @property
+    def last_inference_ms(self) -> float:
+        """Last model-call duration reported by the shared inference server."""
+        return self._last_inference_ms
 
     def load_model(
         self,
@@ -201,6 +229,17 @@ class SharedRemoteBackend(DetectionBackend):
         contiguous = np.ascontiguousarray(frame, dtype=np.uint8)
         if contiguous.ndim != 3 or contiguous.shape[2] != 3:
             raise ValueError("shared YOLO expects a BGR HxWx3 image")
+        source_height, source_width = contiguous.shape[:2]
+        max_side = int(image_size or self._shared_input_max_side or 0)
+        resized = False
+        if max_side > 0 and max(source_height, source_width) > max_side:
+            scale = max_side / float(max(source_height, source_width))
+            width = max(1, int(round(source_width * scale)))
+            height = max(1, int(round(source_height * scale)))
+            contiguous = cv2.resize(
+                contiguous, (width, height), interpolation=cv2.INTER_AREA
+            )
+            resized = True
         message = Image()
         message.header = header
         message.height, message.width = map(int, contiguous.shape[:2])
@@ -208,9 +247,32 @@ class SharedRemoteBackend(DetectionBackend):
         message.is_bigendian = 0
         message.step = message.width * 3
         message.data = contiguous.tobytes()
-        return self.detect_image(
+        detections = self.detect_image(
             message, source_id, conf, iou, max_det, image_size
         )
+        if resized:
+            scale_x = source_width / float(message.width)
+            scale_y = source_height / float(message.height)
+            for detection in detections:
+                detection.aabb_xyxy = tuple(int(round(value * scale)) for value, scale in zip(
+                    detection.aabb_xyxy, (scale_x, scale_y, scale_x, scale_y)
+                ))
+                detection.center_xy = (
+                    int(round(detection.center_xy[0] * scale_x)),
+                    int(round(detection.center_xy[1] * scale_y)),
+                )
+                if detection.obb_xywhr is not None:
+                    cx, cy, width, height, angle = detection.obb_xywhr
+                    detection.obb_xywhr = (
+                        cx * scale_x, cy * scale_y,
+                        width * scale_x, height * scale_y, angle,
+                    )
+                if detection.polygon_xy is not None:
+                    detection.polygon_xy = [
+                        (x * scale_x, y * scale_y)
+                        for x, y in detection.polygon_xy
+                    ]
+        return detections
 
     def detect_image(
         self,
@@ -241,6 +303,7 @@ class SharedRemoteBackend(DetectionBackend):
                 logger.debug("Dropped an outdated shared-inference frame: %s", message)
                 return []
             raise RuntimeError(response.message or "shared YOLO inference failed")
+        self._last_inference_ms = float(response.inference_ms)
         return [self._from_message(item) for item in response.detections]
 
     @staticmethod

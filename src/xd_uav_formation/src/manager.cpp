@@ -63,7 +63,8 @@ Config parseConfig(const std::string& mode, const YAML::Node& node,
                    const std::string& root_team) {
   const std::vector<std::string> common_numeric_parameters = {
       "minimum_slot_distance", "fixedwing_minimum_slot_distance",
-      "fixedwing_min_speed", "fixedwing_max_catchup_speed",
+      "fixedwing_min_speed", "fixedwing_max_speed",
+      "fixedwing_max_catchup_speed",
       "fixedwing_min_groundspeed_for_course", "multirotor_max_speed",
       "catchup_gain", "catchup_ki", "catchup_kd", "catchup_deadband",
       "catchup_integral_limit", "catchup_derivative_filter_time_constant",
@@ -129,6 +130,7 @@ Config parseConfig(const std::string& mode, const YAML::Node& node,
   XD_DOUBLE(acquire_timeout, "acquire_timeout");
   XD_DOUBLE(fixedwing_minimum_slot_distance, "fixedwing_minimum_slot_distance");
   XD_DOUBLE(fixedwing_min_speed, "fixedwing_min_speed");
+  XD_DOUBLE(fixedwing_max_speed, "fixedwing_max_speed");
   XD_DOUBLE(fixedwing_max_catchup_speed, "fixedwing_max_catchup_speed");
   XD_DOUBLE(fixedwing_min_groundspeed_for_course, "fixedwing_min_groundspeed_for_course");
   XD_DOUBLE(multirotor_max_speed, "multirotor_max_speed");

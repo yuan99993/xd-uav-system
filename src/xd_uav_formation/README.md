@@ -89,7 +89,8 @@ rostopic pub -1 /formation/shape std_msgs/String "data: 'arrow'"
 | `tf_lookup_timeout`、`tf_buffer_cache_time` | TF 查询等待时间和缓存时长 |
 | `external_quiet_time` | 启动前等待外部参考静默的时间 |
 | `minimum_slot_distance`、`fixedwing_minimum_slot_distance` | 领机跟随时限制僚机槽位距领机的距离；一致性编队时检查成员槽位之间的最小间距 |
-| `fixedwing_min_speed`、`fixedwing_max_catchup_speed` | 固定翼参考速度下限，以及落后时最多增加的水平速度 |
+| `fixedwing_min_speed`、`fixedwing_max_speed` | 固定翼编队使用的速度范围，也用于计算转弯时的速度余量 |
+| `fixedwing_max_catchup_speed` | 领机跟随时，落后僚机最多增加的水平速度 |
 | `multirotor_max_speed` | 多旋翼参考水平速度上限 |
 | `fixedwing_min_groundspeed_for_course` | 固定翼地速低于此值时，若空速有效且安全，则用机头方向估算队形中心航向 |
 | `catchup_gain`、`catchup_ki`、`catchup_kd` | 槽位追赶 PID 的 P、I、D 增益；`catchup_deadband`、`catchup_integral_limit` 和 `catchup_derivative_filter_time_constant` 控制死区、积分限幅和微分滤波 |
@@ -113,11 +114,13 @@ rostopic pub -1 /formation/shape std_msgs/String "data: 'arrow'"
 
 圆形队形的半径会随成员数增加而扩大；较大的队形需要更大的转弯空间和更宽的内外侧速度范围。每个节点仍接收所有成员状态，队伍规模增加也会增加总体通信和计算开销，因此取消代码数量限制不代表任意规模均能保持相同飞行效果。
 
+固定翼一致性编队根据当前队形的最大槽位半径和 `fixedwing_min_speed`/`fixedwing_max_speed` 计算可用的转弯角速度，再与 `formation_heading_rate_limit` 取较小值。队形越宽，允许的转弯角速度越小，转弯会更缓；槽位旋转速度补偿在共同速度平滑后叠加，避免滤波削弱内外侧速度差。转弯时各机速度不同是保持队形所需，配置的 `cruise_speed` 是编队中心的基准速度。
+
 以下参数也位于各机队 YAML 的 `consensus` 段：
 
 | 参数 | 用途 |
 | --- | --- |
-| `formation_heading_rate_limit` | 航线飞行时公共槽位航向的最大变化率，单位 rad/s；所有成员使用同一个预览距离和公共旋转速度，不随单机追赶速度改变槽位朝向 |
+| `formation_heading_rate_limit` | 航线飞行时槽位航向变化率的全局上限，单位 rad/s；固定翼一致性编队还会根据队形跨度和配置速度范围进一步限幅 |
 | `formation_speed_slew_rate` | 单机水平速度指令变化率上限，单位 m/s² |
 | `formation_course_slew_rate` | 单机水平航向指令变化率上限，单位 rad/s |
 | `route_correction_gain` | 编队完成集结及高度合并后，队伍向航线收敛的位置误差增益 |

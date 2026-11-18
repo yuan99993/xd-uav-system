@@ -14,17 +14,17 @@
   <arg name="vehicle_config"
        default="$(find sar_yolo_detector)/config/smart_tracker_xd_vehicle.yaml" />
   <arg name="model_path"
-       default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine" />
+       default="$(find sar_yolo_detector)/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512_batch3.engine" />
   <arg name="model_sha256"
-       default="471011311fa9fa6a4067c9cae2fb7e29215fb32956c36a3ea3112c06e75b784e" />
+       default="556765730995b1067f121d72e3ca2751e2fae81f09b141129f010da6ffcc796c" />
   <arg name="python_executable" default="/home/nvidia/xd-uavsystem-test/.venv-sar/bin/python" />
   <arg name="use_gpu" default="true" />
   <!-- One elected process per model hash owns the GPU model. Every UAV
        tracker remains independent and calls that process for detections. -->
   <arg name="shared_inference" default="true" />
-  <!-- Use the provided static TensorRT engine directly at startup. Set to 2
-       only when the cached dynamic-batch engine has already been built. -->
-  <arg name="maximum_batch_size" default="1" />
+  <!-- The provided Orin engine supports dynamic batches up to three images. -->
+  <arg name="maximum_batch_size" default="3" />
+  <arg name="batch_wait_ms" default="10.0" />
   <!-- Drop frames that have already waited too long, keeping image updates fresh. -->
   <arg name="inference_max_fps" default="20.0" />
   <arg name="maximum_capture_age_sec" default="2.0" />
@@ -80,6 +80,7 @@
       <param name="use_gpu" value="$(arg use_gpu)" />
       <param name="fallback_to_cpu" value="false" />
       <param name="maximum_batch_size" value="$(arg maximum_batch_size)" />
+      <param name="batch_wait_ms" value="$(arg batch_wait_ms)" />
       <param name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
     </node>
   </group>

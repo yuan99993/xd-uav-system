@@ -63,9 +63,9 @@ fixedwing:
     bank_load_factor_pitch_gain: 0.25
 
   energy_control:
-    cruise_airspeed: 20.0
-    minimum_airspeed: 8.0
-    maximum_airspeed: 50.0
+    cruise_airspeed: 25.0
+    minimum_airspeed: 10.0
+    maximum_airspeed: 60.0
     trim_throttle: 0.25
     airspeed_throttle_gain: 0.08
     # 爬升时同步补油以维持空速。

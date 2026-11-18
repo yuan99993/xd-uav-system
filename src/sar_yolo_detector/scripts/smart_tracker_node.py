@@ -692,7 +692,7 @@ class SmartTrackerNode:
         # ROS transport never waits for CUDA, KCF, rendering, or a mode service.
         self._image_mailbox.put(message)
 
-    def _infer(self, frame, header=None, image_message=None):
+    def _infer(self, frame, header=None):
         tracker = self._tracker
         arguments = dict(conf=tracker.conf_threshold, iou=tracker.iou_threshold, max_det=tracker.max_det)
         remote_detect = getattr(tracker.backend, "detect_frame", None)
@@ -702,9 +702,9 @@ class SmartTrackerNode:
             source_id = "%s/%s/%s" % (
                 self._identity.uav_id, self._identity.sensor_id, rospy.get_name()
             )
-            remote_image = getattr(tracker.backend, "detect_image", None)
-            if image_message is not None and callable(remote_image):
-                return tuple(remote_image(image_message, source_id, **arguments))
+            # The shared backend sends the already-decoded BGR frame. It can
+            # shrink it to the model input size before ROS service serialization,
+            # avoiding a second full-resolution image copy/transfer per UAV.
             return tuple(remote_detect(frame, header, source_id, **arguments))
         if tracker._should_run_track_api():
             _, detections = tracker.backend.detect_and_track(
@@ -729,7 +729,7 @@ class SmartTrackerNode:
                     if backend_epoch != generation:
                         self._tracker.backend.reset_tracking()
                         backend_epoch = generation
-                    detections = self._infer(frame, message.header, image_message=message)
+                    detections = self._infer(frame, message.header)
                     self._inference_completed += 1
                 except Exception as exc:
                     self._inference_failed += 1
@@ -1053,7 +1053,7 @@ class SmartTrackerNode:
         suppressed_class_duplicates = 0
         try:
             if detections is None:
-                detections = self._infer(frame, image.header, image_message=image)
+                detections = self._infer(frame, image.header)
             allowed = self._tracker.allowed_class_ids
             detections = [d for d in detections if allowed is None or int(d.class_id) in allowed]
             candidates = [self._fusion_candidate(d) for d in detections]
@@ -1108,6 +1108,13 @@ class SmartTrackerNode:
             result = self._fusion.result
         # A bounded original-image cache is used only by frame-bound selection.
         self._cache_fusion_snapshot(image, frame, candidates)
+        # Auto selection must advance on fresh detector updates only. Reusing
+        # cached LK observations on every camera frame would count the same
+        # detector result multiple times as independent confirmations.
+        if detector_updated:
+            auto_selected = self._auto_select_from_detections(image, detections)
+            if auto_selected is not None:
+                result = self._fusion.result
         # Raw BoT-SORT output must not bypass a rejected selected-entity gate.
         bound_ids = {identity for identity in (result.public_id, result.local_id) if identity >= 0}
         if result.observed and result.reason == "reacquisition_confirmation_visual_hold":
@@ -1735,7 +1742,7 @@ class SmartTrackerNode:
         return response
 
     def _auto_select_mode_supported(self) -> bool:
-        if self._tracking_mode == "smart_tracker":
+        if self._tracking_mode in ("smart_tracker", "fusion_tracker"):
             return True
         if self._tracking_mode == "color_tracker":
             tracker = self._manual_trackers.get("color_tracker")
@@ -1823,6 +1830,27 @@ class SmartTrackerNode:
         if self._tracking_mode == "color_tracker":
             self._manual_color_selected_bbox = tuple(winner.aabb_xyxy)
             self._manual_color_misses = 0
+        elif self._tracking_mode == "fusion_tracker":
+            # Initialize FusionTracker from the exact current-frame detector
+            # candidate, preserving the same local/public identity as a manual
+            # YOLO selection.
+            snapshot = next((item for item in reversed(self._fusion_snapshots)
+                             if item[0].stamp == image.header.stamp
+                             and item[0].frame_id == image.header.frame_id), None)
+            if snapshot is None:
+                return None
+            matches = [candidate for candidate in snapshot[2]
+                       if candidate.local_id == int(winner.track_id)
+                       and candidate.class_id == int(winner.class_id)]
+            if len(matches) != 1:
+                return None
+            try:
+                self._initialize_fusion_selection(
+                    snapshot, matches[0].box, selected_candidate=matches[0]
+                )
+            except ValueError as exc:
+                rospy.logwarn_throttle(2.0, "Auto Fusion selection rejected: %s", exc)
+                return None
         else:
             self._remember_selected_detection(winner)
         self._auto_select_enabled = False
@@ -2444,6 +2472,9 @@ class SmartTrackerNode:
             status.add("rejected_frames", self._rejected_frames)
             status.add("last_processing_ms", self._last_processing_ms)
             status.add("inference_ms", getattr(self, "_inference_ms", 0.))
+            backend = getattr(getattr(self, "_tracker", None), "backend", None)
+            status.add("shared_model_inference_ms",
+                       getattr(backend, "last_inference_ms", 0.0))
             status.add("pipeline_epoch", getattr(self, "_epoch", 0))
             status.add("model_switch_busy", self._model_busy)
             status.add("capture_segment", self._capture_clock.segment)

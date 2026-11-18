@@ -460,10 +460,10 @@ follower:
     # 图像误差只补充云台视线角；云台角度保持全权重，图像修正权重为 0.30。
     image_error_weight: 0.30
     pid:
-      course:     {kp: 3.0, ki: 0.05, kd: 0.10, integral_limit: 0.35}
+      course:     {kp: 1.2, ki: 0.05, kd: 0.10, integral_limit: 0.35}
       climb_rate: {kp: 20.0, ki: 0.05, kd: 0.10, integral_limit: 0.8}
-    airspeed: 18.0
-    maximum_course_offset: 0.70
+    airspeed: 25.0
+    maximum_course_offset: 0.50
     maximum_climb_rate: 8.0
 
 # 5. 跨模块安全策略 -----------------------------------------------------------

@@ -1,0 +1,16 @@
+{
+  "dynamic": true,
+  "batch_size": 3,
+  "image_size": 512,
+  "precision": "fp16",
+  "workspace_gib": 0.5,
+  "builder_optimization_level": 1,
+  "source_model": "/home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7.pt",
+  "source_sha256": "8f2506e1fd9585eab0d23203f504ff0036d580327e55ef15d23bd9e46fd34b54",
+  "engine": "/home/nvidia/xd-uavsystem-test/src/sar_yolo_detector/models/xd_vehicle_train7/xd_vehicle_train7_tegra_512_batch3.engine",
+  "engine_sha256": "556765730995b1067f121d72e3ca2751e2fae81f09b141129f010da6ffcc796c",
+  "tensorrt_version": "8.5.2.2",
+  "ultralytics_version": "8.4.164",
+  "cuda_version": "11.4",
+  "gpu": "Orin"
+}

@@ -166,6 +166,11 @@ Follower::Follower(ros::NodeHandle nh, const Config& config, std::string member,
   require_finite_positive(config_.fixedwing_minimum_slot_distance,
                            "fixedwing_minimum_slot_distance");
   require_finite_positive(config_.fixedwing_min_speed, "fixedwing_min_speed");
+  require_finite_positive(config_.fixedwing_max_speed, "fixedwing_max_speed");
+  if (config_.fixedwing_max_speed <= config_.fixedwing_min_speed) {
+    throw std::invalid_argument(
+        "fixedwing_max_speed must exceed fixedwing_min_speed");
+  }
   require_finite_positive(config_.fixedwing_max_catchup_speed,
                            "fixedwing_max_catchup_speed", true);
   require_finite_positive(config_.fixedwing_min_groundspeed_for_course,
@@ -195,6 +200,11 @@ Follower::Follower(ros::NodeHandle nh, const Config& config, std::string member,
                              "acquire_max_speed_adjustment", true);
     require_finite_positive(config_.formation_heading_rate_limit,
                              "formation_heading_rate_limit");
+    if (config_.cruise_speed <= config_.fixedwing_min_speed ||
+        config_.cruise_speed >= config_.fixedwing_max_speed) {
+      throw std::invalid_argument(
+          "consensus cruise_speed must be inside the fixed-wing speed limits");
+    }
     require_finite_positive(config_.formation_speed_slew_rate,
                              "formation_speed_slew_rate");
     require_finite_positive(config_.formation_course_slew_rate,
@@ -1229,6 +1239,20 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
     offsets.push_back(offset->second);
   }
   const Vec3 centroid = sharedCenter(positions).first;
+  double maximum_slot_radius = 0.0;
+  for (const auto& entry : slot_offsets) {
+    maximum_slot_radius = std::max(
+        maximum_slot_radius,
+        std::hypot(entry.second[0], entry.second[1]));
+  }
+  const double speed_headroom = std::min(
+      config_.cruise_speed - config_.fixedwing_min_speed,
+      config_.fixedwing_max_speed - config_.cruise_speed);
+  const double shape_turn_rate_limit = maximum_slot_radius > 1e-6
+      ? speed_headroom / maximum_slot_radius
+      : config_.formation_heading_rate_limit;
+  const double turn_rate_limit = std::min(
+      config_.formation_heading_rate_limit, shape_turn_rate_limit);
   geometry.capturing = acquire_heading_ && acquire_stage_ &&
       (*acquire_stage_ == "waiting_for_team" || *acquire_stage_ == "separating" ||
        *acquire_stage_ == "gathering" || *acquire_stage_ == "merging");
@@ -1263,8 +1287,8 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
           const double error = std::atan2(std::sin(desired - geometry.heading),
                                           std::cos(desired - geometry.heading));
           const double step = clampValue(error,
-              -config_.formation_heading_rate_limit * dt,
-              config_.formation_heading_rate_limit * dt);
+              -turn_rate_limit * dt,
+              turn_rate_limit * dt);
           geometry.heading += step;
           geometry.turn_rate = step / dt;
         }
@@ -1920,15 +1944,15 @@ mavros_msgs::PositionTarget Follower::fixedwingConsensusTarget(
     route_adjustment = clampValue(config_.route_correction_gain * route_error,
         -config_.max_route_correction_velocity, config_.max_route_correction_velocity);
   }
-  Vec3 velocity = slotVelocity({config_.cruise_speed * tx,
-      config_.cruise_speed * ty, geometry.route_vz}, {0,0,0}, heading,
+  Vec3 center_velocity = smoothCourseVelocity(
+      {tx * (config_.cruise_speed + speed_adjustment) +
+           nx * (route_adjustment + lateral_adjustment),
+       ty * (config_.cruise_speed + speed_adjustment) +
+           ny * (route_adjustment + lateral_adjustment),
+       geometry.route_vz},
+      now, own);
+  const Vec3 velocity = slotVelocity(center_velocity, {0,0,0}, heading,
       consensus_offset, 0.0, false, geometry.turn_rate, true);
-  const double along_speed = std::max(config_.fixedwing_min_speed,
-      velocity[0] * tx + velocity[1] * ty + speed_adjustment);
-  const double cross_speed = velocity[0] * nx + velocity[1] * ny +
-                              lateral_adjustment + route_adjustment;
-  velocity = smoothCourseVelocity({tx * along_speed + nx * cross_speed,
-      ty * along_speed + ny * cross_speed, geometry.route_vz}, now, own);
   const auto slot = slotTarget(mean, heading, consensus_offset, config_.yaw_offset);
   const double target_altitude = altitude ? *altitude :
       (geometry.capturing ? *acquire_altitude_ + consensus_offset[2] :

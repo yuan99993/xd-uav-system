@@ -15,7 +15,8 @@ external_quiet_time: 0.0
 minimum_slot_distance: 0.1
 fixedwing_minimum_slot_distance: 0.1
 # Speed and formation tracking parameters.
-fixedwing_min_speed: 0.1
+fixedwing_min_speed: 10.0
+fixedwing_max_speed: 40.0
 # Maximum horizontal speed increase for a fixed-wing follower catching up.
 fixedwing_max_catchup_speed: 10.0
 # Groundspeed threshold for estimating course; below it, use body heading
