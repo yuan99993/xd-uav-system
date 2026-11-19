@@ -62,10 +62,8 @@ class H264RawSender:
     def __init__(self):
         # self.image_topic = rospy.get_param("~image_topic",
         #     "/uav1/fixed_camera/tracking_overlay")
-        # self.image_topic = rospy.get_param("~image_topic",
-        #     "/uav1/sar_yolo_detector/smart/annotated")
         self.image_topic = rospy.get_param("~image_topic",
-            "/uav1/track/phase_annotated")
+            "/uav1/sar_yolo_detector/smart/annotated")
         self.group = rospy.get_param("~group", "224.0.5.4")
         self.port = int(rospy.get_param("~port", "32797"))
         self.local_ip = rospy.get_param("~local_ip", "192.168.2.102")
@@ -114,7 +112,8 @@ class H264RawSender:
         self._recv = 0             # 收到的图像消息数(用于对比源帧率 vs 编码帧率)
         self._dropped = 0          # 因抽帧被丢弃的帧数
         self._overwritten = 0      # 编码忙时被更新帧覆盖的帧数
-        self._next_fwd = 0.0       # 下一次允许入队的时间(单调时钟)
+        self._last_fps_check = 0.0
+        self._fps_tokens = max(1.0, self.fps)
 
         if self.unicast_host:
             rospy.loginfo("[h264_tx] 模式=单播 -> %s:%d (完全裸流)", self.unicast_host, self.port)
@@ -153,7 +152,9 @@ class H264RawSender:
                 "fdsrc", "fd=0", "blocksize=%d" % (w * h * 3), "!",
                 "videoparse", "format=bgr", "width=%d" % w, "height=%d" % h,
                 "framerate=%d/%d" % (fps.numerator, fps.denominator), "!",
-                "videoconvert", "!", "video/x-raw,format=I420", "!",
+                # Keep the CPU step to channel packing; nvvidconv performs the
+                # BGRx-to-NV12 color conversion on the Jetson video converter.
+                "videoconvert", "!", "video/x-raw,format=BGRx", "!",
                 "nvvidconv", "!", "video/x-raw(memory:NVMM),format=NV12", "!",
                 "nvv4l2h264enc", "bitrate=%d" % bitrate_bps,
                 "iframeinterval=%d" % self.gop, "idrinterval=%d" % self.gop,
@@ -279,16 +280,18 @@ class H264RawSender:
 
         self._recv += 1             # 收到一帧有效图像(用于诊断源帧率)
 
-        # --- 帧率限制: 按目标 _fps 抽帧, 丢弃多余帧 ---
-        # 源帧率高于 _fps 时只转发约 _fps 帧/秒, 让输出真正降到指定帧率;
-        # 编码器的输入帧率也等于 _fps。允许四分之一帧间隔的到达抖动，
-        # 避免 30fps 来源偶有提前到达时被误丢成较低帧率。
-        min_dt = 1.0 / self.fps
+        # 目标帧率是长期上限；token bucket 保留少量突发余量，避免
+        # ROS/TCPROS 到达抖动把 28-30fps 输入误降到约 18fps。
         now = time.monotonic()
-        if self._next_fwd > 0 and now + min_dt * 0.25 < self._next_fwd:
+        if self._last_fps_check <= 0.0:
+            self._last_fps_check = now
+        elapsed = max(0.0, now - self._last_fps_check)
+        self._last_fps_check = now
+        self._fps_tokens = min(self.fps, self._fps_tokens + elapsed * self.fps)
+        if self._fps_tokens < 1.0:
             self._dropped += 1
-            return                      # 超出目标帧率, 丢弃本帧(不喂给 ffmpeg)
-        self._next_fwd = max(now, self._next_fwd) + min_dt
+            return
+        self._fps_tokens -= 1.0
 
         # ROS 回调不等待编码器：只保留最新帧，避免管道阻塞拖慢订阅。
         with self._pending_cv:

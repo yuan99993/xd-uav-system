@@ -46,7 +46,7 @@ post_arrival:
     uav2:
       task_type: track
       handoff_mode: visual
-      follower_profile: gm_velocity_chase
+      follower_profile: gmfw_velocity_vector
 
     # uav3:
     #   task_type: arrive

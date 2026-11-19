@@ -42,7 +42,7 @@
     "registry_service_available": false,
     "switch_requires_trusted_backend": true
   },
-  "modes": ["smart_tracker", "feature_tracker", "color_tracker", "fusion_tracker"],
+  "modes": ["fusion_tracker", "feature_tracker", "color_tracker"],
   "topics": {
     "annotated_image": {
       "name": "{topic_root}/annotated", "type": "sensor_msgs/Image", "direction": "subscribe",
@@ -72,7 +72,7 @@
     },
     "selected_target": {
       "name": "{topic_root}/selected_tracked_detections", "type": "sar_yolo_detector/TrackedDetection2DArray", "direction": "subscribe",
-      "supported_consumption_modes": ["smart_tracker", "feature_tracker", "color_tracker", "fusion_tracker"],
+      "supported_consumption_modes": ["fusion_tracker", "feature_tracker", "color_tracker"],
       "manual_modes_currently_publish_empty_selected_array": false
     },
     "state": {
@@ -172,7 +172,7 @@
     "never_fallback_to_latest_on_original_frame_rejection": true
   },
   "not_provided_by_this_runtime": [
-    "four-mode web UI", "HTTP video stream endpoint", "automatic compressed Image output",
+    "three-mode web UI", "HTTP video stream endpoint", "automatic compressed Image output",
     "perception/* three-mode contract", "models/list registry", "state/get service",
     "unified request-id transaction queue", "trajectory topic", "cross-camera global identity merging",
     "frame-bound standalone feature/color ROI", "camera timestamp-reset recovery",

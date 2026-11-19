@@ -1,7 +1,8 @@
 # sar_yolo_detector
 
 本包当前保留的主启动链是 `launch/xd_smart_tracker_fusion_integration.launch`。
-它启动 SmartTracker Fusion、共享 TensorRT 推理服务，以及向 XD 感知输入转发所选目标的桥接节点。
+它启动 FusionTracker、共享 TensorRT 推理服务，以及向 XD 感知输入转发所选目标的桥接节点。
+独立 SmartTracker 跟踪模式已移除；其配置命名空间仍保存 FusionTracker 使用的 YOLO 模型、类别和推理参数。
 
 ```bash
 roslaunch sar_yolo_detector xd_smart_tracker_fusion_integration.launch \
@@ -12,13 +13,17 @@ roslaunch sar_yolo_detector xd_smart_tracker_fusion_integration.launch \
 
 启动文件依赖以下配置：
 
-- `config/smart_tracker.yaml`：SmartTracker 基础设置
+- `config/smart_tracker.yaml`：YOLO 检测后端基础设置
 - `config/smart_tracker_xd_vehicle.yaml`：车辆类别、跟踪和手动选择设置
 - `config/vehicle_botsort.yaml`：BoT-SORT 设置
 - `config/fusion_tracker.yaml`：FusionTracker 设置
 
 默认模型为 `models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine`，并在启动时校验
 SHA-256。启动多个无人机实例时，共享推理服务按模型摘要复用同一份 GPU 模型；每架无人机的跟踪状态仍然独立。
+
+FusionTracker、FeatureTracker 和 ColorTracker 共用同一个图像接收与帧调度节点。
+每帧按需缓存灰度/HSV 转换；没有待传播的光流目标且本次 YOLO 结果为空时，跳过无用的灰度转换和 LK 初始化。
+OpenCV 与 PyTorch CPU 线程数默认限制为 1，可在对应运行配置中调到 2–4；该限制用于防止多个 ROS/推理进程相互争抢 CPU。
 
 主要输出：
 

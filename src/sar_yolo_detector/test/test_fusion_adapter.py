@@ -496,12 +496,19 @@ class FusionAdapterTest(unittest.TestCase):
         self.assertEqual(typed.detections[0].target, legacy.detections[0])
         self.assertFalse(hasattr(legacy.detections[0], "measurement_source"))
 
-    def test_all_four_modes_switch_and_reset(self):
-        for mode in ("smart_tracker", "feature_tracker", "color_tracker", "fusion_tracker"):
+    def test_all_three_modes_switch_and_reset(self):
+        for mode in ("fusion_tracker", "feature_tracker", "color_tracker"):
             response = self.node._switch_tracking_mode(SwitchTrackingModeRequest(mode=mode))
             self.assertTrue(response.success, response.message)
             self.assertEqual(response.active_mode, mode)
             self.assertEqual(len(self.node._fusion_snapshots), 0)
+
+    def test_standalone_smart_tracker_mode_is_removed(self):
+        response = self.node._switch_tracking_mode(
+            SwitchTrackingModeRequest(mode="smart_tracker")
+        )
+        self.assertFalse(response.success)
+        self.assertEqual(response.active_mode, self.node._tracking_mode)
 
     def test_manual_modes_are_visual_and_publish_same_selected_box(self):
         # The publish path only needs these tracker identity fields; the frame
@@ -540,12 +547,12 @@ class FusionAdapterTest(unittest.TestCase):
         self.assertTrue(np.array_equal(annotated[45:100, 45:100], self.frame[45:100, 45:100]))
 
     def test_legacy_entry_cannot_mislabel_fusion_as_detector(self):
-        self.node._tracking_mode = "smart_tracker"
+        self.node._tracking_mode = "feature_tracker"
         self.node._fusion_mode_enabled = False
         response = self.node._switch_tracking_mode(SwitchTrackingModeRequest(mode="fusion_tracker"))
         self.assertFalse(response.success)
-        self.assertEqual(response.active_mode, "smart_tracker")
-        self.assertEqual(self.node._tracking_mode, "smart_tracker")
+        self.assertEqual(response.active_mode, "feature_tracker")
+        self.assertEqual(self.node._tracking_mode, "feature_tracker")
 
     def test_slow_inference_does_not_block_capture_or_local_tracking(self):
         node = self.node

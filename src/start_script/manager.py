@@ -3,10 +3,12 @@
 
 import argparse
 import atexit
+import concurrent.futures
 import copy
 import fcntl
 import hashlib
 import hmac
+import http.client
 import json
 import os
 from pathlib import Path
@@ -20,6 +22,8 @@ import sys
 import threading
 import time
 import uuid
+import xmlrpc.client
+from urllib.parse import urlparse
 
 import yaml
 
@@ -29,6 +33,22 @@ _ARG_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _TERM_GRACE_SEC = 2.0
 _KILL_GRACE_SEC = 1.0
+_ROS_CALL_TIMEOUT_SEC = 0.5
+
+
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """XML-RPC transport with a bounded connect/read timeout."""
+
+    def __init__(self, timeout):
+        super().__init__()
+        self.timeout = timeout
+
+    def make_connection(self, host):
+        if self._connection and self._connection[0] == host:
+            return self._connection[1]
+        connection = http.client.HTTPConnection(host, timeout=self.timeout)
+        self._connection = (host, connection)
+        return connection
 
 
 def _read_yaml(path):
@@ -136,6 +156,12 @@ class ProcessManager:
             raise RuntimeError("set {} before starting the listener".format(
                 self.auth_token_env or "network.auth_token_env"))
         self.max_vehicles = int(self.config.get("max_vehicles", 60))
+        self.node_startup_timeout_sec = max(
+            1.0, float(self.config.get("node_startup_timeout_sec", 15.0)))
+        self.node_status_check_interval_sec = max(
+            1.0, float(self.config.get("node_status_check_interval_sec", 10.0)))
+        self.node_reuse_check_interval_sec = max(
+            1.0, float(self.config.get("node_reuse_check_interval_sec", 10.0)))
         self.setup_scripts = [
             _expand_string(os.path.expandvars(os.path.expanduser(str(item))),
                            {"workspace": str(self.workspace)})
@@ -156,14 +182,112 @@ class ProcessManager:
                 self.runtime_dir)) from error
 
         self.active = {}
+        self.reused_launches = {}
+        self.last_node_status_check = 0.0
+        self.last_client_activity = time.monotonic()
         self.session_id = None
         self.generation_dir = None
         self.shutdown_event = threading.Event()
         self.server_socket = None
+        self.ros_cleanup_done = False
         self._recover_previous_processes()
 
     def _log(self, message):
         print("[start-manager] " + message, flush=True)
+
+    def _cleanup_ros_master(self):
+        """Run global stale-registration cleanup once when a session ends."""
+        if self.ros_cleanup_done:
+            return True
+        rosnode = shutil.which("rosnode")
+        if not rosnode:
+            self._log("rosnode cleanup unavailable; source the ROS environment first")
+            return False
+        try:
+            result = subprocess.run(
+                [rosnode, "cleanup"],
+                input="y\n",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=180.0,
+                env=os.environ.copy(),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            self._log("rosnode cleanup timed out")
+            return False
+        for line in (result.stdout or "").splitlines():
+            self._log("rosnode cleanup: " + line)
+        if result.returncode != 0:
+            self._log("rosnode cleanup failed with exit code {}".format(
+                result.returncode))
+            return False
+        self.ros_cleanup_done = True
+        return True
+
+    @staticmethod
+    def _xmlrpc_proxy(uri):
+        return xmlrpc.client.ServerProxy(
+            uri, allow_none=True,
+            transport=_TimeoutTransport(_ROS_CALL_TIMEOUT_SEC))
+
+    def _registered_ros_nodes(self):
+        master_uri = os.environ.get("ROS_MASTER_URI", "").strip()
+        if not master_uri:
+            raise RuntimeError("ROS_MASTER_URI is not set")
+        with self._xmlrpc_proxy(master_uri) as master:
+            code, message, state = master.getSystemState("/xd_uav_start_manager")
+        if code != 1:
+            raise RuntimeError("ROS master getSystemState failed: {}".format(message))
+        nodes = set()
+        for entries in state:
+            for _resource, node_names in entries:
+                nodes.update(node_names)
+        return nodes
+
+    def _ros_node_owner(self, node_name):
+        master_uri = os.environ.get("ROS_MASTER_URI", "").strip()
+        with self._xmlrpc_proxy(master_uri) as master:
+            code, message, node_uri = master.lookupNode(
+                "/xd_uav_start_manager", node_name)
+        if code != 1:
+            raise RuntimeError("ROS master lookupNode failed: {}".format(message))
+        with self._xmlrpc_proxy(node_uri) as node:
+            code, message, pid = node.getPid("/xd_uav_start_manager")
+        if code != 1:
+            raise RuntimeError("node getPid failed: {}".format(message))
+        return node_uri, int(pid)
+
+    @staticmethod
+    def _node_uri_is_local(uri):
+        try:
+            host = urlparse(uri).hostname
+        except (TypeError, ValueError):
+            return False
+        if not host:
+            return False
+        local_names = {
+            "localhost", socket.gethostname(), socket.getfqdn(),
+            os.environ.get("ROS_IP", ""), os.environ.get("ROS_HOSTNAME", ""),
+        }
+        local_names.discard("")
+        if host in local_names:
+            return True
+        try:
+            host_addresses = {
+                item[4][0] for item in socket.getaddrinfo(host, None)
+            }
+            local_addresses = {"127.0.0.1", "::1"}
+            for name in local_names:
+                try:
+                    local_addresses.update(
+                        item[4][0] for item in socket.getaddrinfo(name, None))
+                except OSError:
+                    continue
+            return bool(host_addresses & local_addresses)
+        except OSError:
+            return False
 
     def _load_registry(self):
         try:
@@ -182,6 +306,18 @@ class ProcessManager:
         temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         os.chmod(temp_path, 0o600)
         os.replace(temp_path, self.registry_path)
+
+    @staticmethod
+    def _validate_expected_node_names(desired):
+        owners = {}
+        for key, spec in desired.items():
+            for node_name in spec.get("expected_nodes", []):
+                previous = owners.get(node_name)
+                if previous is not None and previous != key:
+                    raise ValueError(
+                        "expected ROS node {} is claimed by both {} and {}".format(
+                            node_name, previous, key))
+                owners[node_name] = key
 
     def _signal_records(self, records):
         """Stop launch groups and ROS descendants; return groups still alive."""
@@ -656,9 +792,22 @@ class ProcessManager:
                         label, parameter))
                 argv.append("{}{}:={}".format(
                     prefix, parameter, self._ros_arg_value(value, label)))
-            signature = hashlib.sha256(json.dumps(argv, ensure_ascii=False).encode(
+            expected_nodes = _expand_tree(spec.get("expected_nodes", []), local_context)
+            if (not isinstance(expected_nodes, list) or
+                    any(not isinstance(node, str) or not node.startswith("/")
+                        for node in expected_nodes)):
+                raise ValueError("expected_nodes for {} must be a list of absolute ROS names".format(
+                    label))
+            expected_nodes = list(dict.fromkeys(expected_nodes))
+            signature_payload = ({"argv": argv, "expected_nodes": expected_nodes}
+                                 if expected_nodes else argv)
+            signature = hashlib.sha256(json.dumps(
+                signature_payload, ensure_ascii=False).encode(
                 "utf-8")).hexdigest()
-            desired[key] = {"argv": argv, "signature": signature, "label": label}
+            desired[key] = {
+                "argv": argv, "signature": signature, "label": label,
+                "expected_nodes": expected_nodes,
+            }
 
         for launch_id in shared_launches:
             spec = self.config["shared_launches"][launch_id]
@@ -672,7 +821,7 @@ class ProcessManager:
                 "uav_id": vehicle["name"], "drone": vehicle["drone"],
                 "type": vehicle["type"], "uav_index": vehicle["uav_index"],
                 "video_port": vehicle["video_port"],
-                "video_topic": "/{}/track/phase_annotated".format(vehicle["name"]),
+                "video_topic": "/{}/sar_yolo_detector/smart/annotated".format(vehicle["name"]),
             })
             profile_files = profile.get("files", {})
             tf_path = profile_files.get("tf_config_by_type", {}).get(vehicle["type"])
@@ -806,7 +955,8 @@ class ProcessManager:
     def _wrapped_argv(self, argv):
         setup = " && ".join("source {}".format(shlex.quote(path))
                             for path in self.setup_scripts)
-        command = (setup + " && " if setup else "") + 'exec "$@"'
+        command = (setup + " && " if setup else "") + (
+            "unset ROS_NAMESPACE ROS_HOSTNAME && exec \"$@\"")
         return ["bash", "-lc", command, "xd-uav-managed-launch"] + argv
 
     def _start_process(self, key, spec):
@@ -849,8 +999,18 @@ class ProcessManager:
             "command": spec["argv"],
             "log_path": str(log_path),
             "label": spec["label"],
+            "expected_nodes": list(spec.get("expected_nodes", [])),
         }
-        self.active[key] = {"record": record, "process": process}
+        expected_nodes = list(spec.get("expected_nodes", []))
+        self.active[key] = {
+            "record": record,
+            "process": process,
+            "expected_nodes": expected_nodes,
+            "started_monotonic": time.monotonic(),
+            "health": "starting" if expected_nodes else "running",
+            "health_reason": "waiting for ROS node registration" if expected_nodes else "",
+            "node_states": {node: "waiting" for node in expected_nodes},
+        }
         self._write_registry()
         self._log("started {} pid={} log={}".format(
             spec["label"], process.pid, log_path))
@@ -886,7 +1046,98 @@ class ProcessManager:
             self.active.pop(key, None)
             self._log("stopped {} pid={}".format(record.get("label", key), record["pid"]))
 
+    def _find_reusable_launches(self, start_specs):
+        """Reuse complete, responsive ROS launch groups already on the master."""
+        expected_by_key = {
+            key: list(spec.get("expected_nodes", []))
+            for key, spec in start_specs if spec.get("expected_nodes")
+        }
+        expected_nodes = sorted({
+            node_name for nodes in expected_by_key.values() for node_name in nodes
+        })
+        if not expected_nodes:
+            return {}
+
+        try:
+            registered = self._registered_ros_nodes()
+        except Exception as error:
+            self._log("ROS master unavailable during reuse check; starting configured "
+                      "launches normally: {}".format(error))
+            return {}
+
+        registered_expected = sorted(set(expected_nodes) & registered)
+        if not registered_expected:
+            return {}
+
+        owners = {}
+        if registered_expected:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(16, len(registered_expected))) as executor:
+                futures = {
+                    executor.submit(self._ros_node_owner, node_name): node_name
+                    for node_name in registered_expected
+                }
+                for future, node_name in futures.items():
+                    try:
+                        owners[node_name] = future.result()
+                    except Exception as error:
+                        owners[node_name] = error
+
+        stale = [node_name for node_name, owner in owners.items()
+                 if isinstance(owner, Exception)]
+        if stale:
+            self._log("registered expected node(s) are unreachable; cleaning stale ROS "
+                      "registrations once: {}".format(", ".join(stale)))
+            self.ros_cleanup_done = False
+            cleanup_ok = self._cleanup_ros_master()
+            # A cleanup during an active session must not suppress cleanup at
+            # the eventual session end.
+            self.ros_cleanup_done = False
+            if cleanup_ok:
+                try:
+                    registered = self._registered_ros_nodes()
+                    registered_expected = sorted(set(expected_nodes) & registered)
+                except Exception as error:
+                    self._log("could not recheck ROS registrations after cleanup; "
+                              "starting configured launches: {}".format(error))
+                    return {}
+                if registered_expected:
+                    with concurrent.futures.ThreadPoolExecutor(
+                            max_workers=min(16, len(registered_expected))) as executor:
+                        futures = {
+                            executor.submit(self._ros_node_owner, node_name): node_name
+                            for node_name in registered_expected
+                        }
+                        owners = {}
+                        for future, node_name in futures.items():
+                            try:
+                                owners[node_name] = future.result()
+                            except Exception as error:
+                                owners[node_name] = error
+
+        reusable = {}
+        now = time.monotonic()
+        for key, nodes in expected_by_key.items():
+            if not nodes or not set(nodes).issubset(registered):
+                continue
+            node_owners = {node_name: owners.get(node_name) for node_name in nodes}
+            if any(not isinstance(owner, tuple) for owner in node_owners.values()):
+                continue
+            spec = next(spec for candidate_key, spec in start_specs
+                        if candidate_key == key)
+            reusable[key] = {
+                "signature": spec["signature"],
+                "label": spec["label"],
+                "expected_nodes": list(nodes),
+                "owners": node_owners,
+                "next_check": now + self.node_reuse_check_interval_sec,
+            }
+            self._log("reusing already-running {} with registered nodes {}".format(
+                spec["label"], ", ".join(nodes)))
+        return reusable
+
     def _reconcile(self, desired):
+        started = []
         stale_keys = []
         for key, managed in list(self.active.items()):
             wanted = desired.get(key)
@@ -896,15 +1147,150 @@ class ProcessManager:
             if not same or not alive:
                 stale_keys.append(key)
         self._stop_processes(stale_keys)
-        for key, spec in desired.items():
-            if key not in self.active:
-                self._start_process(key, spec)
+        still_running = [key for key in stale_keys if key in self.active]
+        if still_running:
+            raise RuntimeError(
+                "could not stop replaced managed process(es); refusing to start a "
+                "second copy: {}".format(", ".join(still_running)))
+        start_specs = [(key, spec) for key, spec in desired.items()
+                       if key not in self.active]
+        self.reused_launches = {
+            key: reused for key, reused in self.reused_launches.items()
+            if key in desired and key not in self.active and
+            desired[key]["signature"] == reused.get("signature")
+        }
+        now = time.monotonic()
+        cached_reuse = {
+            key: self.reused_launches[key] for key, spec in start_specs
+            if key in self.reused_launches and
+            now < self.reused_launches[key].get("next_check", 0.0) and
+            self.reused_launches[key].get("signature") == spec["signature"]
+        }
+        self.reused_launches = dict(cached_reuse)
+        reuse_candidates = [(key, spec) for key, spec in start_specs
+                            if key not in cached_reuse]
+        newly_reused = self._find_reusable_launches(reuse_candidates)
+        self.reused_launches.update(newly_reused)
+        for key, spec in start_specs:
+            if key in self.reused_launches:
+                continue
+            self._start_process(key, spec)
+            started.append(key)
         self._write_registry()
+        return started, bool(stale_keys or started)
 
-    def _stop_all(self):
+    def _refresh_node_status(self, force=False):
+        now = time.monotonic()
+        if (not force and now - self.last_node_status_check <
+                self.node_status_check_interval_sec):
+            return
+        self.last_node_status_check = now
+        expected = sorted({
+            node for managed in self.active.values()
+            for node in managed.get("expected_nodes", [])
+        })
+        if not expected:
+            for managed in self.active.values():
+                managed["health"] = (
+                    "running" if managed["process"].poll() is None else "launch_exited")
+            return
+
+        try:
+            registered = self._registered_ros_nodes()
+        except Exception as error:
+            for key, managed in self.active.items():
+                if managed.get("expected_nodes"):
+                    self._set_node_health(
+                        key, managed, "ros_master_unavailable", str(error), {})
+            return
+
+        nodes_to_probe = sorted(set(expected) & registered)
+        owners = {}
+        if nodes_to_probe:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(16, len(nodes_to_probe))) as executor:
+                futures = {
+                    executor.submit(self._ros_node_owner, node): node
+                    for node in nodes_to_probe
+                }
+                for future, node in futures.items():
+                    try:
+                        owners[node] = future.result()
+                    except Exception as error:
+                        owners[node] = error
+
+        process_snapshot = _proc_snapshot()
+        for key, managed in list(self.active.items()):
+            process = managed["process"]
+            if process.poll() is not None:
+                self._set_node_health(
+                    key, managed, "launch_exited",
+                    "roslaunch exited with code {}".format(process.returncode), {})
+                continue
+            expected_nodes = managed.get("expected_nodes", [])
+            if not expected_nodes:
+                self._set_node_health(key, managed, "running", "", {})
+                continue
+
+            root_pid = int(managed["record"]["pid"])
+            managed_pids = {root_pid, *_descendants(process_snapshot, root_pid)}
+            node_states = {}
+            replaced = []
+            unverified = []
+            for node_name in expected_nodes:
+                if node_name not in registered:
+                    node_states[node_name] = "missing"
+                    continue
+                owner = owners.get(node_name)
+                if isinstance(owner, Exception):
+                    node_states[node_name] = "unverified"
+                    unverified.append("{} ({})".format(node_name, owner))
+                    continue
+                node_uri, node_pid = owner
+                if (not self._node_uri_is_local(node_uri) or
+                        node_pid not in managed_pids):
+                    node_states[node_name] = "replaced"
+                    replaced.append("{} (pid {}, {})".format(
+                        node_name, node_pid, node_uri))
+                else:
+                    node_states[node_name] = "running"
+
+            if replaced:
+                health = "node_replaced"
+                reason = "same-name ROS node belongs to another process: " + "; ".join(
+                    replaced)
+            elif unverified:
+                health = "node_unverified"
+                reason = "could not verify node owner: " + "; ".join(unverified)
+            elif any(state == "missing" for state in node_states.values()):
+                elapsed = time.monotonic() - managed.get("started_monotonic", 0.0)
+                missing = ", ".join(
+                    node for node, state in node_states.items() if state == "missing")
+                health = ("starting" if elapsed < self.node_startup_timeout_sec
+                          else "missing_nodes")
+                reason = "waiting for: " + missing if health == "starting" else (
+                    "not registered: " + missing)
+            else:
+                health = "healthy"
+                reason = ""
+            self._set_node_health(key, managed, health, reason, node_states)
+
+    def _set_node_health(self, key, managed, health, reason, node_states):
+        changed = (managed.get("health") != health or
+                   managed.get("health_reason") != reason)
+        managed["health"] = health
+        managed["health_reason"] = reason
+        managed["node_states"] = node_states
+        if changed:
+            self._log("{} health={}{}".format(
+                managed["record"].get("label", key), health,
+                ": " + reason if reason else ""))
+
+    def _stop_all(self, cleanup_ros=True):
         self._stop_processes(list(self.active))
         old_generation = self.generation_dir
         self.session_id = None
+        self.reused_launches = {}
         if self.active:
             self._log("retaining generated configuration for processes not yet stopped")
         else:
@@ -912,6 +1298,11 @@ class ProcessManager:
         self._write_registry()
         if not self.active and old_generation and old_generation.exists():
             shutil.rmtree(old_generation, ignore_errors=True)
+        processes_stopped = not self.active
+        if cleanup_ros:
+            return processes_stopped and self._cleanup_ros_master()
+        self.ros_cleanup_done = False
+        return processes_stopped
 
     def _check_auth(self, message):
         if self.require_auth and not self.auth_token:
@@ -925,26 +1316,41 @@ class ProcessManager:
         action = message.get("action")
         if action in ("start", "update", "state"):
             session_id, profile_name, vehicles, shared_launches = self._validate_snapshot(message)
-            if self.session_id and self.session_id != session_id:
-                self._log("session changed from {} to {}; stopping old processes".format(
-                    self.session_id, session_id))
-                self._stop_all()
-            self.session_id = session_id
+            new_session = self.session_id != session_id
             profile = self.config["profiles"][profile_name]
             desired = self._desired_processes(
                 profile_name, profile, vehicles, shared_launches)
-            self._reconcile(desired)
+            self._validate_expected_node_names(desired)
+
+            if new_session:
+                self._log("switching session from {} to {}; keeping matching live "
+                          "launches and reconciling changes".format(
+                              self.session_id or "(none)", session_id))
+                self.ros_cleanup_done = False
+            elif action == "start":
+                self._log("start request for active session {}; reconciling idempotently".format(
+                    session_id))
+            self.session_id = session_id
+            started, changed = self._reconcile(desired)
+            if new_session or changed:
+                self._refresh_node_status(force=True)
+            elif action == "start":
+                self._refresh_node_status()
             return {"ok": True, "action": action, "session_id": session_id,
-                    "profile": profile_name, "active": self._status()}
+                    "profile": profile_name, "active": self._status(),
+                    "reused": self._reused_status()}
         if action == "heartbeat":
             return {"ok": True, "action": action, "session_id": self.session_id,
                     "active_count": len(self.active)}
         if action == "status":
+            self._refresh_node_status(force=True)
             return {"ok": True, "session_id": self.session_id,
-                    "active": self._status()}
+                    "active": self._status(),
+                    "reused": self._reused_status()}
         if action == "stop":
-            self._stop_all()
-            return {"ok": True, "action": "stop", "active": []}
+            cleaned = self._stop_all()
+            return {"ok": True, "action": "stop", "active": self._status(),
+                    "cleanup_complete": cleaned}
         raise ValueError("action must be start, update, heartbeat, status or stop")
 
     def _status(self):
@@ -957,9 +1363,22 @@ class ProcessManager:
                 "pid": record["pid"],
                 "label": record.get("label"),
                 "running": process is None or process.poll() is None,
+                "health": managed.get("health", "unknown"),
+                "health_reason": managed.get("health_reason", ""),
+                "expected_nodes": managed.get("expected_nodes", []),
+                "nodes": managed.get("node_states", {}),
                 "log_path": record.get("log_path"),
             })
         return result
+
+    def _reused_status(self):
+        return [
+            {"key": key, "label": reused.get("label"), "running": True,
+             "health": "already_running",
+             "health_reason": "reusing registered node group",
+             "expected_nodes": reused.get("expected_nodes", [])}
+            for key, reused in self.reused_launches.items()
+        ]
 
     def _send(self, connection, value):
         raw = (json.dumps(value, ensure_ascii=False) + "\n").encode("utf-8")
@@ -971,17 +1390,19 @@ class ProcessManager:
         last_message = time.monotonic()
         connection.settimeout(1.0)
         should_close = False
+        heartbeat_timed_out = False
         try:
             while not self.shutdown_event.is_set() and not should_close:
                 if time.monotonic() - last_message > self.timeout_sec:
                     self._log("host heartbeat timeout; stopping active processes")
+                    heartbeat_timed_out = True
                     break
                 try:
                     chunk = connection.recv(65536)
                 except socket.timeout:
                     continue
                 if not chunk:
-                    self._log("host disconnected; stopping active processes")
+                    self._log("host disconnected; retaining processes for reconnect grace period")
                     break
                 buffer.extend(chunk)
                 if len(buffer) > self.max_message_bytes:
@@ -993,12 +1414,15 @@ class ProcessManager:
                     if not raw_line.strip():
                         continue
                     last_message = time.monotonic()
+                    self.last_client_activity = last_message
                     try:
                         message = json.loads(raw_line.decode("utf-8"))
                         if not isinstance(message, dict):
                             raise ValueError("each line must be a JSON object")
                         response = self._handle_message(message)
                         self._send(connection, response)
+                        last_message = time.monotonic()
+                        self.last_client_activity = last_message
                         if message.get("action") == "stop":
                             should_close = True
                             break
@@ -1013,7 +1437,18 @@ class ProcessManager:
                 connection.close()
             except OSError:
                 pass
-            self._stop_all()
+            if heartbeat_timed_out:
+                self._stop_all()
+
+    def _expire_disconnected_session(self):
+        if not (self.session_id is not None or self.active):
+            return
+        now = time.monotonic()
+        if now - self.last_client_activity <= self.timeout_sec:
+            return
+        self._log("client disconnected past heartbeat timeout; stopping active processes")
+        self.last_client_activity = now
+        self._stop_all()
 
     def serve_forever(self):
         network = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1029,6 +1464,7 @@ class ProcessManager:
                 try:
                     connection, address = network.accept()
                 except socket.timeout:
+                    self._expire_disconnected_session()
                     continue
                 except OSError:
                     if self.shutdown_event.is_set():

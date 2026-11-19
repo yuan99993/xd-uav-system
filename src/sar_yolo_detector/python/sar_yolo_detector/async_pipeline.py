@@ -62,6 +62,7 @@ class InferencePacket:
     epoch: int
     processing_ms: float
     error: str = ""
+    input_received_wall: float = 0.0
 
 
 class FlowDetections:
@@ -156,11 +157,27 @@ class FlowDetections:
             values['_flow_seed_area'] = max(1., abs(cv2.contourArea(values['_flow_corners'])))
             self.items.append((SimpleNamespace(**values), np.float64((x1, y1, x2, y2)), points))
 
-    def update(self, frame, stamp, detections=None, detector_frame=None, detector_stamp=None, motion=None):
+    def update(self, frame, stamp, detections=None, detector_frame=None, detector_stamp=None,
+               motion=None, gray=None, detector_gray=None):
         self.diagnostics = dict(tracks_before=len(self.items), rejected={})
         if stamp != self.stamp:
             self.visual_observations = {}
-        gray = self._gray(frame)
+        if not self.items and (detections is None or not detections):
+            # No detections are being propagated, so a full-frame grayscale
+            # conversion and LK setup would be wasted work. Still consume a
+            # fresh empty detector packet so later packets are checked against
+            # the correct detector timestamp.
+            if detections is not None:
+                measured = float(detector_stamp)
+                if (measured > stamp or stamp - measured > self.max_age
+                        or measured <= self.detector_stamp):
+                    self._reject_flow('non_fresh_or_expired_packet')
+                else:
+                    self.detector_stamp = measured
+            self.gray, self.stamp = None, stamp
+            self.diagnostics['tracks_after'] = 0
+            return []
+        gray = self._gray(frame) if gray is None else gray
         if detections is not None:
             measured = float(detector_stamp)
             if measured > stamp or stamp - measured > self.max_age or measured <= self.detector_stamp:
@@ -174,7 +191,9 @@ class FlowDetections:
                     self._advance(gray, motion.between(self.stamp, stamp) if motion is not None else None)
                 previous = self.items
                 self._remember_visual(previous, stamp)
-                source_gray = gray if measured == stamp else self._gray(detector_frame)
+                source_gray = gray if measured == stamp else (
+                    detector_gray if detector_gray is not None else self._gray(detector_frame)
+                )
                 self._seed(source_gray, tuple(detections), measured)
                 if measured < stamp and self.items:
                     self._advance(gray, motion.between(measured, stamp) if motion is not None else None)

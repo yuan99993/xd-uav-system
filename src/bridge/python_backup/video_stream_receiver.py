@@ -275,6 +275,122 @@ class GStreamerH264Decoder:
         self.pipeline.set_state(self.Gst.State.NULL)
 
 
+class GStreamerRtpH264Decoder:
+    """Receive RTP, depacketize, and hardware-decode without Python per-packet work."""
+
+    def __init__(self, group, port, local_ip=""):
+        try:
+            import gi
+            gi.require_version("Gst", "1.0")
+            gi.require_version("GstVideo", "1.0")
+            from gi.repository import Gst, GstVideo
+        except Exception as exc:
+            raise RuntimeError("GStreamer RTP reception is unavailable: {}".format(exc)) from exc
+
+        Gst.init(None)
+        self.Gst = Gst
+        self.GstVideo = GstVideo
+        self.frames_this_second = 0
+        self.decoded_frames = 0
+        self.pipeline = Gst.Pipeline.new("jetson-rtp-h264-receiver")
+        self.source = Gst.ElementFactory.make("udpsrc", "rtp-udp-source")
+        self.jitter = Gst.ElementFactory.make("rtpjitterbuffer", "rtp-jitter-buffer")
+        self.depay = Gst.ElementFactory.make("rtph264depay", "h264-depayloader")
+        self.parser = Gst.ElementFactory.make("h264parse", "h264-parser")
+        self.decoder = Gst.ElementFactory.make("nvv4l2decoder", "h264-hardware-decoder")
+        self.converter = Gst.ElementFactory.make("nvvidconv", "video-converter")
+        self.output_caps = Gst.ElementFactory.make("capsfilter", "bgrx-caps")
+        self.appsink = Gst.ElementFactory.make("appsink", "decoded-frame-output")
+        elements = (self.source, self.jitter, self.depay, self.parser,
+                    self.decoder, self.converter, self.output_caps, self.appsink)
+        names = ("udpsrc", "rtpjitterbuffer", "rtph264depay", "h264parse",
+                 "nvv4l2decoder", "nvvidconv", "capsfilter", "appsink")
+        missing = [name for name, element in zip(names, elements) if element is None]
+        if missing:
+            raise RuntimeError("missing GStreamer element(s): {}".format(", ".join(missing)))
+
+        multicast = bool(group and group not in ("0.0.0.0", "unicast"))
+        self.source.set_property("port", int(port))
+        self.source.set_property("buffer-size", RECV_BUFFER_BYTES)
+        if multicast:
+            self.source.set_property("address", str(group))
+            self.source.set_property("auto-multicast", True)
+        else:
+            self.source.set_property("address", local_ip or "0.0.0.0")
+        self.source.set_property(
+            "caps", Gst.Caps.from_string(
+                "application/x-rtp,media=video,clock-rate=90000,"
+                "encoding-name=H264,payload=96"
+            )
+        )
+        self.jitter.set_property("latency", 0)
+        self.jitter.set_property("drop-on-latency", True)
+        self.jitter.set_property("do-lost", True)
+        self.parser.set_property("config-interval", -1)
+        for property_name in ("low-latency-mode", "enable-max-performance"):
+            if self.decoder.find_property(property_name) is not None:
+                self.decoder.set_property(property_name, True)
+        self.output_caps.set_property(
+            "caps", Gst.Caps.from_string("video/x-raw,format=BGRx")
+        )
+        self.appsink.set_property("emit-signals", False)
+        self.appsink.set_property("sync", False)
+        self.appsink.set_property("max-buffers", 1)
+        self.appsink.set_property("drop", True)
+        for element in elements:
+            self.pipeline.add(element)
+        for left, right in zip(elements, elements[1:]):
+            if not left.link(right):
+                self.pipeline.set_state(Gst.State.NULL)
+                raise RuntimeError("could not link GStreamer RTP decode pipeline")
+        if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            self.pipeline.set_state(Gst.State.NULL)
+            raise RuntimeError("could not start GStreamer RTP decode pipeline")
+        self.bus = self.pipeline.get_bus()
+        print("[decode] GStreamer RTP depay + NVIDIA nvv4l2decoder", flush=True)
+
+    def packet_stats(self):
+        stats = self.jitter.get_property("stats")
+        if stats is None:
+            return 0, 0
+        return int(stats.get_value("num-pushed")), int(stats.get_value("num-lost"))
+
+    def _sample_to_frame(self, sample):
+        info = self.GstVideo.VideoInfo()
+        if not info.from_caps(sample.get_caps()):
+            raise RuntimeError("could not read decoded video frame dimensions")
+        width, height, stride = int(info.width), int(info.height), int(info.stride[0])
+        buffer = sample.get_buffer()
+        mapped, map_info = buffer.map(self.Gst.MapFlags.READ)
+        if not mapped:
+            raise RuntimeError("could not map decoded video frame")
+        try:
+            import numpy as np
+            raw = np.frombuffer(map_info.data, dtype=np.uint8)
+            rows = raw[:stride * height].reshape((height, stride))
+            bgrx = rows[:, :width * 4].reshape((height, width, 4))
+            return BgrVideoFrame(bgrx[:, :, :3].copy())
+        finally:
+            buffer.unmap(map_info)
+
+    def pull_frame(self, timeout_ms=100):
+        sample = self.appsink.emit(
+            "try-pull-sample", int(timeout_ms) * self.Gst.MSECOND
+        )
+        error = self.bus.pop_filtered(self.Gst.MessageType.ERROR)
+        if error is not None:
+            detail, debug = error.parse_error()
+            raise RuntimeError("GStreamer RTP pipeline failed: {} ({})".format(detail, debug))
+        if sample is None:
+            return None
+        self.decoded_frames += 1
+        self.frames_this_second += 1
+        return self._sample_to_frame(sample)
+
+    def close(self):
+        self.pipeline.set_state(self.Gst.State.NULL)
+
+
 def create_h264_decoder(mode):
     if mode == "hardware":
         return GStreamerH264Decoder()
@@ -547,7 +663,8 @@ class RosImagePublisher:
             self.camera_info_publisher.publish(message)
 
     def publish(self, frame):
-        image = frame.to_ndarray(format="bgr24")
+        import numpy as np
+        image = np.ascontiguousarray(frame.to_ndarray(format="bgr24"))
         height, width = image.shape[:2]
         message = self.Image()
         message.header.stamp = self.rospy.Time.now()
@@ -677,6 +794,7 @@ def main(argv=None):
             control = None
             video = None
             decoder = None
+            depacketizer = None
             subscribed = False
             try:
                 control = ControlClient(
@@ -700,10 +818,21 @@ def main(argv=None):
                         "simulator did not report a video endpoint; pass "
                         "--group/--port explicitly")
 
-                # Socket bind and decoder startup can fail transiently too; both
-                # stay inside the reconnect loop so the process remains alive.
-                video = open_video_socket(group, port, args.local_ip)
-                decoder = create_h264_decoder(args.decoder)
+                # Let GStreamer receive/depacketize RTP directly on the Jetson
+                # hot path. Keep the Python socket path for software decode and
+                # optional Annex-B dumps.
+                native_rtp = args.decoder == "hardware" and not args.dump
+                if native_rtp:
+                    try:
+                        decoder = GStreamerRtpH264Decoder(group, port, args.local_ip)
+                    except Exception as exc:
+                        print("[decode] GStreamer RTP path unavailable (%s); "
+                              "using socket depacketizer" % exc,
+                              file=sys.stderr, flush=True)
+                        native_rtp = False
+                if not native_rtp:
+                    video = open_video_socket(group, port, args.local_ip)
+                    decoder = create_h264_decoder(args.decoder)
 
                 state = {"last_keyframe_request": 0.0}
 
@@ -714,12 +843,13 @@ def main(argv=None):
                     state["last_keyframe_request"] = now
                     control.request_keyframe()
 
-                depacketizer = H264Depacketizer(
-                    decoder=decoder,
-                    on_frame=on_frame,
-                    on_corrupt=request_keyframe,
-                    dump_path=args.dump,
-                )
+                if not native_rtp:
+                    depacketizer = H264Depacketizer(
+                        decoder=decoder,
+                        on_frame=on_frame,
+                        on_corrupt=request_keyframe,
+                        dump_path=args.dump,
+                    )
 
                 print("[video] receiving H.264 from %s (%s) on UDP %s:%d"
                       % (args.camera, args.image_type, group or "unicast", port),
@@ -729,6 +859,8 @@ def main(argv=None):
                 last_packet = time.monotonic()
                 last_stats = last_packet
                 missed_heartbeats = 0
+                last_packet_count = 0
+                last_lost_count = 0
 
                 while True:
                     now = time.monotonic()
@@ -750,26 +882,41 @@ def main(argv=None):
                         raise TimeoutError(
                             "no RTP packets for %.1fs" % args.timeout)
 
-                    try:
-                        packet, _ = video.recvfrom(MAX_DATAGRAM)
-                    except socket.timeout:
-                        continue
-
-                    last_packet = time.monotonic()
-                    depacketizer.push(packet)
+                    if native_rtp:
+                        frame = decoder.pull_frame(timeout_ms=100)
+                        packet_count, lost_count = decoder.packet_stats()
+                        if packet_count != last_packet_count:
+                            last_packet = time.monotonic()
+                            last_packet_count = packet_count
+                        if lost_count > last_lost_count:
+                            request_keyframe()
+                            last_lost_count = lost_count
+                        if frame is not None:
+                            on_frame(frame)
+                    else:
+                        try:
+                            packet, _ = video.recvfrom(MAX_DATAGRAM)
+                        except socket.timeout:
+                            continue
+                        last_packet = time.monotonic()
+                        depacketizer.push(packet)
 
                     if last_packet - last_stats >= 1.0:
-                        fps = depacketizer.frames_this_second
-                        depacketizer.frames_this_second = 0
+                        if native_rtp:
+                            fps = decoder.frames_this_second
+                            decoder.frames_this_second = 0
+                            packets, lost = decoder.packet_stats()
+                            frames = decoder.decoded_frames
+                        else:
+                            fps = depacketizer.frames_this_second
+                            depacketizer.frames_this_second = 0
+                            packets = depacketizer.received_packets
+                            lost = depacketizer.lost_packets
+                            frames = depacketizer.decoded_frames
                         last_stats = last_packet
                         print(
                             "[stats] %.1f fps | packets %d | lost %d | frames %d"
-                            % (
-                                fps,
-                                depacketizer.received_packets,
-                                depacketizer.lost_packets,
-                                depacketizer.decoded_frames,
-                            ),
+                            % (fps, packets, lost, frames),
                             flush=True,
                         )
             except KeyboardInterrupt:

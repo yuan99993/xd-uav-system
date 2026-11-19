@@ -15,17 +15,19 @@ export XD_UAV_START_TOKEN='<共享密钥>'
 
 ## JSON 状态
 
-TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态；飞机、启动清单或 profile 改变时用新的完整状态发送 `update`。每 30 秒内至少发送一次 heartbeat。连接断开、超时或收到 `stop` 后，管理器会停止这次会话启动的所有进程。
+TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态；飞机、启动清单或 profile 改变时用新的完整状态发送 `update`。每 30 秒内至少发送一次 heartbeat。短暂断线后进程会保留，客户端在 30 秒内用相同 `session_id` 重连并重发状态时不会重复启动；超过心跳超时或收到 `stop` 后，管理器才清理本次会话启动的进程。
 
 [example_state.json](example_state.json) 展示了两架飞机采用不同启动项的例子。关键字段如下：
 
 示例里的 `/Sim/...` 相机和测距话题要按仿真实际发布的话题替换；管理器不会再假设所有仿真都使用同一组相机路径。
 
-- `shared_launches`：放仿真端选择的整支机队共用程序。`world_tf` 会依据当前 `vehicles` 名称和数量生成临时配置。编队管理器由 start 自动启动一次，不需要在 JSON 里重复列出。
+- `shared_launches`：放仿真端选择的整支机队共用程序。`world_tf` 会依据当前 `vehicles` 名称和数量生成临时配置。编队管理器和任务分配器由 start 自动启动一次，不需要在 JSON 里重复列出。
 - `vehicles[].sensors`：沿用仿真端现有的传感器类型并声明实际话题。`front_gimbal_camera` 会自动启动云台姿态桥接、云台控制和目标定位；它仍然是一条前视相机记录。
 - `vehicles[].launches`：选择该架飞机的识别和其他可选程序。启动项可以是字符串，也可以是带 `sensor` 和 `params` 的对象；前视相机对应的云台程序由 start 自动加入。
 
 `xd_uav_formation/formation.launch` 使用包内固定的机队配置，由 start 在每个会话中只启动一个管理进程，供整支机队使用。每架飞机不需要单独启动一份。
+
+`xd_uav_task_allocate/task_allocate.launch` 也作为共享程序默认启动一次。它固定加载 `mission.yaml`、`scouts_two_fixed.yaml`、`workers_two_fixed.yaml` 和 `task_execution_uav1_uav2_gm_fixedwing.yaml`；这些路径在 `manager.yaml` 中配置，暂不根据机队内容生成配置文件。
 
 相机只有前视和下视两路。保持仿真 JSON 现有的 `front_gimbal_camera`、`down_camera` 类型定义：`front_gimbal_camera` 表示前视这一路相机，它安装在云台上；云台不是额外的相机条目。云台相关启动项绑定到同一架飞机的前视相机 ID（示例中是 `front`）。
 
@@ -37,7 +39,7 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 - `down_camera`：下视相机。
 - `lidar`：点云或激光测距传感器。
 
-机型对应的 `localization`、`control` 和 `task_execute`，以及视觉识别程序，都通过飞机自己的 `launches` 清单选择。识别程序必须明确选择 `detect` 或 `sar_yolo_detector` 并绑定相机；不需要识别时就省略它们。前视相机带来的三个云台/定位程序由 start 自动启动；若要覆盖默认参数，可以在 `launches` 里显式填写同名启动项。`task_allocate` 不在板端启动清单中。
+机型对应的 `localization`、`control` 和 `task_execute`，以及视觉识别程序，都通过飞机自己的 `launches` 清单选择。识别程序必须明确选择 `detect` 或 `sar_yolo_detector` 并绑定相机；不需要识别时就省略它们。前视相机带来的三个云台/定位程序由 start 自动启动；若要覆盖默认参数，可以在 `launches` 里显式填写同名启动项。任务分配器是机队级共享程序，由 start 默认启动。
 
 自动启动的云台控制沿用 `tmux_start` 中的完整命令参数；只按飞机替换 UAV 名称和 `/uavN/` 话题前缀。仿真 JSON 中的 `front` 传感器 ID 或其启动参数不会改写云台控制参数。目标定位也固定连接同一个 `smart` 选择目标话题，前视传感器提供的测距和姿态话题仍按 JSON 配置。
 
@@ -47,13 +49,13 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 
 ## 相机相关启动项与视频端口
 
-只有当飞机的 `sensors` 中声明 `front_gimbal_camera` 时，管理器才会自动启动 `xd_uav_track/track.launch` 和 `src/bridge/h264_nal_multicast_sender.py`。下视相机目前只启动接收器，不会启动 track 叠加或 H.264 回传。每架飞机的 track 和发送器各启动一份。发送器使用跟踪输出话题 `/uavN/track/phase_annotated`；端口根据飞机编号自动分配：
+只有当飞机的 `sensors` 中声明 `front_gimbal_camera` 时，管理器才会自动启动 `xd_uav_track/track.launch` 和 C++ H.264 发送器 `src/bridge/bin/h264_nal_multicast_sender`。阶段文字由 SAR YOLO 节点画入识别标注图，下视相机目前只启动接收器，不会启动 H.264 回传。每架飞机的 track 和发送器各启动一份。发送器订阅 YOLO 最终图像话题 `/uavN/sar_yolo_detector/smart/annotated`；端口根据飞机编号自动分配：
 
 | 飞机 | UDP 端口 | ROS 图像话题 |
 | --- | ---: | --- |
-| `uav1` | `32797` | `/uav1/track/phase_annotated` |
-| `uav2` | `32798` | `/uav2/track/phase_annotated` |
-| `uavN` | `32796 + N` | `/uavN/track/phase_annotated` |
+| `uav1` | `32797` | `/uav1/sar_yolo_detector/smart/annotated` |
+| `uav2` | `32798` | `/uav2/sar_yolo_detector/smart/annotated` |
+| `uavN` | `32796 + N` | `/uavN/sar_yolo_detector/smart/annotated` |
 
 端口之外的组播地址和网卡 IP 目前沿用 `manager.yaml` 中发送器配置。车辆名使用 `uav1`、`uav2` 这样的格式，以便稳定计算端口。
 
@@ -73,6 +75,8 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 
 ## 临时配置与进程清理
 
-只有 `world_tf` 的运行配置写入 `~/.ros/xd_uav_start_manager/generated/`，不会改写 `src/` 下的源配置。配置会按照本次 JSON 中的飞机列表更新 `vehicles` 和 `vehicle_configs`。track 沿用 `track.launch` 默认加载的包内配置；编队包直接使用 `formation.launch` 中已设置的固定配置。
+只有 `world_tf` 的运行配置写入 `~/.ros/xd_uav_start_manager/generated/`，不会改写 `src/` 下的源配置。配置会按照本次 JSON 中的飞机列表更新 `vehicles` 和 `vehicle_configs`。track 沿用 `track.launch` 默认加载的包内配置；编队包使用 `formation.launch` 中的固定配置；任务分配器使用 `manager.yaml` 指定的四个固定配置文件。
 
-每个启动项独立运行并记录 PID、进程组、启动时间、命令和日志。同一启动项重启时继续写入同一个日志文件，并用启动时间分隔；追加前会修复已有的非法 UTF-8 字节。日志位于 `~/.ros/xd_uav_start_manager/logs/`，当前路径记录在进程状态中。停止会话、连接断开或更新移除启动项时，管理器会核对 PID 身份，结束启动进程组并清理它派生的 ROS 节点进程（ROS 节点可能各自在独立进程组）。
+每个启动项独立运行并记录 PID、进程组、启动时间、命令和日志。同一启动项重启时继续写入同一个日志文件，并用启动时间分隔；追加前会修复已有的非法 UTF-8 字节。日志位于 `~/.ros/xd_uav_start_manager/logs/`，当前路径记录在进程状态中。收到 `stop`、心跳超时、管理器退出或更新移除启动项时，管理器会核对 PID 身份，结束启动进程组并清理它派生的 ROS 节点进程（ROS 节点可能各自在独立进程组）；TCP 短暂断开会等待 30 秒重连，不会立即杀进程。
+
+重复 `start` 会按完整目标清单做幂等对账：已启动且仍存活的同一启动项保持运行，新增或参数变更项才启动，移除项才停止；即使 `session_id` 改变，只要启动项签名相同也会复用现有进程。若管理器接管启动时，Master 上已经存在一整组可联系的预期节点，会复用并在响应的 `reused` 字段列出，不再启动第二份；遇到无响应的旧登记时会尝试一次 `rosnode cleanup` 后重新检查。`localization`、`control` 的节点名会先做重复声明检查，启动后会核对节点注册及 PID 归属。节点检查只在启动、显式 `status` 以及重复 `start` 时执行；重复 `start` 的检查最多每 10 秒一次，没有后台高频轮询。启动包装器在每个子 launch 执行前清除继承的 `ROS_NAMESPACE` 和 `ROS_HOSTNAME`，再由 launch 文件的 `UAV_NAME` 参数设置飞机命名空间，避免进程意外继承成其他飞机的节点名。TCP 短暂断开后会保留进程 30 秒供客户端重连；超过心跳超时、收到 `stop` 或管理器退出时才清理本次管理的进程。

@@ -12,6 +12,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+import cv2
 import numpy as np
 import rospy
 import rospkg
@@ -53,6 +54,10 @@ def _read_yaml(path):
 
 class SharedInferenceServer:
     def __init__(self):
+        # The tracker process also uses a one-thread OpenCV budget. Keep resize
+        # and image conversions in the shared model worker from oversubscribing
+        # CPU cores when several aircraft are submitting frames concurrently.
+        cv2.setNumThreads(max(1, min(4, int(rospy.get_param("~opencv_threads", 1)))))
         self._backend_lock = threading.Lock()
         self._queue_condition = threading.Condition()
         self._pending = deque()
@@ -96,6 +101,13 @@ class SharedInferenceServer:
         self._batch_counts = [0] * 9
         self._batch_stats_requests = 0
         self._batch_inference_ms_total = 0.0
+        self._backend_stage_totals = {
+            "preprocess_ms": 0.0,
+            "model_forward_ms": 0.0,
+            "postprocess_ms": 0.0,
+            "normalize_ms": 0.0,
+        }
+        self._backend_stage_samples = 0
         self._batch_stats_started = time.monotonic()
         self._batch_wait_sec = max(0.0, min(0.010, float(rospy.get_param(
             "~batch_wait_ms", 4.0)) / 1000.0))
@@ -424,6 +436,15 @@ class SharedInferenceServer:
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
                 if len(results) != len(fresh):
                     raise RuntimeError("shared backend returned an incomplete batch")
+                stage_timings = getattr(self._backend, "last_stage_timings", {})
+                for name in self._backend_stage_totals:
+                    try:
+                        self._backend_stage_totals[name] += float(
+                            stage_timings.get(name, 0.0)
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                self._backend_stage_samples += 1
                 self._batch_counts[len(fresh)] += 1
                 self._batch_stats_requests += len(fresh)
                 self._batch_inference_ms_total += elapsed_ms
@@ -444,17 +465,32 @@ class SharedInferenceServer:
                     batches = sum(self._batch_counts)
                     average_ms = (self._batch_inference_ms_total / batches
                                   if batches else 0.0)
+                    stage_count = max(1, self._backend_stage_samples)
+                    stage_averages = {
+                        name: total / stage_count
+                        for name, total in self._backend_stage_totals.items()
+                    }
                     rospy.loginfo(
                         "shared YOLO perf: requests=%d requests_per_sec=%.2f "
-                        "batches=%d batch_mix=%s batch_inference_ms_avg=%.2f max_batch=%d",
+                        "batches=%d batch_mix=%s batch_inference_ms_avg=%.2f max_batch=%d "
+                        "preprocess_ms_avg=%.2f model_forward_ms_avg=%.2f "
+                        "postprocess_ms_avg=%.2f normalize_ms_avg=%.2f",
                         self._batch_stats_requests,
                         self._batch_stats_requests / stats_duration,
                         batches, batch_mix, average_ms,
                         self._maximum_batch_size,
+                        stage_averages["preprocess_ms"],
+                        stage_averages["model_forward_ms"],
+                        stage_averages["postprocess_ms"],
+                        stage_averages["normalize_ms"],
                     )
                     self._batch_counts = [0] * 9
                     self._batch_stats_requests = 0
                     self._batch_inference_ms_total = 0.0
+                    self._backend_stage_totals = {
+                        name: 0.0 for name in self._backend_stage_totals
+                    }
+                    self._backend_stage_samples = 0
                     self._batch_stats_started = now
             except Exception as exc:
                 message = "%s: %s" % (type(exc).__name__, exc)

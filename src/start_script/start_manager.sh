@@ -32,6 +32,6 @@ if [[ -z "${ROS_IP:-}" ]]; then
   exit 2
 fi
 export ROS_MASTER_URI ROS_IP
-unset ROS_HOSTNAME
+unset ROS_HOSTNAME ROS_NAMESPACE
 
 exec python3 "$SCRIPT_DIR/manager.py" --config "$CONFIG_PATH"

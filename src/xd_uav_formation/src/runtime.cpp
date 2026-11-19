@@ -1211,7 +1211,11 @@ Follower::stateInCommonFrame(const xd_uav_controller::ControlState& state,
 std::vector<Vec3> Follower::memberPositionsInCommonFrame(
     const ros::Time& now, const StateSnapshot& input) const {
   std::vector<Vec3> positions;
-  for (const auto& name : config_.members) {
+  // Reacquisition must use the same membership snapshot as the formation
+  // slots and acquisition plan. Configured members can include aircraft that
+  // have dropped out; requiring their stale states here makes every remaining
+  // aircraft fail while trying to rebuild the smaller formation.
+  for (const auto& name : activeMembers()) {
     const xd_uav_controller::ControlState* state = nullptr;
     if (name == member_) {
       if (!own_state_) throw std::invalid_argument("follower_state_stale");

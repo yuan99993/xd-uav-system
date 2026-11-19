@@ -1,5 +1,9 @@
 # SAR YOLO / PixEagle 四模式融合：需求、功能、问题与交接汇总
 
+> 历史交接记录。当前活动运行时已移除独立 `smart_tracker` 跟踪模式，默认使用 FusionTracker；
+> FusionTracker 仍通过 `SmartTracker:` 参数空间加载 YOLO 检测器。当前可切换模式见
+> [融合使用指南](fusion_experiment_guide.md)。
+
 > 当前精简包以 `launch/xd_smart_tracker_fusion_integration.launch` 为主入口；下文
 > 关于旧归档入口和历史代码布局的描述仅记录当时的实现状态，不代表当前文件仍保留。
 

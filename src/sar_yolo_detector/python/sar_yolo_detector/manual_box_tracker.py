@@ -257,7 +257,7 @@ class ManualBoxTracker:
             parsed.append((lower, upper))
         return tuple(parsed)
 
-    def initialize(self, frame: np.ndarray, roi: PixelBox) -> ManualTrackResult:
+    def initialize(self, frame: np.ndarray, roi: PixelBox, *, gray=None, hsv=None) -> ManualTrackResult:
         if frame is None or frame.ndim != 3 or frame.shape[2] != 3:
             self.reset()
             return self._result(None, 0.0, False, "invalid_bgr_frame")
@@ -276,8 +276,8 @@ class ManualBoxTracker:
         if self.tracker_type == "color_tracker":
             if self.colour_source == "configured":
                 self._configured_selection_roi = bbox
-                return self._update_configured_colour(frame)
-            if not self._initialize_colour(frame, bbox):
+                return self._update_configured_colour(frame, hsv=hsv)
+            if not self._initialize_colour(frame, bbox, hsv=hsv):
                 self.reset()
                 return self._result(
                     bbox,
@@ -300,7 +300,7 @@ class ManualBoxTracker:
                     tracker = None
             if tracker is None:
                 self._tracker_name = "template"
-                self._template = self._extract_gray(frame, bbox)
+                self._template = self._extract_gray(frame, bbox, gray=gray)
                 if self._template is None:
                     self.reset()
                     return self._result(bbox, 0.0, False, "template_initialization_failed")
@@ -310,23 +310,23 @@ class ManualBoxTracker:
         self._active = True
         return self._result(bbox, 1.0, True, "initialized")
 
-    def update(self, frame: np.ndarray) -> ManualTrackResult:
+    def update(self, frame: np.ndarray, *, gray=None, hsv=None) -> ManualTrackResult:
         if (
             self.tracker_type == "color_tracker"
             and self.colour_source == "configured"
         ):
             if frame is None or frame.ndim != 3 or frame.shape[2] != 3:
                 return self._configured_colour_failure("invalid_bgr_frame")
-            return self._update_configured_colour(frame)
+            return self._update_configured_colour(frame, hsv=hsv)
         if not self._active or self._last_bbox is None:
             return self._result(None, 0.0, False, "waiting_for_initial_roi")
         if frame is None or frame.ndim != 3 or frame.shape[2] != 3:
             return self._record_failure(self._last_bbox, "invalid_bgr_frame")
 
         if self.tracker_type == "color_tracker":
-            bbox, confidence, valid, reason = self._update_colour(frame)
+            bbox, confidence, valid, reason = self._update_colour(frame, hsv=hsv)
         elif self._tracker_name == "template":
-            bbox, confidence, valid, reason = self._update_template(frame)
+            bbox, confidence, valid, reason = self._update_template(frame, gray=gray)
         else:
             try:
                 ok, candidate = self._opencv_tracker.update(frame)
@@ -371,15 +371,16 @@ class ManualBoxTracker:
         return result
 
     @staticmethod
-    def _extract_gray(frame: np.ndarray, bbox: PixelBox) -> Optional[np.ndarray]:
+    def _extract_gray(frame: np.ndarray, bbox: PixelBox, gray=None) -> Optional[np.ndarray]:
         x, y, width, height = (int(round(value)) for value in bbox)
-        crop = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)[y : y + height, x : x + width]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if gray is None else gray
+        crop = gray[y : y + height, x : x + width]
         return crop.copy() if crop.size else None
 
-    def _update_template(self, frame: np.ndarray):
+    def _update_template(self, frame: np.ndarray, gray=None):
         if self._template is None or self._last_bbox is None:
             return self._last_bbox, 0.0, False, "template_unavailable"
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if gray is None else gray
         template_height, template_width = self._template.shape[:2]
         x, y, width, height = self._last_bbox
         expansion = self.template_search_expansion
@@ -405,9 +406,9 @@ class ManualBoxTracker:
             "ok" if valid else "template_confidence_too_low"
         )
 
-    def _initialize_colour(self, frame: np.ndarray, bbox: PixelBox) -> bool:
+    def _initialize_colour(self, frame: np.ndarray, bbox: PixelBox, hsv=None) -> bool:
         x, y, width, height = (int(round(value)) for value in bbox)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV) if hsv is None else hsv
         crop = hsv[y : y + height, x : x + width]
         if crop.size == 0:
             return False
@@ -428,10 +429,10 @@ class ManualBoxTracker:
         )
         return True
 
-    def _update_colour(self, frame: np.ndarray):
+    def _update_colour(self, frame: np.ndarray, hsv=None):
         if self._last_bbox is None:
             return self._last_bbox, 0.0, False, "colour_model_unavailable"
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV) if hsv is None else hsv
         if self._colour_histogram is None:
             return self._last_bbox, 0.0, False, "colour_model_unavailable"
         backprojection = cv2.calcBackProject(
@@ -484,12 +485,12 @@ class ManualBoxTracker:
         valid = width >= 2 and height >= 2 and updated_window[2] >= 2 and updated_window[3] >= 2
         return bbox, confidence, valid, "ok" if valid else "colour_target_not_found"
 
-    def configured_colour_candidates(self, frame: np.ndarray):
+    def configured_colour_candidates(self, frame: np.ndarray, hsv=None):
         """Return every configured-colour component as (xywh, confidence, area)."""
         if (self.tracker_type != "color_tracker" or self.colour_source != "configured"
                 or frame is None or frame.ndim != 3 or frame.shape[2] != 3):
             return ()
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV) if hsv is None else hsv
         mask = self._configured_colour_mask(hsv)
         if self.morph_kernel > 1:
             kernel = cv2.getStructuringElement(
@@ -522,8 +523,8 @@ class ManualBoxTracker:
         candidates.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3]))
         return tuple(candidates)
 
-    def _update_configured_colour(self, frame: np.ndarray) -> ManualTrackResult:
-        candidates = self.configured_colour_candidates(frame)
+    def _update_configured_colour(self, frame: np.ndarray, hsv=None) -> ManualTrackResult:
+        candidates = self.configured_colour_candidates(frame, hsv=hsv)
 
         best_bbox = None
         best_area = 0.0

@@ -14,7 +14,7 @@
        default execution backend is selected in mission.yaml and may be
        overridden per vehicle in scouts.yaml/workers.yaml. -->
   <node pkg="xd_uav_task_allocate"
-        type="task_allocate_node.py"
+        type="task_allocate_node_cpp"
         name="task_allocate_coordinator"
         output="screen"
         respawn="$(arg respawn)"

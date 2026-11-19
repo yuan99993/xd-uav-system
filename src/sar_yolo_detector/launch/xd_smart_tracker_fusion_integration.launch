@@ -7,6 +7,7 @@
   <!-- Unique suffix for a second (for example gimbal) camera instance. -->
   <arg name="instance_name" default="smart" /> 
   <arg name="tracking_mode" default="FusionTracker" />
+  <arg name="tracker_node_type" default="sar_yolo_smart_tracker_cpp" />
   <arg name="fusion_config" default="$(find sar_yolo_detector)/config/fusion_tracker.yaml" />
   <!-- 不要改这个instancename -->
   <arg name="config"
@@ -24,9 +25,12 @@
   <arg name="shared_inference" default="true" />
   <!-- The provided Orin engine supports dynamic batches up to three images. -->
   <arg name="maximum_batch_size" default="3" />
-  <arg name="batch_wait_ms" default="10.0" />
+  <arg name="batch_wait_ms" default="1.0" />
   <!-- Drop frames that have already waited too long, keeping image updates fresh. -->
+  <!-- Fusion propagates selected tracks between detector updates; cap YOLO
+       requests to avoid running the shared inference path faster than needed. -->
   <arg name="inference_max_fps" default="20.0" />
+  <arg name="annotated_max_fps" default="40.0" />
   <arg name="maximum_capture_age_sec" default="2.0" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
   <arg name="camera_info_topic" default="down_camera/camera_info" />
@@ -48,7 +52,7 @@
   <arg name="state_topic" default="sar_yolo_detector/$(arg instance_name)/state" />
   <arg name="annotated_image_topic"
        default="sar_yolo_detector/$(arg instance_name)/annotated" />
-  <!-- Set gimbal_control.py ~detection_topic to this topic. SmartTracker
+  <!-- Set gimbal_control.py ~detection_topic to this topic. FusionTracker
        selection can be started by a pixel click or the SetBool auto-select
        service; FeatureTracker publishes its valid ROI box directly here. -->
   <arg name="gimbal_detection_topic" default="$(arg selected_detections_topic)" />
@@ -69,10 +73,9 @@
   <arg name="sensor_id" default="fixed_camera" />
 
   <group if="$(arg shared_inference)">
-    <node pkg="sar_yolo_detector" type="sar_yolo_shared_model_server"
+    <node pkg="sar_yolo_detector" type="sar_yolo_shared_model_server_cpp"
           name="sar_yolo_shared_model_$(arg UAV_NAME)_$(arg instance_name)"
           output="screen">
-      <env name="SAR_YOLO_SMART_PYTHON" value="$(arg python_executable)" />
       <param name="config" value="$(arg config)" />
       <param name="overlay_config" value="$(arg vehicle_config)" />
       <param name="model_path" value="$(arg model_path)" />
@@ -87,6 +90,7 @@
 
   <group ns="$(arg UAV_NAME)">
     <include file="$(find sar_yolo_detector)/launch/smart_tracker_fusion.launch">
+      <arg name="tracker_node_type" value="$(arg tracker_node_type)" />
       <arg name="tracking_mode" value="$(arg tracking_mode)" />
       <arg name="fusion_config" value="$(arg fusion_config)" />
       <arg name="node_name" value="sar_yolo_smart_tracker_$(arg instance_name)" />
@@ -116,6 +120,7 @@
            value="$(arg publish_annotated_image)" />
       <arg name="shared_inference" value="$(arg shared_inference)" />
       <arg name="inference_max_fps" value="$(arg inference_max_fps)" />
+      <arg name="annotated_max_fps" value="$(arg annotated_max_fps)" />
       <arg name="maximum_capture_age_sec" value="$(arg maximum_capture_age_sec)" />
       <arg name="uav_id" value="$(arg UAV_NAME)" />
       <arg name="sensor_id" value="$(arg sensor_id)" />

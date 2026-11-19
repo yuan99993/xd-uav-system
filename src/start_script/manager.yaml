@@ -4,6 +4,9 @@ workspace: /home/nvidia/xd-uavsystem-test
 runtime_dir: ~/.ros/xd_uav_start_manager
 default_profile: vtol
 max_vehicles: 60
+node_startup_timeout_sec: 15.0
+node_status_check_interval_sec: 10.0
+node_reuse_check_interval_sec: 10.0
 
 # Each child launch sources these files before exec'ing its argv.
 setup_scripts:
@@ -23,10 +26,11 @@ network:
 # front_gimbal_camera sensor. The down camera is not sent back yet.
 required_vehicle_launches: []
 
-# One formation manager owns the whole fleet and uses the fixed config in
-# formation.launch. Start it once per simulation session.
+# Formation and task allocation each run once per simulation session. Task
+# allocation uses the fixed config files declared in its shared launch below.
 required_shared_launches:
   - formation
+  - task_allocate
 
 sensor_types:
   front_gimbal_camera:
@@ -39,14 +43,18 @@ sensor_types:
 parameters:
   gimbal_attitude_bridge_script: /home/nvidia/image_compress/gimbal_attitude_bridge.py
   gimbal_control_script: /home/nvidia/image_compress/gimbal_control.py
-  video_stream_receiver_script: "{workspace}/src/bridge/video_stream_receiver.py"
-  h264_sender_script: "{workspace}/src/bridge/h264_nal_multicast_sender.py"
+  video_stream_receiver_binary: "{workspace}/src/bridge/bin/video_stream_receiver"
+  h264_sender_binary: "{workspace}/src/bridge/bin/h264_nal_multicast_sender"
   airsim_scene: SceneBasicDrone
 
 aircraft_types:
   vtol:
     launches:
       - id: localization
+        expected_nodes:
+          - "/{name}/state_estimator"
+          - "/{name}/gps_global_alignment"
+          - "/{name}/single_tf_manager"
         argv:
           - roslaunch
           - xd_uav_state_estimators
@@ -54,6 +62,9 @@ aircraft_types:
           - "UAV_NAME:={name}"
           - "tf_config:={tf_config}"
       - id: control
+        expected_nodes:
+          - "/{name}/control_manager"
+          - "/{name}/controller"
         argv:
           - roslaunch
           - xd_uav_control_manager
@@ -63,6 +74,10 @@ aircraft_types:
   fixedwing:
     launches:
       - id: localization
+        expected_nodes:
+          - "/{name}/state_estimator"
+          - "/{name}/gps_global_alignment"
+          - "/{name}/single_tf_manager"
         argv:
           - roslaunch
           - xd_uav_state_estimators
@@ -70,6 +85,9 @@ aircraft_types:
           - "UAV_NAME:={name}"
           - "tf_config:={tf_config}"
       - id: control
+        expected_nodes:
+          - "/{name}/control_manager"
+          - "/{name}/controller"
         argv:
           - roslaunch
           - xd_uav_control_manager
@@ -80,6 +98,10 @@ aircraft_types:
   multirotor:
     launches:
       - id: localization
+        expected_nodes:
+          - "/{name}/state_estimator"
+          - "/{name}/gps_global_alignment"
+          - "/{name}/single_tf_manager"
         argv:
           - roslaunch
           - xd_uav_state_estimators
@@ -87,6 +109,9 @@ aircraft_types:
           - "UAV_NAME:={name}"
           - "tf_config:={tf_config}"
       - id: control
+        expected_nodes:
+          - "/{name}/control_manager"
+          - "/{name}/controller"
         argv:
           - roslaunch
           - xd_uav_control_manager
@@ -112,8 +137,7 @@ vehicle_launches:
     sensor_types: [front_gimbal_camera]
     once_per_vehicle: true
     argv:
-      - python3
-      - "{h264_sender_script}"
+      - "{h264_sender_binary}"
     parameter_prefix: "_"
     default_params:
       image_topic: "{video_topic}"
@@ -150,8 +174,7 @@ vehicle_launches:
     sensor_types: [front_gimbal_camera, down_camera]
     ignore_selection_params: true
     argv:
-      - python3
-      - "{video_stream_receiver_script}"
+      - "{video_stream_receiver_binary}"
       - --decoder
       - hardware
       - "--camera"
@@ -257,6 +280,16 @@ shared_launches:
       - roslaunch
       - xd_uav_formation
       - formation.launch
+
+  # task_allocate:
+  #   argv:
+  #     - roslaunch
+  #     - xd_uav_task_allocate
+  #     - task_allocate.launch
+  #     - "mission_config:={workspace}/src/xd_uav_task_allocate/config/mission.yaml"
+  #     - "scout_config:={workspace}/src/xd_uav_task_allocate/config/scouts_two_fixed.yaml"
+  #     - "worker_config:={workspace}/src/xd_uav_task_allocate/config/workers_two_fixed.yaml"
+  #     - "post_arrival_config:={workspace}/src/xd_uav_task_allocate/config/task_execution_uav1_uav2_gm_fixedwing.yaml"
 
 profiles:
   vtol:

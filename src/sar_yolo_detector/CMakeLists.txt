@@ -9,6 +9,7 @@ find_package(catkin REQUIRED COMPONENTS
   image_transport
   message_generation
   roscpp
+  roslib
   rospy
   sensor_msgs
   std_msgs
@@ -19,6 +20,23 @@ find_package(catkin REQUIRED COMPONENTS
   vision_msgs
   xd_uav_track
 )
+
+find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d video tracking)
+find_package(CUDA REQUIRED)
+find_package(OpenSSL REQUIRED)
+find_package(yaml-cpp REQUIRED)
+find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+  PATHS /usr/include/aarch64-linux-gnu /usr/include /usr/local/include
+)
+find_library(TENSORRT_NVINFER_LIBRARY nvinfer
+  PATHS /usr/lib/aarch64-linux-gnu /usr/lib /usr/local/lib
+)
+find_library(TENSORRT_PLUGIN_LIBRARY nvinfer_plugin
+  PATHS /usr/lib/aarch64-linux-gnu /usr/lib /usr/local/lib
+)
+if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_NVINFER_LIBRARY OR NOT TENSORRT_PLUGIN_LIBRARY)
+  message(FATAL_ERROR "TensorRT development headers and libraries (nvinfer, nvinfer_plugin) are required")
+endif()
 
 catkin_python_setup()
 
@@ -81,8 +99,7 @@ generate_messages(
     xd_uav_track
 )
 
-# Keep the existing ROS message/service API stable for sibling packages. This
-# package builds only the bridge node used by the selected SmartTracker launch.
+# Keep the existing ROS message/service API stable for sibling packages.
 catkin_package(
   CATKIN_DEPENDS
     cv_bridge
@@ -92,6 +109,7 @@ catkin_package(
     image_transport
     message_runtime
     roscpp
+    roslib
     rospy
     sensor_msgs
     std_msgs
@@ -115,7 +133,51 @@ add_dependencies(sar_vision_to_xd_bridge
 target_compile_features(sar_vision_to_xd_bridge PRIVATE cxx_std_14)
 target_link_libraries(sar_vision_to_xd_bridge ${catkin_LIBRARIES})
 
-install(TARGETS sar_vision_to_xd_bridge
+add_executable(sar_yolo_shared_model_server_cpp
+  src/shared_inference_server_trt_node.cpp
+)
+add_dependencies(sar_yolo_shared_model_server_cpp
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+target_compile_features(sar_yolo_shared_model_server_cpp PRIVATE cxx_std_14)
+target_include_directories(sar_yolo_shared_model_server_cpp PRIVATE
+  ${OpenCV_INCLUDE_DIRS}
+  ${CUDA_INCLUDE_DIRS}
+  ${TENSORRT_INCLUDE_DIR}
+  ${YAML_CPP_INCLUDE_DIRS}
+)
+target_link_libraries(sar_yolo_shared_model_server_cpp
+  ${roscpp_LIBRARIES}
+  ${roslib_LIBRARIES}
+  ${OpenCV_LIBS}
+  ${CUDA_CUDART_LIBRARY}
+  ${TENSORRT_NVINFER_LIBRARY}
+  ${TENSORRT_PLUGIN_LIBRARY}
+  yaml-cpp
+  OpenSSL::Crypto
+)
+
+add_executable(sar_yolo_smart_tracker_cpp
+  src/smart_tracker_fusion_cpp_node.cpp
+)
+add_dependencies(sar_yolo_smart_tracker_cpp
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+target_compile_features(sar_yolo_smart_tracker_cpp PRIVATE cxx_std_14)
+target_include_directories(sar_yolo_smart_tracker_cpp PRIVATE
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(sar_yolo_smart_tracker_cpp
+  ${roscpp_LIBRARIES}
+  ${tf2_ros_LIBRARIES}
+  ${OpenCV_LIBS}
+  yaml-cpp
+)
+
+install(TARGETS sar_vision_to_xd_bridge sar_yolo_shared_model_server_cpp
+                sar_yolo_smart_tracker_cpp
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 install(DIRECTORY config launch models docs web

@@ -1,12 +1,13 @@
-# PixEagle / train7.pt 四模式融合使用指南
+# PixEagle / train7.pt 三模式融合使用指南
 
 更新：2026-10-09。基线 Gitee feature/xd-uav-construction 提交 `3db09b001e903f70ca56815b325dba18d40fb756`。
 
-方案定位更新：用户于2026-10-09选定本目录SAR与同级XD为后续正式方案。文件名、工作区路径保留历史experiment命名；
-不改变原有默认模式，不代表UE/实机上线验收已经完成。完整正式部署合同见下方网页适配指南。
+方案定位更新：用户于2026-10-09选定本目录SAR与同级XD为后续方案；2026-11-19按当前需求移除了独立
+`smart_tracker` 跟踪模式，并把默认模式设为 FusionTracker。文件名、工作区路径保留历史experiment命名；
+这不代表UE/实机上线验收已经完成。完整部署合同见下方网页适配指南。
 
 新网页/跨主机接入见 [网页接口适配指南](web_frontend_integration_guide.md)与
-[接口绑定 JSON](web_frontend_interface_manifest.json)；该文档描述本实验实际四模式接口，不是旧 perception/* 网页。
+[接口绑定 JSON](web_frontend_interface_manifest.json)；该文档描述当前三种运行模式，不是旧 perception/* 网页。
 
 ## 修改范围
 
@@ -14,18 +15,17 @@
 旧 `/home/promise/mrs_test/src` 下两包未改。旧实验备份在 `/home/promise/mrs_test/sar_fusion_backup_20261009.CpqpkW`，含旧 build/devel。
 没有推送 Gitee，没有保存密钥。本次没有搬迁源码；不要同时将两份同名包加入同一catkin src，避免重复包。
 
-## 四种模式
+## 当前三种运行模式
 
 | 服务值 | 启动参数 | 算法 |
 |---|---|---|
-| smart_tracker | SmartTracker | 原 PixEagle YOLO + BoT-SORT |
 | feature_tracker | FeatureTracker | 原人工 ROI + KCF/CSRT/MIL/模板兼容路径 |
 | color_tracker | ColorTracker | 原 ROI 颜色学习或配置颜色全图搜索 |
 | fusion_tracker | FusionTracker | 全图 YOLO + 选中单目标 KCF/CSRT + 运动、类别父组及弱外观门控 |
 
-默认由原 YAML 的 Default_Tracker 决定，当前 SmartTracker；tracking_mode 留空不覆盖配置。
+独立 `smart_tracker` 跟踪模式已移除，默认运行 FusionTracker。YOLO 模型、类别过滤和 BoT-SORT 后端配置仍在 `SmartTracker:` YAML 命名空间中供融合检测链使用；该名称是历史参数空间，不代表独立运行模式。
 融合未选目标时输出全图 YOLO；选择后该目标只输出一个最终融合框，其他目标保持 YOLO 输出。
-不是全目标 KCF 池，也不是跨相机身份层。原三模式未被替换。
+不是全目标 KCF 池，也不是跨相机身份层。
 
 ## 模型与环境
 

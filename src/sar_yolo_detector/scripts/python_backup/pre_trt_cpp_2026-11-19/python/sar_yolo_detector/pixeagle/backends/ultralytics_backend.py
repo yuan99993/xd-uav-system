@@ -1,0 +1,620 @@
+# Derived from PixEagle under Apache-2.0; see THIRD_PARTY_NOTICES.md.
+"""Ultralytics backend adapted to sar_yolo_detector's model-integrity contract."""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import math
+import os
+import stat
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from .detection_backend import DetectionBackend, DevicePreference
+from ..detection_adapter import NormalizedDetection
+from ..geometry_utils import obb_xywhr_to_aabb, validate_obb_xywhr
+from .tensorrt_compat import import_tensorrt
+
+# Runtime dependency installation is inappropriate on an aircraft or other
+# managed ROS host. Missing packages must cause an explicit startup/inference
+# error and be provisioned from requirements-smart-tracker.txt instead.
+os.environ.setdefault("YOLO_AUTOINSTALL", "false")
+
+try:
+    from ultralytics import YOLO
+
+    ULTRALYTICS_AVAILABLE = True
+    ULTRALYTICS_IMPORT_ERROR = ""
+except Exception as exc:  # Optional runtime dependency.
+    YOLO = None
+    ULTRALYTICS_AVAILABLE = False
+    ULTRALYTICS_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+
+
+logger = logging.getLogger(__name__)
+DEFAULT_TRACKER_TYPE = "botsort"
+DEFAULT_MAX_MODEL_BYTES = 512 * 1024 * 1024
+
+
+class UltralyticsBackend(DetectionBackend):
+    """YOLO detect/OBB backend with CPU/CUDA fallback and SHA-256 verification."""
+
+    def __init__(self, config: dict, *, models_root: Optional[Path] = None):
+        self._config = dict(config or {})
+        self._configure_torch_threads()
+        configured_root = self._config.get("SMART_TRACKER_MODELS_ROOT")
+        self._models_root = Path(
+            models_root or configured_root or Path.cwd()
+        ).expanduser().resolve()
+        self._max_model_bytes = int(
+            self._config.get("SMART_TRACKER_MODEL_MAX_BYTES", DEFAULT_MAX_MODEL_BYTES)
+        )
+        if not 0 < self._max_model_bytes <= DEFAULT_MAX_MODEL_BYTES:
+            raise ValueError("SMART_TRACKER_MODEL_MAX_BYTES is outside 1..512 MiB")
+        self._require_sha256 = bool(
+            self._config.get("SMART_TRACKER_REQUIRE_MODEL_SHA256", True)
+        )
+        self._model = None
+        self._runtime_info: Dict[str, Any] = {}
+        self._last_stage_timings: Dict[str, float] = {
+            "preprocess_ms": 0.0,
+            "model_forward_ms": 0.0,
+            "postprocess_ms": 0.0,
+            "normalize_ms": 0.0,
+        }
+        raw_allowed_class_ids = self._config.get("SMART_TRACKER_ALLOWED_CLASS_IDS")
+        self._allowed_class_ids = (
+            sorted({int(class_id) for class_id in raw_allowed_class_ids})
+            if raw_allowed_class_ids is not None
+            else None
+        )
+        self._agnostic_nms = bool(
+            self._config.get("SMART_TRACKER_AGNOSTIC_NMS", False)
+        )
+        configured_size = int(self._config.get(
+            "SMART_TRACKER_INFERENCE_IMAGE_SIZE", 640))
+        if (configured_size < 320 or configured_size > 1536 or
+                configured_size % 32 != 0):
+            raise ValueError(
+                "SMART_TRACKER_INFERENCE_IMAGE_SIZE must be a multiple of 32 "
+                "within 320..1536")
+        self._inference_image_size = configured_size
+        self.tracker_type_str, self.use_custom_reid = self._select_tracker_type()
+        self._tracker_config_path = str(self._config.get("SMART_TRACKER_TRACKER_CONFIG_PATH", "") or "")
+        if self._tracker_config_path:
+            import yaml
+            path = Path(self._tracker_config_path).expanduser()
+            path = path if path.is_absolute() else self._models_root / path
+            if path.suffix not in (".yaml", ".yml") or not path.is_file() or path.stat().st_size > 65536:
+                raise ValueError("Invalid BoT-SORT tracker config path/size")
+            with path.open(encoding="utf-8") as stream:
+                settings = yaml.safe_load(stream)
+            if not isinstance(settings, dict) or settings.get("tracker_type") != self.tracker_type_str:
+                raise ValueError("Tracker config type does not match TRACKER_TYPE")
+            low, high, new = (float(settings[key]) for key in ("track_low_thresh", "track_high_thresh", "new_track_thresh"))
+            if not 0 <= low <= high <= 1 or not 0 <= new <= 1:
+                raise ValueError("Invalid tracker confidence thresholds")
+            self._tracker_config_path = str(path.resolve())
+        self.tracker_args = {"persist": True, "verbose": False}
+
+    def _configure_torch_threads(self) -> None:
+        """Bound PyTorch CPU pools before loading or running the model."""
+        try:
+            import torch
+        except Exception:
+            # Model loading reports the actionable dependency error later.
+            return
+
+        intraop = max(1, min(4, int(
+            self._config.get("SMART_TRACKER_TORCH_NUM_THREADS", 1)
+        )))
+        interop = max(1, min(4, int(
+            self._config.get("SMART_TRACKER_TORCH_INTEROP_THREADS", 1)
+        )))
+        torch.set_num_threads(intraop)
+        try:
+            # PyTorch permits this only before inter-op work starts. A backend
+            # recreated in the same process may find the limit already fixed.
+            torch.set_num_interop_threads(interop)
+        except RuntimeError:
+            pass
+
+    @property
+    def is_available(self) -> bool:
+        return ULTRALYTICS_AVAILABLE
+
+    @property
+    def backend_name(self) -> str:
+        return "ultralytics"
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    @property
+    def last_stage_timings(self) -> Dict[str, float]:
+        """Most recent Ultralytics stage timings, when Results.speed is available."""
+        return dict(self._last_stage_timings)
+
+    @staticmethod
+    def _result_speed(results: Any) -> Dict[str, float]:
+        if not isinstance(results, (list, tuple)) or not results:
+            return {}
+        speed = getattr(results[0], "speed", None)
+        if not isinstance(speed, dict):
+            return {}
+        values = {}
+        for source, target in (("preprocess", "preprocess_ms"),
+                               ("inference", "model_forward_ms"),
+                               ("postprocess", "postprocess_ms")):
+            try:
+                value = float(speed.get(source, 0.0))
+            except (TypeError, ValueError):
+                value = 0.0
+            values[target] = value if math.isfinite(value) and value >= 0.0 else 0.0
+        return values
+
+    def _select_tracker_type(self) -> Tuple[str, bool]:
+        requested = str(
+            self._config.get("TRACKER_TYPE", DEFAULT_TRACKER_TYPE)
+        ).strip().lower()
+        if requested == "bytetrack":
+            return "bytetrack", False
+        if requested == "custom_reid":
+            return "bytetrack", True
+        if requested in {"detection_only", "none"}:
+            return "bytetrack", False
+        if requested != "botsort":
+            logger.warning("Unknown tracker type %s; using botsort", requested)
+        return "botsort", False
+
+    @staticmethod
+    def _device_name(device: Any) -> str:
+        raw = device.value if isinstance(device, DevicePreference) else str(device)
+        normalized = str(raw or "auto").strip().lower()
+        if normalized in {"gpu", "cuda"}:
+            return "cuda"
+        if normalized == "cpu":
+            return "cpu"
+        return "auto"
+
+    @staticmethod
+    def _cuda_available() -> bool:
+        try:
+            import torch
+
+            return bool(torch.cuda.is_available())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _clear_cuda_cache() -> None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _resolve_model_path(self, model_path: str) -> Path:
+        candidate = Path(str(model_path or "").replace("\\", "/")).expanduser()
+        if not candidate.is_absolute():
+            direct = self._models_root / candidate
+            candidate = direct if direct.exists() else self._models_root / candidate.name
+        if candidate.is_symlink():
+            raise ValueError("SmartTracker model must not be a symbolic link")
+        resolved = candidate.resolve(strict=True)
+        if not (resolved.is_file() or resolved.is_dir()):
+            raise ValueError(f"Unsupported model artifact: {resolved}")
+        return resolved
+
+    def _expected_sha256(self, path: Path) -> Optional[str]:
+        mapping = self._config.get("SMART_TRACKER_MODEL_SHA256_BY_NAME", {})
+        value = mapping.get(path.name) if isinstance(mapping, dict) else None
+        if not value:
+            configured_path = str(
+                self._config.get("SMART_TRACKER_GPU_MODEL_PATH", "")
+            )
+            if Path(configured_path).name == path.name:
+                value = self._config.get("SMART_TRACKER_MODEL_SHA256")
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            if self._require_sha256 and path.is_file():
+                raise ValueError(
+                    f"No trusted SHA-256 configured for executable model {path.name}"
+                )
+            return None
+        if len(normalized) != 64 or any(c not in "0123456789abcdef" for c in normalized):
+            raise ValueError("Configured model SHA-256 must contain 64 hexadecimal characters")
+        return normalized
+
+    def authorize_model_digest(self, model_path: str, sha256: str) -> None:
+        """Bind a publisher/operator supplied digest to one model filename."""
+        normalized = str(sha256 or "").strip().lower()
+        if len(normalized) != 64 or any(c not in "0123456789abcdef" for c in normalized):
+            raise ValueError("Model SHA-256 must contain 64 hexadecimal characters")
+        mapping = self._config.setdefault("SMART_TRACKER_MODEL_SHA256_BY_NAME", {})
+        if not isinstance(mapping, dict):
+            raise ValueError("SMART_TRACKER_MODEL_SHA256_BY_NAME must be a mapping")
+        mapping[Path(str(model_path)).name] = normalized
+
+    def _verify_file(self, path: Path) -> Dict[str, Any]:
+        expected = self._expected_sha256(path)
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(str(path), flags)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError("SmartTracker model artifact must be a regular file")
+            if before.st_size <= 0 or before.st_size > self._max_model_bytes:
+                raise ValueError("SmartTracker model size is outside the configured limit")
+            if stat.S_IMODE(before.st_mode) & 0o022:
+                raise ValueError("SmartTracker model must not be group/world writable")
+            digest = hashlib.sha256()
+            while True:
+                block = os.read(descriptor, 1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+            after = os.fstat(descriptor)
+            identity_before = (
+                before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+            )
+            identity_after = (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+            )
+            if identity_before != identity_after:
+                raise ValueError("SmartTracker model changed while it was being verified")
+            observed = digest.hexdigest()
+            if expected and observed != expected:
+                raise ValueError(
+                    f"SmartTracker model SHA-256 mismatch for {path.name}: {observed}"
+                )
+            return {
+                "verified": bool(expected),
+                "sha256": observed,
+                "expected_sha256": expected,
+                "size_bytes": before.st_size,
+            }
+        finally:
+            os.close(descriptor)
+
+    def _load_candidate(self, path: Path, target_device: str):
+        if not ULTRALYTICS_AVAILABLE:
+            raise RuntimeError(
+                "Ultralytics is unavailable: " + ULTRALYTICS_IMPORT_ERROR
+            )
+        suffix = path.suffix.lower()
+        if path.is_file() and suffix not in {".pt", ".engine"}:
+            raise ValueError("Direct SmartTracker backend accepts .pt/.engine or NCNN directories")
+        if suffix == ".engine":
+            if target_device != "cuda" or not self._cuda_available():
+                raise RuntimeError("TensorRT .engine artifacts require CUDA")
+            try:
+                import_tensorrt()
+            except Exception as exc:
+                raise RuntimeError(
+                    "TensorRT Python bindings are unavailable or incompatible: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+        provenance = self._verify_file(path) if path.is_file() else {
+            "verified": False,
+            "sha256": None,
+            "size_bytes": None,
+        }
+        model = YOLO(str(path))
+        if target_device == "cuda" and suffix != ".engine":
+            if not self._cuda_available():
+                raise RuntimeError("CUDA requested but torch.cuda.is_available() is false")
+            model.to("cuda")
+        return model, provenance
+
+    def load_model(
+        self,
+        model_path: str,
+        device: DevicePreference = DevicePreference.AUTO,
+        fallback_enabled: bool = True,
+        context: str = "startup",
+    ) -> Dict[str, Any]:
+        requested = self._device_name(device)
+        primary_device = (
+            "cuda" if requested == "cuda" or (requested == "auto" and self._cuda_available())
+            else "cpu"
+        )
+        attempts: List[Dict[str, Any]] = []
+        candidates: List[Tuple[str, str]] = [(model_path, primary_device)]
+        if primary_device == "cuda" and fallback_enabled:
+            cpu_path = str(
+                self._config.get("SMART_TRACKER_CPU_MODEL_PATH", model_path)
+            )
+            candidates.append((cpu_path, "cpu"))
+
+        loaded = None
+        selected_path: Optional[Path] = None
+        selected_device = primary_device
+        provenance: Dict[str, Any] = {}
+        for candidate_name, candidate_device in candidates:
+            try:
+                path = self._resolve_model_path(candidate_name)
+                loaded, provenance = self._load_candidate(path, candidate_device)
+                selected_path = path
+                selected_device = candidate_device
+                attempts.append({"path": str(path), "device": candidate_device, "success": True})
+                break
+            except Exception as exc:
+                attempts.append({
+                    "path": str(candidate_name),
+                    "device": candidate_device,
+                    "success": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+        if loaded is None or selected_path is None:
+            errors = "; ".join(a.get("error", "unknown") for a in attempts)
+            raise RuntimeError(f"No SmartTracker model candidate could be loaded: {errors}")
+
+        previous = self._model
+        self._model = loaded
+        previous = None
+        self._clear_cuda_cache()
+        self._runtime_info = {
+            "requested_device": requested,
+            "effective_device": selected_device,
+            "backend": ("tensorrt_fp16" if selected_path.suffix.lower() == ".engine"
+                        else ("cuda_torch" if selected_device == "cuda" else "cpu_torch")),
+            "model_format": ("tensorrt_engine" if selected_path.suffix.lower() == ".engine"
+                              else "ultralytics_pt"),
+            "model_path": str(selected_path),
+            "model_name": selected_path.name,
+            "fallback_enabled": bool(fallback_enabled),
+            "fallback_occurred": selected_device != primary_device,
+            "fallback_reason": attempts[0].get("error") if len(attempts) > 1 else None,
+            "model_provenance": provenance,
+            "artifact_sha256": provenance.get("sha256"),
+            "context": context,
+            "attempts": attempts,
+        }
+        return dict(self._runtime_info)
+
+    def unload_model(self) -> None:
+        self._model = None
+        self._runtime_info = {}
+        self._clear_cuda_cache()
+
+    close = unload_model
+
+    def switch_model(
+        self,
+        new_model_path: str,
+        device: DevicePreference = DevicePreference.AUTO,
+        fallback_enabled: bool = True,
+    ) -> Dict[str, Any]:
+        previous_model = self._model
+        previous_info = dict(self._runtime_info)
+        try:
+            return self.load_model(
+                new_model_path, device, fallback_enabled, context="switch"
+            )
+        except Exception:
+            self._model = previous_model
+            self._runtime_info = previous_info
+            raise
+
+    def _resolve_image_size(self, image_size: Optional[int]) -> int:
+        if image_size is None:
+            return self._inference_image_size
+        requested = int(image_size)
+        if requested < 320 or requested > 1536 or requested % 32 != 0:
+            raise ValueError("inference image_size must be a multiple of 32 within 320..1536")
+        return requested
+
+    def _inference_args(self, image_size: Optional[int]) -> Dict[str, Any]:
+        inference_args: Dict[str, Any] = {"imgsz": self._resolve_image_size(image_size)}
+        if self._allowed_class_ids is not None:
+            inference_args["classes"] = self._allowed_class_ids
+        if self._agnostic_nms:
+            inference_args["agnostic_nms"] = True
+        return inference_args
+
+    def detect(
+        self, frame, conf: float = 0.3, iou: float = 0.3, max_det: int = 20,
+        image_size: Optional[int] = None,
+    ) -> Tuple[str, List[NormalizedDetection]]:
+        if self._model is None:
+            raise RuntimeError("SmartTracker model is not loaded")
+        results = self._model.predict(
+            frame,
+            conf=conf,
+            iou=iou,
+            max_det=max_det,
+            verbose=False,
+            **self._inference_args(image_size),
+        )
+        speed = self._result_speed(results)
+        normalize_started = time.perf_counter()
+        normalized = self._normalize_results(results)
+        self._last_stage_timings = dict(
+            speed,
+            normalize_ms=(time.perf_counter() - normalize_started) * 1000.0,
+        )
+        return normalized
+
+    def detect_many(
+        self, frames: List[Any], conf: float = 0.3, iou: float = 0.3,
+        max_det: int = 20, image_size: Optional[int] = None,
+    ) -> List[Tuple[str, List[NormalizedDetection]]]:
+        """Run one Ultralytics call for same-shaped camera frames."""
+        if not frames:
+            return []
+        if len(frames) == 1:
+            return [self.detect(frames[0], conf, iou, max_det, image_size)]
+        if self._model is None:
+            raise RuntimeError("SmartTracker model is not loaded")
+        results = list(self._model.predict(
+            frames, conf=conf, iou=iou, max_det=max_det, verbose=False,
+            **self._inference_args(image_size)))
+        if len(results) != len(frames):
+            raise RuntimeError("Ultralytics returned an incomplete inference batch")
+        stage_samples = [self._result_speed([result]) for result in results]
+        speed = {}
+        for key in ("preprocess_ms", "model_forward_ms", "postprocess_ms"):
+            values = [sample[key] for sample in stage_samples if key in sample]
+            if values:
+                speed[key] = sum(values) / len(values)
+        normalize_started = time.perf_counter()
+        normalized = [self._normalize_results([result]) for result in results]
+        speed["normalize_ms"] = (time.perf_counter() - normalize_started) * 1000.0
+        self._last_stage_timings = speed
+        return normalized
+
+    def detect_and_track(
+        self,
+        frame,
+        conf: float = 0.3,
+        iou: float = 0.3,
+        max_det: int = 20,
+        tracker_type: str = "bytetrack",
+        tracker_args: Optional[Dict] = None,
+    ) -> Tuple[str, List[NormalizedDetection]]:
+        if self._model is None:
+            raise RuntimeError("SmartTracker model is not loaded")
+        args = dict(tracker_args or self.tracker_args)
+        if self._allowed_class_ids is not None:
+            args["classes"] = self._allowed_class_ids
+        if self._agnostic_nms:
+            args["agnostic_nms"] = True
+        results = self._model.track(
+            frame,
+            conf=conf,
+            iou=iou,
+            max_det=max_det,
+            tracker=self._tracker_config_path or f"{tracker_type}.yaml",
+            **args,
+        )
+        return self._normalize_results(results)
+
+    def get_model_labels(self) -> Dict[int, str]:
+        """Actual checkpoint label contract."""
+        return dict(getattr(self._model, "names", {}) or {}) if self._model else {}
+
+    def reset_tracking(self):
+        """Clear BoT-SORT/GMC history without changing model weights or device."""
+        predictor = getattr(self._model, "predictor", None)
+        for tracker in getattr(predictor, "trackers", ()):
+            tracker.reset()
+
+    def get_model_task(self) -> str:
+        return str(getattr(self._model, "task", "detect")) if self._model else "detect"
+
+    def supports_tracking(self) -> bool:
+        return True
+
+    def supports_obb(self) -> bool:
+        return True
+
+    def get_device_info(self) -> Dict[str, Any]:
+        return dict(self._runtime_info)
+
+    @staticmethod
+    def _to_list(value: Any) -> List[Any]:
+        if value is None:
+            return []
+        try:
+            if hasattr(value, "detach"):
+                value = value.detach()
+            if hasattr(value, "cpu"):
+                value = value.cpu()
+            if hasattr(value, "numpy"):
+                value = value.numpy()
+            if hasattr(value, "tolist"):
+                return value.tolist()
+        except Exception:
+            pass
+        return value if isinstance(value, list) else []
+
+    @classmethod
+    def _parse_boxes(cls, result: Any) -> List[NormalizedDetection]:
+        boxes = getattr(result, "boxes", None)
+        if boxes is None:
+            return []
+        xyxy = cls._to_list(getattr(boxes, "xyxy", None))
+        confs = cls._to_list(getattr(boxes, "conf", None))
+        classes = cls._to_list(getattr(boxes, "cls", None))
+        ids = cls._to_list(getattr(boxes, "id", None))
+        output = []
+        for index in range(min(len(xyxy), len(confs), len(classes))):
+            values = tuple(float(v) for v in xyxy[index][:4])
+            if len(values) != 4 or not all(math.isfinite(v) for v in values):
+                continue
+            x1, y1, x2, y2 = values
+            aabb = (int(x1), int(y1), int(x2), int(y2))
+            stable = index < len(ids) and ids[index] is not None
+            output.append(NormalizedDetection(
+                track_id=int(ids[index]) if stable else -(index + 1),
+                class_id=int(classes[index]),
+                confidence=float(confs[index]),
+                aabb_xyxy=aabb,
+                center_xy=((aabb[0] + aabb[2]) // 2, (aabb[1] + aabb[3]) // 2),
+                geometry_type="aabb",
+                track_id_is_stable=stable,
+            ))
+        return output
+
+    @classmethod
+    def _parse_obb(cls, result: Any) -> List[NormalizedDetection]:
+        obb = getattr(result, "obb", None)
+        if obb is None:
+            return []
+        xywhr = cls._to_list(getattr(obb, "xywhr", None))
+        confs = cls._to_list(getattr(obb, "conf", None))
+        classes = cls._to_list(getattr(obb, "cls", None))
+        ids = cls._to_list(getattr(obb, "id", None))
+        polygons = cls._to_list(getattr(obb, "xyxyxyxy", None))
+        output = []
+        for index in range(min(len(xywhr), len(confs), len(classes))):
+            values = tuple(float(v) for v in xywhr[index][:5])
+            if not validate_obb_xywhr(values):
+                continue
+            try:
+                aabb = obb_xywhr_to_aabb(values)
+            except Exception:
+                continue
+            polygon = None
+            if index < len(polygons) and len(polygons[index]) == 4:
+                polygon = [(float(p[0]), float(p[1])) for p in polygons[index]]
+            stable = index < len(ids) and ids[index] is not None
+            output.append(NormalizedDetection(
+                track_id=int(ids[index]) if stable else -(index + 1),
+                class_id=int(classes[index]),
+                confidence=float(confs[index]),
+                aabb_xyxy=aabb,
+                center_xy=((aabb[0] + aabb[2]) // 2, (aabb[1] + aabb[3]) // 2),
+                geometry_type="obb",
+                obb_xywhr=values,
+                polygon_xy=polygon,
+                rotation_deg=math.degrees(values[4]),
+                track_id_is_stable=stable,
+            ))
+        return output
+
+    @classmethod
+    def _normalize_results(cls, results: Any) -> Tuple[str, List[NormalizedDetection]]:
+        if not results:
+            return "none", []
+        result = results[0]
+        obb = getattr(result, "obb", None)
+        boxes = getattr(result, "boxes", None)
+        has_obb = obb is not None and len(getattr(obb, "data", [])) > 0
+        has_boxes = boxes is not None and len(getattr(boxes, "data", [])) > 0
+        if has_obb:
+            return "obb", cls._parse_obb(result)
+        if has_boxes:
+            return "detect", cls._parse_boxes(result)
+        return "none", []
+
+
+__all__ = ["UltralyticsBackend", "ULTRALYTICS_AVAILABLE"]

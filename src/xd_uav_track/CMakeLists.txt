@@ -137,7 +137,6 @@ catkin_install_python(PROGRAMS
   scripts/validate_tracking_config.py
   scripts/verify_fixedwing_sitl.py
   scripts/tracking_overlay_node.py
-  scripts/tracking_phase_overlay_node.py
   scripts/combined_tracking_view_node.py
   scripts/moving_uav_search_driver.py
   scripts/gimbal_tracking_metrics.py
