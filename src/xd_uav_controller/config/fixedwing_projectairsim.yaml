@@ -66,6 +66,10 @@ fixedwing:
     maximum_airspeed: 45.0
     trim_throttle: 0.25
     airspeed_throttle_gain: 0.10
+    # 空速误差积分增益，单位为油门/(m/s·s)，用于消除稳态空速误差。
+    airspeed_integral_gain: 0.02
+    # 积分项对归一化油门的最大绝对修正量，防止积分过量。
+    airspeed_integral_throttle_limit: 0.25
     # 爬升时同步补油以维持空速。
     climb_rate_throttle_gain: 0.04
     # 补偿量为gain*(1/cos(bank)-1)，在空速实际下降前随目标滚转补油。

@@ -281,7 +281,7 @@ class Follower {
   void publishHold();
   void publishCenter(const ros::Time& now, const StateSnapshot& snapshot);
   void refreshMembership(const ros::Time& now, const StateSnapshot& snapshot);
-  void resumeDegradedAcquisition();
+  void restartAcquisitionForMembershipChange(const std::string& reason);
   bool fresh(const std_msgs::Header& header, bool has_message,
              const ros::Time& received, const ros::Time& now) const;
   std::optional<std::string> readiness(
@@ -351,7 +351,7 @@ class Follower {
   void setAcquireStage(const std::string& stage);
   AcquisitionPlan buildAcquisitionPlan(const ros::Time& now,
                                        const StateSnapshot& snapshot) const;
-  void planAcquisition(const ros::Time& now,
+  bool planAcquisition(const ros::Time& now,
                        const StateSnapshot& snapshot);
   mavros_msgs::PositionTarget fixedwingWaitTarget(
       const ros::Time& now, const StateSnapshot& snapshot,
@@ -430,11 +430,13 @@ class Follower {
   std::string reason_{"waiting_for_start"};
   std::optional<std::string> acquire_stage_;
   std::optional<ros::Time> acquire_started_;
+  std::vector<std::string> acquire_members_;
   std::vector<Vec3> acquire_slots_;
   std::vector<double> acquire_tiers_;
   std::vector<std::array<double, 2>> acquire_initial_xy_;
   std::optional<double> acquire_heading_;
   std::optional<double> acquire_altitude_;
+  bool acquire_force_capture_{false};
   std::optional<double> consensus_heading_;
   std::optional<ros::Time> consensus_heading_stamp_;
   ros::Publisher reference_pub_;

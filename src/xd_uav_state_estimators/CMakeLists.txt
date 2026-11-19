@@ -41,6 +41,8 @@ generate_messages(
 )
 
 catkin_package(
+  INCLUDE_DIRS include
+  LIBRARIES odometry_adapter_runtime
   CATKIN_DEPENDS
     diagnostic_msgs
     geometry_msgs
@@ -57,8 +59,22 @@ catkin_package(
 )
 
 include_directories(
+  include
   ${catkin_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
+)
+
+add_library(odometry_adapter_runtime STATIC
+  src/odometry_adapter.cpp
+)
+add_dependencies(odometry_adapter_runtime
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+)
+target_compile_features(odometry_adapter_runtime PRIVATE cxx_std_17)
+target_link_libraries(odometry_adapter_runtime
+  Eigen3::Eigen
+  ${catkin_LIBRARIES}
 )
 
 add_executable(multi_source_estimator_node
@@ -70,6 +86,7 @@ add_dependencies(multi_source_estimator_node
 )
 target_compile_features(multi_source_estimator_node PRIVATE cxx_std_17)
 target_link_libraries(multi_source_estimator_node
+  odometry_adapter_runtime
   Eigen3::Eigen
   ${catkin_LIBRARIES}
 )
@@ -83,6 +100,7 @@ add_dependencies(odometry_adapter_manager_node
 )
 target_compile_features(odometry_adapter_manager_node PRIVATE cxx_std_17)
 target_link_libraries(odometry_adapter_manager_node
+  odometry_adapter_runtime
   ${catkin_LIBRARIES}
 )
 
@@ -92,9 +110,19 @@ if(CATKIN_ENABLE_TESTING)
 endif()
 
 install(TARGETS
+  odometry_adapter_runtime
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+)
+
+install(TARGETS
   multi_source_estimator_node
   odometry_adapter_manager_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(DIRECTORY include/${PROJECT_NAME}/
+  DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
 
 install(DIRECTORY config launch

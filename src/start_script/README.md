@@ -45,9 +45,9 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 
 `camera_stream_receiver` 是通用接收器，前视和下视都使用同一份启动定义；管理器按传感器类型给每个实例传入相机流名称和输出话题。默认接收 `DroneN/FrontCamera` 或 `DroneN/DownCamera`，分别发布到 `/uavN/front_camera/image_raw`、`/uavN/front_camera/camera_info` 和 `/uavN/down_camera/image_raw`、`/uavN/down_camera/camera_info`。仿真相机流名称不同时，可在对应 sensor 的 `params` 中设置 `camera_stream_name`。接收器会在视频服务暂未就绪时重试订阅。SAR YOLO 和 detect 使用对应飞机的本地相机话题；track 叠加沿用 `xd_uav_track/config/track.yaml` 的现有设置。
 
-## 固定启动项与视频端口
+## 相机相关启动项与视频端口
 
-每架飞机无论 JSON 如何配置，都会启动 `xd_uav_track/track.launch` 和 `src/bridge/h264_nal_multicast_sender.py`。发送器使用当前代码的跟踪输出话题 `/uavN/track/phase_annotated`；端口根据飞机编号自动分配：
+只有当飞机的 `sensors` 中声明 `front_gimbal_camera` 时，管理器才会自动启动 `xd_uav_track/track.launch` 和 `src/bridge/h264_nal_multicast_sender.py`。下视相机目前只启动接收器，不会启动 track 叠加或 H.264 回传。每架飞机的 track 和发送器各启动一份。发送器使用跟踪输出话题 `/uavN/track/phase_annotated`；端口根据飞机编号自动分配：
 
 | 飞机 | UDP 端口 | ROS 图像话题 |
 | --- | ---: | --- |

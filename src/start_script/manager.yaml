@@ -19,11 +19,9 @@ network:
   auth_token_env: XD_UAV_START_TOKEN
   require_auth: true
 
-# These run for every aircraft in every snapshot. The video sender subscribes
-# to the tracking overlay topic and uses UDP port 32796 + the uav number.
-required_vehicle_launches:
-  - track
-  - h264_sender
+# Track and H.264 sending are started only when this vehicle declares its
+# front_gimbal_camera sensor. The down camera is not sent back yet.
+required_vehicle_launches: []
 
 # One formation manager owns the whole fleet and uses the fixed config in
 # formation.launch. Start it once per simulation session.
@@ -96,10 +94,13 @@ aircraft_types:
           - "UAV_NAME:={name}"
           - "controller_config:={controller_config}"
 
-# Optional per-aircraft launches. Only entries selected in that aircraft's
-# JSON launches list are started; merely declaring a sensor starts nothing.
+# Optional per-aircraft launch definitions. Entries can be selected explicitly
+# in JSON launches or started automatically by sensor type below.
 vehicle_launches:
   track:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera]
+    once_per_vehicle: true
     argv:
       - roslaunch
       - xd_uav_track
@@ -107,6 +108,9 @@ vehicle_launches:
       - "UAV_NAME:={name}"
 
   h264_sender:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera]
+    once_per_vehicle: true
     argv:
       - python3
       - "{h264_sender_script}"
@@ -230,6 +234,8 @@ vehicle_launches:
 automatic_sensor_launches:
   front_gimbal_camera:
     - id: camera_stream_receiver
+    - id: track
+    - id: h264_sender
     - id: gimbal_attitude_bridge
     - id: gimbal_control
     - id: target_geolocation

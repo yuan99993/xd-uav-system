@@ -41,6 +41,7 @@
 #include <xd_uav_state_estimators/VelocityXY.h>
 #include <xd_uav_state_estimators/VelocityZ.h>
 #include <xd_uav_state_estimators/YawRate.h>
+#include <xd_uav_state_estimators/odometry_adapter.hpp>
 
 namespace {
 
@@ -570,11 +571,12 @@ struct CorrectionSample {
 class MultiSourceEstimatorNode {
  public:
   MultiSourceEstimatorNode()
-      : private_nh_("~"), tf_listener_(tf_buffer_) {
+      : private_nh_("~") {
     loadParameters();
     main_state_ = std::make_unique<MainRuntime>(
         axis_parameters_, yaw_process_noise_, yaw_rate_process_noise_);
     loadSources();
+    loadOdometryAdapters();
 
     imu_subscriber_ =
         nh_.subscribe("imu", 100, &MultiSourceEstimatorNode::imuCallback, this);
@@ -830,6 +832,27 @@ class MultiSourceEstimatorNode {
       const std::string prefix = "sources/" + source->config.name + "/";
       loadCorrections(source.get(), prefix);
       createSourceFramePublishers(source.get());
+    }
+  }
+
+  void loadOdometryAdapters() {
+    bool inline_odometry_adapters = false;
+    private_nh_.param("inline_odometry_adapters",
+                      inline_odometry_adapters, false);
+    if (!inline_odometry_adapters) {
+      return;
+    }
+
+    XmlRpc::XmlRpcValue adapter_configs;
+    if (!private_nh_.getParam("odometry_adapters", adapter_configs)) {
+      throw std::runtime_error(
+          "inline_odometry_adapters启用但未找到odometry_adapters配置");
+    }
+    odometry_adapters_ =
+        std::make_unique<xd_uav_state_estimators::OdometryAdapterCollection>(
+            nh_, &tf_buffer_, uav_name_, adapter_configs);
+    if (odometry_adapters_->requiresTransform() && !tf_listener_) {
+      tf_listener_ = std::make_unique<tf2_ros::TransformListener>(tf_buffer_);
     }
   }
 
@@ -2800,6 +2823,13 @@ class MultiSourceEstimatorNode {
   void publishFrameOutputs(const nav_msgs::Odometry& odometry,
                            std::vector<FramePublisher>* publishers) {
     for (FramePublisher& publisher : *publishers) {
+      // Transforming an odometry message requires a TF lookup and covariance
+      // rotation. Avoid doing that work while no node consumes this optional
+      // frame output; getNumSubscribers() is checked every cycle so a later
+      // subscriber receives the stream without restarting the estimator.
+      if (publisher.publisher.getNumSubscribers() == 0) {
+        continue;
+      }
       nav_msgs::Odometry transformed;
       if (transformOdometry(odometry, publisher.target_frame,
                             &transformed)) {
@@ -2808,8 +2838,39 @@ class MultiSourceEstimatorNode {
     }
   }
 
+  bool ensureFrameOutputTfListener() {
+    if (tf_listener_) {
+      return true;
+    }
+    const auto has_subscribers = [](const auto& publishers) {
+      return std::any_of(
+          publishers.begin(), publishers.end(),
+          [](const FramePublisher& publisher) {
+            return publisher.publisher.getNumSubscribers() > 0;
+          });
+    };
+    bool needed = has_subscribers(main_frame_publishers_);
+    if (!needed) {
+      for (const auto& source : sources_) {
+        if (has_subscribers(source->frame_publishers)) {
+          needed = true;
+          break;
+        }
+      }
+    }
+    if (!needed) {
+      return false;
+    }
+    // The listener is only used to transform optional Odometry frame outputs.
+    // Start it lazily so an estimator with no such subscribers does not ingest
+    // every vehicle's /tf traffic or own an idle listener thread.
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(tf_buffer_);
+    return false;
+  }
+
   void outputTimerCallback(const ros::TimerEvent&) {
     const ros::Time now = ros::Time::now();
+    const bool frame_outputs_ready = ensureFrameOutputTfListener();
     updateSourceConnectionStates(now);
     updateSelection(now);
     for (auto& source : sources_) {
@@ -2822,7 +2883,9 @@ class MultiSourceEstimatorNode {
         const nav_msgs::Odometry odometry =
             sourceEstimateToOdometry(*source, estimate);
         source->odometry_publisher.publish(odometry);
-        publishFrameOutputs(odometry, &source->frame_publishers);
+        if (frame_outputs_ready) {
+          publishFrameOutputs(odometry, &source->frame_publishers);
+        }
       }
     }
 
@@ -2855,8 +2918,10 @@ class MultiSourceEstimatorNode {
         main_acceleration_publisher_.publish(
             estimateToAcceleration(main));
         publishMainTransform(main_odometry);
-        publishFrameOutputs(main_odometry,
-                            &main_frame_publishers_);
+        if (frame_outputs_ready) {
+          publishFrameOutputs(main_odometry,
+                              &main_frame_publishers_);
+        }
       }
     }
     publishBoolean(localization_valid_publisher_,
@@ -3149,8 +3214,10 @@ class MultiSourceEstimatorNode {
   ros::NodeHandle nh_;
   ros::NodeHandle private_nh_;
   tf2_ros::Buffer tf_buffer_;
-  tf2_ros::TransformListener tf_listener_;
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   tf2_ros::TransformBroadcaster main_transform_broadcaster_;
+  std::unique_ptr<xd_uav_state_estimators::OdometryAdapterCollection>
+      odometry_adapters_;
   ros::Subscriber imu_subscriber_;
   ros::Publisher main_odometry_publisher_;
   ros::Publisher main_acceleration_publisher_;

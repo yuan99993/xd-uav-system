@@ -792,8 +792,10 @@ class ProcessManager:
                 if launch_id == "detect" and sensor and sensor["type"] == "lidar":
                     local_context["detect_config"] = local_context.get(
                         "lidar_detect_config", local_context.get("detect_config", ""))
+                # Track and H.264 consume the UAV-wide annotated topic, so a
+                # vehicle with both cameras still owns only one process each.
                 key = "vehicle:{}/launch:{}".format(vehicle["name"], launch_id)
-                if sensor_id:
+                if sensor_id and not spec.get("once_per_vehicle", False):
                     key += ":sensor:{}".format(sensor_id)
                 add(key, spec, local_context,
                     "{}:{}{}".format(vehicle["name"], launch_id,

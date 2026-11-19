@@ -561,14 +561,8 @@ void Follower::markPeerDropped(const std::string& member,
   active_members_dirty_ = true;
   ROS_WARN("[xd_uav_formation] excluding %s after %s",
            member.c_str(), reason.c_str());
-  if (config_.mode == "consensus" && enabled_) {
-    if (!acquire_stage_ || *acquire_stage_ != "following") {
-      acquire_stage_ = "following";
-      acquire_started_.reset();
-    }
-    reason_ = "following_degraded:" + member + ":" + reason;
-    publishStatus();
-  }
+  if (config_.mode == "consensus" && enabled_)
+    restartAcquisitionForMembershipChange("excluded:" + member + ":" + reason);
 }
 
 void Follower::beginDropout(const std::string& reason) {
@@ -625,9 +619,18 @@ void Follower::refreshMembership(const ros::Time& now,
                                  const StateSnapshot& input) {
   if (config_.mode != "consensus" || !enabled_ || !own_state_) return;
   for (const auto& name : config_.members) {
-    if (name == member_ || dropped_members_.count(name)) continue;
+    if (name == member_) continue;
     const auto status = input.statuses.find(name);
-    if (status != input.statuses.end() &&
+    const auto status_received = input.status_received.find(name);
+    const bool status_fresh = status != input.statuses.end() &&
+        status_received != input.status_received.end() &&
+        std::max(0.0, (now - status_received->second).toSec()) <=
+            config_.mavros_timeout;
+    const bool was_dropped = dropped_members_.count(name) != 0;
+    const bool status_active = status_fresh &&
+        status->second.rfind("active:", 0) == 0;
+    if (was_dropped && !status_active) continue;
+    if (!was_dropped && status != input.statuses.end() &&
         status->second.rfind("inactive:dropout", 0) == 0) {
       markPeerDropped(name, status->second);
       continue;
@@ -670,18 +673,33 @@ void Follower::refreshMembership(const ros::Time& now,
         error = "center_frame_mismatch";
       }
     }
-    if (!error.empty()) markPeerDropped(name, error);
+    if (!error.empty()) {
+      if (!was_dropped) markPeerDropped(name, error);
+    } else if (was_dropped) {
+      dropped_members_.erase(name);
+      active_members_dirty_ = true;
+      ROS_INFO("[xd_uav_formation] restoring %s to the formation", name.c_str());
+      restartAcquisitionForMembershipChange("restored:" + name);
+    }
   }
 }
 
-void Follower::resumeDegradedAcquisition() {
-  if (config_.mode == "consensus" && enabled_ && !dropped_members_.empty() &&
-      acquire_stage_ && *acquire_stage_ != "following") {
-    acquire_stage_ = "following";
-    acquire_started_.reset();
-    reason_ = "following_degraded";
-    publishStatus();
-  }
+void Follower::restartAcquisitionForMembershipChange(const std::string& reason) {
+  if (config_.mode != "consensus" || !enabled_) return;
+  acquire_force_capture_ = true;
+  acquire_heading_.reset();
+  acquire_altitude_.reset();
+  acquire_stage_ = "waiting_for_team";
+  acquire_started_ = ros::Time::now();
+  consensus_heading_.reset();
+  consensus_heading_stamp_.reset();
+  paced_speed_.reset();
+  paced_speed_stamp_.reset();
+  progress_error_filter_.clear();
+  clearAcquisitionPlan();
+  nh_.deleteParam("/formation/" + config_.team_id + "/acquisition_plan");
+  reason_ = "acquiring_waiting_for_team:" + reason;
+  publishStatus();
 }
 
 std::optional<std::string> Follower::readiness(
@@ -1574,6 +1592,7 @@ bool Follower::teamEnabled(const ros::Time& now,
 
 void Follower::setAcquireStage(const std::string& stage) {
   acquire_stage_ = stage;
+  if (stage == "following") acquire_force_capture_ = false;
   reason_ = stage == "following" ? "following" : "acquiring_" + stage;
   publishStatus();
 }
@@ -1581,12 +1600,16 @@ void Follower::setAcquireStage(const std::string& stage) {
 AcquisitionPlan Follower::buildAcquisitionPlan(
     const ros::Time& now, const StateSnapshot& input) const {
   AcquisitionPlan plan;
-  plan.members = config_.members;
+  plan.members = activeMembers();
+  if (plan.members.empty())
+    throw std::invalid_argument("no active members for acquisition");
   plan.shape = formation_selection_.shape;
   plan.spacing = config_.spacing;
   plan.selection_revision = formation_selection_.revision;
   plan.stamp = now;
   plan.initial_positions = memberPositionsInCommonFrame(now, input);
+  if (plan.initial_positions.size() != plan.members.size())
+    throw std::invalid_argument("active acquisition member positions are incomplete");
   Vec3 mean{0.0, 0.0, 0.0};
   for (const auto& point : plan.initial_positions)
     for (int axis = 0; axis < 3; ++axis) mean[axis] += point[axis] / plan.initial_positions.size();
@@ -1595,32 +1618,30 @@ AcquisitionPlan Follower::buildAcquisitionPlan(
       formation_selection_.loop_path);
   plan.heading = std::atan2(route.velocity[1], route.velocity[0]);
   plan.altitude = route.position[2];
+  const auto offsets = formationOffsets(
+      formation_selection_.shape, plan.members.size(), config_.spacing);
   plan.slots = acquisitionSlots(plan.initial_positions,
-                                formation_selection_.slots,
+                                offsets,
                                 plan.heading, plan.altitude);
   double top = route.position[2];
   for (const auto& point : plan.initial_positions) top = std::max(top, point[2]);
   const double base = std::ceil(top);
-  for (std::size_t i = 0; i < config_.members.size(); ++i)
+  for (std::size_t i = 0; i < plan.members.size(); ++i)
     plan.tiers.push_back(base + i * config_.acquire_vertical_spacing);
   return plan;
 }
 
-void Follower::planAcquisition(const ros::Time& now,
+bool Follower::planAcquisition(const ros::Time& now,
                                const StateSnapshot& input) {
+  const auto members = activeMembers();
+  if (members.empty() ||
+      std::find(members.begin(), members.end(), member_) == members.end())
+    return false;
+  const std::size_t count = members.size();
   std::optional<AcquisitionPlan> plan;
   {
     std::lock_guard<std::mutex> lock(shared_->acquisition_plan_mutex);
     plan = shared_->acquisition_plan;
-  }
-  if (!plan && (member_ == config_.members.front() || shared_inputs_)) {
-    plan = buildAcquisitionPlan(now, input);
-    {
-      std::lock_guard<std::mutex> lock(shared_->acquisition_plan_mutex);
-      shared_->acquisition_plan = plan;
-    }
-    nh_.setParam("/formation/" + config_.team_id + "/acquisition_plan",
-                 acquisitionPlanValue(*plan));
   }
   if (!plan) {
     XmlRpc::XmlRpcValue parameter;
@@ -1656,10 +1677,20 @@ void Follower::planAcquisition(const ros::Time& now,
       }
     }
   }
-  const std::size_t count = config_.members.size();
-  if (plan && plan->selection_revision != formation_selection_.revision)
-    plan.reset();
-  if (!plan && (member_ == config_.members.front() || shared_inputs_)) {
+  auto matchesCurrentTeam = [&](const std::optional<AcquisitionPlan>& candidate) {
+    if (!candidate || candidate->members != members ||
+        candidate->shape != formation_selection_.shape ||
+        candidate->selection_revision != formation_selection_.revision ||
+        candidate->spacing != config_.spacing ||
+        candidate->initial_positions.size() != count ||
+        candidate->slots.size() != count || candidate->tiers.size() != count)
+      return false;
+    const double age = (now - candidate->stamp).toSec();
+    return age >= 0.0 && age <= config_.acquire_timeout;
+  };
+  if (!matchesCurrentTeam(plan)) plan.reset();
+  const bool mayCreatePlan = shared_inputs_ || member_ == members.front();
+  if (!plan && mayCreatePlan) {
     plan = buildAcquisitionPlan(now, input);
     {
       std::lock_guard<std::mutex> lock(shared_->acquisition_plan_mutex);
@@ -1668,33 +1699,43 @@ void Follower::planAcquisition(const ros::Time& now,
     nh_.setParam("/formation/" + config_.team_id + "/acquisition_plan",
                  acquisitionPlanValue(*plan));
   }
-  if (!plan || plan->members != config_.members ||
-      plan->shape != formation_selection_.shape ||
-      plan->selection_revision != formation_selection_.revision ||
-      plan->spacing != config_.spacing || plan->initial_positions.size() != count ||
-      plan->slots.size() != count || plan->tiers.size() != count)
-    throw std::invalid_argument("shared acquisition plan is missing or mismatched");
-  const double age = (now - plan->stamp).toSec();
-  if (age < 0.0 || age > config_.acquire_timeout)
-    throw std::invalid_argument("shared acquisition plan has expired");
+  if (!matchesCurrentTeam(plan)) return false;
   for (const auto& p : plan->initial_positions)
     for (double value : p) if (!std::isfinite(value)) throw std::invalid_argument("shared acquisition plan is invalid");
   for (const auto& p : plan->slots)
     for (double value : p) if (!std::isfinite(value)) throw std::invalid_argument("shared acquisition plan is invalid");
   for (double value : plan->tiers) if (!std::isfinite(value)) throw std::invalid_argument("shared acquisition plan is invalid");
-  const auto index = static_cast<std::size_t>(std::find(config_.members.begin(),
-      config_.members.end(), member_) - config_.members.begin());
+  const auto member_it = std::find(plan->members.begin(), plan->members.end(), member_);
+  if (member_it == plan->members.end()) return false;
+  const auto index = static_cast<std::size_t>(member_it - plan->members.begin());
+  acquire_members_ = plan->members;
   acquire_slots_ = plan->slots;
   acquire_tiers_ = plan->tiers;
   acquire_initial_xy_.clear();
-  acquire_initial_xy_.push_back({plan->initial_positions[index][0], plan->initial_positions[index][1]});
+  acquire_initial_xy_.push_back(
+      {plan->initial_positions[index][0], plan->initial_positions[index][1]});
   acquire_heading_ = plan->heading;
   acquire_altitude_ = plan->altitude;
   if (!std::isfinite(*acquire_heading_) || !std::isfinite(*acquire_altitude_))
     throw std::invalid_argument("shared acquisition heading or altitude is invalid");
-  acquire_started_ = plan->stamp;
-  const double error = std::get<2>(consensusCenters(now, input, *own_state_));
-  setAcquireStage(error <= config_.acquire_tolerance ? "following" : "separating");
+  acquire_started_ = now;
+  const auto positions = memberPositionsInCommonFrame(now, input);
+  if (positions.size() != count)
+    throw std::invalid_argument("active acquisition positions changed");
+  bool alreadyInSlots = true;
+  for (std::size_t i = 0; i < count; ++i) {
+    const double horizontal_error = std::hypot(
+        positions[i][0] - plan->slots[i][0],
+        positions[i][1] - plan->slots[i][1]);
+    const double altitude_error = std::abs(positions[i][2] - plan->slots[i][2]);
+    alreadyInSlots = alreadyInSlots &&
+        horizontal_error <= config_.acquire_tolerance &&
+        altitude_error <= config_.acquire_height_tolerance;
+  }
+  const bool capture = acquire_force_capture_ || !alreadyInSlots;
+  setAcquireStage(capture ? "separating" : "following");
+  if (!capture) acquire_force_capture_ = false;
+  return true;
 }
 
 mavros_msgs::PositionTarget Follower::fixedwingWaitTarget(
@@ -1724,20 +1765,28 @@ mavros_msgs::PositionTarget Follower::acquisitionTarget(
     const ros::Time& now, const StateSnapshot& input,
     const xd_uav_controller::ControlState& own) {
   if (acquire_stage_ && *acquire_stage_ == "waiting_for_team") {
-    if (teamEnabled(now, input)) planAcquisition(now, input);
-    else if (own.vehicle_type == xd_uav_controller::ControlState::VEHICLE_FIXEDWING)
-      return fixedwingWaitTarget(now, input, own);
-    else {
+    auto waitTarget = [&]() {
+      if (own.vehicle_type == xd_uav_controller::ControlState::VEHICLE_FIXEDWING)
+        return fixedwingWaitTarget(now, input, own);
       const auto p = pointVec(own.position_odom);
       geometry_msgs::PoseStamped pose; pose.pose.orientation = own.orientation_odom_body;
       return positionTarget(p, yaw(pose), now, Vec3{0,0,0}, "", own);
+    };
+    if (!teamEnabled(now, input) || !planAcquisition(now, input) ||
+        (acquire_stage_ && *acquire_stage_ == "waiting_for_team")) {
+      return waitTarget();
     }
   }
   if (acquire_stage_ && *acquire_stage_ == "following")
     return consensusTarget(now, input, own);
   const auto positions = memberPositionsInCommonFrame(now, input);
-  const std::size_t index = static_cast<std::size_t>(std::find(config_.members.begin(),
-      config_.members.end(), member_) - config_.members.begin());
+  const auto member_it = std::find(acquire_members_.begin(), acquire_members_.end(), member_);
+  if (member_it == acquire_members_.end() ||
+      positions.size() != acquire_members_.size() ||
+      acquire_tiers_.size() != acquire_members_.size() ||
+      acquire_slots_.size() != acquire_members_.size())
+    throw std::invalid_argument("acquisition member set changed unexpectedly");
+  const std::size_t index = static_cast<std::size_t>(member_it - acquire_members_.begin());
   if (*acquire_stage_ == "separating") {
     bool separated = true;
     for (std::size_t i = 0; i < positions.size(); ++i)
@@ -2084,6 +2133,10 @@ bool Follower::setEnabled(bool enabled, std::string& message) {
   const StateSnapshot input = snapshot();
   const auto failure = readiness(now, input);
   if (failure) { message = *failure; return false; }
+  const bool restartingAfterDropout = reason_.rfind("dropout:", 0) == 0;
+  dropped_members_.clear();
+  active_members_dirty_ = true;
+  acquire_force_capture_ = restartingAfterDropout;
   try {
     if (config_.mode == "consensus") {
       memberPositionsInCommonFrame(now, input);
@@ -2117,8 +2170,6 @@ bool Follower::setEnabled(bool enabled, std::string& message) {
   } catch (...) {
     message = "unknown error while starting formation"; return false;
   }
-  dropped_members_.clear();
-  active_members_dirty_ = true;
   enabled_ = true;
   if (config_.mode == "consensus") {
     paced_speed_.reset(); paced_speed_stamp_.reset(); progress_error_filter_.clear();

@@ -4,13 +4,17 @@
 
 ## 模块划分
 
-本包包含两个相互独立的模块：
+本包保留两个逻辑模块，默认多机定位启动将它们放在同一个估计器进程中运行：
 
-- `odometry_adapter_manager_node`：按照配置把多个`nav_msgs/Odometry`输入转换成六种独立修正消息。
+- Odometry适配器：按照配置把多个`nav_msgs/Odometry`输入转换成六种独立修正消息。
 - `multi_source_estimator_node`：分别估计各来源的完整状态、维护来源健康状态、切换主源并输出连续状态。
 
-适配器本身只负责标准化输入。管理节点从`sources.yaml`一次加载全部适配器，每个
-定位源用自己列出的修正和公共IMU维护一套完整滤波状态；`main`不跨来源拼接状态分量。
+默认的`uav_localization_stack.launch`在估计器进程内运行适配器，避免每架飞机额外启动
+一个节点和跨进程传递六种修正消息。适配器仍发布原有六类话题，参数结构和输出接口不变。
+需要单独运行适配器时，`odometry_adapter_manager.launch`仍可独立启动；在定位栈中显式设置
+`start_odometry_adapters:=true`也会使用这种独立方式。
+
+每个定位源仍用自己列出的修正和公共IMU维护一套完整滤波状态；`main`不跨来源拼接状态分量。
 
 六类标准修正话题为：
 

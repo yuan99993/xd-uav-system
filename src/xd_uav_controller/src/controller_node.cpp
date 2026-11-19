@@ -215,6 +215,16 @@ class FiniteHorizonAxisMpc {
     q_ = q;
     terminal_q_ = terminal_q;
     r_ = std::max(1e-6, r);
+
+    // The Riccati recursion depends only on fixed parameters and on which
+    // state dimensions are controlled. Cache all four masks once at startup
+    // instead of repeating up to 40 matrix iterations on every control tick.
+    for (std::size_t mask = 0; mask < first_gains_.size(); ++mask) {
+      const std::array<bool, 2> controlled{{
+          (mask & 1U) != 0U, (mask & 2U) != 0U}};
+      const Eigen::RowVector2d gain = computeFirstGain(controlled);
+      first_gains_[mask] = {{gain[0], gain[1]}};
+    }
   }
 
   double acceleration(
@@ -222,11 +232,22 @@ class FiniteHorizonAxisMpc {
       const Eigen::Vector2d& reference,
       const std::array<bool, 2>& controlled,
       const double acceleration_feedforward) const {
+    const std::size_t mask =
+        (controlled[0] ? 1U : 0U) | (controlled[1] ? 2U : 0U);
+    const auto& first_gain = first_gains_[mask];
+    return -(first_gain[0] * (state[0] - reference[0]) +
+             first_gain[1] * (state[1] - reference[1])) +
+           acceleration_feedforward;
+  }
+
+ private:
+  Eigen::RowVector2d computeFirstGain(
+      const std::array<bool, 2>& controlled) const {
     Eigen::Matrix2d a;
     const double dt2 = dt_ * dt_;
     a << 1.0, dt_,
          0.0, 1.0;
-    Eigen::Vector2d b(0.5 * dt2, dt_);
+    const Eigen::Vector2d b(0.5 * dt2, dt_);
 
     Eigen::Matrix2d q = Eigen::Matrix2d::Zero();
     Eigen::Matrix2d p = Eigen::Matrix2d::Zero();
@@ -247,16 +268,15 @@ class FiniteHorizonAxisMpc {
         first_gain = gain;
       }
     }
-    return -first_gain.dot(state - reference) +
-           acceleration_feedforward;
+    return first_gain;
   }
 
- private:
   int horizon_{26};
   double dt_{0.01};
   double r_{20.0};
   std::array<double, 2> q_{{500.0, 100.0}};
   std::array<double, 2> terminal_q_{{1000.0, 300.0}};
+  std::array<std::array<double, 2>, 4> first_gains_{};
 };
 
 using ControllerResult = xd_uav_controller::BackendOutput;
@@ -710,6 +730,16 @@ class ControllerNode {
           "fixedwing/energy_control/airspeed_throttle_gain",
           "fixedwing/airspeed_throttle_gain",
           &airspeed_throttle_gain_, 0.08);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/energy_control/airspeed_integral_gain",
+          "fixedwing/airspeed_integral_gain",
+          &airspeed_integral_gain_, 0.02);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/energy_control/airspeed_integral_throttle_limit",
+          "fixedwing/airspeed_integral_throttle_limit",
+          &airspeed_integral_throttle_limit_, 0.25);
       loadParameterWithLegacy(
           private_nh_,
           "fixedwing/energy_control/climb_rate_throttle_gain",
@@ -1240,6 +1270,9 @@ class ControllerNode {
          fixedwing_minimum_course_rate_speed_ < 0.0 ||
          fixedwing_course_integral_gain_ < 0.0 ||
          fixedwing_course_integral_rate_limit_ < 0.0 ||
+         airspeed_integral_gain_ < 0.0 ||
+         airspeed_integral_throttle_limit_ < 0.0 ||
+         airspeed_integral_throttle_limit_ > 1.0 ||
          altitude_time_constant_ <= 0.0 ||
          altitude_integral_gain_ < 0.0 ||
          altitude_integral_climb_rate_limit_ < 0.0 ||
@@ -1270,6 +1303,8 @@ class ControllerNode {
          !std::isfinite(fixedwing_minimum_course_rate_speed_) ||
          !std::isfinite(fixedwing_course_integral_gain_) ||
          !std::isfinite(fixedwing_course_integral_rate_limit_) ||
+         !std::isfinite(airspeed_integral_gain_) ||
+         !std::isfinite(airspeed_integral_throttle_limit_) ||
          !std::isfinite(altitude_time_constant_) ||
          !std::isfinite(altitude_integral_gain_) ||
          !std::isfinite(altitude_integral_climb_rate_limit_) ||
@@ -2134,6 +2169,7 @@ class ControllerNode {
 
   void resetFixedwingControlState() {
     fixedwing_altitude_integral_climb_rate_ = 0.0;
+    fixedwing_airspeed_integral_throttle_ = 0.0;
     filtered_climb_rate_ = 0.0;
     filtered_climb_rate_initialized_ = false;
     fixedwing_course_integral_rate_ = 0.0;
@@ -5732,19 +5768,50 @@ class ControllerNode {
         -vertical_acceleration_pitch_rate_gain_ *
         target.vertical_acceleration_feedforward /
         std::max(minimum_airspeed_, airspeed);
+    const double airspeed_error =
+        std::max(target.airspeed, bank_protected_airspeed) -
+        state_.airspeed;
     const double fixedwing_energy_throttle =
         vtol_back_transition
             ? trim_throttle_
             : trim_throttle_ +
-                  airspeed_throttle_gain_ *
-                      (std::max(target.airspeed,
-                                bank_protected_airspeed) -
-                       state_.airspeed) +
+                  airspeed_throttle_gain_ * airspeed_error +
                   turn_load_factor_throttle_gain_ *
                       (load_factor - 1.0);
-    double throttle = clamp(
+    const double throttle_without_airspeed_integral =
         fixedwing_energy_throttle +
-            climb_rate_throttle_gain_ * desired_climb_rate,
+        climb_rate_throttle_gain_ * desired_climb_rate;
+    const bool airspeed_integrator_enabled =
+        !takeoff_active_ && !landing_active_ &&
+        !vtol_back_transition && !fixedwing_underspeed_active_ &&
+        airspeed_integral_gain_ > 0.0 &&
+        airspeed_integral_throttle_limit_ > 0.0;
+    if (airspeed_integrator_enabled) {
+      const double integral_delta =
+          airspeed_integral_gain_ * airspeed_error * dt;
+      const double candidate = clamp(
+          fixedwing_airspeed_integral_throttle_ + integral_delta,
+          -airspeed_integral_throttle_limit_,
+          airspeed_integral_throttle_limit_);
+      const double candidate_throttle =
+          throttle_without_airspeed_integral + candidate;
+      const bool winds_up_high =
+          candidate_throttle > maximum_throttle_ &&
+          integral_delta > 0.0;
+      const bool winds_up_low =
+          candidate_throttle < minimum_throttle_ &&
+          integral_delta < 0.0;
+      if (!winds_up_high && !winds_up_low) {
+        fixedwing_airspeed_integral_throttle_ = candidate;
+      }
+    } else {
+      // Takeoff, landing, back-transition and underspeed recovery use
+      // dedicated throttle laws; do not carry speed-loop integral through them.
+      fixedwing_airspeed_integral_throttle_ = 0.0;
+    }
+    double throttle = clamp(
+        throttle_without_airspeed_integral +
+            fixedwing_airspeed_integral_throttle_,
         minimum_throttle_, maximum_throttle_);
 
     if (takeoff_active_) {
@@ -6511,6 +6578,9 @@ class ControllerNode {
   double maximum_airspeed_{24.0};
   double trim_throttle_{0.25};
   double airspeed_throttle_gain_{0.08};
+  double airspeed_integral_gain_{0.02};
+  double airspeed_integral_throttle_limit_{0.25};
+  double fixedwing_airspeed_integral_throttle_{0.0};
   double course_time_constant_{3.0};
   double fixedwing_guidance_lookahead_distance_{60.0};
   bool fixedwing_adaptive_lookahead_{true};
