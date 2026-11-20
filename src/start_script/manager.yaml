@@ -224,8 +224,6 @@ vehicle_launches:
       - "_ki_yaw:=0.05"
       - "_ki_pitch:=0.03"
       - "_ff_alpha:=0.0"
-      - "_max_slew_yaw:=15"
-      - "_max_slew_pitch:=8"
       - "_filter_alpha:=0.3"
       - "_deadzone_px:=8"
 
@@ -281,15 +279,15 @@ shared_launches:
       - xd_uav_formation
       - formation.launch
 
-  # task_allocate:
-  #   argv:
-  #     - roslaunch
-  #     - xd_uav_task_allocate
-  #     - task_allocate.launch
-  #     - "mission_config:={workspace}/src/xd_uav_task_allocate/config/mission.yaml"
-  #     - "scout_config:={workspace}/src/xd_uav_task_allocate/config/scouts_two_fixed.yaml"
-  #     - "worker_config:={workspace}/src/xd_uav_task_allocate/config/workers_two_fixed.yaml"
-  #     - "post_arrival_config:={workspace}/src/xd_uav_task_allocate/config/task_execution_uav1_uav2_gm_fixedwing.yaml"
+  task_allocate:
+    argv:
+      - roslaunch
+      - xd_uav_task_allocate
+      - task_allocate.launch
+      - "mission_config:={workspace}/src/xd_uav_task_allocate/config/mission.yaml"
+      - "scout_config:={workspace}/src/xd_uav_task_allocate/config/scouts_two_fixed.yaml"
+      - "worker_config:={workspace}/src/xd_uav_task_allocate/config/workers_two_fixed.yaml"
+      - "post_arrival_config:={workspace}/src/xd_uav_task_allocate/config/task_execution_uav1_uav2_gm_fixedwing.yaml"
 
 profiles:
   vtol:

@@ -136,6 +136,12 @@ void loadTargetGuidance(const ros::NodeHandle& nh,
            config->maximum_lateral_speed);
   nh.param(p + "maximum_vertical_speed", config->maximum_vertical_speed,
            config->maximum_vertical_speed);
+  nh.param(p + "direct_control/arrival_radius_m",
+           config->direct_control_arrival_radius_m,
+           config->direct_control_arrival_radius_m);
+  nh.param(p + "direct_control/speed_mps",
+           config->direct_control_speed_mps,
+           config->direct_control_speed_mps);
   nh.param(p + "fixed_camera/fov_constraint_enabled",
            config->fixed_camera_fov_constraint_enabled,
            config->fixed_camera_fov_constraint_enabled);
@@ -317,7 +323,7 @@ class XdUavTrackNode {
                profile_name.c_str());
       config.profile = xd_uav_track::FollowerProfile::kVelocityChase;
     }
-    if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
+    if (xd_uav_track::isMetricTargetProfile(config.profile)) {
       const std::string profile_key =
           xd_uav_track::followerProfileName(config.profile);
       const std::string tracker_profile_prefix =
@@ -616,7 +622,7 @@ class XdUavTrackNode {
                       config.relative_maximum_correction);
     loadTargetGuidance(private_nh_, &config.target_guidance,
                        "follower/target_guidance/");
-    if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
+    if (xd_uav_track::isMetricTargetProfile(config.profile)) {
       const std::string guidance_profile_prefix =
           std::string("follower/target_guidance/profiles/") +
           xd_uav_track::followerProfileName(config.profile) + "/";
@@ -935,7 +941,7 @@ class XdUavTrackNode {
     private_nh_.param("runtime/state_timeout_sec", state_timeout_sec_, 0.30);
     private_nh_.param("runtime/publish_control_reference",
                       publish_control_reference_, true);
-    if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
+    if (xd_uav_track::isMetricTargetProfile(config.profile)) {
       const std::string runtime_profile_prefix =
           std::string("runtime/profiles/") +
           xd_uav_track::followerProfileName(config.profile) + "/";
@@ -2618,7 +2624,7 @@ class XdUavTrackNode {
           "mc_velocity_position, mc_velocity_distance, mc_velocity_chase, "
           "gm_velocity_chase, gm_velocity_vector, fw_velocity_vector, "
           "gmfw_velocity_vector, "
-          "fw_metric_pursuit, fw_metric_orbit";
+          "fw_metric_pursuit, fw_metric_orbit, direct_control";
       return true;
     }
     const ros::WallTime now = ros::WallTime::now();
@@ -2907,6 +2913,11 @@ class XdUavTrackNode {
       reference.position.y = command.position_reference[1];
       reference.position.z = command.position_reference[2];
     }
+    if (command.position_reference_only) {
+      reference.type_mask |= mavros_msgs::PositionTarget::IGNORE_VX |
+          mavros_msgs::PositionTarget::IGNORE_VY |
+          mavros_msgs::PositionTarget::IGNORE_VZ;
+    }
     if (!command.use_yaw_rate) {
       reference.type_mask |= mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
     }
@@ -3018,6 +3029,9 @@ class XdUavTrackNode {
       command.left = 0.0;
       command.up = 0.0;
       command.yaw_rate = 0.0;
+      command.release_reference_on_invalid =
+          xd_uav_track::isFixedWingProfile(requested_profile_) ||
+          requested_profile_ == xd_uav_track::FollowerProfile::kDirectControl;
       command.tracking_state = "stopped";
       command.invalid_reason = "tracker is waiting for StartTracker";
     }
@@ -3029,7 +3043,8 @@ class XdUavTrackNode {
       command.up = 0.0;
       command.yaw_rate = 0.0;
       command.release_reference_on_invalid =
-          xd_uav_track::isFixedWingProfile(requested_profile_);
+          xd_uav_track::isFixedWingProfile(requested_profile_) ||
+          requested_profile_ == xd_uav_track::FollowerProfile::kDirectControl;
       command.tracking_state = "emergency_stop";
       command.invalid_reason = "emergency stop service is active";
     }

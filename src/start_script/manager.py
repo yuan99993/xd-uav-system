@@ -1276,15 +1276,9 @@ class ProcessManager:
             self._set_node_health(key, managed, health, reason, node_states)
 
     def _set_node_health(self, key, managed, health, reason, node_states):
-        changed = (managed.get("health") != health or
-                   managed.get("health_reason") != reason)
         managed["health"] = health
         managed["health_reason"] = reason
         managed["node_states"] = node_states
-        if changed:
-            self._log("{} health={}{}".format(
-                managed["record"].get("label", key), health,
-                ": " + reason if reason else ""))
 
     def _stop_all(self, cleanup_ros=True):
         self._stop_processes(list(self.active))
@@ -1448,6 +1442,7 @@ class ProcessManager:
             return
         self._log("client disconnected past heartbeat timeout; stopping active processes")
         self.last_client_activity = now
+        self._stop_all()
         self._stop_all()
 
     def serve_forever(self):

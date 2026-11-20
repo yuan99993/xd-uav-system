@@ -2,6 +2,10 @@
 
 面向当前 XD UAV ROS1 工作空间的应急救援任务层。第一版采用中心协调器，负责：
 
+默认 `task_allocate.launch` 运行 `roscpp` 实现的 `task_allocate_node_cpp`；覆盖规划、目标融合、
+分配和 ROS 服务不再由 Python 节点执行。Python coordinator 保留作兼容和开发参考，Python mock
+节点与测试也继续保留。
+
 - 将多个搜索多边形生成覆盖航线，并按预计飞行时间分给侦察机；四旋翼使用相邻折返，固定翼
   使用跨区跳行并在区域外插入满足最小转弯半径的 Dubins 连接；
 - 直接读取 `xd_uav_detect` 的 `/uavX/track/detections`，无需启动 tracker 节点；
@@ -180,6 +184,19 @@ post_arrival:
     required_execution_sec: 10.0
 ```
 
+如果希望分配器发现目标后就把完整 XYZ 交给工作机直接飞过去，可在 `task_execute` 模式下把任务设成 `direct_control`。这种任务会在分配时启动，不等待规划器先到达较宽松的导航半径：
+
+```yaml
+post_arrival:
+  mode: task_execute
+  default_task:
+    task_type: direct_control
+    maximum_duration_sec: 180.0
+```
+
+也可保留 `task_type: track`，并通过 worker/class override 设置
+`follower_profile: direct_control`。分配器会自动使用位置交接并将任务目标的 XYZ、共享坐标系写入 action；`xd_uav_track` 发布完整 XYZ 位置参考，到达三维容差后 action 成功。目标坐标系必须与工作机里程计的 world frame 一致。
+
 协调器随后连接 `/<worker>/task_execute/execute`。视觉交接任务要求工作机进入
 `target_radius_m` 且本机检测到匹配类别；位置交接任务（例如 `fw_metric_orbit` /
 `fw_metric_pursuit`）只要求导航后端报告最终目标点 `REACHED`，不依赖工作机相机。
@@ -195,8 +212,8 @@ ROS 队列的末帧控制参考；direct 多旋翼随后持续刷新当前导航
 任务参数按 `default_task → mobility_profile_overrides → worker_overrides → class_overrides`
 依次覆盖。通常用 `worker_overrides` 按飞机 ID 定义任务，mobility 规则仅作为未配置飞机的
 兼容回退；目标类别规则优先级最高，和飞机 ID 规则冲突时采用 `class_overrides`。
-`handoff_mode` 也可放入这些覆盖项中；`auto` 会将 `fw_metric_*`、`OBSERVE` 和
-`INTERCEPT` 解析为位置交接，其余任务解析为视觉交接。
+`handoff_mode` 也可放入这些覆盖项中；`auto` 会将 `fw_metric_*`、`direct_control`、
+`OBSERVE` 和 `INTERCEPT` 解析为位置交接，其余任务解析为视觉交接。
 `follower_profile: ""` 表示沿用 Track 自身配置，避免分配层强制切换。
 暂停、停止、禁用飞机、取消任务、拒绝目标或工作机掉线时，协调器会取消对应 Action；暂停
 会把未完成任务退回队列，恢复后重新分配。

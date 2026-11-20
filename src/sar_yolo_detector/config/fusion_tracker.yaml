@@ -5,7 +5,9 @@ FusionTracker:
   # A manually seeded KCF track may publish valid per-frame KCF boxes while
   # waiting for YOLO; after confirmation, visual_hold_sec applies.
   manual_seed_visual_without_yolo: true
-  prediction_hold_sec: 0.35
+  # Keep a low-confidence coasting box alive through brief YOLO/KCF dropouts;
+  # SmartTracker publishes it as prediction_only and clears it after this age.
+  prediction_hold_sec: 0.60
   reacquire_hold_sec: 8.0
   # Short tracking ends at 8 s; one selected identity remains recoverable up
   # to 60 s. No archive refresh on failed/pending candidates. HSV is weak

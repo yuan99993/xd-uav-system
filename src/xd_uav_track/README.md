@@ -31,3 +31,18 @@ Tracker 默认停止控制输出。确认检测器、里程计、控制器和目
 ```bash
 rosservice call /uav1/track/start_tracker "start: true"
 ```
+
+## `direct_control` 点到点模式
+
+`direct_control` 使用共享世界坐标系中的 `MetricTarget`，不需要相机检测或本机 track ID。未进入到达半径时，按 `follower/target_guidance/direct_control/speed_mps` 以恒定三维速度朝目标飞行；进入 `arrival_radius_m` 配置的半径后切换到 XYZ 位置保持并报告 `arrived`。目标 Z 同样参与制导。
+
+`task_execute` 会在执行期间持续刷新该目标，避免长距离飞行时目标过期。启用此 profile 前，必须确认 `target_pose.header.frame_id` 与飞机里程计共享同一坐标系。
+
+```bash
+rosservice call /uav1/track/set_profile "profile: 'direct_control'"
+rosservice call /uav1/track/start_tracker "start: true"
+rostopic pub -1 /uav1/track/metric_target xd_uav_track/MetricTarget \
+  "{header: {frame_id: 'world'}, target_id: 1, valid: true, pose: {pose: {position: {x: 20.0, y: 5.0, z: 8.0}}}}"
+```
+
+正式任务中由 `xd_uav_task_execute` 设置 profile、启动 tracker 并发送目标点；`xd_uav_task_allocate` 可在目标分配时直接启动这一任务。

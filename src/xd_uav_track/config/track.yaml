@@ -7,7 +7,7 @@
 # 1. 运行方式 -----------------------------------------------------------------
 runtime:
   publish_rate_hz: 100.0
-  state_timeout_sec: 0.30
+  state_timeout_sec: 5.0
   # true：直接接 xd_uav_controller；false：只观察 track 下的诊断输出。
   publish_control_reference: true
   profiles:
@@ -48,7 +48,7 @@ interfaces:
 tracker:
   # false 时必须调用 ~start_tracker，避免检测器一启动飞机立即跟随。
   enabled_at_startup: false
-  input_timeout_sec: 0.25
+  input_timeout_sec: 3.0
   minimum_confidence: 0.10
   confidence_hysteresis: 0.05
   profiles:
@@ -333,6 +333,10 @@ follower:
       publish_course_rate_feedforward: true
       publish_position_reference: true
     maximum_course_offset: 1.20
+    # Direct XYZ approach speed and 3D arrival tolerance.
+    direct_control:
+      speed_mps: 35.0
+      arrival_radius_m: 0.5
     fixed_camera:
       fov_constraint_enabled: true
       fov_margin_ratio: 0.10
@@ -440,10 +444,10 @@ follower:
     # 图像误差只补充云台视线角；云台角度保持全权重，图像修正权重为 0.30。
     image_error_weight: 0.30
     pid:
-      course:     {kp: 0.9, ki: 0.01, kd: 0.07, integral_limit: 0.35}
-      climb_rate: {kp: 20.0, ki: 0.05, kd: 0.10, integral_limit: 0.8}
-    airspeed: 25.0
-    maximum_course_offset: 0.50
+      course:     {kp: 1.2, ki: 0.01, kd: 0.07, integral_limit: 0.35}
+      climb_rate: {kp: 30.0, ki: 0.05, kd: 0.10, integral_limit: 0.8}
+    airspeed: 35.0
+    maximum_course_offset: 0.80
     maximum_climb_rate: 8.0
 
 # 5. 跨模块安全策略 -----------------------------------------------------------

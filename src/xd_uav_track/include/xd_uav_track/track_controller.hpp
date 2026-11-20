@@ -22,6 +22,8 @@ enum class FollowerProfile {
   // use TargetGuidance for pursuit or standoff orbit generation.
   kFixedWingMetricPursuit,
   kFixedWingMetricOrbit,
+  // Point-to-point flight from a shared-world XYZ target.
+  kDirectControl,
 };
 
 enum class LateralGuidanceMode {
@@ -275,11 +277,12 @@ struct TrackVelocity {
   // Fixed-wing cannot stop in place. On target loss, release the streaming
   // reference so xd_uav_controller can enter its configured timeout loiter.
   bool release_reference_on_invalid{false};
-  // Optional internal position anchor for fixed-wing orbit guidance.  These
-  // fields are consumed by xd_uav_track_node when publishing the existing
-  // MAVROS PositionTarget.
+  // Optional internal position reference for fixed-wing orbit and direct
+  // point guidance. These fields are consumed by xd_uav_track_node when
+  // publishing the existing MAVROS PositionTarget.
   bool position_reference_valid{false};
   std::array<double, 3> position_reference{{0.0, 0.0, 0.0}};
+  bool position_reference_only{false};
   std::string profile;
   std::string lateral_guidance_mode;
   std::string tracking_state;
@@ -484,6 +487,7 @@ bool parseFollowerProfile(const std::string& value, FollowerProfile* profile);
 const char* followerProfileName(FollowerProfile profile);
 bool isFixedWingProfile(FollowerProfile profile);
 bool isMetricFixedWingProfile(FollowerProfile profile);
+bool isMetricTargetProfile(FollowerProfile profile);
 TargetGuidanceMode targetGuidanceModeForFollowerProfile(
     FollowerProfile profile);
 bool parseLateralGuidanceMode(const std::string& value,

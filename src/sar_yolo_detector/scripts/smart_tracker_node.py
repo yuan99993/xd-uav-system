@@ -1489,6 +1489,9 @@ class SmartTrackerNode:
                         observed=result.observed, processing_ms=self._last_processing_ms,
                         suppressed_class_duplicates=suppressed_class_duplicates,
                         inference_ms=getattr(self, "_inference_ms", 0.),
+                        detector_updated=bool(detector_updated),
+                        detector_detection_count=(len(self._tracker.last_detections)
+                            if detector_updated else None),
                         pipeline_epoch=getattr(self, "_epoch", 0),
                         capture_segment=getattr(getattr(self, "_capture_clock", None), "segment", 0))
         evidence['diagnostics'] = dict(self._fusion.diagnostics,

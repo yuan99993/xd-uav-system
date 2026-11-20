@@ -168,6 +168,35 @@ std::string lower(std::string value) {
   return value;
 }
 
+bool hasConfiguredColor(const std::string &value) {
+  const std::string color = lower(value);
+  return color == "red" || color == "green" || color == "blue" ||
+      color == "white" || color == "black";
+}
+
+std::string jsonEscape(const std::string &value) {
+  std::ostringstream escaped;
+  for (unsigned char ch : value) {
+    switch (ch) {
+      case '"': escaped << "\\\""; break;
+      case '\\': escaped << "\\\\"; break;
+      case '\b': escaped << "\\b"; break;
+      case '\f': escaped << "\\f"; break;
+      case '\n': escaped << "\\n"; break;
+      case '\r': escaped << "\\r"; break;
+      case '\t': escaped << "\\t"; break;
+      default:
+        if (ch < 0x20) {
+          const char hex[] = "0123456789abcdef";
+          escaped << "\\u00" << hex[(ch >> 4) & 0x0f] << hex[ch & 0x0f];
+        } else {
+          escaped << static_cast<char>(ch);
+        }
+    }
+  }
+  return escaped.str();
+}
+
 cv::Mat imageToBgr(const sensor_msgs::Image &message) {
   if (message.width == 0 || message.height == 0) {
     throw std::runtime_error("image dimensions must be positive");
@@ -503,7 +532,17 @@ class FlowDetections {
     if (tracks_.empty()) {
       previous_gray_.release();
       previous_stamp_ = stamp;
-      return {};
+      // If this detector frame could not seed LK tracks, keep the latest
+      // detector boxes visible between rate-limited inference calls until they expire.
+      std::vector<Detection> cached;
+      for (const auto &detection : detections) {
+        if (detection.detector_stamp > 0.0 && stamp >= detection.detector_stamp &&
+            stamp - detection.detector_stamp <= max_age &&
+            validBox(detection.box, frame.size())) {
+          cached.push_back(detection);
+        }
+      }
+      return cached;
     }
     const double dt = stamp - previous_stamp_;
     if (dt <= 0.0 || dt > max_age || previous_gray_.empty()) {
@@ -517,6 +556,19 @@ class FlowDetections {
     advance(gray, camera_transform);
     previous_gray_ = gray;
     previous_stamp_ = stamp;
+    if (tracks_.empty()) {
+      // Keep the last YOLO boxes visible on the frame where LK loses its
+      // points; they remain eligible until the detector age limit expires.
+      std::vector<Detection> cached;
+      for (const auto &detection : detections) {
+        if (detection.detector_stamp > 0.0 && stamp >= detection.detector_stamp &&
+            stamp - detection.detector_stamp <= max_age &&
+            validBox(detection.box, frame.size())) {
+          cached.push_back(detection);
+        }
+      }
+      return cached;
+    }
     std::vector<Detection> output;
     for (const auto &track : tracks_) {
       if (stamp - track.detection.detector_stamp > max_age) continue;
@@ -758,6 +810,9 @@ class SmartTrackerFusionCpp {
   bool selectFromSnapshot(const Snapshot &snapshot, const Box &requested,
                           bool snap_to_detection, bool manual_seed,
                           int64_t *selected_id, std::string *error);
+  bool selectConfiguredColorCandidate(const Snapshot &snapshot,
+                                      const Detection &candidate,
+                                      const std::string &reason);
   void resetSelection();
   bool selectService(sar_yolo_detector::SelectSmartTrack::Request &request,
                      sar_yolo_detector::SelectSmartTrack::Response &response);
@@ -790,7 +845,9 @@ class SmartTrackerFusionCpp {
   bool trackingPhase();
   void drawOverlay(cv::Mat &frame, const std::vector<Detection> &detections);
   void publishEmptySelection(const std_msgs::Header &header);
-  void processColor(const cv::Mat &frame, double stamp);
+  bool initializeColorFromRoi(const Snapshot &snapshot, const Box &roi);
+  void processColor(const cv::Mat &frame, double stamp,
+                    std::vector<Detection> &detections);
   void processFusion(const cv::Mat &frame, double stamp,
                      const std::vector<Detection> &detections,
                      bool detector_updated, const cv::Mat &camera_transform,
@@ -856,6 +913,8 @@ class SmartTrackerFusionCpp {
   std::string auto_status_topic_;
   std::string manual_roi_topic_;
   std::string mode_{"fusion_tracker"};
+  bool shared_inference_enabled_{false};
+  uint64_t mode_epoch_{0};
   std::string color_name_;
   std::string model_version_;
   std::string mission_id_;
@@ -932,6 +991,7 @@ class SmartTrackerFusionCpp {
   double snapshot_max_age_{0.75};
 
   cv::Ptr<cv::TrackerKCF> kcf_;
+  int kcf_reseed_count_{0};
   bool selected_{false};
   bool manual_seed_{false};
   bool manual_active_{false};
@@ -941,6 +1001,7 @@ class SmartTrackerFusionCpp {
   int64_t selected_local_id_{-1};
   int selected_class_id_{-1};
   int64_t next_id_{900000001};
+  int64_t next_detector_id_{1};
   double selected_confidence_{0.0};
   double selected_stamp_{0.0};
   double last_fusion_stamp_{0.0};
@@ -957,6 +1018,8 @@ class SmartTrackerFusionCpp {
   int confirmation_frames_{3};
   double visual_hold_sec_{1.5};
   double prediction_hold_sec_{0.35};
+  double detector_id_memory_sec_{1.5};
+  double reacquire_detector_gain_{0.35};
   double reacquire_hold_sec_{8.0};
   double identity_ttl_sec_{60.0};
   double max_frame_gap_sec_{0.75};
@@ -1081,12 +1144,17 @@ void SmartTrackerFusionCpp::loadConfig() {
   pnh_.param("maximum_capture_age_sec", maximum_age_sec_, 2.0);
   pnh_.param("future_timestamp_tolerance_sec", future_tolerance_sec_, 0.02);
   pnh_.param("Default_Tracker", mode_, std::string("FusionTracker"));
+  pnh_.param("shared_inference", shared_inference_enabled_, false);
   mode_ = lower(mode_);
   if (mode_ == "fusiontracker" || mode_ == "fusion") mode_ = "fusion_tracker";
   if (mode_ == "featuretracker" || mode_ == "manualboxtracker" || mode_ == "manual") mode_ = "feature_tracker";
   if (mode_ == "colortracker" || mode_ == "colour_tracker") mode_ = "color_tracker";
   if (mode_ != "fusion_tracker" && mode_ != "feature_tracker" && mode_ != "color_tracker") {
     throw std::runtime_error("Default_Tracker must be FusionTracker, FeatureTracker, or ColorTracker");
+  }
+  if (!shared_inference_enabled_) {
+    throw std::runtime_error(
+        "The C++ SmartTracker requires shared_inference:=true and a running shared YOLO provider");
   }
 
   if (model_path_.empty()) throw std::runtime_error("model_path is required");
@@ -1129,6 +1197,8 @@ void SmartTrackerFusionCpp::loadConfig() {
 
   pnh_.param("FusionTracker/visual_hold_sec", visual_hold_sec_, 1.5);
   pnh_.param("FusionTracker/prediction_hold_sec", prediction_hold_sec_, 0.35);
+  pnh_.param("FusionTracker/detector_id_memory_sec", detector_id_memory_sec_, 1.5);
+  pnh_.param("FusionTracker/reacquire_detector_gain", reacquire_detector_gain_, 0.35);
   pnh_.param("FusionTracker/reacquire_hold_sec", reacquire_hold_sec_, 8.0);
   pnh_.param("FusionTracker/identity_memory_ttl_sec", identity_ttl_sec_, 60.0);
   pnh_.param("FusionTracker/manual_seed_visual_without_yolo", manual_seed_visual_without_yolo_, true);
@@ -1149,6 +1219,8 @@ void SmartTrackerFusionCpp::loadConfig() {
   pnh_.param("FusionTracker/minimum_maintenance_confidence", min_maintenance_confidence_, 0.10);
   pnh_.param("FusionTracker/local_template_refresh_sec", local_template_refresh_sec_, 0.75);
   pnh_.param("FusionTracker/reacquire_confirm_frames", confirmation_frames_, 3);
+  detector_id_memory_sec_ = std::max(0.0, detector_id_memory_sec_);
+  reacquire_detector_gain_ = clamp01(reacquire_detector_gain_);
   pnh_.param("FusionTracker/selection_max_frames", snapshot_max_frames_, 24);
   int snapshot_bytes = 25165824;
   pnh_.param("FusionTracker/selection_max_bytes", snapshot_bytes, snapshot_bytes);
@@ -1186,6 +1258,7 @@ void SmartTrackerFusionCpp::loadConfig() {
   pnh_.param("AutoSelect/stable_frames", auto_select_stable_frames_, 5);
   pnh_.param("AutoSelect/minimum_confidence", auto_select_min_confidence_, 0.0);
   pnh_.param("AutoSelect/max_frame_gap_sec", auto_select_max_gap_, 1.0);
+  color_waiting_roi_ = mode_ == "color_tracker" && !hasConfiguredColor(color_name_);
 
   pnh_.param("PhaseOverlay/enabled", phase_overlay_enabled_, false);
   pnh_.param<std::string>("PhaseOverlay/input_detections_topic", phase_detection_topic_, "track/selected_detections");
@@ -1258,8 +1331,10 @@ void SmartTrackerFusionCpp::createRosApi() {
   auto_status.data = auto_select_enabled_;
   auto_status_pub_.publish(auto_status);
 
-  info_client_ = nh_.serviceClient<sar_yolo_detector::GetSharedModelInfo>(inference_base_ + "/info", true);
-  inference_client_ = nh_.serviceClient<sar_yolo_detector::RunSharedInference>(inference_base_ + "/detect", true);
+  // The model server is elected from several standby nodes. Do not retain a
+  // TCPROS connection to a provider that may have released the model lock.
+  info_client_ = nh_.serviceClient<sar_yolo_detector::GetSharedModelInfo>(inference_base_ + "/info", false);
+  inference_client_ = nh_.serviceClient<sar_yolo_detector::RunSharedInference>(inference_base_ + "/detect", false);
   ROS_INFO_STREAM("C++ SmartTracker ROS API ready; image=" << input_topic_ << " annotated=" << annotated_topic_
       << " inference=" << inference_base_);
 }
@@ -1480,7 +1555,13 @@ bool SmartTrackerFusionCpp::requestDetections(const cv::Mat &frame,
     }
   }
   if (!inference_client_.waitForExistence(ros::Duration(0.5))) {
-    last_error_ = "shared TensorRT inference service is unavailable";
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      last_error_ = "shared TensorRT inference service is unavailable";
+    }
+    ROS_WARN_STREAM_THROTTLE(5.0,
+        "Shared YOLO inference request skipped: service is unavailable at "
+        << inference_base_ << "/detect");
     return false;
   }
 
@@ -1510,18 +1591,34 @@ bool SmartTrackerFusionCpp::requestDetections(const cv::Mat &frame,
   call.request.max_detections = static_cast<uint32_t>(max_detections_);
   call.request.image_size = inference_image_size_;
   const auto started = SteadyClock::now();
-  if (!inference_client_.call(call) || !call.response.success) {
-    last_error_ = call.response.message.empty() ? "shared TensorRT inference request failed" : call.response.message;
+  const bool service_call_succeeded = inference_client_.call(call);
+  if (!service_call_succeeded || !call.response.success) {
+    const std::string message = !service_call_succeeded
+        ? "ROS service transport call failed at " + inference_base_ + "/detect"
+        : (call.response.message.empty()
+            ? "shared TensorRT provider rejected the inference request without a reason"
+            : call.response.message);
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      last_error_ = message;
+    }
+    ROS_WARN_STREAM_THROTTLE(5.0,
+        "Shared YOLO inference request failed: " << message);
     return false;
   }
   const double service_ms = std::chrono::duration<double, std::milli>(SteadyClock::now() - started).count();
   const double scale_x = source_width / static_cast<double>(input.cols);
   const double scale_y = source_height / static_cast<double>(input.rows);
+  const size_t raw_detection_count = call.response.detections.size();
+  size_t class_filtered_count = 0;
   detections->clear();
   detections->reserve(call.response.detections.size());
   for (const auto &raw : call.response.detections) {
     if (!allowed_class_ids_.empty() &&
-        std::find(allowed_class_ids_.begin(), allowed_class_ids_.end(), raw.class_id) == allowed_class_ids_.end()) continue;
+        std::find(allowed_class_ids_.begin(), allowed_class_ids_.end(), raw.class_id) == allowed_class_ids_.end()) {
+      ++class_filtered_count;
+      continue;
+    }
     Detection detection;
     detection.id = raw.track_id;
     detection.class_id = raw.class_id;
@@ -1546,27 +1643,52 @@ bool SmartTrackerFusionCpp::requestDetections(const cv::Mat &frame,
     }
     if (validBox(detection.box, frame.size())) detections->push_back(std::move(detection));
   }
-  (void)service_ms;
-  last_error_.clear();
+  ROS_INFO_STREAM_THROTTLE(5.0,
+      "Shared YOLO inference succeeded: model_results=" << raw_detection_count
+      << " accepted=" << detections->size()
+      << " class_filtered=" << class_filtered_count
+      << " service_ms=" << std::fixed << std::setprecision(1) << service_ms);
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    last_error_.clear();
+  }
   return true;
 }
 
 void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
   if (!image) return;
   const double stamp = image->header.stamp.toSec();
-  if (!std::isfinite(stamp) || stamp <= 0.0) return;
+  if (!std::isfinite(stamp) || stamp <= 0.0) {
+    ROS_WARN_THROTTLE(5.0, "SmartTracker skipped image with invalid/zero header stamp");
+    return;
+  }
   const double now_ros = ros::Time::now().toSec();
   if (now_ros > 0.0) {
     const double age = now_ros - stamp;
-    if (age < -future_tolerance_sec_ || (maximum_age_sec_ > 0.0 && age > maximum_age_sec_)) return;
+    if (age < -future_tolerance_sec_) {
+      ROS_WARN_STREAM_THROTTLE(5.0, "SmartTracker skipped future-dated image: age="
+          << std::fixed << std::setprecision(3) << age << " s");
+      return;
+    }
+    if (maximum_age_sec_ > 0.0 && age > maximum_age_sec_) {
+      ROS_WARN_STREAM_THROTTLE(5.0, "SmartTracker skipped stale image: age="
+          << std::fixed << std::setprecision(3) << age << " s, limit="
+          << maximum_age_sec_ << " s");
+      return;
+    }
   }
   cv::Mat frame = imageToBgr(*image);
   const double wall_now = std::chrono::duration<double>(SteadyClock::now().time_since_epoch()).count();
   bool run_inference = false;
+  std::string frame_mode;
+  uint64_t frame_mode_epoch = 0;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (stamp <= last_capture_stamp_) {
-      if (last_capture_stamp_ - stamp < 0.5) return;
+      if (last_capture_stamp_ - stamp < 0.5) {
+        ROS_WARN_THROTTLE(5.0, "SmartTracker skipped duplicate/out-of-order image timestamp");
+        return;
+      }
       resetSelection();
       flow_detections_.reset();
       snapshots_.clear();
@@ -1592,16 +1714,21 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
       previous_frame_.release();
     }
     last_capture_stamp_ = stamp;
-    run_inference = inference_max_fps_ <= 0.0 || last_inference_wall_ == 0.0 ||
-        wall_now - last_inference_wall_ >= 1.0 / inference_max_fps_;
+    frame_mode = mode_;
+    frame_mode_epoch = mode_epoch_;
+    run_inference = frame_mode == "fusion_tracker" &&
+        (inference_max_fps_ <= 0.0 || last_inference_wall_ == 0.0 ||
+         wall_now - last_inference_wall_ >= 1.0 / inference_max_fps_);
     if (run_inference) last_inference_wall_ = wall_now;
   }
 
   std::vector<Detection> new_detections;
   double inference_ms = 0.0;
+  bool inference_succeeded = false;
   if (run_inference) {
     const auto started = SteadyClock::now();
     if (requestDetections(frame, image->header, &new_detections)) {
+      inference_succeeded = true;
       inference_ms = std::chrono::duration<double, std::milli>(SteadyClock::now() - started).count();
     } else {
       std::lock_guard<std::mutex> lock(state_mutex_);
@@ -1615,20 +1742,56 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
   cv::Mat motion;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (run_inference && last_error_.empty()) {
+    const bool inference_result_current = mode_ == frame_mode && mode_epoch_ == frame_mode_epoch;
+    if (!inference_result_current) {
+      new_detections.clear();
+      inference_ms = 0.0;
+    }
+    if (run_inference && inference_result_current && inference_succeeded) {
+      // The shared C++ TensorRT provider returns frame-local negative IDs.
+      // Associate each new YOLO box to the previous detector frame so Fusion
+      // and KCF can keep a stable local identity across inference updates.
+      std::vector<bool> previous_used(last_detector_detections_.size(), false);
+      for (auto &detection : new_detections) {
+        if (detection.stable && detection.id >= 0) continue;
+        size_t best_index = last_detector_detections_.size();
+        double best_iou = 0.15;
+        for (size_t i = 0; i < last_detector_detections_.size(); ++i) {
+          const Detection &previous = last_detector_detections_[i];
+          if (previous_used[i] || !previous.stable || previous.id < 0 ||
+              previous.class_id != detection.class_id) continue;
+          const double overlap = boxIou(previous.box, detection.box);
+          if (overlap > best_iou) {
+            best_iou = overlap;
+            best_index = i;
+          }
+        }
+        if (best_index < last_detector_detections_.size()) {
+          detection.id = last_detector_detections_[best_index].id;
+          previous_used[best_index] = true;
+        } else {
+          detection.id = next_detector_id_++;
+        }
+        detection.stable = true;
+      }
       last_detector_detections_ = std::move(new_detections);
       last_detector_stamp_ = stamp;
       fresh = true;
     }
-    current_detections = last_detector_detections_;
-    for (auto &detection : current_detections) detection.detector_stamp = last_detector_stamp_;
-    std::vector<Box> motion_boxes;
-    for (const auto &detection : current_detections) motion_boxes.push_back(detection.box);
-    if (selected_ && result_.has_box) motion_boxes.push_back(result_.box);
-    const cv::Mat pose = motion_boxes.empty() ? cv::Mat() : poseRotation(*image);
-    motion = camera_motion_.update(frame, stamp, motion_boxes, pose);
-    current_detections = flow_detections_.update(frame, stamp, current_detections,
-        fresh, motion, max_frame_gap_sec_);
+    if (mode_ == "fusion_tracker") {
+      current_detections = last_detector_detections_;
+      for (auto &detection : current_detections) detection.detector_stamp = last_detector_stamp_;
+      std::vector<Box> motion_boxes;
+      for (const auto &detection : current_detections) motion_boxes.push_back(detection.box);
+      if (selected_ && result_.has_box) motion_boxes.push_back(result_.box);
+      const cv::Mat pose = motion_boxes.empty() ? cv::Mat() : poseRotation(*image);
+      motion = camera_motion_.update(frame, stamp, motion_boxes, pose);
+      current_detections = flow_detections_.update(frame, stamp, current_detections,
+          fresh, motion, max_frame_gap_sec_);
+    } else {
+      current_detections.clear();
+      motion.release();
+    }
 
     if (selected_ && kcf_ && !motion.empty() && !previous_frame_.empty() &&
         validateHomography(motion, frame.size())) {
@@ -1654,19 +1817,35 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
       }
       const Box transformed = transformBox(selected_box_, motion);
       if (validBox(transformed, frame.size())) {
-        if (pending_reacquire_count_ > 0) pending_reacquire_box_ = transformBox(pending_reacquire_box_, motion);
-        cv::Mat warped_previous;
-        cv::warpPerspective(previous_frame_, warped_previous, motion, frame.size());
-        selected_box_ = transformed;
-        try {
-          kcf_ = cv::TrackerKCF::create();
-          const cv::Rect roi(static_cast<int>(std::lround(transformed.x)),
-              static_cast<int>(std::lround(transformed.y)),
-              static_cast<int>(std::lround(transformed.w)),
-              static_cast<int>(std::lround(transformed.h)));
-          kcf_->init(warped_previous, roi);
-        } catch (const cv::Exception &) {
-          kcf_.release();
+        const cv::Point2d new_center = center(transformed);
+        const double center_shift = cv::norm(new_center - old_center);
+        const double width_change = std::abs(transformed.w - selected_box_.w) /
+            std::max(1.0, selected_box_.w);
+        const double height_change = std::abs(transformed.h - selected_box_.h) /
+            std::max(1.0, selected_box_.h);
+        // KCF already updates on the current frame. Re-warping the entire
+        // previous frame and rebuilding the filter for subpixel/near-static
+        // motion adds CPU cost without a meaningful correction.
+        constexpr double kMinCompensationShiftPx = 0.75;
+        constexpr double kMinCompensationScaleChange = 0.005;
+        const bool compensation_needed = center_shift >= kMinCompensationShiftPx ||
+            width_change >= kMinCompensationScaleChange ||
+            height_change >= kMinCompensationScaleChange;
+        if (compensation_needed) {
+          if (pending_reacquire_count_ > 0) pending_reacquire_box_ = transformBox(pending_reacquire_box_, motion);
+          cv::Mat warped_previous;
+          cv::warpPerspective(previous_frame_, warped_previous, motion, frame.size());
+          selected_box_ = transformed;
+          try {
+            kcf_ = cv::TrackerKCF::create();
+            const cv::Rect roi(static_cast<int>(std::lround(transformed.x)),
+                static_cast<int>(std::lround(transformed.y)),
+                static_cast<int>(std::lround(transformed.w)),
+                static_cast<int>(std::lround(transformed.h)));
+            kcf_->init(warped_previous, roi);
+          } catch (const cv::Exception &) {
+            kcf_.release();
+          }
         }
       }
     }
@@ -1728,7 +1907,7 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
         result_.observed = false;
       }
     } else if (mode_ == "color_tracker") {
-      processColor(frame, stamp);
+      processColor(frame, stamp, current_detections);
     } else {
       result_ = TrackResult();
     }
@@ -1745,7 +1924,8 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
       snapshot_bytes_ -= static_cast<size_t>(snapshots_.front().frame.total() * snapshots_.front().frame.elemSize());
       snapshots_.pop_front();
     }
-    if (fresh && auto_select_enabled_ && !selected_) updateAutoSelection(current_detections, frame, image);
+    if ((fresh || mode_ == "color_tracker") && auto_select_enabled_ && !selected_)
+      updateAutoSelection(current_detections, frame, image);
   }
 
   const double processing_ms = std::chrono::duration<double, std::milli>(SteadyClock::now() - processing_started).count();
@@ -1797,6 +1977,13 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
   const double horizon = std::min(absence, motion_horizon_sec_);
   predicted.x += velocity_.x * horizon;
   predicted.y += velocity_.y * horizon;
+  const auto smooth_box = [](const Box &prior, const Box &measurement, double gain) {
+    gain = clamp01(gain);
+    return Box{prior.x + gain * (measurement.x - prior.x),
+               prior.y + gain * (measurement.y - prior.y),
+               prior.w + gain * (measurement.w - prior.w),
+               prior.h + gain * (measurement.h - prior.h)};
+  };
   if (step > max_frame_gap_sec_ || long_recovery_) {
     kcf_.release();
     if (step > max_frame_gap_sec_) {
@@ -1816,6 +2003,7 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
         static_cast<int>(std::lround(selected_box_.h)));
     try { visual_valid = kcf_->update(frame, tracked); }
     catch (const cv::Exception &) { visual_valid = false; }
+    if (!visual_valid) kcf_.release();
     if (visual_valid) {
       visual = clipBox({static_cast<double>(tracked.x), static_cast<double>(tracked.y),
                         static_cast<double>(tracked.width), static_cast<double>(tracked.height)}, frame.size());
@@ -1868,9 +2056,12 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
         candidate.detector_stamp > stamp || !std::isfinite(candidate.confidence) ||
         candidate.confidence < min_maintenance_confidence_ || candidate.confidence > 1.0 ||
         !candidate.stable || candidate.id < 0 || !validBox(candidate.box, frame.size())) continue;
-    if (candidate.confidence < min_detector_confidence_ &&
-        !(candidate.id == selected_local_id_ && selected_local_id_ >= 0 && result_.observed &&
-          pending_reacquire_count_ == 0 && visual_valid && boxIou(visual, candidate.box) >= 0.30)) continue;
+    // A weak detection for the already selected stable ID can maintain the
+    // track if it passes the same spatial and appearance gates below. Keep
+    // the higher confidence threshold for acquiring or rebinding identities.
+    const bool maintains_selected_id = candidate.id == selected_local_id_ &&
+        selected_local_id_ >= 0;
+    if (candidate.confidence < min_detector_confidence_ && !maintains_selected_id) continue;
     if (selected_class_id_ >= 0 && candidate.class_id != selected_class_id_) {
       const auto first = class_group_by_id_.find(selected_class_id_);
       const auto second = class_group_by_id_.find(candidate.class_id);
@@ -1988,29 +2179,42 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
   if (match) {
     manual_seed_without_yolo_ = false;
     const bool agrees = visual_valid && boxIou(visual, match->box) >= 0.30;
-    Box fused = match->box;
+    Box measurement = match->box;
     std::string source = "yolo";
     if (agrees) {
       const double weight = std::max(0.5, detector_weight_ * match->confidence /
           std::max(0.01, detector_weight_ * match->confidence +
           (1.0 - detector_weight_) * visual_quality));
-      if (match->confidence < detector_authority_) {
-        fused = {weight * match->box.x + (1.0 - weight) * visual.x,
-                 weight * match->box.y + (1.0 - weight) * visual.y,
-                 weight * match->box.w + (1.0 - weight) * visual.w,
-                 weight * match->box.h + (1.0 - weight) * visual.h};
-      }
+      measurement = {weight * match->box.x + (1.0 - weight) * visual.x,
+                     weight * match->box.y + (1.0 - weight) * visual.y,
+                     weight * match->box.w + (1.0 - weight) * visual.w,
+                     weight * match->box.h + (1.0 - weight) * visual.h};
       source = "fused";
     }
+    if (agrees) kcf_reseed_count_ = 0;
+    else if (detector_updated) ++kcf_reseed_count_;
+    // Do not let a single detector update move the published target box
+    // directly. The constant-velocity prediction absorbs small detector jitter;
+    // a confirmed identity rebound starts at the new measurement immediately.
+    const double authority_span = std::max(0.01, detector_authority_ - min_detector_confidence_);
+    const double confidence_above_maintenance = clamp01(
+        (match->confidence - min_detector_confidence_) / authority_span);
+    const double detector_gain = rebound ? 1.0 :
+        std::max(0.28, std::min(0.62,
+            0.28 + 0.28 * confidence_above_maintenance +
+            (match->confidence >= detector_authority_ ? 0.06 : 0.0)));
+    const Box fused = smooth_box(predicted, measurement, detector_gain);
     const bool refresh = agrees && stamp - last_local_seed_stamp_ >= local_template_refresh_sec_ &&
         match->confidence >= min_detector_confidence_ && match->detector_stamp == stamp;
-    if (!agrees || rebound || refresh) {
+    const bool reseed_kcf = rebound || !kcf_ || refresh || kcf_reseed_count_ >= 2;
+    if (reseed_kcf) {
       try {
         kcf_ = cv::TrackerKCF::create();
-        kcf_->init(frame, cv::Rect(static_cast<int>(std::lround(match->box.x)),
-            static_cast<int>(std::lround(match->box.y)), static_cast<int>(std::lround(match->box.w)),
-            static_cast<int>(std::lround(match->box.h))));
+        kcf_->init(frame, cv::Rect(static_cast<int>(std::lround(fused.x)),
+            static_cast<int>(std::lround(fused.y)), static_cast<int>(std::lround(fused.w)),
+            static_cast<int>(std::lround(fused.h))));
         last_local_seed_stamp_ = stamp;
+        kcf_reseed_count_ = 0;
       } catch (const cv::Exception &) { kcf_.release(); }
     }
     if (rebound) {
@@ -2020,7 +2224,7 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
       const double observation_dt = stamp - last_observation_stamp_;
       if (observation_dt > 0.0) {
         const cv::Point2d measured_velocity = (center(fused) - center(selected_box_)) / observation_dt;
-        velocity_ = 0.6 * velocity_ + 0.4 * measured_velocity;
+        velocity_ = 0.8 * velocity_ + 0.2 * measured_velocity;
       }
     }
     selected_local_id_ = match->id;
@@ -2051,18 +2255,19 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
     result_.detector_stamp = match->detector_stamp;
   } else if (visual_valid && ((manual_seed_without_yolo_ && manual_seed_visual_without_yolo_) ||
       stamp - std::max(last_detector_for_selection_, selected_stamp_) <= visual_hold_sec_)) {
+    const Box filtered_visual = smooth_box(predicted, visual, 0.65);
     const double dt = stamp - last_observation_stamp_;
     if (dt > 0.0) {
-      const cv::Point2d measured = (center(visual) - center(selected_box_)) / dt;
-      velocity_ = 0.6 * velocity_ + 0.4 * measured;
+      const cv::Point2d measured = (center(filtered_visual) - center(selected_box_)) / dt;
+      velocity_ = 0.8 * velocity_ + 0.2 * measured;
     }
-    selected_box_ = visual;
+    selected_box_ = filtered_visual;
     last_observation_stamp_ = stamp;
     if (visual_quality >= 0.65 && visual_feature.size() == appearance_anchor_.size()) {
       for (size_t i = 0; i < visual_feature.size(); ++i)
         appearance_anchor_[i] = 0.95f * appearance_anchor_[i] + 0.05f * visual_feature[i];
     }
-    result_.box = visual;
+    result_.box = filtered_visual;
     result_.has_box = true;
     result_.observed = true;
     result_.source = "visual";
@@ -2091,16 +2296,19 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
   if (result_.observed) motion_continuous_ = true;
 }
 
-void SmartTrackerFusionCpp::processColor(const cv::Mat &frame, double stamp) {
+void SmartTrackerFusionCpp::processColor(const cv::Mat &frame, double stamp,
+    std::vector<Detection> &detections) {
   result_ = TrackResult();
-  if (color_waiting_roi_ || (!color_initialized_ && color_name_.empty())) {
+  detections.clear();
+  const std::string name = lower(color_name_);
+  const bool configured_color = hasConfiguredColor(name);
+  if (color_waiting_roi_ || (!color_initialized_ && !configured_color)) {
     result_.reason = "waiting_for_initial_roi";
     return;
   }
   cv::Mat hsv, mask;
   cv::cvtColor(frame, hsv, cv::COLOR_BGR2HSV);
-  const std::string name = lower(color_name_);
-  if (name == "red" || name.empty()) {
+  if (name == "red") {
     cv::Mat first, second;
     cv::inRange(hsv, cv::Scalar(0, 80, 50), cv::Scalar(12, 255, 255), first);
     cv::inRange(hsv, cv::Scalar(168, 80, 50), cv::Scalar(180, 255, 255), second);
@@ -2129,24 +2337,59 @@ void SmartTrackerFusionCpp::processColor(const cv::Mat &frame, double stamp) {
       cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernel_size, kernel_size)));
   std::vector<std::vector<cv::Point>> contours;
   cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-  double best_score = -1.0;
+  const bool follow_selection = selected_ && validBox(selected_box_, frame.size());
+  const cv::Point2d anchor = follow_selection ? center(selected_box_) : cv::Point2d();
+  const double max_jump = follow_selection
+      ? std::min(0.35 * std::hypot(frame.cols, frame.rows),
+                 std::max(48.0, 4.0 * std::hypot(selected_box_.w, selected_box_.h)))
+      : std::numeric_limits<double>::infinity();
+  double best_score = follow_selection ? std::numeric_limits<double>::infinity() : -1.0;
   Box best;
+  size_t best_index = 0;
   for (const auto &contour : contours) {
     const cv::Rect rect = cv::boundingRect(contour);
     if (rect.area() < minimum_color_area_ || rect.width < 4 || rect.height < 4) continue;
+    const Box candidate_box{static_cast<double>(rect.x), static_cast<double>(rect.y),
+                            static_cast<double>(rect.width), static_cast<double>(rect.height)};
     double score = cv::contourArea(contour);
-    if (selected_ && validBox(selected_box_, frame.size())) {
-      const Box candidate{static_cast<double>(rect.x), static_cast<double>(rect.y),
-                          static_cast<double>(rect.width), static_cast<double>(rect.height)};
-      score = 0.65 * score + 0.35 * boxIou(candidate, selected_box_) * frame.total();
+    bool eligible_to_follow_selected = true;
+    if (follow_selection) {
+      const double distance = cv::norm(center(candidate_box) - anchor);
+      if (distance > max_jump) {
+        // Keep this component in the full-frame color candidates. The jump
+        // gate applies only to maintaining the selected identity, as in the
+        // Python ColorTracker path.
+        eligible_to_follow_selected = false;
+      } else if (configured_color) {
+        // Python ColorTracker follows the nearest colour component to the UI
+        // selected box and rejects components that jump too far.
+        score = distance;
+      } else if (eligible_to_follow_selected) {
+        // ROI-learned color mode is a single-target tracker. Prefer the
+        // component overlapping the sampled ROI, then the nearest component.
+        score = -boxIou(candidate_box, selected_box_) * 1.0e6 + distance;
+      }
     }
-    if (score > best_score) {
+    Detection detection;
+    detection.id = static_cast<int64_t>(detections.size() + 1);
+    detection.class_id = color_class_id_;
+    detection.confidence = 0.5;
+    detection.box = candidate_box;
+    detection.stable = false;
+    detection.source = "color_detector";
+    detection.detector_stamp = stamp;
+    detections.push_back(std::move(detection));
+    if (eligible_to_follow_selected &&
+        ((follow_selection && score < best_score) || (!follow_selection && score > best_score))) {
       best_score = score;
-      best = {static_cast<double>(rect.x), static_cast<double>(rect.y),
-              static_cast<double>(rect.width), static_cast<double>(rect.height)};
+      best = candidate_box;
+      best_index = detections.size() - 1;
     }
   }
-  if (best_score < 0.0 || !validBox(best, frame.size())) {
+  const bool found = validBox(best, frame.size()) &&
+      (follow_selection ? best_score < std::numeric_limits<double>::infinity() : best_score >= 0.0);
+  if (!found) {
+    if (!configured_color) detections.clear();
     if (selected_) {
       result_.public_id = selected_id_;
       result_.local_id = selected_local_id_;
@@ -2156,16 +2399,102 @@ void SmartTrackerFusionCpp::processColor(const cv::Mat &frame, double stamp) {
     }
     return;
   }
+  if (!selected_) {
+    result_.reason = "color_candidates_waiting_for_selection";
+    return;
+  }
+  selected_box_ = best;
+  selected_confidence_ = detections[best_index].confidence;
+  last_observation_stamp_ = stamp;
+  detections[best_index].source = "color_detector_candidate";
+  if (!configured_color) {
+    Detection selected_detection = detections[best_index];
+    detections.assign(1, selected_detection);
+  }
+  result_ = {best, selected_id_, selected_local_id_, selected_class_id_, selected_confidence_,
+             0.0, "visual", "color_tracker", true, true};
+}
+
+bool SmartTrackerFusionCpp::selectConfiguredColorCandidate(const Snapshot &snapshot,
+    const Detection &candidate, const std::string &reason) {
+  if (!snapshot.image || mode_ != "color_tracker" || !hasConfiguredColor(color_name_) ||
+      !validBox(candidate.box, snapshot.frame.size())) return false;
+
+  const bool was_auto_selecting = auto_select_enabled_;
+  auto_select_enabled_ = false;
+  auto_select_count_ = 0;
+  auto_select_candidate_id_ = -1;
+  resetSelection();
   selected_ = true;
   manual_active_ = true;
   selected_id_ = manual_track_id_;
   selected_local_id_ = -1;
+  selected_class_id_ = candidate.class_id;
+  selected_box_ = candidate.box;
+  selected_confidence_ = candidate.confidence;
+  selected_stamp_ = snapshot.image->header.stamp.toSec();
+  last_observation_stamp_ = selected_stamp_;
+  result_ = {selected_box_, selected_id_, selected_local_id_, selected_class_id_,
+             selected_confidence_, 0.0, "visual", reason, true, true};
+  if (was_auto_selecting) {
+    auto_select_pub_status_ = false;
+    std_msgs::Bool status;
+    status.data = false;
+    auto_status_pub_.publish(status);
+  }
+  return true;
+}
+
+bool SmartTrackerFusionCpp::initializeColorFromRoi(const Snapshot &snapshot, const Box &roi) {
+  if (!snapshot.image || !validBox(roi, snapshot.frame.size())) return false;
+  const int x = std::max(0, static_cast<int>(std::floor(roi.x)));
+  const int y = std::max(0, static_cast<int>(std::floor(roi.y)));
+  const int right = std::min(snapshot.frame.cols, static_cast<int>(std::ceil(roi.x + roi.w)));
+  const int bottom = std::min(snapshot.frame.rows, static_cast<int>(std::ceil(roi.y + roi.h)));
+  if (right - x < 4 || bottom - y < 4) return false;
+
+  cv::Mat hsv;
+  cv::cvtColor(snapshot.frame(cv::Rect(x, y, right - x, bottom - y)), hsv, cv::COLOR_BGR2HSV);
+  int channels[] = {0, 1};
+  int sizes[] = {16, 8};
+  float hue[] = {0.0f, 180.0f}, saturation[] = {0.0f, 256.0f};
+  const float *ranges[] = {hue, saturation};
+  cv::Mat histogram;
+  cv::calcHist(&hsv, 1, channels, cv::Mat(), histogram, 2, sizes, ranges, true, false);
+  double max_bin = 0.0;
+  cv::minMaxLoc(histogram, nullptr, &max_bin);
+  if (!(max_bin > 1e-9)) return false;
+  // calcBackProject writes an 8-bit mask and processColor thresholds it at
+  // 35, so keep histogram bins in the same 0..255 range. L2-normalizing to
+  // values below 1 made every backprojection pixel fall below that threshold.
+  histogram *= 255.0 / max_bin;
+
+  const bool was_auto_selecting = auto_select_enabled_;
+  resetSelection();
+  color_histogram_.assign(histogram.ptr<float>(), histogram.ptr<float>() + histogram.total());
+  color_initialized_ = true;
+  color_waiting_roi_ = false;
+  color_name_ = "custom";
+  auto_select_enabled_ = false;
+  auto_select_count_ = 0;
+  selected_ = true;
+  manual_active_ = true;
+  manual_seed_ = false;
+  selected_id_ = manual_track_id_;
+  selected_local_id_ = -1;
   selected_class_id_ = color_class_id_;
-  selected_box_ = best;
+  selected_box_ = roi;
   selected_confidence_ = 0.5;
-  last_observation_stamp_ = stamp;
-  result_ = {best, selected_id_, -1, selected_class_id_, selected_confidence_,
-             last_detector_for_selection_, "visual", "color_tracker", true, true};
+  selected_stamp_ = snapshot.image->header.stamp.toSec();
+  last_observation_stamp_ = selected_stamp_;
+  result_ = {roi, selected_id_, selected_local_id_, selected_class_id_, selected_confidence_,
+             0.0, "visual", "color_roi_selected", true, true};
+  if (was_auto_selecting) {
+    std_msgs::Bool status;
+    status.data = false;
+    auto_status_pub_.publish(status);
+  }
+  return true;
 }
 
 void SmartTrackerFusionCpp::updateAutoSelection(const std::vector<Detection> &detections,
@@ -2203,9 +2532,15 @@ void SmartTrackerFusionCpp::updateAutoSelection(const std::vector<Detection> &de
   auto_select_last_stamp_ = stamp;
   if (auto_select_count_ < auto_select_stable_frames_) return;
   Snapshot snapshot{image, frame, detections};
-  int64_t id = -1;
-  std::string error;
-  if (selectFromSnapshot(snapshot, winner->box, true, false, &id, &error)) {
+  bool selected = false;
+  if (mode_ == "color_tracker" && hasConfiguredColor(color_name_)) {
+    selected = selectConfiguredColorCandidate(snapshot, *winner, "color_auto_selected");
+  } else {
+    int64_t id = -1;
+    std::string error;
+    selected = selectFromSnapshot(snapshot, winner->box, true, false, &id, &error);
+  }
+  if (selected) {
     auto_select_enabled_ = false;
     auto_select_pub_status_ = false;
     std_msgs::Bool status;
@@ -2394,11 +2729,19 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
     selected_stamp = last_detector_for_selection_;
   }
 
-  std::vector<Detection> output = detections;
+  // FusionTracker publishes YOLO candidates; ColorTracker publishes color
+  // candidates. FeatureTracker only publishes a manually selected target.
+  std::vector<Detection> output =
+      (mode == "fusion_tracker" || mode == "color_tracker")
+      ? detections : std::vector<Detection>{};
   const bool selected_observed = has_selection && selected.observed && selected.has_box;
-  if (selected_observed) {
-    output.erase(std::remove_if(output.begin(), output.end(), [local_id](const Detection &detection) {
-      return local_id >= 0 && detection.id == local_id;
+  const bool selected_coasting = has_selection && selected.has_box &&
+      selected.source == "prediction";
+  const bool selected_publishable = selected_observed || selected_coasting;
+  if (selected_publishable) {
+    output.erase(std::remove_if(output.begin(), output.end(), [local_id, mode, &selected](const Detection &detection) {
+      return (local_id >= 0 && detection.id == local_id) ||
+          (mode == "color_tracker" && boxIou(detection.box, selected.box) >= 0.50);
     }), output.end());
     Detection target;
     target.id = selected.public_id;
@@ -2408,7 +2751,8 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
     target.stable = true;
     target.geometry = "aabb";
     target.detector_stamp = selected.detector_stamp > 0.0 ? selected.detector_stamp : selected_stamp;
-    target.source = selected.source == "visual" ? "visual_tracker" : "detector";
+    target.source = selected.source == "visual" ? "visual_tracker" :
+        (selected.source == "prediction" ? "prediction" : "detector");
     output.push_back(target);
   }
 
@@ -2459,15 +2803,16 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
 
   for (const auto &item : output) append_detection(item, &tracked_array, &fusion_array);
   tracked_pub_.publish(tracked_array);
-  fusion_pub_.publish(fusion_array);
+  if (mode == "fusion_tracker") fusion_pub_.publish(fusion_array);
 
-  if (fresh) {
+  if (mode != "fusion_tracker" || fresh) {
     sar_yolo_detector::FusionDetection2DArray observations;
     observations.header = image->header;
     observations.provenance = provenance;
     observations.image_width = image->width;
     observations.image_height = image->height;
-    for (const auto &item : detections) {
+    const auto &observation_items = mode == "fusion_tracker" ? detections : output;
+    for (const auto &item : observation_items) {
       sar_yolo_detector::FusionDetection2D entry;
       sar_yolo_detector::TrackedDetection2D target;
       target.track_id = item.id;
@@ -2483,8 +2828,10 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
       hypothesis.score = clamp01(item.confidence);
       target.detection.results.push_back(hypothesis);
       entry.target = target;
-      entry.measurement_source = "detector";
-      entry.last_detector_stamp = image->header.stamp;
+      entry.measurement_source = mode == "fusion_tracker"
+          ? "detector" : (item.source.empty() ? "visual_tracker" : item.source);
+      entry.last_detector_stamp = mode == "fusion_tracker" && item.detector_stamp > 0.0
+          ? ros::Time(item.detector_stamp) : ros::Time(0);
       observations.detections.push_back(entry);
     }
     observations_pub_.publish(observations);
@@ -2493,7 +2840,7 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
   sar_yolo_detector::TrackedDetection2DArray selected_array;
   selected_array.header = image->header;
   selected_array.provenance = provenance;
-  if (selected_observed) {
+  if (selected_publishable) {
     auto found = std::find_if(output.begin(), output.end(), [public_id](const Detection &detection) {
       return detection.id == public_id;
     });
@@ -2529,12 +2876,13 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
   state.tentative = selected.source == "ambiguous";
   state.data_is_stale = selected.source == "lost" || selected.source == "ambiguous";
   state.control_measurement_ready = selected.observed;
-  state.association_method = "fusion_" + selected.source;
+  state.association_method = mode == "fusion_tracker"
+      ? "fusion_" + selected.source : "manual_" + mode;
   state.freshness_reason = selected.reason;
   state.tracker_type = mode == "fusion_tracker" ? "YOLO+KCF" : mode;
-  state.backend = "shared_remote";
-  state.device = use_gpu_ ? "cuda" : "cpu";
-  state.model_path = model_path_;
+  state.backend = mode == "fusion_tracker" ? "shared_remote" : "opencv";
+  state.device = mode == "fusion_tracker" && use_gpu_ ? "cuda" : "cpu";
+  state.model_path = mode == "fusion_tracker" ? model_path_ : "";
   state.detection_count = static_cast<uint32_t>(output.size());
   state.frame_processing_ms = static_cast<float>(processing_ms);
   if (selected.detector_stamp > 0.0 && image->header.stamp.toSec() >= selected.detector_stamp) {
@@ -2552,6 +2900,8 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
       << "\",\"reason\":\"" << selected.reason << "\",\"observed\":"
       << (selected.observed ? "true" : "false")
       << ",\"detection_count\":" << output.size()
+      << ",\"detector_updated\":" << (fresh ? "true" : "false")
+      << ",\"inference_error\":\"" << jsonEscape(error) << "\""
       << ",\"inference_ms\":" << inference_ms
       << ",\"processing_ms\":" << processing_ms
       << ",\"camera_motion_source\":\"" << camera_motion_.source() << "\""
@@ -2570,7 +2920,6 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
       last_annotated_wall_ = wall_now;
     }
   }
-  (void)error;
   (void)manual_active;
 }
 
@@ -2594,6 +2943,7 @@ void SmartTrackerFusionCpp::resetSelection() {
   manual_active_ = false;
   manual_seed_ = false;
   kcf_.release();
+  kcf_reseed_count_ = 0;
   selected_box_ = Box();
   selected_id_ = -1;
   selected_local_id_ = -1;
@@ -2790,7 +3140,15 @@ bool SmartTrackerFusionCpp::switchMode(sar_yolo_detector::SwitchTrackingMode::Re
     response.active_mode = mode_;
     return true;
   }
-  if (!manual_enabled_) {
+  if (requested == "fusion_tracker" &&
+      !inference_client_.waitForExistence(ros::Duration(0.25))) {
+    response.success = false;
+    response.active_mode = mode_;
+    response.message = "Cannot enter fusion_tracker: shared YOLO inference service is unavailable at " +
+        inference_base_ + "/detect";
+    return true;
+  }
+  if (requested != "fusion_tracker" && !manual_enabled_) {
     response.success = false;
     response.message = "ManualBoxTracker is disabled";
     response.active_mode = mode_;
@@ -2810,30 +3168,56 @@ bool SmartTrackerFusionCpp::switchMode(sar_yolo_detector::SwitchTrackingMode::Re
     response.message = "Mode already active; existing target retained";
     response.active_mode = mode_;
     response.waiting_for_initial_roi = requested == "color_tracker" && color_waiting_roi_;
-    response.color_source = color_name_.empty() ? "roi" : "configured";
+    response.color_source = hasConfiguredColor(color_name_) ? "configured" : "roi";
     response.color_name = color_name_;
     return true;
   }
-  if (requested == "color_tracker") color_name_ = requested_color;
+  // An omitted color_name keeps the configured color; callers can request
+  // "custom" to enter ROI-learning mode explicitly.
+  if (requested == "color_tracker" && !requested_color.empty()) color_name_ = requested_color;
   mode_ = requested;
+  ++mode_epoch_;
   resetSelection();
   has_pending_roi_ = false;
   flow_detections_.reset();
   camera_motion_.reset();
+  last_detector_detections_.clear();
+  latest_detections_.clear();
+  last_detector_stamp_ = 0.0;
+  last_detector_for_selection_ = 0.0;
+  last_inference_wall_ = 0.0;
+  last_error_.clear();
   snapshots_.clear();
   snapshot_bytes_ = 0;
   auto_select_count_ = 0;
   auto_select_candidate_id_ = -1;
-  color_waiting_roi_ = requested == "color_tracker" && color_name_.empty();
+  if (requested != "fusion_tracker" && auto_select_enabled_) {
+    auto_select_enabled_ = false;
+    std_msgs::Bool status;
+    status.data = false;
+    auto_status_pub_.publish(status);
+  }
+  // A configured named color is searched over the full image immediately.
+  // Empty/custom color settings wait for an ROI to learn a histogram.
+  color_waiting_roi_ = requested == "color_tracker" && !hasConfiguredColor(color_name_);
   response.success = true;
   response.active_mode = mode_;
   response.waiting_for_initial_roi = requested == "feature_tracker" || color_waiting_roi_;
-  response.color_source = color_name_.empty() ? "roi" : "configured";
+  response.color_source = hasConfiguredColor(color_name_) ? "configured" : "roi";
   response.color_name = color_name_;
-  response.message = requested == "fusion_tracker"
-      ? "Switched to YOLO/feature fusion; select by ID, point or frame-bound ROI"
-      : (response.waiting_for_initial_roi ? "Switched to manual tracker; waiting for initial ROI"
-                                          : "Switched to configured color tracker");
+  if (requested == "fusion_tracker") {
+    response.message = "Switched to YOLO/feature fusion; select by ID, point or frame-bound ROI";
+  } else if (requested == "color_tracker") {
+    response.message = response.waiting_for_initial_roi
+        ? "Switched to color_tracker; waiting for initial ROI; YOLO inference paused"
+        : "Switched to configured color tracker; YOLO inference paused";
+  } else {
+    response.message = "Switched to feature_tracker; YOLO inference paused";
+  }
+  ROS_INFO_STREAM("Tracking mode switched to " << mode_
+      << (mode_ == "fusion_tracker"
+          ? "; shared YOLO inference resumed"
+          : "; shared YOLO inference paused; model server remains loaded"));
   return true;
 }
 
@@ -2879,6 +3263,42 @@ bool SmartTrackerFusionCpp::selectRoi(sar_yolo_detector::SelectFusionROI::Reques
   }
   const Box roi{static_cast<double>(request.roi.x_offset), static_cast<double>(request.roi.y_offset),
                 static_cast<double>(request.roi.width), static_cast<double>(request.roi.height)};
+  if (mode_ == "color_tracker") {
+    if (hasConfiguredColor(color_name_)) {
+      const double roi_area = roi.w * roi.h;
+      const Detection *winner = nullptr;
+      double best_overlap_ratio = -1.0;
+      double best_overlap = 0.0;
+      for (const auto &candidate : found->detections) {
+        const double left = std::max(roi.x, candidate.box.x);
+        const double top = std::max(roi.y, candidate.box.y);
+        const double right = std::min(roi.x + roi.w, candidate.box.x + candidate.box.w);
+        const double bottom = std::min(roi.y + roi.h, candidate.box.y + candidate.box.h);
+        const double overlap = std::max(0.0, right - left) * std::max(0.0, bottom - top);
+        if (overlap <= 0.0) continue;
+        const double box_area = candidate.box.w * candidate.box.h;
+        const double ratio = overlap / std::max(1.0, std::min(roi_area, box_area));
+        if (ratio > best_overlap_ratio ||
+            (ratio == best_overlap_ratio && overlap > best_overlap)) {
+          winner = &candidate;
+          best_overlap_ratio = ratio;
+          best_overlap = overlap;
+        }
+      }
+      response.success = winner && selectConfiguredColorCandidate(*found, *winner, "color_roi_selected");
+      response.message = response.success
+          ? "Configured-color candidate selected by ROI"
+          : "ROI did not overlap a detected color box";
+      response.selected_target_id = response.success ? manual_track_id_ : -1;
+      return true;
+    }
+    response.success = initializeColorFromRoi(*found, roi);
+    response.message = response.success
+        ? "ColorTracker initialized from the selected ROI; YOLO inference remains paused"
+        : "ColorTracker ROI is invalid or has no usable color histogram";
+    response.selected_target_id = response.success ? manual_track_id_ : -1;
+    return true;
+  }
   int64_t selected_id = -1;
   std::string error;
   response.success = selectFromSnapshot(*found, roi, !manual_seed, manual_seed, &selected_id, &error);
@@ -2931,16 +3351,25 @@ bool SmartTrackerFusionCpp::selectPoint(sar_yolo_detector::SelectFusionPoint::Re
 bool SmartTrackerFusionCpp::autoSelect(std_srvs::SetBool::Request &request,
     std_srvs::SetBool::Response &response) {
   std::lock_guard<std::mutex> lock(state_mutex_);
-  const bool supported = mode_ == "fusion_tracker" || (mode_ == "color_tracker" && !color_name_.empty());
+  const bool color_search_ready = mode_ == "color_tracker" &&
+      (hasConfiguredColor(color_name_) || color_initialized_);
+  const bool supported = mode_ == "fusion_tracker" || color_search_ready;
   if (request.data && !supported) {
     auto_select_enabled_ = false;
     response.success = false;
-    response.message = "Auto target selection requires FusionTracker or configured-color ColorTracker";
+    response.message = "Auto selection requires FusionTracker or a configured color/initialized ColorTracker ROI";
   } else {
     auto_select_enabled_ = request.data;
+    if (mode_ == "color_tracker") {
+      color_waiting_roi_ = !color_initialized_ && !hasConfiguredColor(color_name_);
+    }
     response.success = true;
     response.message = request.data
-        ? "Auto target selection started; waiting for stable detections"
+        ? (mode_ == "color_tracker"
+            ? (hasConfiguredColor(color_name_)
+                ? "Whole-image search for the configured color started"
+                : "Whole-image search from the ROI-learned color histogram started")
+            : "Auto target selection started; waiting for stable detections")
         : "Auto target selection stopped";
   }
   auto_select_count_ = 0;
@@ -2977,13 +3406,51 @@ void SmartTrackerFusionCpp::pointCallback(const geometry_msgs::PointStampedConst
     int64_t id = -1;
     std::string error;
     selectFromSnapshot(snapshot, winner->box, true, false, &id, &error);
+  } else if (mode_ == "color_tracker" && hasConfiguredColor(color_name_)) {
+    const Detection *winner = nullptr;
+    double best_distance = std::numeric_limits<double>::infinity();
+    double best_center_distance = std::numeric_limits<double>::infinity();
+    double best_confidence = -1.0;
+    for (const auto &candidate : snapshot.detections) {
+      const double dx = std::max({candidate.box.x - x, 0.0,
+                                  x - candidate.box.x - candidate.box.w});
+      const double dy = std::max({candidate.box.y - y, 0.0,
+                                  y - candidate.box.y - candidate.box.h});
+      const double distance = dx * dx + dy * dy;
+      const cv::Point2d candidate_center = center(candidate.box);
+      const double center_distance = std::pow(candidate_center.x - x, 2.0) +
+          std::pow(candidate_center.y - y, 2.0);
+      if (distance < best_distance ||
+          (distance == best_distance && center_distance < best_center_distance) ||
+          (distance == best_distance && center_distance == best_center_distance &&
+           candidate.confidence > best_confidence)) {
+        winner = &candidate;
+        best_distance = distance;
+        best_center_distance = center_distance;
+        best_confidence = candidate.confidence;
+      }
+    }
+    if (winner) {
+      selectConfiguredColorCandidate(snapshot, *winner, "color_pixel_selected");
+    } else {
+      resetSelection();
+      publishEmptySelection(snapshot.image->header);
+      ROS_WARN_THROTTLE(2.0, "Ignoring color target click: no matching color boxes");
+    }
   } else {
     const int side = std::min({20, snapshot.frame.cols, snapshot.frame.rows});
     const int x0 = std::max(0, std::min(snapshot.frame.cols - side, static_cast<int>(std::lround(x)) - side / 2));
     const int y0 = std::max(0, std::min(snapshot.frame.rows - side, static_cast<int>(std::lround(y)) - side / 2));
-    pending_roi_ = {static_cast<double>(x0), static_cast<double>(y0), static_cast<double>(side), static_cast<double>(side)};
-    has_pending_roi_ = true;
-    if (mode_ == "color_tracker" && color_name_.empty()) color_waiting_roi_ = true;
+    const Box roi{static_cast<double>(x0), static_cast<double>(y0),
+                  static_cast<double>(side), static_cast<double>(side)};
+    if (mode_ == "color_tracker") {
+      if (!initializeColorFromRoi(snapshot, roi)) {
+        ROS_WARN_THROTTLE(2.0, "ColorTracker click ROI is too small or has no usable color histogram");
+      }
+    } else {
+      pending_roi_ = roi;
+      has_pending_roi_ = true;
+    }
   }
 }
 
@@ -2992,25 +3459,45 @@ void SmartTrackerFusionCpp::manualRoiCallback(const sensor_msgs::RegionOfInteres
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (snapshots_.empty()) return;
   const Snapshot &snapshot = snapshots_.back();
+  if (mode_ == "color_tracker" && (roi->width == 0 || roi->height == 0)) {
+    resetSelection();
+    color_waiting_roi_ = !hasConfiguredColor(color_name_);
+    publishEmptySelection(snapshot.image ? snapshot.image->header : latest_header_);
+    return;
+  }
   const Box box{static_cast<double>(roi->x_offset), static_cast<double>(roi->y_offset),
                 static_cast<double>(roi->width), static_cast<double>(roi->height)};
   if (!validBox(box, snapshot.frame.size())) return;
-  if (mode_ == "color_tracker" && color_name_.empty()) {
-    const cv::Rect rect(static_cast<int>(box.x), static_cast<int>(box.y), static_cast<int>(box.w), static_cast<int>(box.h));
-    cv::Mat hsv;
-    cv::cvtColor(snapshot.frame(rect), hsv, cv::COLOR_BGR2HSV);
-    int channels[] = {0, 1};
-    int sizes[] = {16, 8};
-    float hue[] = {0.0f, 180.0f}, saturation[] = {0.0f, 256.0f};
-    const float *ranges[] = {hue, saturation};
-    cv::Mat hist;
-    cv::calcHist(&hsv, 1, channels, cv::Mat(), hist, 2, sizes, ranges, true, false);
-    const double norm = cv::norm(hist, cv::NORM_L2);
-    if (norm > 1e-9) hist /= norm;
-    color_histogram_.assign(hist.ptr<float>(), hist.ptr<float>() + hist.total());
-    color_initialized_ = true;
-    color_waiting_roi_ = false;
-    color_name_ = "custom";
+  if (mode_ == "color_tracker") {
+    if (hasConfiguredColor(color_name_)) {
+      const double roi_area = box.w * box.h;
+      const Detection *winner = nullptr;
+      double best_overlap_ratio = -1.0;
+      double best_overlap = 0.0;
+      for (const auto &candidate : snapshot.detections) {
+        const double left = std::max(box.x, candidate.box.x);
+        const double top = std::max(box.y, candidate.box.y);
+        const double right = std::min(box.x + box.w, candidate.box.x + candidate.box.w);
+        const double bottom = std::min(box.y + box.h, candidate.box.y + candidate.box.h);
+        const double overlap = std::max(0.0, right - left) * std::max(0.0, bottom - top);
+        if (overlap <= 0.0) continue;
+        const double box_area = candidate.box.w * candidate.box.h;
+        const double ratio = overlap / std::max(1.0, std::min(roi_area, box_area));
+        if (ratio > best_overlap_ratio ||
+            (ratio == best_overlap_ratio && overlap > best_overlap)) {
+          winner = &candidate;
+          best_overlap_ratio = ratio;
+          best_overlap = overlap;
+        }
+      }
+      if (!winner || !selectConfiguredColorCandidate(snapshot, *winner, "color_roi_selected")) {
+        ROS_WARN_THROTTLE(2.0, "Color ROI did not overlap any detected color box");
+      }
+      return;
+    }
+    if (!initializeColorFromRoi(snapshot, box)) {
+      ROS_WARN_THROTTLE(2.0, "ColorTracker ROI has no usable color histogram");
+    }
     return;
   }
   int64_t id = -1;

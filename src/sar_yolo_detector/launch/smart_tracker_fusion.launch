@@ -50,6 +50,9 @@
     <param name="input_image_topic" value="$(arg input_image_topic)" />
     <param name="camera_info_topic" value="$(arg camera_info_topic)" />
     <param name="camera_motion_fixed_frame" value="$(arg camera_motion_fixed_frame)" />
+    <param name="shared_inference" value="$(arg shared_inference)" />
+    <param name="model_path" value="$(arg model_path)" />
+    <param name="model_sha256" value="$(arg model_sha256)" />
     <param name="tracked_detections_topic" value="$(arg tracked_detections_topic)" />
     <param name="fusion_detections_topic" value="$(arg fusion_detections_topic)" />
     <param name="fusion_observations_topic" value="$(arg fusion_observations_topic)" />

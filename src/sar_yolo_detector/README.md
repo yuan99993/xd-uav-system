@@ -1,11 +1,14 @@
 # sar_yolo_detector
 
 本包当前保留的主启动链是 `launch/xd_smart_tracker_fusion_integration.launch`。
-它启动 FusionTracker、共享 TensorRT 推理服务，以及向 XD 感知输入转发所选目标的桥接节点。
+默认使用 C++ tracker 和 C++ TensorRT 推理服务，并向 XD 感知输入转发所选目标。
+Python tracker/provider 仅在显式设置 `tracker_node_type` 与 `shared_model_server_type` 时使用。
 独立 SmartTracker 跟踪模式已移除；其配置命名空间仍保存 FusionTracker 使用的 YOLO 模型、类别和推理参数。
 
 ```bash
 roslaunch sar_yolo_detector xd_smart_tracker_fusion_integration.launch \
+  tracker_node_type:=sar_yolo_smart_tracker_cpp \
+  shared_model_server_type:=sar_yolo_shared_model_server_cpp \
   UAV_NAME:=uav1 \
   input_image_topic:=down_camera/image_raw \
   camera_info_topic:=down_camera/camera_info
@@ -18,12 +21,18 @@ roslaunch sar_yolo_detector xd_smart_tracker_fusion_integration.launch \
 - `config/vehicle_botsort.yaml`：BoT-SORT 设置
 - `config/fusion_tracker.yaml`：FusionTracker 设置
 
-默认模型为 `models/xd_vehicle_train7/xd_vehicle_train7_tegra_512.engine`，并在启动时校验
+默认模型为 `models/xd_vehicle_train7/xd_vehicle_train7_tegra_512_batch3.engine`，并在启动时校验
 SHA-256。启动多个无人机实例时，共享推理服务按模型摘要复用同一份 GPU 模型；每架无人机的跟踪状态仍然独立。
 
 FusionTracker、FeatureTracker 和 ColorTracker 共用同一个图像接收与帧调度节点。
 每帧按需缓存灰度/HSV 转换；没有待传播的光流目标且本次 YOLO 结果为空时，跳过无用的灰度转换和 LK 初始化。
 OpenCV 与 PyTorch CPU 线程数默认限制为 1，可在对应运行配置中调到 2–4；该限制用于防止多个 ROS/推理进程相互争抢 CPU。
+
+模式行为：
+
+- `fusion_tracker` 会按 `inference_max_fps` 请求 YOLO 检测，并发布到 `tracked_detections`。KCF 跟踪当前选中的目标；可通过点选/框选，或调用 `auto_select` 开始自动选择。尚未选中目标时，`selected_tracked_detections` 为空，但 YOLO 检测仍会发布。
+- `feature_tracker` 和 `color_tracker` 不请求 YOLO 推理；共享推理服务仍保持运行，模型不会因切换模式而卸载。ColorTracker 配置了 `red/green/blue/white/black` 时，会立即把全图色块作为候选框发布到 `tracked_detections`，但不会自动选中；只有 UI 点选/框选或显式开启 `auto_select` 后，`selected_tracked_detections` 才发布目标。颜色为空或为 `custom` 时先等待 ROI，再按 ROI 学到的颜色特征跟踪。
+- 切回 `fusion_tracker` 时会检查共享 YOLO 服务。若服务不可用，模式切换会失败并返回服务地址。节点的 `fusion_evidence` 会提供 `detector_updated` 与 `inference_error`，用于区分本帧没有新推理、推理失败和推理成功但未检出目标。
 
 主要输出：
 

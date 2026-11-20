@@ -1,13 +1,15 @@
 <launch>
   <!-- Isolated PixEagle/PT fusion entry, keeping the latest smart/selection topics. -->
-  <!-- Real Ultralytics .pt inference for the XD detection/localization stack.
+  <!-- C++ TensorRT YOLO inference for the XD detection/localization stack.
        This replaces the synthetic red-box detector but leaves xd_uav_detect
        independently configured and running. -->
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
   <!-- Unique suffix for a second (for example gimbal) camera instance. -->
   <arg name="instance_name" default="smart" /> 
   <arg name="tracking_mode" default="FusionTracker" />
+  <!-- Default deployment uses the C++ tracker and C++ TensorRT provider. -->
   <arg name="tracker_node_type" default="sar_yolo_smart_tracker_cpp" />
+  <arg name="shared_model_server_type" default="sar_yolo_shared_model_server_cpp" />
   <arg name="fusion_config" default="$(find sar_yolo_detector)/config/fusion_tracker.yaml" />
   <!-- 不要改这个instancename -->
   <arg name="config"
@@ -73,9 +75,10 @@
   <arg name="sensor_id" default="fixed_camera" />
 
   <group if="$(arg shared_inference)">
-    <node pkg="sar_yolo_detector" type="sar_yolo_shared_model_server_cpp"
+    <node pkg="sar_yolo_detector" type="$(arg shared_model_server_type)"
           name="sar_yolo_shared_model_$(arg UAV_NAME)_$(arg instance_name)"
           output="screen">
+      <env name="SAR_YOLO_SMART_PYTHON" value="$(arg python_executable)" />
       <param name="config" value="$(arg config)" />
       <param name="overlay_config" value="$(arg vehicle_config)" />
       <param name="model_path" value="$(arg model_path)" />

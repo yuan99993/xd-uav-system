@@ -826,7 +826,8 @@ class TaskAllocateCoordinator {
       if(name=="track")return xd_uav_task_execute::ExecuteTaskGoal::TRACK;
       if(name=="observe")return xd_uav_task_execute::ExecuteTaskGoal::OBSERVE;
       if(name=="intercept")return xd_uav_task_execute::ExecuteTaskGoal::INTERCEPT;
-      throw std::invalid_argument("post_arrival task_type must be arrive, track, observe or intercept");
+      if(name=="direct_control")return xd_uav_task_execute::ExecuteTaskGoal::TRACK;
+      throw std::invalid_argument("post_arrival task_type must be arrive, track, observe, intercept or direct_control");
     }
     const int value_int=static_cast<int>(xmlDouble(value,xd_uav_task_execute::ExecuteTaskGoal::TRACK));
     if(value_int<xd_uav_task_execute::ExecuteTaskGoal::ARRIVE||value_int>xd_uav_task_execute::ExecuteTaskGoal::INTERCEPT)
@@ -834,12 +835,29 @@ class TaskAllocateCoordinator {
     return static_cast<std::uint8_t>(value_int);
   }
 
+  std::string taskExecuteProfile(const RescueTaskRecord& task,const Vehicle& worker) const {
+    auto profile=xmlString(taskOption(task,worker,"follower_profile"),"");
+    if(!profile.empty())return profile;
+    auto type=xmlString(taskOption(task,worker,"task_type"),"");
+    std::transform(type.begin(),type.end(),type.begin(),[](unsigned char c){return std::tolower(c);});
+    return type=="direct_control"?"direct_control":"";
+  }
+
+  bool taskUsesDirectControl(const RescueTaskRecord& task,const Vehicle& worker) const {
+    auto profile=taskExecuteProfile(task,worker);
+    std::transform(profile.begin(),profile.end(),profile.begin(),[](unsigned char c){return std::tolower(c);});
+    if(post_arrival_mode_!="task_execute"||profile!="direct_control")return false;
+    try{return taskExecuteType(taskOption(task,worker,"task_type"))!=xd_uav_task_execute::ExecuteTaskGoal::ARRIVE;}
+    catch(const std::exception&){return false;}
+  }
+
   std::string taskExecuteHandoff(const RescueTaskRecord& task,const Vehicle& worker) const {
     const auto configured=xmlString(taskOption(task,worker,"handoff_mode"),task_execute_handoff_mode_);
     if(configured!="auto"&&configured!="visual"&&configured!="position")throw std::invalid_argument("invalid task_execute handoff_mode");
     if(configured!="auto")return configured;
-    const auto profile=xmlString(taskOption(task,worker,"follower_profile"),"");
-    if(profile.find("fw_metric_")==0)return "position";
+    auto profile=taskExecuteProfile(task,worker);
+    std::transform(profile.begin(),profile.end(),profile.begin(),[](unsigned char c){return std::tolower(c);});
+    if(profile.find("fw_metric_")==0||profile=="direct_control")return "position";
     const auto type=taskExecuteType(taskOption(task,worker,"task_type"));
     if(type==xd_uav_task_execute::ExecuteTaskGoal::OBSERVE||type==xd_uav_task_execute::ExecuteTaskGoal::INTERCEPT)return "position";
     return "visual";
@@ -854,7 +872,7 @@ class TaskAllocateCoordinator {
     goal.target_pose.pose.position.x=task.target_position[0];goal.target_pose.pose.position.y=task.target_position[1];goal.target_pose.pose.position.z=task.target_position[2];goal.target_pose.pose.orientation.w=1.0;
     const auto configured_track=static_cast<int>(xmlDouble(taskOption(task,worker,"local_track_id"),-1));
     goal.local_track_id=local_track_id==-2?configured_track:local_track_id;
-    goal.follower_profile=xmlString(taskOption(task,worker,"follower_profile"),"");
+    goal.follower_profile=taskExecuteProfile(task,worker);
     goal.required_execution_sec=std::max(0.0,xmlDouble(taskOption(task,worker,"required_execution_sec"),0.0));
     goal.maximum_duration_sec=std::max(0.0,xmlDouble(taskOption(task,worker,"maximum_duration_sec"),0.0));
     return goal;
@@ -881,7 +899,7 @@ class TaskAllocateCoordinator {
   }
 
   void handleTaskExecuteFailure(RescueTaskRecord& task,Vehicle& worker,const std::string& detail) {
-    const auto message="post-arrival task failed: "+detail;
+    const auto message="task_execute task failed: "+detail;
     if(task_execute_failure_policy_=="retry"){
       auto released=allocator_.releaseWorker(worker.name,message);if(released)registry_.setStatus(released->target_id,TARGET_CONFIRMED);
       worker_retry_after_[worker.name]=ros::Time::now().toSec()+std::max(0.0,task_execute_retry_delay_);
@@ -895,7 +913,7 @@ class TaskAllocateCoordinator {
   void taskExecutionActive(const std::string& worker,std::uint32_t token) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);auto active=active_task_executions_.find(worker);
     if(active==active_task_executions_.end()||active->second.second!=token)return;
-    auto task=allocator_.tasks().find(active->second.first);if(task!=allocator_.tasks().end())task->second.detail="post-arrival task_execute action is active";
+    auto task=allocator_.tasks().find(active->second.first);if(task!=allocator_.tasks().end())task->second.detail="task_execute action is active";
   }
 
   void taskExecutionFeedback(const std::string& worker,std::uint32_t token,
@@ -924,6 +942,8 @@ class TaskAllocateCoordinator {
   void cancelTaskExecution(const std::string& worker,const std::string& detail) {
     auto active=active_task_executions_.find(worker);if(active==active_task_executions_.end())return;
     auto client=task_execute_clients_.find(worker);if(client!=task_execute_clients_.end())client->second->cancelGoal();
+    auto vehicle=vehicles_.find(worker);
+    if(vehicle!=vehicles_.end()&&vehicle->second.backend=="direct_controller_test"&&vehicle->second.mobility!="fixedwing")publishDirectHold(vehicle->second);
     auto task=allocator_.tasks().find(active->second.first);if(task!=allocator_.tasks().end())task->second.detail=detail;
     active_task_executions_.erase(active);
   }
@@ -1204,11 +1224,27 @@ class TaskAllocateCoordinator {
       auto& task=allocator_.tasks().at(assignment.task.task_id);
       auto& worker=vehicles_.at(assignment.worker.name);
       registry_.setStatus(task.target_id,TARGET_ASSIGNED);
-      task.goal={{task.target_position[0],task.target_position[1],worker.position[2]}};
-      publishGoal(worker,task.goal,"rescue",task.task_id);
-      task.detail=worker.backend+" goal published";
+      if(taskUsesDirectControl(task,worker)){
+        // direct_control owns the whole point-to-point leg. Start it as soon
+        // as allocation assigns the target so the full XYZ target_pose reaches
+        // task_execute without waiting for the navigation backend to report
+        // REACHED at its usually wider acceptance radius.
+        task.goal=task.target_position;
+        startTaskExecution(task,worker,-1,"direct_control started from assigned XYZ target");
+      }else{
+        task.goal={{task.target_position[0],task.target_position[1],worker.position[2]}};
+        publishWorkerGoal(worker,task);
+        task.detail=worker.backend+" goal published";
+      }
     }
     publishState();
+  }
+
+  void publishWorkerGoal(Vehicle& worker,const RescueTaskRecord& task) {
+    if(worker.mobility=="fixedwing"&&worker.has_position){
+      std::vector<Vec3> path{worker.position,task.goal};
+      publishGoal(worker,task.goal,"rescue",task.task_id,&path);
+    }else publishGoal(worker,task.goal,"rescue",task.task_id);
   }
 
   void checkMissionComplete() {
@@ -1246,7 +1282,7 @@ class TaskAllocateCoordinator {
     std::lock_guard<std::recursive_mutex> lock(mutex_);if(mission_state_!=kPaused){res.success=false;res.message="only PAUSED mission can resume";return true;}
     mission_state_=kActive;mission_detail_="mission resumed by operator";publishMissionState();
     for(const auto& n:scouts_)publishNextScout(vehicles_.at(n));
-    for(const auto& n:workers_){auto& v=vehicles_.at(n);auto t=allocator_.workers().at(n).assigned_task;if(t){auto task=allocator_.tasks().find(*t);if(task!=allocator_.tasks().end())publishGoal(v,task->second.goal,"rescue",task->second.task_id);}}
+    for(const auto& n:workers_){auto& v=vehicles_.at(n);auto t=allocator_.workers().at(n).assigned_task;if(t){auto task=allocator_.tasks().find(*t);if(task!=allocator_.tasks().end())publishWorkerGoal(v,task->second);}}
     dispatchAssignments();res.success=true;res.message=mission_detail_;return true;
   }
 
@@ -1372,7 +1408,12 @@ class TaskAllocateCoordinator {
     for(const auto& entry:allocator_.tasks())if(entry.second.target_id==req.target_id){canonical_task=entry.first;break;}
     if(canonical_task)for(auto& item:vehicles_)if(item.second.active&&item.second.active->kind=="rescue"&&item.second.active->object_id==*canonical_task){std::string detail;if(!cancelVehicleGoal(item.second,"target rejected by operator",detail)){res.success=false;res.message="cannot cancel worker planner: "+detail;return true;}item.second.active.reset();}
     if(canonical_task)for(auto it=active_task_executions_.begin();it!=active_task_executions_.end();){if(it->second.first==*canonical_task){const auto worker=it->first;++it;cancelTaskExecution(worker,"target rejected by operator");}else ++it;}
-    if(canonical_task)for(auto it=worker_visual_waiting_.begin();it!=worker_visual_waiting_.end();)if(it->second==*canonical_task)it=worker_visual_waiting_.erase(it);else ++it;
+    if(canonical_task){
+      for(auto it=worker_visual_waiting_.begin();it!=worker_visual_waiting_.end();){
+        if(it->second==*canonical_task)it=worker_visual_waiting_.erase(it);
+        else ++it;
+      }
+    }
     allocator_.removeTargetTask(req.target_id);
     auto region=verification_region_by_target_.find(req.target_id);
     if(region!=verification_region_by_target_.end()){auto members=verification_targets_by_region_.find(region->second);if(members!=verification_targets_by_region_.end())members->second.erase(req.target_id);verification_region_by_target_.erase(region);}
