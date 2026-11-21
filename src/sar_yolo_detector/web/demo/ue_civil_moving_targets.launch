@@ -1,4 +1,5 @@
 <launch>
+  <arg name="platform_config" default="" />
   <arg name="ue_project" />
   <arg name="capture_fps" default="25" />
   <arg name="fov_profile" default="fixed" />
@@ -23,6 +24,7 @@
   <arg name="image_width" default="640" />
   <arg name="image_height" default="640" />
   <include file="$(find sar_yolo_detector)/web/demo/ue_dfine_v3_live.launch">
+    <arg name="platform_config" value="$(arg platform_config)" />
     <arg name="ue_project" value="$(arg ue_project)" />
     <arg name="capture_fps" value="$(arg capture_fps)" />
     <arg name="fov_profile" value="$(arg fov_profile)" />
@@ -79,4 +81,5 @@
   <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/jpeg_decode_device" value="$(arg jpeg_decode_device)" />
   <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/SmartTracker/SMART_TRACKER_DFINE_CUDA_GRAPH" value="$(arg dfine_cuda_graph)" type="bool" />
   <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/ManualBoxTracker/feature_tracker/minimum_motion_warp_px" value="$(arg minimum_motion_warp_px)" type="double" />
-<param name="/$(arg UAV_NAME)/fusion_web_preview/initial_mode" value="fusion_tracker" /></launch>
+<param name="/$(arg UAV_NAME)/fusion_web_preview/initial_mode" value="fusion_tracker" />  <rosparam if="$(eval arg('platform_config') != '')" command="load" ns="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3" file="$(arg platform_config)" />
+</launch>

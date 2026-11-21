@@ -57,4 +57,23 @@ class SoftDisplayTests(unittest.TestCase):
   for i in range(1,32):result=layer.step(self.image,1+i*.1,0,[])
   self.assertEqual(result,[])
 
+ def test_oversize_detection_rebuilds_on_current_frame(self):
+  layer=SoftTrackLayer(['car']);gray=cv2.cvtColor(self.image,cv2.COLOR_BGR2GRAY)
+  layer.associate(self.image,gray,self.rows,1.0)
+  first=next(iter(layer.tracks))
+  larger=[dict(box=[70,50,115,90],class_id=0,confidence=.9)]
+  layer.associate(self.image,gray,larger,1.05)
+  self.assertNotIn(first,layer.tracks)
+  self.assertEqual(len(layer.tracks),1)
+  track=next(iter(layer.tracks.values()))
+  self.assertEqual(track['box'],[70.,50.,115.,90.])
+  self.assertEqual(track['last_perception_stamp'],1.05)
+ def test_primary_switch_suppresses_new_primary_and_preserves_other_soft_track(self):
+  one=dict(id=700000001,box=[20,20,20,20],center=[30,30])
+  two=dict(id=700000002,box=[60,20,20,20],center=[70,30])
+  a=compose_display([one,two],7,[30,30,20,20],[])
+  b=compose_display([one,two],8,[70,30,20,20],[])
+  self.assertEqual([o['id'] for o in a],[two['id']])
+  self.assertEqual([o['id'] for o in b],[one['id']])
+
 if __name__=='__main__':unittest.main()

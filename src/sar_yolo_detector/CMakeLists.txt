@@ -317,6 +317,9 @@ install(DIRECTORY config launch training models docs web third_party tools ue_pl
   PATTERN "Intermediate" EXCLUDE
   PATTERN "*.pdb" EXCLUDE
 )
+install(FILES scripts/smart_tracker_node.py
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/scripts
+)
 install(FILES scripts/build_ue_stream_plugin.ps1
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
@@ -326,7 +329,9 @@ install(DIRECTORY archive/launch
 install(DIRECTORY test/fixtures
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/test
 )
-install(FILES test/test_ue_virtual_gimbal.py test/test_target_geometry.py test/test_selected_flow.py
+install(FILES test/test_box_fusion.py test/test_selected_detector_gate.py test/test_reselection_refresh.py
+  test/test_fusion_adapter.py test/test_lost_detector_dispatch.py
+  test/test_ue_virtual_gimbal.py test/test_target_geometry.py test/test_selected_flow.py
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/test
 )
 install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md

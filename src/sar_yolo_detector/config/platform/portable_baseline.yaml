@@ -1,0 +1,13 @@
+# Load under the smart tracker node's private namespace after base profiles.
+# These reproduce the current simulation settings; calibrate per platform.
+input_image_transport: raw
+input_image_queue_size: 1
+capture_gap_notice_sec: 0.15
+control_maximum_capture_age_sec: 0.75
+FusionTracker:
+  visual_fallback_gap_sec: 0.25
+  prediction_hold_sec: 0.65
+  visual_hold_sec: 3.0
+  max_frame_gap_sec: 0.75
+  selection_max_age_sec: 0.75
+  async_max_result_age_sec: 0.75

@@ -194,6 +194,7 @@ class SmartTrackerNode:
         self._stage_lock = threading.Lock()
         self._stage_counts = {}
         self._stage_last = {}
+        self._important_stage_last = {}
         self._epoch = 0
         self._model_busy = False
         self._image_mailbox = LatestMailbox()
@@ -428,6 +429,7 @@ class SmartTrackerNode:
         transport=rospy.get_param("~input_image_transport","raw")
         if transport not in ("raw","compressed"):raise ValueError("input_image_transport must be raw or compressed")
         self._civil_control_deadline=float(rospy.get_param("~control_maximum_capture_age_sec",0.))
+        self._capture_gap_notice_sec=max(0.,float(rospy.get_param("~capture_gap_notice_sec",.15)))
         from sar_yolo_detector.jpeg_decode import JPEGDecoder
         self._jpeg_decoder=JPEGDecoder(str(rospy.get_param("~jpeg_decode_device","cpu")),self._maximum_image_bytes)
         self._decoded_mailbox=LatestMailbox() if rospy.get_param("~async_decode",False) else None
@@ -440,7 +442,7 @@ class SmartTrackerNode:
             self._input_topic+("/compressed" if transport=="compressed" else ""),
             CompressedImage if transport=="compressed" else Image,
             self._image_callback,
-            queue_size=1,
+            queue_size=max(1, int(rospy.get_param("~input_image_queue_size", 1))),
             buff_size=16 * 1024 * 1024,
             tcp_nodelay=True,
         )
@@ -828,6 +830,11 @@ class SmartTrackerNode:
             counts = self._stage_counts.setdefault(mode, Counter())
             counts[stage] += 1
             self._stage_last[mode] = dict(stage=stage, **detail)
+            if stage in ('capture_gap', 'selection_request', 'strong_takeover_veto',
+                         'control_capture_deadline_exceeded', 'detector_gap_visual_fallback'):
+                if not hasattr(self, '_important_stage_last'):
+                    self._important_stage_last = {}
+                self._important_stage_last[stage] = dict(mode=mode, **detail)
 
     def _periodic_diagnostics(self, _event):
         self._updater.update()
@@ -846,6 +853,7 @@ class SmartTrackerNode:
             with self._stage_lock:
                 counts = {mode: dict(values) for mode, values in self._stage_counts.items()}
                 last = {mode: dict(value) for mode, value in self._stage_last.items()}
+                important = {stage: dict(value) for stage, value in self._important_stage_last.items()}
             payload = dict(
                 schema_version=1,
                 stamp=rospy.Time.now().to_sec(),
@@ -857,6 +865,7 @@ class SmartTrackerNode:
                 last_capture_stamp=self._last_capture_stamp.to_sec(),
                 stage_counts_by_mode=counts,
                 last_stage_by_mode=last,
+                important_stage_last=important,
                 dfine_backend=backend_trace,
                 scheduling=(self._detector_schedule.diagnostics() if hasattr(self,'_detector_schedule') else {}),
                 mailboxes=dict(image_replaced=self._image_mailbox.replaced,
@@ -982,6 +991,13 @@ class SmartTrackerNode:
                             self._result_mailbox.put(packet)
                             (getattr(self,"_decoded_mailbox",None) or self._image_mailbox).wake()
                         continue
+                    previous_stamp = getattr(self, "_last_input_stamp", rospy.Time(0))
+                    if not previous_stamp.is_zero():
+                        gap = (message.header.stamp - previous_stamp).to_sec()
+                        threshold = getattr(self, '_capture_gap_notice_sec', .15)
+                        if threshold > 0 and gap > threshold:
+                            self._record_stage('capture_gap', gap_sec=gap,
+                                               capture_stamp=message.header.stamp.to_sec())
                     self._last_input_stamp = message.header.stamp
                     self._pipeline_current = (epoch, message, frame)
                     if mode in ("smart_tracker", "fusion_tracker") and not self._model_busy:
@@ -1626,6 +1642,16 @@ class SmartTrackerNode:
                 self._record_stage('fusion_lens_template_refresh')
             if color_result is not None:
                 self._fusion.diagnostics['branches']['color']['context'] = getattr(color_result,'diagnostics',{})
+            vetoes = self._fusion.diagnostics.get('strong_takeover_vetoes', {})
+            if vetoes:
+                summary = [dict(box=list(c.box), confidence=float(c.confidence),
+                                class_id=int(c.class_id), detector_stamp=c.detector_stamp)
+                           for c in measured_candidates[:4]]
+                reference = getattr(self._fusion, '_detector_reference_box', None)
+                self._record_stage('strong_takeover_veto', reasons=dict(vetoes),
+                                   capture_stamp=stamp, selected_id=result.public_id,
+                                   reference_box=list(reference) if reference is not None else None,
+                                   candidates=summary)
             self._record_stage('fusion_arbiter_step', source=result.source,
                 observed=bool(result.observed), detector_updated=bool(new_detector_evidence),
                 selected_id=result.public_id)
@@ -1643,6 +1669,8 @@ class SmartTrackerNode:
         deadline=getattr(self,"_civil_control_deadline",0.)
         capture_age=(rospy.Time.now()-image.header.stamp).to_sec()
         if result.observed and deadline>0 and not 0<=capture_age<=deadline:
+            self._record_stage('control_capture_deadline_exceeded', capture_age_sec=capture_age,
+                               capture_stamp=image.header.stamp.to_sec())
             result=replace(result,box=None,source="lost",reason="control_capture_deadline_exceeded",confidence=0.)
         # A bounded original-image cache is used only by frame-bound selection.
         self._cache_fusion_snapshot(image, frame, candidates)
@@ -1997,6 +2025,8 @@ class SmartTrackerNode:
 
     def _select_fusion_roi(self, request):
         response = SelectFusionROIResponse()
+        self._record_stage('selection_request', clear=bool(request.clear_selection),
+                           capture_stamp=request.header.stamp.to_sec())
         with self._lock:
             if getattr(self, "_model_busy", False):
                 response.message = "BUSY: model switch in progress"

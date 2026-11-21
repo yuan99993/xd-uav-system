@@ -1,4 +1,5 @@
 <launch>
+  <arg name="platform_config" default="" />
   <arg name="feature_tracker_algorithm" default="" />
   <arg name="UAV_NAME" default="ue_test" />
   <arg name="instance_name" default="dfine_v3" />
@@ -22,6 +23,7 @@
   <arg name="bind_address" default="127.0.0.1" />
 
   <include file="$(find sar_yolo_detector)/launch/xd_smart_tracker_fusion_integration.launch">
+    <arg name="platform_config" value="$(arg platform_config)" />
     <arg name="feature_tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="instance_name" value="$(arg instance_name)" />

@@ -5,6 +5,7 @@
   <arg name="node_name" default="sar_yolo_smart_tracker" />
   <arg name="overlay_config" default="" />
   <arg name="tracking_mode" default="" />
+  <arg name="platform_config" default="" />
   <arg name="fusion_config" default="$(find sar_yolo_detector)/config/fusion_tracker_dfine_v3.yaml" />
   <arg name="input_image_topic" default="camera/image_raw" />
   <arg name="camera_info_topic" default="" />
@@ -73,5 +74,6 @@
            name="SmartTracker/SMART_TRACKER_MODEL_SHA256" value="$(arg model_sha256)" />
     <param if="$(eval arg('feature_tracker_algorithm') != '')"
            name="ManualBoxTracker/feature_tracker/tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
+    <rosparam if="$(eval arg('platform_config') != '')" command="load" file="$(arg platform_config)" />
   </node>
 </launch>

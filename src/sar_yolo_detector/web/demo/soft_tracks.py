@@ -48,7 +48,8 @@ class SoftTrackLayer:
         lo=points.min(axis=0);hi=points.max(axis=0)
         width,height=hi-lo
         # Drop visibly inflated overlays even when the rotated edges pass.
-        if width*height>2.5*seed_w*seed_h:return None
+        original_w,original_h=track.get('initial_size',track['seed_size'])
+        if width*height>min(2.5*seed_w*seed_h,2.5*original_w*original_h):return None
         box=self.clip([lo[0],lo[1],width,height],shape)
         return (box,quad) if box is not None else None
 
@@ -89,13 +90,20 @@ class SoftTrackLayer:
             if ranked and ranked[0][0]>=.30:
                 if len(ranked)>1 and ranked[1][0]>=.30 and ranked[0][0]-ranked[1][0]<.12:continue
                 identifier=ranked[0][1]
+                original_size=self.tracks[identifier]['initial_size']
+                if (box[2]>1.6*original_size[0] or box[3]>1.6*original_size[1]
+                        or box[2]*box[3]>2.0*original_size[0]*original_size[1]):
+                    del self.tracks[identifier]
+                    identifier=self.next_id
+                    self.next_id+=1
             else:
                 if any(overlap(box,t['box'])>.30 for t in self.tracks.values()):continue
                 if len(self.tracks)>=24:continue
                 identifier=self.next_id;self.next_id+=1
             points=self.points(gray,box)
             if points is None or len(points)<4:continue
-            self.tracks[identifier]=dict(box=box,class_id=row['class_id'],confidence=row['confidence'],
+            initial_size=self.tracks[identifier]['initial_size'] if identifier in self.tracks else box[2:]
+            self.tracks[identifier]=dict(box=box,initial_size=initial_size,class_id=row['class_id'],confidence=row['confidence'],
                 points=points,quad=self.corners(box),seed_size=box[2:],histogram=self.histogram(image,box),last_perception_stamp=stamp,visual_quality=1.)
             used.add(identifier)
 

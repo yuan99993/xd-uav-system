@@ -8,6 +8,7 @@
   <!-- Unique suffix for a second (for example gimbal) camera instance. -->
   <arg name="instance_name" default="smart" /> 
   <arg name="tracking_mode" default="" />
+  <arg name="platform_config" default="" />
   <arg name="fusion_config" default="$(find sar_yolo_detector)/config/fusion_tracker_dfine_v3.yaml" />
   <!-- 不要改这个instancename -->
   <arg name="config"
@@ -50,6 +51,7 @@
     <arg name="feature_tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
       <arg name="tracking_mode" value="$(arg tracking_mode)" />
       <arg name="fusion_config" value="$(arg fusion_config)" />
+      <arg name="platform_config" value="$(arg platform_config)" />
       <arg name="node_name" value="sar_yolo_smart_tracker_$(arg instance_name)" />
       <arg name="config" value="$(arg config)" />
       <arg name="overlay_config" value="$(arg vehicle_config)" />
