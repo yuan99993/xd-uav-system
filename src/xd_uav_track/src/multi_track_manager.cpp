@@ -736,8 +736,7 @@ ManagedDetectionFrame MultiTrackManager::update(
 
   // Create bounded new tracks for the unmatched detections.
   for (std::size_t index = 0; index < prepared.size(); ++index) {
-    if (prepared[index].message.measurement_source == "visual_tracker" ||
-        assigned_ids[index] >= 0 || ambiguous_detections[index] ||
+    if (assigned_ids[index] >= 0 || ambiguous_detections[index] ||
         prepared[index].message.confidence < std::max(
             impl_->config.minimum_new_track_confidence,
             impl_->config.high_confidence_threshold) ||

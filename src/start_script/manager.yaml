@@ -41,8 +41,8 @@ sensor_types:
     description: Point cloud or laser range sensor.
 
 parameters:
-  gimbal_attitude_bridge_script: /home/nvidia/image_compress/gimbal_attitude_bridge.py
-  gimbal_control_script: /home/nvidia/image_compress/gimbal_control.py
+  gimbal_attitude_bridge_script: "{workspace}/src/bridge/gimbal_attitude_bridge.py"
+  gimbal_control_script: "{workspace}/src/bridge/gimbal_control.py"
   video_stream_receiver_binary: "{workspace}/src/bridge/bin/video_stream_receiver"
   h264_sender_binary: "{workspace}/src/bridge/bin/h264_nal_multicast_sender"
   airsim_scene: SceneBasicDrone
@@ -218,11 +218,11 @@ vehicle_launches:
       - "_detection_topic:=/{name}/sar_yolo_detector/smart/selected_tracked_detections"
       - "_image_width:=1280"
       - "_image_height:=720"
-      - "_fov_x_deg:=45"
-      - "_kp_yaw:=0.05"
-      - "_kp_pitch:=0.02"
-      - "_ki_yaw:=0.05"
-      - "_ki_pitch:=0.03"
+      - "_fov_x_deg:=17"
+      - "_kp_yaw:=0.07"
+      - "_kp_pitch:=0.03"
+      - "_ki_yaw:=0.04"
+      - "_ki_pitch:=0.02"
       - "_ff_alpha:=0.0"
       - "_filter_alpha:=0.3"
       - "_deadzone_px:=8"

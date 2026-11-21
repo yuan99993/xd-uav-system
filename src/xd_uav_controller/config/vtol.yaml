@@ -50,7 +50,7 @@ fixedwing:
   vertical_control:
     altitude_time_constant: 3.5
     # 高度P环输出爬升率修正；积分项用于消除持续高度偏差，输出单位m/s。
-    altitude_integral_gain: 0.02
+    altitude_integral_gain: 0.05
     altitude_integral_climb_rate_limit: 1.0
     # 爬升率闭环直接修正俯仰角，单位rad/(m/s)；测量先低通滤波。
     climb_rate_pitch_gain: 0.06
@@ -93,7 +93,7 @@ fixedwing:
     # Dubins radius (the previous 0.95 rad produced the measured inner loops).
     maximum_roll: 0.6
     maximum_pitch: 0.45
-    maximum_climb_rate: 8.0
+    maximum_climb_rate: 14.0
     maximum_body_rate: [1.5, 2.0, 2.0]
 
   modes:

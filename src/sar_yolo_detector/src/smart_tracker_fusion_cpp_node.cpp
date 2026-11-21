@@ -57,6 +57,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <boost/function.hpp>
@@ -87,6 +88,7 @@ struct Detection {
   std::vector<float> polygon;
   double detector_stamp{0.0};
   std::string source{"detector"};
+  bool selected_identity_reacquire{false};
 };
 
 struct TrackResult {
@@ -130,6 +132,30 @@ double boxIou(const Box &a, const Box &b) {
   const double bottom = std::min(a.y + a.h, b.y + b.h);
   const double area = std::max(0.0, right - left) * std::max(0.0, bottom - top);
   return area / std::max(1.0, a.w * a.h + b.w * b.h - area);
+}
+
+bool duplicateTargetBoxes(const Box &a, int class_a, const Box &b, int class_b) {
+  const double iou = boxIou(a, b);
+  if (iou >= 0.72) return true;
+  if (class_a != class_b) return false;
+
+  const double left = std::max(a.x, b.x);
+  const double top = std::max(a.y, b.y);
+  const double right = std::min(a.x + a.w, b.x + b.w);
+  const double bottom = std::min(a.y + a.h, b.y + b.h);
+  const double intersection = std::max(0.0, right - left) *
+      std::max(0.0, bottom - top);
+  const double smaller_area = std::min(a.w * a.h, b.w * b.h);
+  const double contained_overlap = intersection / std::max(1.0, smaller_area);
+  const double scale = std::max(8.0,
+      std::hypot(std::max(a.w, b.w), std::max(a.h, b.h)));
+  const cv::Point2d a_center(a.x + a.w * 0.5, a.y + a.h * 0.5);
+  const cv::Point2d b_center(b.x + b.w * 0.5, b.y + b.h * 0.5);
+  const double center_distance = cv::norm(a_center - b_center) / scale;
+  if (contained_overlap >= 0.75 && center_distance <= 0.22) return true;
+
+  const double area_ratio = a.w * a.h / std::max(1.0, b.w * b.h);
+  return area_ratio >= 0.80 && area_ratio <= 1.25 && center_distance <= 0.15;
 }
 
 cv::Point2d center(const Box &box) {
@@ -301,6 +327,96 @@ std::vector<float> appearanceFeature(const cv::Mat &frame, const Box &box,
   std::vector<float> result(hist.total());
   std::copy(hist.ptr<float>(), hist.ptr<float>() + hist.total(), result.begin());
   return result;
+}
+
+cv::Mat grayTemplate(const cv::Mat &frame, const Box &box) {
+  if (!validBox(box, frame.size())) return {};
+  const cv::Rect roi(static_cast<int>(std::lround(box.x)),
+                     static_cast<int>(std::lround(box.y)),
+                     static_cast<int>(std::lround(box.w)),
+                     static_cast<int>(std::lround(box.h)));
+  cv::Mat gray;
+  cv::cvtColor(frame(roi), gray, cv::COLOR_BGR2GRAY);
+  return gray.clone();
+}
+
+bool matchGrayTemplate(const cv::Mat &frame_gray, const cv::Mat &reference,
+                       const Box &predicted, double absence_sec, bool global_search,
+                       bool multi_scale,
+                       Box *matched_box, double *matched_score) {
+  if (frame_gray.empty() || reference.empty() || !matched_box || !matched_score) return false;
+
+  const double coordinate_scale = global_search && std::max(reference.cols, reference.rows) >= 48
+      ? 0.5 : 1.0;
+  cv::Mat search_image;
+  if (coordinate_scale < 1.0) {
+    cv::resize(frame_gray, search_image, cv::Size(), coordinate_scale, coordinate_scale,
+               cv::INTER_AREA);
+  } else {
+    search_image = frame_gray;
+  }
+  cv::Mat search_template;
+  if (coordinate_scale < 1.0) {
+    cv::resize(reference, search_template, cv::Size(), coordinate_scale, coordinate_scale,
+               cv::INTER_AREA);
+  } else {
+    search_template = reference;
+  }
+  if (search_template.cols < 4 || search_template.rows < 4) return false;
+
+  cv::Rect search_roi(0, 0, search_image.cols, search_image.rows);
+  if (!global_search) {
+    const double expansion = 0.5 + std::min(2.0, std::max(0.0, absence_sec) * 0.6);
+    const double margin_x = std::max(24.0, predicted.w * expansion);
+    const double margin_y = std::max(24.0, predicted.h * expansion);
+    const double scale = coordinate_scale;
+    const int left = std::max(0, static_cast<int>(std::floor((predicted.x + predicted.w * 0.5 - margin_x) * scale)));
+    const int top = std::max(0, static_cast<int>(std::floor((predicted.y + predicted.h * 0.5 - margin_y) * scale)));
+    const int right = std::min(search_image.cols,
+        static_cast<int>(std::ceil((predicted.x + predicted.w * 0.5 + margin_x) * scale)));
+    const int bottom = std::min(search_image.rows,
+        static_cast<int>(std::ceil((predicted.y + predicted.h * 0.5 + margin_y) * scale)));
+    if (right <= left || bottom <= top) return false;
+    search_roi = cv::Rect(left, top, right - left, bottom - top);
+  }
+  if (search_roi.width < search_template.cols || search_roi.height < search_template.rows) return false;
+
+  const cv::Mat search = search_image(search_roi);
+  const std::array<double, 5> scales{{0.68, 0.84, 1.0, 1.20, 1.45}};
+  double best_score = -1.0;
+  Box best_box;
+  for (size_t i = 0; i < scales.size(); ++i) {
+    if (!multi_scale && i != 2) continue;
+    const double factor = scales[i];
+    const int width = std::max(6, static_cast<int>(std::lround(search_template.cols * factor)));
+    const int height = std::max(6, static_cast<int>(std::lround(search_template.rows * factor)));
+    if (width > search.cols || height > search.rows) continue;
+    cv::Mat scaled_template;
+    cv::resize(search_template, scaled_template, cv::Size(width, height), 0.0, 0.0,
+               factor < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
+    cv::Scalar template_mean, template_stddev;
+    cv::meanStdDev(scaled_template, template_mean, template_stddev);
+    const bool low_texture = template_stddev[0] < 2.0;
+    const int method = low_texture ? cv::TM_SQDIFF_NORMED : cv::TM_CCOEFF_NORMED;
+    cv::Mat response;
+    cv::matchTemplate(search, scaled_template, response, method);
+    double score = -1.0, minimum = 0.0;
+    cv::Point location, minimum_location;
+    cv::minMaxLoc(response, &minimum, &score, &minimum_location, &location);
+    if (low_texture) {
+      score = 1.0 - minimum;
+      location = minimum_location;
+    }
+    if (!std::isfinite(score) || score <= best_score) continue;
+    best_score = score;
+    best_box = {(search_roi.x + location.x) / coordinate_scale,
+                (search_roi.y + location.y) / coordinate_scale,
+                width / coordinate_scale, height / coordinate_scale};
+  }
+  if (best_score < 0.0) return false;
+  *matched_box = best_box;
+  *matched_score = best_score;
+  return true;
 }
 
 double cosineSimilarity(const std::vector<float> &a, const std::vector<float> &b) {
@@ -504,278 +620,355 @@ class CameraMotion {
   std::string source_{"unavailable"};
 };
 
-class FlowDetections {
+class TemplateDetections {
  public:
-  void reset() { tracks_.clear(); previous_gray_.release(); previous_stamp_ = 0.0; }
+  void reset() { tracks_.clear(); used_track_ids_.clear(); }
 
   std::vector<Detection> update(const cv::Mat &frame, double stamp,
       const std::vector<Detection> &detections, bool detector_updated,
-      const cv::Mat &camera_transform, double max_age) {
-    if (detector_updated) {
-      tracks_.clear();
-      for (const auto &detection : detections) {
-        if (tracks_.size() >= 30) break;
-        if (!detection.stable || detection.id < 0 || !validBox(detection.box, frame.size())) continue;
-        FlowTrack track;
-        track.detection = detection;
-        track.box = detection.box;
-        track.seed_area = std::max(1.0, detection.box.w * detection.box.h);
-        tracks_.push_back(std::move(track));
-      }
-      previous_gray_.release();
-      previous_stamp_ = stamp;
-      if (tracks_.empty()) return detections;
-      cv::cvtColor(frame, previous_gray_, cv::COLOR_BGR2GRAY);
-      for (auto &track : tracks_) seed(previous_gray_, track);
-      return detections;
-    }
-    if (tracks_.empty()) {
-      previous_gray_.release();
-      previous_stamp_ = stamp;
-      // If this detector frame could not seed LK tracks, keep the latest
-      // detector boxes visible between rate-limited inference calls until they expire.
-      std::vector<Detection> cached;
-      for (const auto &detection : detections) {
-        if (detection.detector_stamp > 0.0 && stamp >= detection.detector_stamp &&
-            stamp - detection.detector_stamp <= max_age &&
-            validBox(detection.box, frame.size())) {
-          cached.push_back(detection);
-        }
-      }
-      return cached;
-    }
-    const double dt = stamp - previous_stamp_;
-    if (dt <= 0.0 || dt > max_age || previous_gray_.empty()) {
-      tracks_.clear();
-      previous_gray_.release();
-      previous_stamp_ = stamp;
-      return {};
-    }
+      const cv::Mat &camera_transform, double track_memory_sec,
+      double coast_hold_sec, double match_threshold, double update_confidence,
+      double template_refresh_sec,
+      double appearance_gate,
+      double quality_gate, double max_area_ratio, double multi_scale_period_sec,
+      int64_t selected_track_id) {
+    used_track_ids_.clear();
+    if (frame.empty()) return {};
     cv::Mat gray;
     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-    advance(gray, camera_transform);
-    previous_gray_ = gray;
-    previous_stamp_ = stamp;
-    if (tracks_.empty()) {
-      // Keep the last YOLO boxes visible on the frame where LK loses its
-      // points; they remain eligible until the detector age limit expires.
-      std::vector<Detection> cached;
+
+    pruneDuplicateTracks(selected_track_id);
+    std::unordered_map<int64_t, Detection> fresh_by_id;
+    if (detector_updated) {
       for (const auto &detection : detections) {
-        if (detection.detector_stamp > 0.0 && stamp >= detection.detector_stamp &&
-            stamp - detection.detector_stamp <= max_age &&
-            validBox(detection.box, frame.size())) {
-          cached.push_back(detection);
+        if (!detection.stable || detection.id < 0 || !validBox(detection.box, frame.size())) continue;
+        int64_t track_id = detection.id;
+        auto found = tracks_.find(track_id);
+        if (found == tracks_.end()) {
+          double best_score = -std::numeric_limits<double>::infinity();
+          int64_t best_id = -1;
+          double detection_quality = 0.0;
+          const auto detection_feature = appearanceFeature(frame, detection.box, &detection_quality);
+          const bool small_detection = std::max(detection.box.w, detection.box.h) < 20.0;
+          for (const auto &entry : tracks_) {
+            if (entry.first == track_id || used_track_ids_.count(entry.first)) continue;
+            const bool class_changed =
+                entry.second.detection.class_id != detection.class_id;
+            const Box &old_box = entry.second.box;
+            const double overlap = boxIou(old_box, detection.box);
+            const double area_ratio = detection.box.w * detection.box.h /
+                std::max(1.0, old_box.w * old_box.h);
+            if (class_changed && overlap < 0.60) continue;
+            const double distance = cv::norm(center(old_box) - center(detection.box)) /
+                std::max(8.0, std::hypot(std::max(old_box.w, detection.box.w),
+                                        std::max(old_box.h, detection.box.h)));
+            const double similarity = entry.second.appearance.empty()
+                ? 0.0 : cosineSimilarity(detection_feature, entry.second.appearance);
+            const double left = std::max(old_box.x, detection.box.x);
+            const double top = std::max(old_box.y, detection.box.y);
+            const double right = std::min(old_box.x + old_box.w, detection.box.x + detection.box.w);
+            const double bottom = std::min(old_box.y + old_box.h, detection.box.y + detection.box.h);
+            const double intersection = std::max(0.0, right - left) *
+                std::max(0.0, bottom - top);
+            const double contained_overlap = intersection /
+                std::max(1.0, std::min(old_box.w * old_box.h,
+                                       detection.box.w * detection.box.h));
+            const bool small_track = std::max(old_box.w, old_box.h) < 20.0;
+            const bool overlap_match = area_ratio >= 0.45 && area_ratio <= 2.2 &&
+                overlap >= (class_changed ? 0.60 :
+                    (small_detection ? 0.35 : 0.25)) &&
+                (similarity >= appearance_gate - 0.15 || small_detection);
+            const bool scale_change_match = !class_changed && contained_overlap >= 0.70 &&
+                distance <= 0.30 &&
+                (similarity >= appearance_gate - 0.15 || small_detection || small_track);
+            const bool appearance_match = !class_changed && distance <= 0.30 &&
+                similarity >= appearance_gate;
+            if (!overlap_match && !scale_change_match && !appearance_match) continue;
+            const double selected_bonus = entry.first == selected_track_id ? 1.0 : 0.0;
+            const double score = selected_bonus + overlap + 0.25 * similarity - 0.1 * distance;
+            if (score > best_score) {
+              best_score = score;
+              best_id = entry.first;
+            }
+          }
+          if (best_id >= 0) {
+            track_id = best_id;
+            found = tracks_.find(track_id);
+          }
+        }
+
+        Detection assigned = detection;
+        assigned.id = track_id;
+        used_track_ids_.insert(track_id);
+        fresh_by_id[track_id] = assigned;
+        if (found != tracks_.end()) continue;
+
+        if (tracks_.size() >= kMaximumTracks) {
+          auto oldest = tracks_.end();
+          for (auto it = tracks_.begin(); it != tracks_.end(); ++it) {
+            if (it->first == selected_track_id) continue;
+            if (oldest == tracks_.end() ||
+                it->second.detection.detector_stamp < oldest->second.detection.detector_stamp)
+              oldest = it;
+          }
+          if (oldest != tracks_.end()) tracks_.erase(oldest);
+        }
+        TemplateTrack track;
+        track.detection = assigned;
+        track.box = assigned.box;
+        track.gray_template = grayTemplate(frame, assigned.box);
+        track.appearance = appearanceFeature(frame, assigned.box, &track.quality);
+        track.last_update_stamp = stamp;
+        track.last_observation_stamp = stamp;
+        track.last_template_update_stamp = stamp;
+        track.last_multi_scale_stamp = stamp;
+        tracks_.emplace(track_id, std::move(track));
+      }
+    }
+
+    for (auto it = tracks_.begin(); it != tracks_.end();) {
+      const double age = it->first == selected_track_id
+          ? stamp - it->second.last_observation_stamp
+          : stamp - it->second.detection.detector_stamp;
+      if (age > track_memory_sec) it = tracks_.erase(it);
+      else ++it;
+    }
+
+    std::vector<Detection> output;
+    output.reserve(tracks_.size());
+    for (auto &entry : tracks_) {
+      TemplateTrack &track = entry.second;
+      const double dt = std::max(0.0, stamp - track.last_update_stamp);
+      if (validateHomography(camera_transform, frame.size())) {
+        track.box = transformBox(track.box, camera_transform);
+      }
+      Box predicted = track.box;
+      const double prediction_dt = std::min(0.5, dt);
+      predicted.x += track.velocity.x * prediction_dt;
+      predicted.y += track.velocity.y * prediction_dt;
+      predicted = clipBox(predicted, frame.size());
+
+      const Detection *fresh_detection = nullptr;
+      const auto fresh = fresh_by_id.find(entry.first);
+      if (fresh != fresh_by_id.end()) fresh_detection = &fresh->second;
+      const double lost_for = std::max(0.0, stamp - track.last_observation_stamp);
+      const bool multi_scale_due = track.last_multi_scale_stamp <= 0.0 ||
+          stamp - track.last_multi_scale_stamp >= multi_scale_period_sec;
+
+      Box matched_box;
+      double match_score = 0.0;
+      bool template_matched = !track.gray_template.empty() &&
+          matchGrayTemplate(gray, track.gray_template, predicted, lost_for, false,
+              multi_scale_due, &matched_box, &match_score);
+      auto validate_match = [&](const Box &candidate, double score, const Box &reference) {
+        if (!validBox(candidate, frame.size()) ||
+            score < match_threshold || !validBox(reference, frame.size())) return false;
+        const double ratio = candidate.w * candidate.h /
+            std::max(1.0, reference.w * reference.h);
+        const double distance = cv::norm(center(candidate) - center(reference)) /
+            std::max(8.0, std::hypot(reference.w, reference.h));
+        if (ratio < 1.0 / max_area_ratio || ratio > max_area_ratio ||
+            distance > 1.4 + std::min(3.0, lost_for * 0.8)) return false;
+        double quality = 0.0;
+        const auto feature = appearanceFeature(frame, candidate, &quality);
+        const double similarity = track.appearance.empty()
+            ? 1.0 : cosineSimilarity(feature, track.appearance);
+        const bool small_patch = std::max(candidate.w, candidate.h) < 20.0;
+        return (quality >= quality_gate || small_patch) &&
+            similarity >= appearance_gate - (small_patch ? 0.10 : 0.0);
+      };
+      if (template_matched && !validate_match(matched_box, match_score, predicted))
+        template_matched = false;
+
+      if (multi_scale_due && !track.gray_template.empty())
+        track.last_multi_scale_stamp = stamp;
+      if (!template_matched && fresh_detection && !track.gray_template.empty()) {
+        Box detector_match;
+        double detector_score = 0.0;
+        if (matchGrayTemplate(gray, track.gray_template, fresh_detection->box, lost_for,
+                false, true, &detector_match, &detector_score) &&
+            validate_match(detector_match, detector_score, fresh_detection->box)) {
+          matched_box = detector_match;
+          match_score = detector_score;
+          template_matched = true;
+          track.last_multi_scale_stamp = stamp;
         }
       }
-      return cached;
+
+      bool detector_fallback = false;
+      if (fresh_detection && fresh_detection->confidence >= update_confidence) {
+        double detector_quality = 0.0;
+        const auto detector_feature = appearanceFeature(frame, fresh_detection->box, &detector_quality);
+        const double detector_similarity = track.appearance.empty()
+            ? 1.0 : cosineSimilarity(detector_feature, track.appearance);
+        const bool small_detector_box = std::max(fresh_detection->box.w,
+            fresh_detection->box.h) < 20.0;
+        if ((detector_quality >= quality_gate || small_detector_box) &&
+            detector_similarity >= appearance_gate - (small_detector_box ? 0.10 : 0.0)) {
+          if (!template_matched) {
+            matched_box = fresh_detection->box;
+            match_score = std::max(match_threshold, std::min(0.95, fresh_detection->confidence));
+            template_matched = true;
+            detector_fallback = true;
+          } else {
+            const double separation = cv::norm(center(matched_box) - center(fresh_detection->box)) /
+                std::max(8.0, std::hypot(matched_box.w, matched_box.h));
+            if (separation <= 0.75 || boxIou(matched_box, fresh_detection->box) >= 0.10) {
+              matched_box = smoothBox(matched_box, fresh_detection->box, 0.25);
+            }
+          }
+          if (stamp - track.last_template_update_stamp >= template_refresh_sec) {
+            cv::Mat current_template = grayTemplate(frame, fresh_detection->box);
+            if (!current_template.empty()) {
+              if (track.gray_template.empty()) track.gray_template = current_template;
+              else {
+                cv::Mat aligned;
+                cv::resize(current_template, aligned, track.gray_template.size());
+                cv::addWeighted(track.gray_template, 0.95, aligned, 0.05, 0.0,
+                                track.gray_template);
+              }
+              if (track.appearance.size() == detector_feature.size()) {
+                for (size_t i = 0; i < detector_feature.size(); ++i)
+                  track.appearance[i] = 0.95f * track.appearance[i] + 0.05f * detector_feature[i];
+              }
+              track.last_template_update_stamp = stamp;
+            }
+          }
+        }
+      }
+
+      if (template_matched) {
+        const double previous_area = std::max(1.0, track.box.w * track.box.h);
+        if (dt > 1e-3) {
+          const cv::Point2d measured_velocity =
+              (center(matched_box) - center(track.box)) / dt;
+          track.velocity = 0.75 * track.velocity + 0.25 * measured_velocity;
+        }
+        track.box = clipBox(matched_box, frame.size());
+        track.last_observation_stamp = stamp;
+        track.quality = detector_fallback ? std::max(match_threshold, match_score) : match_score;
+        track.scale_ratio = track.box.w * track.box.h /
+            previous_area;
+      } else {
+        track.box = predicted;
+      }
+      track.last_update_stamp = stamp;
+      if (fresh_detection) {
+        track.detection = *fresh_detection;
+      }
+      if (stamp - track.last_observation_stamp > coast_hold_sec ||
+          !validBox(track.box, frame.size())) continue;
+
+      Detection tracked = track.detection;
+      tracked.box = track.box;
+      tracked.source = template_matched ? "template_tracker" : "template_prediction";
+      tracked.flow_quality = template_matched ? track.quality : 0.0;
+      tracked.flow_scale_ratio = track.scale_ratio;
+      tracked.geometry = "aabb";
+      tracked.has_rotation = false;
+      if (!template_matched) tracked.confidence = std::min(0.25, tracked.confidence);
+      output.push_back(std::move(tracked));
     }
-    std::vector<Detection> output;
-    for (const auto &track : tracks_) {
-      if (stamp - track.detection.detector_stamp > max_age) continue;
-      Detection detection = track.detection;
-      detection.box = track.box;
-      detection.source = "visual_tracker";
-      detection.confidence = std::min(0.65, detection.confidence);
-      detection.flow_quality = track.quality;
-      detection.flow_scale_ratio = track.area_ratio;
-      detection.geometry = "aabb";
-      detection.has_rotation = false;
-      output.push_back(std::move(detection));
-    }
-    return output;
+    used_track_ids_.clear();
+    pruneDuplicateTracks(selected_track_id);
+    return suppressDuplicateOutput(std::move(output), selected_track_id);
   }
 
  private:
-  struct FlowTrack {
+  struct TemplateTrack {
     Detection detection;
     Box box;
-    std::vector<cv::Point2f> points;
-    std::vector<cv::Point2f> corners;
-    double seed_area{1.0};
+    cv::Mat gray_template;
+    std::vector<float> appearance;
+    cv::Point2d velocity{0.0, 0.0};
     double quality{0.0};
-    double area_ratio{1.0};
+    double scale_ratio{1.0};
+    double last_update_stamp{0.0};
+    double last_observation_stamp{0.0};
+    double last_template_update_stamp{0.0};
+    double last_multi_scale_stamp{0.0};
   };
 
-  static void seed(const cv::Mat &gray, FlowTrack &track) {
-    const cv::Rect roi(static_cast<int>(track.box.x), static_cast<int>(track.box.y),
-        static_cast<int>(track.box.w), static_cast<int>(track.box.h));
-    cv::Mat crop = gray(roi);
-    std::vector<cv::Point2f> points;
-    cv::goodFeaturesToTrack(crop, points, 16, 0.01, 3.0);
-    for (auto &point : points) point += cv::Point2f(static_cast<float>(roi.x), static_cast<float>(roi.y));
-    track.points = std::move(points);
-    const float x = static_cast<float>(track.box.x), y = static_cast<float>(track.box.y);
-    const float right = static_cast<float>(track.box.x + track.box.w);
-    const float bottom = static_cast<float>(track.box.y + track.box.h);
-    track.corners = {{x, y}, {right, y}, {right, bottom}, {x, bottom}};
-    if (track.points.size() >= 6) {
-      const cv::RotatedRect rotated = cv::minAreaRect(track.points);
-      cv::Point2f fitted[4];
-      rotated.points(fitted);
-      std::vector<cv::Point2f> contour(fitted, fitted + 4);
-      const double fitted_area = std::abs(cv::contourArea(contour));
-      if (fitted_area >= 16.0) {
-        track.corners = std::move(contour);
-        track.seed_area = std::max(track.seed_area, fitted_area);
+  static Box smoothBox(const Box &prior, const Box &measurement, double gain) {
+    gain = clamp01(gain);
+    return {prior.x + gain * (measurement.x - prior.x),
+            prior.y + gain * (measurement.y - prior.y),
+            prior.w + gain * (measurement.w - prior.w),
+            prior.h + gain * (measurement.h - prior.h)};
+  }
+
+  static bool duplicateBoxes(const Box &a, int class_a,
+                             const Box &b, int class_b) {
+    return duplicateTargetBoxes(a, class_a, b, class_b);
+  }
+
+  bool preferredTrack(int64_t a_id, const TemplateTrack &a,
+                      int64_t b_id, const TemplateTrack &b,
+                      int64_t selected_track_id) const {
+    if (a_id == b_id) return false;
+    if (a_id == selected_track_id || b_id == selected_track_id)
+      return a_id == selected_track_id;
+    if (a.detection.detector_stamp != b.detection.detector_stamp)
+      return a.detection.detector_stamp > b.detection.detector_stamp;
+    if (a.quality != b.quality) return a.quality > b.quality;
+    if (a.last_observation_stamp != b.last_observation_stamp)
+      return a.last_observation_stamp > b.last_observation_stamp;
+    return a_id < b_id;
+  }
+
+  void pruneDuplicateTracks(int64_t selected_track_id) {
+    std::vector<int64_t> ids;
+    ids.reserve(tracks_.size());
+    for (const auto &entry : tracks_) ids.push_back(entry.first);
+    std::sort(ids.begin(), ids.end(), [this, selected_track_id](int64_t a, int64_t b) {
+      return preferredTrack(a, tracks_.at(a), b, tracks_.at(b), selected_track_id);
+    });
+    std::vector<int64_t> kept;
+    for (int64_t id : ids) {
+      const auto current = tracks_.find(id);
+      if (current == tracks_.end()) continue;
+      bool duplicate = false;
+      for (int64_t kept_id : kept) {
+        const auto other = tracks_.find(kept_id);
+        if (other != tracks_.end() &&
+            duplicateBoxes(current->second.box, current->second.detection.class_id,
+                           other->second.box, other->second.detection.class_id)) {
+          duplicate = true;
+          break;
+        }
       }
+      if (duplicate && id != selected_track_id) tracks_.erase(current);
+      else kept.push_back(id);
     }
   }
 
-  void advance(const cv::Mat &gray, const cv::Mat &camera_transform) {
-    std::vector<size_t> groups;
-    std::vector<cv::Point2f> before;
-    std::vector<size_t> offsets;
-    for (size_t i = 0; i < tracks_.size(); ++i) {
-      if (tracks_[i].points.size() < 4) continue;
-      groups.push_back(i);
-      offsets.push_back(before.size());
-      before.insert(before.end(), tracks_[i].points.begin(), tracks_[i].points.end());
+  std::vector<Detection> suppressDuplicateOutput(std::vector<Detection> output,
+                                                  int64_t selected_track_id) const {
+    std::sort(output.begin(), output.end(), [selected_track_id](const Detection &a,
+                                                               const Detection &b) {
+      if (a.id == b.id) return false;
+      if (a.id == selected_track_id || b.id == selected_track_id)
+        return a.id == selected_track_id;
+      if (a.detector_stamp != b.detector_stamp) return a.detector_stamp > b.detector_stamp;
+      if (a.flow_quality != b.flow_quality) return a.flow_quality > b.flow_quality;
+      return a.confidence > b.confidence;
+    });
+    std::vector<Detection> unique;
+    unique.reserve(output.size());
+    for (auto &detection : output) {
+      const auto duplicate = std::find_if(unique.begin(), unique.end(),
+          [&detection](const Detection &kept) {
+            return duplicateBoxes(detection.box, detection.class_id,
+                                  kept.box, kept.class_id);
+          });
+      if (duplicate == unique.end()) unique.push_back(std::move(detection));
     }
-    if (groups.empty()) { tracks_.clear(); return; }
-
-    const double scale = std::min(1.0, 480.0 / gray.cols);
-    cv::Mat old_small = previous_gray_, new_small = gray;
-    if (scale < 1.0) {
-      const cv::Size size(std::max(1, static_cast<int>(std::lround(gray.cols * scale))),
-                          std::max(1, static_cast<int>(std::lround(gray.rows * scale))));
-      cv::resize(previous_gray_, old_small, size, 0.0, 0.0, cv::INTER_AREA);
-      cv::resize(gray, new_small, size, 0.0, 0.0, cv::INTER_AREA);
-    }
-    const bool have_motion = validateHomography(camera_transform, gray.size());
-    std::vector<cv::Point2f> initial = before;
-    if (have_motion) cv::perspectiveTransform(before, initial, camera_transform);
-    std::vector<cv::Point2f> before_small = before, initial_small = initial;
-    for (auto &point : before_small) point *= static_cast<float>(scale);
-    for (auto &point : initial_small) point *= static_cast<float>(scale);
-    std::vector<cv::Point2f> after_small, back_small;
-    std::vector<uint8_t> forward_status, backward_status;
-    std::vector<float> errors;
-    try {
-      cv::calcOpticalFlowPyrLK(old_small, new_small, before_small, after_small,
-          forward_status, errors, cv::Size(21, 21), 2,
-          cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01),
-          have_motion ? cv::OPTFLOW_USE_INITIAL_FLOW : 0);
-      if (after_small.empty()) { tracks_.clear(); return; }
-      cv::calcOpticalFlowPyrLK(new_small, old_small, after_small, back_small,
-          backward_status, errors, cv::Size(21, 21), 2,
-          cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01));
-    } catch (const cv::Exception &) { tracks_.clear(); return; }
-
-    std::vector<uint8_t> accepted(before.size(), 0);
-    std::vector<cv::Point2f> after(before.size());
-    for (size_t i = 0; i < before.size(); ++i) {
-      if (i >= forward_status.size() || i >= backward_status.size() ||
-          !forward_status[i] || !backward_status[i]) continue;
-      const cv::Point2f back = back_small[i] * static_cast<float>(1.0 / scale);
-      after[i] = after_small[i] * static_cast<float>(1.0 / scale);
-      if (cv::norm(back - before[i]) <= 1.5 && std::isfinite(after[i].x) && std::isfinite(after[i].y))
-        accepted[i] = 1;
-    }
-    std::vector<FlowTrack> kept;
-    for (size_t g = 0; g < groups.size(); ++g) {
-      FlowTrack track = tracks_[groups[g]];
-      const size_t start = offsets[g], count = track.points.size();
-      std::vector<cv::Point2f> old_points, new_points, expected;
-      for (size_t i = 0; i < count; ++i) {
-        const size_t k = start + i;
-        if (!accepted[k]) continue;
-        old_points.push_back(before[k]);
-        new_points.push_back(after[k]);
-        expected.push_back(have_motion ? initial[k] : before[k]);
-      }
-      if (new_points.size() < std::max<size_t>(4, (count + 1) / 2)) continue;
-      cv::Mat affine, inliers;
-      try { affine = cv::estimateAffinePartial2D(expected, new_points, inliers,
-          cv::RANSAC, 2.0, 100, 0.99); }
-      catch (const cv::Exception &) { affine.release(); }
-      cv::Mat object_motion = cv::Mat::eye(3, 3, CV_64F);
-      std::vector<uint8_t> support(new_points.size(), 1);
-      if (!affine.empty() && !inliers.empty()) {
-        int inlier_count = 0;
-        std::vector<cv::Point2f> supported;
-        for (int i = 0; i < inliers.rows; ++i) {
-          if (inliers.at<uint8_t>(i, 0)) {
-            ++inlier_count;
-            supported.push_back(expected[static_cast<size_t>(i)]);
-          } else support[static_cast<size_t>(i)] = 0;
-        }
-        const double scale_change = std::hypot(affine.at<double>(0, 0), affine.at<double>(1, 0));
-        const double angle = std::abs(std::atan2(affine.at<double>(1, 0), affine.at<double>(0, 0)));
-        double spread_x = 0.0, spread_y = 0.0;
-        if (!supported.empty()) {
-          auto minmax_x = std::minmax_element(supported.begin(), supported.end(),
-              [](const cv::Point2f &a, const cv::Point2f &b) { return a.x < b.x; });
-          auto minmax_y = std::minmax_element(supported.begin(), supported.end(),
-              [](const cv::Point2f &a, const cv::Point2f &b) { return a.y < b.y; });
-          spread_x = minmax_x.second->x - minmax_x.first->x;
-          spread_y = minmax_y.second->y - minmax_y.first->y;
-        }
-        if (inlier_count >= std::max(4, static_cast<int>(std::ceil(0.6 * new_points.size()))) &&
-            std::min(spread_x, spread_y) >= 3.0 && scale_change >= 0.80 && scale_change <= 1.25 &&
-            angle <= 35.0 * CV_PI / 180.0) {
-          affine.copyTo(object_motion(cv::Rect(0, 0, 3, 2)));
-        } else {
-          std::vector<double> dx, dy;
-          for (size_t i = 0; i < expected.size(); ++i) {
-            dx.push_back(new_points[i].x - expected[i].x);
-            dy.push_back(new_points[i].y - expected[i].y);
-          }
-          auto median = [](std::vector<double> &values) {
-            const size_t mid = values.size() / 2;
-            std::nth_element(values.begin(), values.begin() + mid, values.end());
-            return values[mid];
-          };
-          object_motion.at<double>(0, 2) = median(dx);
-          object_motion.at<double>(1, 2) = median(dy);
-          std::fill(support.begin(), support.end(), 1);
-        }
-      }
-      std::vector<cv::Point2f> moved_expected;
-      cv::perspectiveTransform(expected, moved_expected, object_motion);
-      std::vector<double> residuals;
-      for (size_t i = 0; i < new_points.size(); ++i) if (support[i])
-        residuals.push_back(cv::norm(moved_expected[i] - new_points[i]));
-      if (residuals.empty()) continue;
-      std::sort(residuals.begin(), residuals.end());
-      const double median_residual = residuals[residuals.size() / 2];
-      if (median_residual > 3.0) continue;
-      cv::Mat total_motion = object_motion;
-      if (have_motion) total_motion = object_motion * camera_transform;
-      std::vector<cv::Point2f> corners;
-      cv::perspectiveTransform(track.corners, corners, total_motion);
-      if (corners.size() != 4) continue;
-      float left = corners[0].x, right = left, top = corners[0].y, bottom = top;
-      for (const auto &point : corners) {
-        if (!std::isfinite(point.x) || !std::isfinite(point.y)) { left = right = top = bottom = 0; break; }
-        left = std::min(left, point.x); right = std::max(right, point.x);
-        top = std::min(top, point.y); bottom = std::max(bottom, point.y);
-      }
-      const Box clipped{std::max(0.0, static_cast<double>(left)),
-          std::max(0.0, static_cast<double>(top)),
-          std::min(static_cast<double>(gray.cols), static_cast<double>(right)) - std::max(0.0, static_cast<double>(left)),
-          std::min(static_cast<double>(gray.rows), static_cast<double>(bottom)) - std::max(0.0, static_cast<double>(top))};
-      const double full_area = std::max(0.0, static_cast<double>(right-left)) * std::max(0.0, static_cast<double>(bottom-top));
-      if (!validBox(clipped, gray.size()) || clipped.w * clipped.h < 0.25 * std::max(1.0, full_area)) continue;
-      std::vector<cv::Point2f> inside;
-      for (size_t i = 0; i < new_points.size(); ++i) {
-        if (support[i] && new_points[i].x >= 0 && new_points[i].x < gray.cols &&
-            new_points[i].y >= 0 && new_points[i].y < gray.rows) inside.push_back(new_points[i]);
-      }
-      if (inside.size() < 4) continue;
-      track.box = clipped;
-      track.corners = std::move(corners);
-      track.points = std::move(inside);
-      track.area_ratio = std::abs(cv::contourArea(track.corners)) / std::max(1.0, track.seed_area);
-      track.quality = static_cast<double>(track.points.size()) / std::max<size_t>(1, new_points.size()) /
-          (1.0 + median_residual / 3.0);
-      kept.push_back(std::move(track));
-    }
-    tracks_ = std::move(kept);
+    return unique;
   }
 
-  std::vector<FlowTrack> tracks_;
-  cv::Mat previous_gray_;
-  double previous_stamp_{0.0};
+  static constexpr size_t kMaximumTracks = 30;
+  std::unordered_map<int64_t, TemplateTrack> tracks_;
+  std::unordered_set<int64_t> used_track_ids_;
 };
 
 class SmartTrackerFusionCpp {
@@ -812,7 +1005,8 @@ class SmartTrackerFusionCpp {
                           int64_t *selected_id, std::string *error);
   bool selectConfiguredColorCandidate(const Snapshot &snapshot,
                                       const Detection &candidate,
-                                      const std::string &reason);
+                                      const std::string &reason,
+                                      bool auto_selection = false);
   void resetSelection();
   bool selectService(sar_yolo_detector::SelectSmartTrack::Request &request,
                      sar_yolo_detector::SelectSmartTrack::Response &response);
@@ -991,7 +1185,10 @@ class SmartTrackerFusionCpp {
   double snapshot_max_age_{0.75};
 
   cv::Ptr<cv::TrackerKCF> kcf_;
-  int kcf_reseed_count_{0};
+  // FusionTracker keeps a frozen appearance patch for long visual searches.
+  // It is refreshed only from a confidently accepted detector observation.
+  cv::Mat target_template_gray_;
+  double last_template_update_stamp_{0.0};
   bool selected_{false};
   bool manual_seed_{false};
   bool manual_active_{false};
@@ -1036,7 +1233,12 @@ class SmartTrackerFusionCpp {
   double min_detector_confidence_{0.50};
   double min_maintenance_confidence_{0.10};
   double local_template_refresh_sec_{0.75};
-  double last_local_seed_stamp_{0.0};
+  double template_match_threshold_{0.52};
+  double long_template_match_threshold_{0.76};
+  double template_update_confidence_{0.70};
+  double template_search_period_sec_{0.20};
+  double last_template_search_stamp_{0.0};
+  int64_t last_template_candidate_trigger_id_{-1};
   double pending_box_stamp_{0.0};
   bool motion_continuous_{true};
   bool long_recovery_{false};
@@ -1048,7 +1250,7 @@ class SmartTrackerFusionCpp {
   CameraMotion camera_motion_{YAML::Node(YAML::NodeType::Map)};
   cv::Mat camera_info_k_;
   sensor_msgs::CameraInfo camera_info_;
-  FlowDetections flow_detections_;
+  TemplateDetections template_detections_;
   cv::Mat previous_rotation_;
   std::string camera_frame_id_;
   bool camera_info_valid_{false};
@@ -1056,12 +1258,15 @@ class SmartTrackerFusionCpp {
   double inference_failures_{0.0};
   std::string last_error_;
   bool auto_select_enabled_{false};
-  int auto_select_stable_frames_{5};
+  bool auto_selected_{false};
+  double auto_selected_missing_since_{0.0};
+  int auto_select_stable_frames_{2};
   int auto_select_count_{0};
-  int auto_select_candidate_id_{-1};
+  int64_t auto_select_candidate_id_{-1};
   int auto_select_candidate_class_{-1};
   double auto_select_min_confidence_{0.0};
   double auto_select_max_gap_{1.0};
+  double auto_select_lost_hold_sec_{8.0};
   double auto_select_last_stamp_{0.0};
   Box auto_select_box_;
   bool manual_enabled_{true};
@@ -1218,16 +1423,27 @@ void SmartTrackerFusionCpp::loadConfig() {
   pnh_.param("FusionTracker/minimum_detector_confidence", min_detector_confidence_, 0.50);
   pnh_.param("FusionTracker/minimum_maintenance_confidence", min_maintenance_confidence_, 0.10);
   pnh_.param("FusionTracker/local_template_refresh_sec", local_template_refresh_sec_, 0.75);
+  pnh_.param("FusionTracker/template_match_threshold", template_match_threshold_, 0.52);
+  pnh_.param("FusionTracker/long_template_match_threshold", long_template_match_threshold_, 0.76);
+  pnh_.param("FusionTracker/template_update_confidence", template_update_confidence_, 0.70);
+  pnh_.param("FusionTracker/template_search_period_sec", template_search_period_sec_, 0.20);
   pnh_.param("FusionTracker/reacquire_confirm_frames", confirmation_frames_, 3);
   detector_id_memory_sec_ = std::max(0.0, detector_id_memory_sec_);
   reacquire_detector_gain_ = clamp01(reacquire_detector_gain_);
+  template_match_threshold_ = clamp01(template_match_threshold_);
+  long_template_match_threshold_ = std::max(template_match_threshold_,
+                                             clamp01(long_template_match_threshold_));
+  template_update_confidence_ = clamp01(template_update_confidence_);
+  template_search_period_sec_ = std::max(0.05, template_search_period_sec_);
   pnh_.param("FusionTracker/selection_max_frames", snapshot_max_frames_, 24);
   int snapshot_bytes = 25165824;
   pnh_.param("FusionTracker/selection_max_bytes", snapshot_bytes, snapshot_bytes);
   snapshot_max_bytes_ = static_cast<size_t>(std::max(1024, snapshot_bytes));
   pnh_.param("FusionTracker/selection_max_age_sec", snapshot_max_age_, 0.75);
-  if (identity_ttl_sec_ <= reacquire_hold_sec_ || identity_ttl_sec_ > 300.0) {
-    throw std::runtime_error("FusionTracker identity_memory_ttl_sec must exceed reacquire_hold_sec and be <= 300");
+  if (identity_ttl_sec_ < 0.0 ||
+      (identity_ttl_sec_ > 0.0 &&
+       (identity_ttl_sec_ <= reacquire_hold_sec_ || identity_ttl_sec_ > 300.0))) {
+    throw std::runtime_error("FusionTracker identity_memory_ttl_sec must be 0 (until reselection) or exceed reacquire_hold_sec and be <= 300");
   }
   if (min_maintenance_confidence_ > min_detector_confidence_) {
     throw std::runtime_error("FusionTracker minimum_maintenance_confidence must not exceed minimum_detector_confidence");
@@ -1255,9 +1471,14 @@ void SmartTrackerFusionCpp::loadConfig() {
   pnh_.param("ManualBoxTracker/color_tracker/min_area_px", minimum_color_area_, 80);
   pnh_.param<std::string>("ManualBoxTracker/color_tracker/color", color_name_, "red");
   pnh_.param("AutoSelect/enabled_at_startup", auto_select_enabled_, false);
-  pnh_.param("AutoSelect/stable_frames", auto_select_stable_frames_, 5);
+  pnh_.param("AutoSelect/stable_frames", auto_select_stable_frames_, 2);
   pnh_.param("AutoSelect/minimum_confidence", auto_select_min_confidence_, 0.0);
   pnh_.param("AutoSelect/max_frame_gap_sec", auto_select_max_gap_, 1.0);
+  pnh_.param("AutoSelect/lost_hold_sec", auto_select_lost_hold_sec_, reacquire_hold_sec_);
+  if (!std::isfinite(auto_select_lost_hold_sec_) || auto_select_lost_hold_sec_ <= 0.0 ||
+      auto_select_lost_hold_sec_ > 300.0) {
+    throw std::runtime_error("AutoSelect lost_hold_sec must be > 0 and <= 300 seconds");
+  }
   color_waiting_roi_ = mode_ == "color_tracker" && !hasConfiguredColor(color_name_);
 
   pnh_.param("PhaseOverlay/enabled", phase_overlay_enabled_, false);
@@ -1690,7 +1911,7 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
         return;
       }
       resetSelection();
-      flow_detections_.reset();
+      template_detections_.reset();
       snapshots_.clear();
       snapshot_bytes_ = 0;
       camera_motion_.reset();
@@ -1705,7 +1926,7 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
     if (!latest_frame_.empty() && (latest_frame_.size() != frame.size() ||
                                    latest_header_.frame_id != image->header.frame_id)) {
       resetSelection();
-      flow_detections_.reset();
+      template_detections_.reset();
       snapshots_.clear();
       snapshot_bytes_ = 0;
       camera_motion_.reset();
@@ -1749,9 +1970,12 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
     }
     if (run_inference && inference_result_current && inference_succeeded) {
       // The shared C++ TensorRT provider returns frame-local negative IDs.
-      // Associate each new YOLO box to the previous detector frame so Fusion
-      // and KCF can keep a stable local identity across inference updates.
+      // Associate new YOLO boxes to the latest detector frame. For the selected
+      // target only, also retain a short ID memory across successful empty
+      // detector frames. The memory is used only for ID association; empty
+      // detector results still clear active boxes and never refresh their age.
       std::vector<bool> previous_used(last_detector_detections_.size(), false);
+      bool selected_identity_reused = false;
       for (auto &detection : new_detections) {
         if (detection.stable && detection.id >= 0) continue;
         size_t best_index = last_detector_detections_.size();
@@ -1770,7 +1994,47 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
           detection.id = last_detector_detections_[best_index].id;
           previous_used[best_index] = true;
         } else {
-          detection.id = next_detector_id_++;
+          bool matched_selected_memory = false;
+          const double selected_detection_age = stamp - last_detector_for_selection_;
+          if (!selected_identity_reused && selected_ && selected_local_id_ >= 0 &&
+              last_detector_for_selection_ > 0.0 && selected_detection_age >= 0.0 &&
+              selected_detection_age <= detector_id_memory_sec_ &&
+              detection.confidence >= min_maintenance_confidence_) {
+            bool same_class = selected_class_id_ < 0 || detection.class_id == selected_class_id_;
+            if (!same_class) {
+              const auto selected_group = class_group_by_id_.find(selected_class_id_);
+              const auto detection_group = class_group_by_id_.find(detection.class_id);
+              same_class = selected_group != class_group_by_id_.end() &&
+                  detection_group != class_group_by_id_.end() &&
+                  selected_group->second == detection_group->second;
+            }
+
+            const double prediction_dt = std::min(max_frame_gap_sec_,
+                std::max(0.0, stamp - last_observation_stamp_));
+            Box selected_prediction = selected_box_;
+            selected_prediction.x += velocity_.x * prediction_dt;
+            selected_prediction.y += velocity_.y * prediction_dt;
+            const double area_ratio = detection.box.w * detection.box.h /
+                std::max(1.0, selected_prediction.w * selected_prediction.h);
+            const double center_distance = cv::norm(center(detection.box) - center(selected_prediction)) /
+                std::max(8.0, std::hypot(selected_prediction.w, selected_prediction.h));
+            const bool geometry_ok = same_class && validBox(selected_prediction, frame.size()) &&
+                area_ratio >= 1.0 / max_area_ratio_ && area_ratio <= max_area_ratio_ &&
+                center_distance <= center_gate_sizes_ && validBox(detection.box, frame.size());
+            if (geometry_ok) {
+              double quality = 0.0;
+              const auto feature = appearanceFeature(frame, detection.box, &quality);
+              const double similarity = appearance_anchor_.empty()
+                  ? 1.0 : cosineSimilarity(feature, appearance_anchor_);
+              if (quality >= quality_gate_ && similarity >= appearance_gate_) {
+                detection.id = selected_local_id_;
+                detection.selected_identity_reacquire = true;
+                matched_selected_memory = true;
+                selected_identity_reused = true;
+              }
+            }
+          }
+          if (!matched_selected_memory) detection.id = next_detector_id_++;
         }
         detection.stable = true;
       }
@@ -1786,14 +2050,18 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
       if (selected_ && result_.has_box) motion_boxes.push_back(result_.box);
       const cv::Mat pose = motion_boxes.empty() ? cv::Mat() : poseRotation(*image);
       motion = camera_motion_.update(frame, stamp, motion_boxes, pose);
-      current_detections = flow_detections_.update(frame, stamp, current_detections,
-          fresh, motion, max_frame_gap_sec_);
+      current_detections = template_detections_.update(frame, stamp, current_detections,
+          fresh, motion, std::max(reacquire_hold_sec_, visual_hold_sec_),
+          prediction_hold_sec_, template_match_threshold_, template_update_confidence_,
+          local_template_refresh_sec_,
+          appearance_gate_, quality_gate_, max_area_ratio_, template_search_period_sec_,
+          selected_local_id_);
     } else {
       current_detections.clear();
       motion.release();
     }
 
-    if (selected_ && kcf_ && !motion.empty() && !previous_frame_.empty() &&
+    if (selected_ && mode_ == "fusion_tracker" && !motion.empty() &&
         validateHomography(motion, frame.size())) {
       const cv::Point2d old_center = center(selected_box_);
       std::vector<cv::Point2f> velocity_points{{static_cast<float>(old_center.x), static_cast<float>(old_center.y)},
@@ -1817,36 +2085,9 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
       }
       const Box transformed = transformBox(selected_box_, motion);
       if (validBox(transformed, frame.size())) {
-        const cv::Point2d new_center = center(transformed);
-        const double center_shift = cv::norm(new_center - old_center);
-        const double width_change = std::abs(transformed.w - selected_box_.w) /
-            std::max(1.0, selected_box_.w);
-        const double height_change = std::abs(transformed.h - selected_box_.h) /
-            std::max(1.0, selected_box_.h);
-        // KCF already updates on the current frame. Re-warping the entire
-        // previous frame and rebuilding the filter for subpixel/near-static
-        // motion adds CPU cost without a meaningful correction.
-        constexpr double kMinCompensationShiftPx = 0.75;
-        constexpr double kMinCompensationScaleChange = 0.005;
-        const bool compensation_needed = center_shift >= kMinCompensationShiftPx ||
-            width_change >= kMinCompensationScaleChange ||
-            height_change >= kMinCompensationScaleChange;
-        if (compensation_needed) {
-          if (pending_reacquire_count_ > 0) pending_reacquire_box_ = transformBox(pending_reacquire_box_, motion);
-          cv::Mat warped_previous;
-          cv::warpPerspective(previous_frame_, warped_previous, motion, frame.size());
-          selected_box_ = transformed;
-          try {
-            kcf_ = cv::TrackerKCF::create();
-            const cv::Rect roi(static_cast<int>(std::lround(transformed.x)),
-                static_cast<int>(std::lround(transformed.y)),
-                static_cast<int>(std::lround(transformed.w)),
-                static_cast<int>(std::lround(transformed.h)));
-            kcf_->init(warped_previous, roi);
-          } catch (const cv::Exception &) {
-            kcf_.release();
-          }
-        }
+        if (pending_reacquire_count_ > 0)
+          pending_reacquire_box_ = transformBox(pending_reacquire_box_, motion);
+        selected_box_ = transformed;
       }
     }
 
@@ -1856,7 +2097,7 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
         const auto found = std::find_if(current_detections.begin(), current_detections.end(),
             [this](const Detection &detection) {
               return detection.id == selected_local_id_ && detection.stable &&
-                  detection.source == "visual_tracker";
+                  detection.source == "template_tracker";
             });
         if (found != current_detections.end()) flow_observation = &*found;
       }
@@ -1912,6 +2153,29 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
       result_ = TrackResult();
     }
 
+    const bool auto_target_unavailable = !result_.has_box &&
+        (result_.source == "lost" || result_.source == "ambiguous");
+    const bool auto_loss_monitoring = auto_select_enabled_ && auto_selected_ && selected_ &&
+        (mode_ == "fusion_tracker" || mode_ == "color_tracker");
+    if (auto_loss_monitoring && auto_target_unavailable) {
+      if (auto_selected_missing_since_ <= 0.0) auto_selected_missing_since_ = stamp;
+      const double missing_duration = stamp - auto_selected_missing_since_;
+      if (missing_duration >= auto_select_lost_hold_sec_) {
+        ROS_WARN_STREAM("C++ SmartTracker auto-selected target has had no valid box for "
+            << std::fixed << std::setprecision(1) << missing_duration
+            << " s; releasing its lock and resuming automatic selection");
+        resetSelection();
+        result_.source = "lost";
+        result_.reason = "auto_select_target_lost";
+        auto_select_count_ = 0;
+        auto_select_candidate_id_ = -1;
+        auto_select_candidate_class_ = -1;
+        auto_select_candidate_stable_ = false;
+      }
+    } else {
+      auto_selected_missing_since_ = 0.0;
+    }
+
     latest_frame_ = frame;
     previous_frame_ = frame;
     latest_header_ = image->header;
@@ -1924,8 +2188,18 @@ void SmartTrackerFusionCpp::process(const sensor_msgs::ImageConstPtr &image) {
       snapshot_bytes_ -= static_cast<size_t>(snapshots_.front().frame.total() * snapshots_.front().frame.elemSize());
       snapshots_.pop_front();
     }
-    if ((fresh || mode_ == "color_tracker") && auto_select_enabled_ && !selected_)
-      updateAutoSelection(current_detections, frame, image);
+    if ((fresh || mode_ == "color_tracker") && auto_select_enabled_ && !selected_) {
+      if (mode_ == "fusion_tracker" && fresh) {
+        std::vector<Detection> fresh_candidates;
+        for (const auto &detection : current_detections) {
+          if (std::abs(detection.detector_stamp - stamp) <= 1e-6)
+            fresh_candidates.push_back(detection);
+        }
+        updateAutoSelection(fresh_candidates, frame, image);
+      } else {
+        updateAutoSelection(current_detections, frame, image);
+      }
+    }
   }
 
   const double processing_ms = std::chrono::duration<double, std::milli>(SteadyClock::now() - processing_started).count();
@@ -1956,8 +2230,7 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
   last_fusion_stamp_ = stamp;
   const double absence = std::max(0.0, stamp - last_observation_stamp_);
   long_recovery_ = absence > reacquire_hold_sec_;
-  if (absence > identity_ttl_sec_) {
-    kcf_.release();
+  if (identity_ttl_sec_ > 0.0 && absence > identity_ttl_sec_) {
     pending_reacquire_id_ = -1;
     pending_reacquire_count_ = 0;
     appearance_anchor_.clear();
@@ -1985,7 +2258,6 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
                prior.h + gain * (measurement.h - prior.h)};
   };
   if (step > max_frame_gap_sec_ || long_recovery_) {
-    kcf_.release();
     if (step > max_frame_gap_sec_) {
       pending_reacquire_id_ = -1;
       pending_reacquire_count_ = 0;
@@ -1996,35 +2268,125 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
   bool visual_valid = false;
   double visual_quality = 0.0;
   std::vector<float> visual_feature;
-  if (kcf_ && step <= max_frame_gap_sec_ && !long_recovery_) {
-    cv::Rect tracked(static_cast<int>(std::lround(selected_box_.x)),
-        static_cast<int>(std::lround(selected_box_.y)),
-        static_cast<int>(std::lround(selected_box_.w)),
-        static_cast<int>(std::lround(selected_box_.h)));
-    try { visual_valid = kcf_->update(frame, tracked); }
-    catch (const cv::Exception &) { visual_valid = false; }
-    if (!visual_valid) kcf_.release();
-    if (visual_valid) {
-      visual = clipBox({static_cast<double>(tracked.x), static_cast<double>(tracked.y),
-                        static_cast<double>(tracked.width), static_cast<double>(tracked.height)}, frame.size());
-      visual_feature = appearanceFeature(frame, visual, &visual_quality);
-      const double ratio = visual.w * visual.h / std::max(1.0, selected_box_.w * selected_box_.h);
-      const double distance = cv::norm(center(visual) - center(predicted)) /
-          std::max(8.0, std::hypot(predicted.w, predicted.h));
-      const bool compatible = ratio >= 1.0 / max_area_ratio_ && ratio <= max_area_ratio_ &&
-          distance <= center_gate_sizes_ && validBox(visual, frame.size());
-      const bool appearance_ok = appearance_anchor_.empty() ||
-          cosineSimilarity(visual_feature, appearance_anchor_) >= appearance_gate_;
-      if (!compatible || visual_quality < quality_gate_ || !appearance_ok) visual_valid = false;
+  // Template matching is the visual tracker in fusion mode. Track locally on
+  // every frame with the current template scale; run multi-scale searches less
+  // often and reserve full-frame searches for long recovery.
+  Box template_match_box;
+  double template_match_score = 0.0;
+  bool template_visual_valid = false;
+
+  // If YOLO briefly returns the target under a new tracker ID, use that box as
+  // a local search center for one template verification attempt.
+  const Detection *rebound_template_candidate = nullptr;
+  if (detector_updated) {
+    for (const auto &candidate : detections) {
+      if (!candidate.stable || candidate.id < 0 || candidate.id == selected_local_id_ ||
+          !std::isfinite(candidate.confidence) || candidate.confidence < min_detector_confidence_ ||
+          candidate.detector_stamp <= last_detector_for_selection_ || candidate.detector_stamp > stamp ||
+          !validBox(candidate.box, frame.size())) continue;
+      if (selected_class_id_ >= 0 && candidate.class_id != selected_class_id_) {
+        const auto first = class_group_by_id_.find(selected_class_id_);
+        const auto second = class_group_by_id_.find(candidate.class_id);
+        if (first == class_group_by_id_.end() || second == class_group_by_id_.end() ||
+            first->second != second->second) continue;
+      }
+      if (candidate.id != last_template_candidate_trigger_id_) {
+        rebound_template_candidate = &candidate;
+        break;
+      }
     }
   }
+  const bool multi_scale_due = last_template_search_stamp_ <= 0.0 ||
+      stamp - last_template_search_stamp_ >= template_search_period_sec_;
+  const bool primary_template_search_due = !long_recovery_ || multi_scale_due;
+  const double template_observation_ratio = visual_observation
+      ? visual_observation->box.w * visual_observation->box.h /
+          std::max(1.0, predicted.w * predicted.h) : 0.0;
+  const double template_observation_distance = visual_observation
+      ? cv::norm(center(visual_observation->box) - center(predicted)) /
+          std::max(8.0, std::hypot(predicted.w, predicted.h)) : 0.0;
+  const bool has_template_tracker_observation = visual_observation &&
+      visual_observation->source == "template_tracker" && visual_observation->stable &&
+      selected_local_id_ >= 0 && visual_observation->id == selected_local_id_ &&
+      validBox(visual_observation->box, frame.size()) &&
+      visual_observation->flow_quality >= template_match_threshold_ &&
+      template_observation_ratio >= 1.0 / max_area_ratio_ &&
+      template_observation_ratio <= max_area_ratio_ &&
+      template_observation_distance <= center_gate_sizes_;
+  cv::Mat frame_gray;
+  if (!target_template_gray_.empty() && primary_template_search_due &&
+      !has_template_tracker_observation)
+    cv::cvtColor(frame, frame_gray, cv::COLOR_BGR2GRAY);
 
-  if (visual_observation && !long_recovery_ && step <= max_frame_gap_sec_ &&
+  const auto run_template_match = [&](const Box &search_center, bool global_search,
+                                      bool multi_scale) {
+    if (frame_gray.empty()) return false;
+    Box match_box;
+    double match_score = 0.0;
+    if (!matchGrayTemplate(frame_gray, target_template_gray_, search_center, absence,
+                           global_search, multi_scale, &match_box, &match_score)) return false;
+    double template_quality = 0.0;
+    auto template_feature = appearanceFeature(frame, match_box, &template_quality);
+    const double template_similarity = appearance_anchor_.empty()
+        ? 1.0 : cosineSimilarity(template_feature, appearance_anchor_);
+    const Box &geometry_reference = search_center;
+    const double area_ratio = match_box.w * match_box.h /
+        std::max(1.0, geometry_reference.w * geometry_reference.h);
+    const double center_distance = cv::norm(center(match_box) - center(geometry_reference)) /
+        std::max(8.0, std::hypot(geometry_reference.w, geometry_reference.h));
+    const double adaptive_center_gate = center_gate_sizes_ +
+        std::min(2.0, absence * 0.20);
+    const double score_gate = long_recovery_
+        ? long_template_match_threshold_ : template_match_threshold_;
+    const bool geometry_ok = validBox(match_box, frame.size()) &&
+        area_ratio >= 1.0 / max_area_ratio_ && area_ratio <= max_area_ratio_ &&
+        (global_search || center_distance <= adaptive_center_gate);
+    const bool appearance_ok = long_recovery_
+        ? (template_similarity >= long_appearance_gate_ || match_score >= 0.84)
+        : template_similarity >= appearance_gate_;
+    if (match_score < score_gate || !geometry_ok || !appearance_ok ||
+        template_quality < quality_gate_) return false;
+    template_match_box = match_box;
+    template_match_score = match_score;
+    template_visual_valid = true;
+    visual = match_box;
+    visual_quality = std::min(match_score, std::max(template_quality, quality_gate_));
+    visual_feature = std::move(template_feature);
+    visual_valid = true;
+    return true;
+  };
+
+  if (!target_template_gray_.empty() && primary_template_search_due &&
+      !has_template_tracker_observation) {
+    const bool global_search = long_recovery_ && !rebound_template_candidate;
+    const Box &search_center = rebound_template_candidate
+        ? rebound_template_candidate->box : predicted;
+    const bool multi_scale_search = long_recovery_ || multi_scale_due;
+    if (multi_scale_search) last_template_search_stamp_ = stamp;
+    run_template_match(search_center, global_search, multi_scale_search);
+  }
+
+  // A one-frame YOLO candidate may be far outside the current local search
+  // window. Check its box directly against the saved target template once.
+  if (!template_visual_valid && rebound_template_candidate &&
+      !target_template_gray_.empty() && !has_template_tracker_observation) {
+    if (frame_gray.empty()) cv::cvtColor(frame, frame_gray, cv::COLOR_BGR2GRAY);
+    last_template_candidate_trigger_id_ = rebound_template_candidate->id;
+    last_template_search_stamp_ = stamp;
+    run_template_match(rebound_template_candidate->box, false, true);
+  }
+
+  const bool template_tracker_observation = visual_observation &&
+      visual_observation->source == "template_tracker";
+  if (visual_observation && (template_tracker_observation ||
+      (!long_recovery_ && step <= max_frame_gap_sec_)) &&
       selected_local_id_ >= 0 && visual_observation->stable &&
       visual_observation->id == selected_local_id_ &&
       visual_observation->detector_stamp > 0.0 && visual_observation->detector_stamp <= stamp &&
-      stamp - visual_observation->detector_stamp <= max_frame_gap_sec_ &&
-      visual_observation->flow_quality >= 0.60 &&
+      (template_tracker_observation ||
+       stamp - visual_observation->detector_stamp <= max_frame_gap_sec_) &&
+      visual_observation->flow_quality >=
+          (template_tracker_observation ? template_match_threshold_ : 0.60) &&
       validBox(visual_observation->box, frame.size())) {
     const double distance = cv::norm(center(visual_observation->box) - center(predicted)) /
         std::max(8.0, std::hypot(predicted.w, predicted.h));
@@ -2035,13 +2397,22 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
     std::vector<float> flow_feature;
     if (flow_valid) {
       flow_feature = appearanceFeature(frame, visual_observation->box, &flow_quality);
-      flow_valid = flow_quality >= quality_gate_ &&
-          (appearance_anchor_.empty() || cosineSimilarity(flow_feature, appearance_anchor_) >= appearance_gate_);
+      const bool small_patch = std::max(visual_observation->box.w,
+          visual_observation->box.h) < 20.0;
+      const double similarity = appearance_anchor_.empty()
+          ? 1.0 : cosineSimilarity(flow_feature, appearance_anchor_);
+      flow_valid = (flow_quality >= quality_gate_ || (template_tracker_observation && small_patch)) &&
+          similarity >= appearance_gate_ - (template_tracker_observation && small_patch ? 0.10 : 0.0);
     }
     if (flow_valid) {
       if (visual_valid && boxIou(visual, visual_observation->box) < 0.15) {
-        visual_valid = false;
+        if (!template_visual_valid) visual_valid = false;
       } else {
+        if (template_tracker_observation) {
+          template_visual_valid = true;
+          template_match_box = visual_observation->box;
+          template_match_score = visual_observation->flow_quality;
+        }
         visual = visual_observation->box;
         visual_quality = std::min(flow_quality, visual_observation->flow_quality);
         visual_feature = std::move(flow_feature);
@@ -2056,12 +2427,27 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
         candidate.detector_stamp > stamp || !std::isfinite(candidate.confidence) ||
         candidate.confidence < min_maintenance_confidence_ || candidate.confidence > 1.0 ||
         !candidate.stable || candidate.id < 0 || !validBox(candidate.box, frame.size())) continue;
+    bool template_support = false;
+    if (template_visual_valid) {
+      const double template_area_ratio = candidate.box.w * candidate.box.h /
+          std::max(1.0, template_match_box.w * template_match_box.h);
+      const double template_center_distance =
+          cv::norm(center(candidate.box) - center(template_match_box)) /
+          std::max(8.0, std::hypot(template_match_box.w, template_match_box.h));
+      template_support = template_area_ratio >= 1.0 / max_area_ratio_ &&
+          template_area_ratio <= max_area_ratio_ &&
+          (boxIou(candidate.box, template_match_box) >= 0.10 ||
+           template_center_distance <= 0.55) &&
+          template_match_score >= (long_recovery_
+              ? long_template_match_threshold_ : template_match_threshold_);
+    }
     // A weak detection for the already selected stable ID can maintain the
     // track if it passes the same spatial and appearance gates below. Keep
     // the higher confidence threshold for acquiring or rebinding identities.
     const bool maintains_selected_id = candidate.id == selected_local_id_ &&
         selected_local_id_ >= 0;
-    if (candidate.confidence < min_detector_confidence_ && !maintains_selected_id) continue;
+    if (candidate.confidence < min_detector_confidence_ && !maintains_selected_id &&
+        !template_support) continue;
     if (selected_class_id_ >= 0 && candidate.class_id != selected_class_id_) {
       const auto first = class_group_by_id_.find(selected_class_id_);
       const auto second = class_group_by_id_.find(candidate.class_id);
@@ -2078,26 +2464,30 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
           (pending_reacquire_count_ > 0 && candidate.id == pending_reacquire_id_);
       if (!inside) continue;
     } else {
+      const Box &reference = template_support ? template_match_box : predicted;
       const double ratio = candidate.box.w * candidate.box.h /
-          std::max(1.0, predicted.w * predicted.h);
-      const double distance = cv::norm(center(candidate.box) - center(predicted)) /
-          std::max(8.0, std::hypot(predicted.w, predicted.h));
+          std::max(1.0, reference.w * reference.h);
+      const double distance = cv::norm(center(candidate.box) - center(reference)) /
+          std::max(8.0, std::hypot(reference.w, reference.h));
       if (ratio < 1.0 / max_area_ratio_ || ratio > max_area_ratio_ ||
-          distance > center_gate_sizes_) continue;
+          distance > (template_support ? 0.75 : center_gate_sizes_)) continue;
     }
     double quality = 0.0;
     const auto feature = appearanceFeature(frame, candidate.box, &quality);
     const double similarity = appearance_anchor_.empty() ? 0.0 :
         cosineSimilarity(feature, appearance_anchor_);
-    const double required_quality = long_recovery_ ? std::max(quality_gate_, long_quality_gate_) : quality_gate_;
-    const double required_similarity = long_recovery_ ? std::max(appearance_gate_, long_appearance_gate_) : appearance_gate_;
+    const double required_quality = long_recovery_ && !template_support
+        ? std::max(quality_gate_, long_quality_gate_) : quality_gate_;
+    const double required_similarity = long_recovery_ && !template_support
+        ? std::max(appearance_gate_, long_appearance_gate_) : appearance_gate_;
     if (quality < required_quality || similarity < required_similarity) continue;
-    if (long_recovery_ && long_motion_required_ && !motion_continuous_) continue;
-    const double distance = cv::norm(center(candidate.box) - center(predicted));
-    const double scale = std::max(8.0, std::hypot(predicted.w, predicted.h));
+    if (long_recovery_ && long_motion_required_ && !motion_continuous_ && !template_support) continue;
+    const Box &ranking_reference = template_support ? template_match_box : predicted;
+    const double distance = cv::norm(center(candidate.box) - center(ranking_reference));
+    const double scale = std::max(8.0, std::hypot(ranking_reference.w, ranking_reference.h));
     const double score = 0.45 * std::max(0.0, 1.0 - distance / scale) +
-        0.25 * boxIou(candidate.box, predicted) + 0.30 * similarity;
-    if (long_recovery_ && score < long_score_gate_) continue;
+        0.25 * boxIou(candidate.box, ranking_reference) + 0.30 * similarity;
+    if (long_recovery_ && score < long_score_gate_ && !template_support) continue;
     ranked.emplace_back(score, &candidate);
   }
   std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) {
@@ -2106,6 +2496,24 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
   if (ranked.size() > 1 && ranked[0].first - ranked[1].first < ambiguity_margin_) {
     pending_reacquire_id_ = -1;
     pending_reacquire_count_ = 0;
+    if (template_visual_valid) {
+      const Box continued = smooth_box(predicted, visual, 0.65);
+      const double dt = stamp - last_observation_stamp_;
+      if (dt > 0.0) {
+        velocity_ = 0.8 * velocity_ +
+            0.2 * (center(continued) - center(selected_box_)) / dt;
+      }
+      selected_box_ = continued;
+      last_observation_stamp_ = stamp;
+      result_.box = continued;
+      result_.has_box = true;
+      result_.observed = true;
+      result_.source = "visual";
+      result_.reason = "template_match_competing_detections";
+      result_.confidence = std::min({0.65, template_match_score, selected_confidence_});
+      motion_continuous_ = true;
+      return;
+    }
     result_.has_box = false;
     result_.observed = false;
     result_.source = "ambiguous";
@@ -2114,10 +2522,34 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
     return;
   }
   const Detection *match = ranked.empty() ? nullptr : ranked.front().second;
+  const bool template_support_match = match && template_visual_valid &&
+      template_match_score >= (long_recovery_
+          ? long_template_match_threshold_ : template_match_threshold_) &&
+      (boxIou(match->box, template_match_box) >= 0.10 ||
+       cv::norm(center(match->box) - center(template_match_box)) /
+           std::max(8.0, std::hypot(template_match_box.w, template_match_box.h)) <= 0.55);
   if (match && selected_local_id_ >= 0 && match->id != selected_local_id_ &&
       std::any_of(detections.begin(), detections.end(), [this](const Detection &item) {
         return item.id == selected_local_id_;
       })) {
+    if (template_visual_valid) {
+      const Box continued = smooth_box(predicted, visual, 0.65);
+      const double dt = stamp - last_observation_stamp_;
+      if (dt > 0.0) {
+        velocity_ = 0.8 * velocity_ +
+            0.2 * (center(continued) - center(selected_box_)) / dt;
+      }
+      selected_box_ = continued;
+      last_observation_stamp_ = stamp;
+      result_.box = continued;
+      result_.has_box = true;
+      result_.observed = true;
+      result_.source = "visual";
+      result_.reason = "template_match_identity_conflict";
+      result_.confidence = std::min({0.65, template_match_score, selected_confidence_});
+      motion_continuous_ = true;
+      return;
+    }
     result_.has_box = false;
     result_.observed = false;
     result_.source = "ambiguous";
@@ -2130,16 +2562,19 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
       boxIou(match->box, predicted) >= 0.30 && absence <= max_frame_gap_sec_ &&
       stamp - last_detector_for_selection_ <= max_frame_gap_sec_ && result_.source != "ambiguous";
   const bool rebound = match && (selected_local_id_ < 0 || match->id != selected_local_id_ ||
-      pending_reacquire_count_ > 0 || long_recovery_ || step > max_frame_gap_sec_ ||
+      match->selected_identity_reacquire || pending_reacquire_count_ > 0 || long_recovery_ ||
+      step > max_frame_gap_sec_ ||
       ((result_.source == "lost" || result_.source == "ambiguous" || result_.source == "prediction") &&
        !recent_same_identity));
 
   if (rebound) {
     const double measured = match->detector_stamp;
+    const double pending_dt = std::max(0.0, measured - pending_reacquire_stamp_);
+    const cv::Point2d pending_expected = center(pending_reacquire_box_) + velocity_ * pending_dt;
     const bool pending_jump = pending_reacquire_id_ == match->id &&
-        pending_reacquire_count_ > 0 && cv::norm(center(match->box) - center(pending_reacquire_box_)) >
+        pending_reacquire_count_ > 0 && cv::norm(center(match->box) - pending_expected) >
         2.0 + center_gate_sizes_ * std::hypot(match->box.w, match->box.h) *
-            std::min(1.0, std::max(0.0, measured - pending_reacquire_stamp_) / max_frame_gap_sec_);
+            std::min(1.0, pending_dt / max_frame_gap_sec_);
     if (pending_reacquire_id_ != match->id || measured - pending_reacquire_stamp_ > max_frame_gap_sec_ ||
         step > max_frame_gap_sec_) {
       pending_reacquire_count_ = 0;
@@ -2151,11 +2586,19 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
       pending_reacquire_stamp_ = measured;
       pending_reacquire_box_ = match->box;
     }
+    // A same-frame template match is independent visual confirmation of a
+    // one-frame YOLO rebound, so do not require three separate detector hits.
+    if (template_support_match) pending_reacquire_count_ = confirmation_frames_;
     if (pending_reacquire_count_ < confirmation_frames_) {
       const bool seed_hold = manual_seed_without_yolo_ && manual_seed_visual_without_yolo_;
-      const bool agrees = visual_valid && stamp - std::max(last_detector_for_selection_, selected_stamp_) <= visual_hold_sec_ &&
-          boxIou(visual, match->box) >= 0.30;
-      if (visual_valid && (seed_hold || agrees)) {
+      const bool visual_hold_allowed = visual_valid &&
+          (template_visual_valid || seed_hold ||
+           stamp - std::max(last_detector_for_selection_, selected_stamp_) <= visual_hold_sec_);
+      // Identity confirmation and control-box continuity are separate jobs:
+      // the candidate has already passed class, motion, size, and appearance
+      // gates above. Keep a valid template box on the output while YOLO confirms,
+      // even if the detector rectangle itself has a different shape/IoU.
+      if (visual_hold_allowed) {
         result_.box = visual;
         result_.has_box = true;
         result_.observed = true;
@@ -2191,39 +2634,28 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
                      weight * match->box.h + (1.0 - weight) * visual.h};
       source = "fused";
     }
-    if (agrees) kcf_reseed_count_ = 0;
-    else if (detector_updated) ++kcf_reseed_count_;
-    // Do not let a single detector update move the published target box
-    // directly. The constant-velocity prediction absorbs small detector jitter;
-    // a confirmed identity rebound starts at the new measurement immediately.
+    // Do not let a confirmed identity rebound snap the control box to one YOLO
+    // rectangle. Blend the re-acquired detector box into the template/predicted box
+    // over several frames; ordinary same-ID corrections retain their existing
+    // confidence-dependent gain.
     const double authority_span = std::max(0.01, detector_authority_ - min_detector_confidence_);
     const double confidence_above_maintenance = clamp01(
         (match->confidence - min_detector_confidence_) / authority_span);
-    const double detector_gain = rebound ? 1.0 :
+    const double detector_gain = rebound ? reacquire_detector_gain_ :
         std::max(0.28, std::min(0.62,
             0.28 + 0.28 * confidence_above_maintenance +
             (match->confidence >= detector_authority_ ? 0.06 : 0.0)));
     const Box fused = smooth_box(predicted, measurement, detector_gain);
-    const bool refresh = agrees && stamp - last_local_seed_stamp_ >= local_template_refresh_sec_ &&
-        match->confidence >= min_detector_confidence_ && match->detector_stamp == stamp;
-    const bool reseed_kcf = rebound || !kcf_ || refresh || kcf_reseed_count_ >= 2;
-    if (reseed_kcf) {
-      try {
-        kcf_ = cv::TrackerKCF::create();
-        kcf_->init(frame, cv::Rect(static_cast<int>(std::lround(fused.x)),
-            static_cast<int>(std::lround(fused.y)), static_cast<int>(std::lround(fused.w)),
-            static_cast<int>(std::lround(fused.h))));
-        last_local_seed_stamp_ = stamp;
-        kcf_reseed_count_ = 0;
-      } catch (const cv::Exception &) { kcf_.release(); }
-    }
-    if (rebound) {
+    const bool preserve_visual_motion = rebound && visual_valid && !long_recovery_ &&
+        stamp - std::max(last_detector_for_selection_, selected_stamp_) <= visual_hold_sec_;
+    if (rebound && !preserve_visual_motion) {
       velocity_ = cv::Point2d(0.0, 0.0);
       motion_continuous_ = true;
     } else {
       const double observation_dt = stamp - last_observation_stamp_;
       if (observation_dt > 0.0) {
-        const cv::Point2d measured_velocity = (center(fused) - center(selected_box_)) / observation_dt;
+        const Box &velocity_box = preserve_visual_motion ? visual : fused;
+        const cv::Point2d measured_velocity = (center(velocity_box) - center(selected_box_)) / observation_dt;
         velocity_ = 0.8 * velocity_ + 0.2 * measured_velocity;
       }
     }
@@ -2237,6 +2669,25 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
     pending_reacquire_count_ = 0;
     double quality = 0.0;
     const auto feature = appearanceFeature(frame, match->box, &quality);
+    const double template_similarity = appearance_anchor_.empty()
+        ? 1.0 : cosineSimilarity(feature, appearance_anchor_);
+    if (match->detector_stamp == stamp &&
+        match->confidence >= template_update_confidence_ &&
+        quality >= quality_gate_ && template_similarity >= appearance_gate_ &&
+        stamp - last_template_update_stamp_ >= local_template_refresh_sec_) {
+      cv::Mat current_template = grayTemplate(frame, match->box);
+      if (!current_template.empty()) {
+        if (target_template_gray_.empty()) {
+          target_template_gray_ = current_template;
+        } else {
+          cv::Mat aligned_template;
+          cv::resize(current_template, aligned_template, target_template_gray_.size());
+          cv::addWeighted(target_template_gray_, 0.95, aligned_template, 0.05,
+                          0.0, target_template_gray_);
+        }
+        last_template_update_stamp_ = stamp;
+      }
+    }
     if (quality >= 0.65 && match->confidence >= min_detector_confidence_ && match->detector_stamp == stamp) {
       if (appearance_anchor_.size() == feature.size()) {
         for (size_t i = 0; i < feature.size(); ++i) appearance_anchor_[i] = 0.95f * appearance_anchor_[i] + 0.05f * feature[i];
@@ -2253,7 +2704,8 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
     result_.reason = agrees ? "compatible_observations" : source;
     result_.confidence = match->confidence;
     result_.detector_stamp = match->detector_stamp;
-  } else if (visual_valid && ((manual_seed_without_yolo_ && manual_seed_visual_without_yolo_) ||
+  } else if (visual_valid && (template_visual_valid ||
+      (manual_seed_without_yolo_ && manual_seed_visual_without_yolo_) ||
       stamp - std::max(last_detector_for_selection_, selected_stamp_) <= visual_hold_sec_)) {
     const Box filtered_visual = smooth_box(predicted, visual, 0.65);
     const double dt = stamp - last_observation_stamp_;
@@ -2271,7 +2723,8 @@ void SmartTrackerFusionCpp::processFusion(const cv::Mat &frame, double stamp,
     result_.has_box = true;
     result_.observed = true;
     result_.source = "visual";
-    result_.reason = "validated_local_tracker_observation";
+    result_.reason = template_visual_valid
+        ? "validated_template_match" : "validated_local_tracker_observation";
     result_.confidence = std::min({0.65, visual_quality, selected_confidence_});
   } else if (absence <= prediction_hold_sec_ && validBox(predicted, frame.size())) {
     result_.box = predicted;
@@ -2416,12 +2869,12 @@ void SmartTrackerFusionCpp::processColor(const cv::Mat &frame, double stamp,
 }
 
 bool SmartTrackerFusionCpp::selectConfiguredColorCandidate(const Snapshot &snapshot,
-    const Detection &candidate, const std::string &reason) {
+    const Detection &candidate, const std::string &reason, bool auto_selection) {
   if (!snapshot.image || mode_ != "color_tracker" || !hasConfiguredColor(color_name_) ||
       !validBox(candidate.box, snapshot.frame.size())) return false;
 
   const bool was_auto_selecting = auto_select_enabled_;
-  auto_select_enabled_ = false;
+  if (!auto_selection) auto_select_enabled_ = false;
   auto_select_count_ = 0;
   auto_select_candidate_id_ = -1;
   resetSelection();
@@ -2436,7 +2889,7 @@ bool SmartTrackerFusionCpp::selectConfiguredColorCandidate(const Snapshot &snaps
   last_observation_stamp_ = selected_stamp_;
   result_ = {selected_box_, selected_id_, selected_local_id_, selected_class_id_,
              selected_confidence_, 0.0, "visual", reason, true, true};
-  if (was_auto_selecting) {
+  if (was_auto_selecting && !auto_selection) {
     auto_select_pub_status_ = false;
     std_msgs::Bool status;
     status.data = false;
@@ -2499,33 +2952,78 @@ bool SmartTrackerFusionCpp::initializeColorFromRoi(const Snapshot &snapshot, con
 
 void SmartTrackerFusionCpp::updateAutoSelection(const std::vector<Detection> &detections,
     const cv::Mat &frame, const sensor_msgs::ImageConstPtr &image) {
-  if (!auto_select_enabled_ || detections.empty() || !image) {
+  const auto clear_candidate = [this]() {
     auto_select_count_ = 0;
     auto_select_candidate_id_ = -1;
+    auto_select_candidate_class_ = -1;
+    auto_select_candidate_stable_ = false;
+    auto_select_last_stamp_ = 0.0;
+    auto_select_box_ = Box();
+  };
+  if (!auto_select_enabled_ || !image) {
+    clear_candidate();
     return;
   }
+
+  const double stamp = image->header.stamp.toSec();
+  if (!std::isfinite(stamp) || stamp <= 0.0) {
+    clear_candidate();
+    return;
+  }
+  if (detections.empty()) {
+    if (auto_select_last_stamp_ <= 0.0 || stamp <= auto_select_last_stamp_ ||
+        stamp - auto_select_last_stamp_ > auto_select_max_gap_)
+      clear_candidate();
+    return;
+  }
+
   const Detection *winner = nullptr;
+  const Detection *pending_candidate = nullptr;
   for (const auto &detection : detections) {
     if (detection.confidence < auto_select_min_confidence_ || !validBox(detection.box, frame.size())) continue;
     if (winner == nullptr || detection.confidence > winner->confidence ||
         (detection.confidence == winner->confidence && detection.box.w * detection.box.h > winner->box.w * winner->box.h)) {
       winner = &detection;
     }
+    const bool same_pending_identity = auto_select_candidate_class_ == detection.class_id &&
+        ((auto_select_candidate_stable_ && detection.stable &&
+          auto_select_candidate_id_ == detection.id) ||
+         (!auto_select_candidate_stable_ && !detection.stable &&
+          boxIou(auto_select_box_, detection.box) >= 0.30));
+    if (auto_select_count_ > 0 && same_pending_identity &&
+        (pending_candidate == nullptr || detection.confidence > pending_candidate->confidence)) {
+      pending_candidate = &detection;
+    }
   }
+  // Keep confirming the same target even if another object's confidence is
+  // briefly higher in a later detector result.
+  if (pending_candidate != nullptr) winner = pending_candidate;
   if (winner == nullptr) {
-    auto_select_count_ = 0;
-    auto_select_candidate_id_ = -1;
+    if (auto_select_last_stamp_ <= 0.0 || stamp <= auto_select_last_stamp_ ||
+        stamp - auto_select_last_stamp_ > auto_select_max_gap_)
+      clear_candidate();
     return;
   }
-  const double stamp = image->header.stamp.toSec();
-  const bool same_identity = (auto_select_candidate_stable_ || winner->stable)
-      ? (auto_select_candidate_stable_ && winner->stable && auto_select_candidate_id_ == winner->id)
-      : (boxIou(auto_select_box_, winner->box) >= 0.30);
-  const bool same = auto_select_candidate_class_ == winner->class_id && same_identity &&
-      boxIou(auto_select_box_, winner->box) >= 0.30 &&
-      stamp - auto_select_last_stamp_ > 0.0 && stamp - auto_select_last_stamp_ <= auto_select_max_gap_;
+
+  const double area_ratio = winner->box.w * winner->box.h /
+      std::max(1.0, auto_select_box_.w * auto_select_box_.h);
+  const double center_distance = cv::norm(center(auto_select_box_) - center(winner->box)) /
+      std::max(8.0, std::hypot(std::max(auto_select_box_.w, winner->box.w),
+                              std::max(auto_select_box_.h, winner->box.h)));
+  const bool stable_id_match = auto_select_candidate_stable_ && winner->stable &&
+      auto_select_candidate_id_ == winner->id;
+  const bool geometry_match = area_ratio >= 0.25 && area_ratio <= 4.0 &&
+      center_distance <= 0.60 &&
+      (boxIou(auto_select_box_, winner->box) >= 0.10 ||
+       duplicateTargetBoxes(auto_select_box_, winner->class_id,
+                            winner->box, winner->class_id));
+  const bool same = auto_select_count_ > 0 &&
+      auto_select_candidate_class_ == winner->class_id &&
+      (stable_id_match || geometry_match) &&
+      stamp - auto_select_last_stamp_ > 0.0 &&
+      stamp - auto_select_last_stamp_ <= auto_select_max_gap_;
   auto_select_count_ = same ? auto_select_count_ + 1 : 1;
-  auto_select_candidate_id_ = static_cast<int>(winner->id);
+  auto_select_candidate_id_ = winner->id;
   auto_select_candidate_class_ = winner->class_id;
   auto_select_candidate_stable_ = winner->stable;
   auto_select_box_ = winner->box;
@@ -2534,19 +3032,16 @@ void SmartTrackerFusionCpp::updateAutoSelection(const std::vector<Detection> &de
   Snapshot snapshot{image, frame, detections};
   bool selected = false;
   if (mode_ == "color_tracker" && hasConfiguredColor(color_name_)) {
-    selected = selectConfiguredColorCandidate(snapshot, *winner, "color_auto_selected");
+    selected = selectConfiguredColorCandidate(snapshot, *winner, "color_auto_selected", true);
   } else {
     int64_t id = -1;
     std::string error;
     selected = selectFromSnapshot(snapshot, winner->box, true, false, &id, &error);
   }
   if (selected) {
-    auto_select_enabled_ = false;
-    auto_select_pub_status_ = false;
-    std_msgs::Bool status;
-    status.data = false;
-    auto_status_pub_.publish(status);
-    ROS_INFO_STREAM("C++ SmartTracker auto-selected detection id=" << winner->id << " stable_frames=" << auto_select_count_);
+    auto_selected_ = true;
+    ROS_INFO_STREAM("C++ SmartTracker auto-selected detection id=" << winner->id
+        << " stable_frames=" << auto_select_count_ << "; auto-selection remains armed");
   }
   auto_select_count_ = 0;
   auto_select_candidate_id_ = -1;
@@ -2741,6 +3236,8 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
   if (selected_publishable) {
     output.erase(std::remove_if(output.begin(), output.end(), [local_id, mode, &selected](const Detection &detection) {
       return (local_id >= 0 && detection.id == local_id) ||
+          duplicateTargetBoxes(detection.box, detection.class_id,
+                               selected.box, selected.class_id) ||
           (mode == "color_tracker" && boxIou(detection.box, selected.box) >= 0.50);
     }), output.end());
     Detection target;
@@ -2813,6 +3310,8 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
     observations.image_height = image->height;
     const auto &observation_items = mode == "fusion_tracker" ? detections : output;
     for (const auto &item : observation_items) {
+      if (mode == "fusion_tracker" &&
+          std::abs(item.detector_stamp - image->header.stamp.toSec()) > 1e-6) continue;
       sar_yolo_detector::FusionDetection2D entry;
       sar_yolo_detector::TrackedDetection2D target;
       target.track_id = item.id;
@@ -2879,7 +3378,7 @@ void SmartTrackerFusionCpp::publishOutputs(const sensor_msgs::ImageConstPtr &ima
   state.association_method = mode == "fusion_tracker"
       ? "fusion_" + selected.source : "manual_" + mode;
   state.freshness_reason = selected.reason;
-  state.tracker_type = mode == "fusion_tracker" ? "YOLO+KCF" : mode;
+  state.tracker_type = mode == "fusion_tracker" ? "YOLO+Template" : mode;
   state.backend = mode == "fusion_tracker" ? "shared_remote" : "opencv";
   state.device = mode == "fusion_tracker" && use_gpu_ ? "cuda" : "cpu";
   state.model_path = mode == "fusion_tracker" ? model_path_ : "";
@@ -2940,10 +3439,15 @@ void SmartTrackerFusionCpp::publishEmptySelection(const std_msgs::Header &header
 
 void SmartTrackerFusionCpp::resetSelection() {
   selected_ = false;
+  auto_selected_ = false;
+  auto_selected_missing_since_ = 0.0;
   manual_active_ = false;
   manual_seed_ = false;
   kcf_.release();
-  kcf_reseed_count_ = 0;
+  target_template_gray_.release();
+  last_template_update_stamp_ = 0.0;
+  last_template_search_stamp_ = 0.0;
+  last_template_candidate_trigger_id_ = -1;
   selected_box_ = Box();
   selected_id_ = -1;
   selected_local_id_ = -1;
@@ -2953,7 +3457,6 @@ void SmartTrackerFusionCpp::resetSelection() {
   last_observation_stamp_ = 0.0;
   last_fusion_stamp_ = 0.0;
   last_detector_for_selection_ = 0.0;
-  last_local_seed_stamp_ = 0.0;
   manual_seed_without_yolo_ = false;
   manual_seed_region_ = Box();
   motion_continuous_ = true;
@@ -3021,23 +3524,26 @@ bool SmartTrackerFusionCpp::selectFromSnapshot(const Snapshot &snapshot, const B
   double quality = 0.0;
   appearance_anchor_ = appearanceFeature(snapshot.frame, chosen, &quality);
   anchor_area_ = chosen.w * chosen.h;
-  last_local_seed_stamp_ = selected_stamp_;
-  try {
-    kcf_ = cv::TrackerKCF::create();
-    if (!kcf_) throw std::runtime_error("OpenCV KCF tracker is unavailable");
-    const cv::Rect roi(static_cast<int>(std::lround(chosen.x)),
-                       static_cast<int>(std::lround(chosen.y)),
-                       static_cast<int>(std::lround(chosen.w)),
-                       static_cast<int>(std::lround(chosen.h)));
-    kcf_->init(snapshot.frame, roi);
-  } catch (const cv::Exception &exception) {
-    resetSelection();
-    if (error) *error = std::string("could not initialize KCF tracker: ") + exception.what();
-    return false;
-  } catch (const std::exception &exception) {
-    resetSelection();
-    if (error) *error = std::string("could not initialize KCF tracker: ") + exception.what();
-    return false;
+  target_template_gray_ = grayTemplate(snapshot.frame, chosen);
+  last_template_update_stamp_ = selected_stamp_;
+  if (mode_ == "feature_tracker") {
+    try {
+      kcf_ = cv::TrackerKCF::create();
+      if (!kcf_) throw std::runtime_error("OpenCV KCF tracker is unavailable");
+      const cv::Rect roi(static_cast<int>(std::lround(chosen.x)),
+                         static_cast<int>(std::lround(chosen.y)),
+                         static_cast<int>(std::lround(chosen.w)),
+                         static_cast<int>(std::lround(chosen.h)));
+      kcf_->init(snapshot.frame, roi);
+    } catch (const cv::Exception &exception) {
+      resetSelection();
+      if (error) *error = std::string("could not initialize KCF tracker: ") + exception.what();
+      return false;
+    } catch (const std::exception &exception) {
+      resetSelection();
+      if (error) *error = std::string("could not initialize KCF tracker: ") + exception.what();
+      return false;
+    }
   }
   if (candidate) {
     result_ = {chosen, selected_id_, selected_local_id_, selected_class_id_,
@@ -3179,7 +3685,7 @@ bool SmartTrackerFusionCpp::switchMode(sar_yolo_detector::SwitchTrackingMode::Re
   ++mode_epoch_;
   resetSelection();
   has_pending_roi_ = false;
-  flow_detections_.reset();
+  template_detections_.reset();
   camera_motion_.reset();
   last_detector_detections_.clear();
   latest_detections_.clear();
@@ -3303,7 +3809,7 @@ bool SmartTrackerFusionCpp::selectRoi(sar_yolo_detector::SelectFusionROI::Reques
   std::string error;
   response.success = selectFromSnapshot(*found, roi, !manual_seed, manual_seed, &selected_id, &error);
   response.message = response.success ? (manual_seed
-      ? "KCF initialized from the requested manual ROI; YOLO will validate and correct nearby matches"
+      ? "Template initialized from the requested manual ROI; YOLO will validate and correct nearby matches"
       : "Fusion initialized from the requested original frame") : error;
   response.selected_target_id = response.success ? selected_id : -1;
   return true;
@@ -3367,9 +3873,9 @@ bool SmartTrackerFusionCpp::autoSelect(std_srvs::SetBool::Request &request,
     response.message = request.data
         ? (mode_ == "color_tracker"
             ? (hasConfiguredColor(color_name_)
-                ? "Whole-image search for the configured color started"
-                : "Whole-image search from the ROI-learned color histogram started")
-            : "Auto target selection started; waiting for stable detections")
+                ? "Configured-color auto selection armed; it resumes after target loss"
+                : "ROI-learned color auto selection armed; it resumes after target loss")
+            : "Auto target selection armed; it resumes after target loss")
         : "Auto target selection stopped";
   }
   auto_select_count_ = 0;

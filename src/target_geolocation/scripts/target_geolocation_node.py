@@ -16,6 +16,7 @@
     -> /uav1/target/global_position            NavSatFix    目标经纬高（主输出）
     -> /uav1/target/geolocated                 GeolocatedTarget 坐标 + 框类别/置信度/track_id
     -> /uav1/target/local_enu                  PointStamped 相对飞机的 ENU 偏移
+    -> /uav1/target/metric_target              MetricTarget 本地 odom 系目标点，供 track 丢框续引导
     -> /uav1/target/marker                     Marker       RViz 可视化
     -> /uav1/target/solution                   Float64MultiArray  11 维调试量
 
@@ -35,12 +36,13 @@ import threading
 import rospy
 from geometry_msgs.msg import PointStamped, PoseStamped, QuaternionStamped
 from mavros_msgs.msg import Mavlink
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, NavSatFix, Range
 from std_msgs.msg import Float32, Float64, Float64MultiArray
 from visualization_msgs.msg import Marker
 from sar_yolo_detector.msg import TrackedDetection2DArray
 from target_geolocation.msg import GeolocatedTarget
-from xd_uav_track.msg import DetectionArray
+from xd_uav_track.msg import DetectionArray, MetricTarget
 
 from target_geolocation import geodesy, solver
 from target_geolocation.solver import GIMBAL_DEVICE_FLAGS_YAW_LOCK
@@ -99,6 +101,8 @@ class TargetGeolocationNode(object):
                             or _join(self.uav_ns, 'mavros/distance_sensor/laser_1d'))
         self.local_pose_topic = (rospy.get_param('~local_pose_topic', '')
                                  or _join(self.uav_ns, 'mavros/local_position/pose'))
+        self.metric_odom_topic = (rospy.get_param('~metric_odom_topic', '')
+                                  or _join(self.uav_ns, 'state_estimator/main/odom'))
         self.gimbal_att_topic = rospy.get_param('~gimbal_att_topic', '')
         self.att_msg_type = str(rospy.get_param('~att_msg_type', 'QuaternionStamped')).lower()
         self.det_topic = rospy.get_param('~det_topic', '')
@@ -156,7 +160,8 @@ class TargetGeolocationNode(object):
         self._range = None     # dict(value, stamp)
         self._gimbal = None    # dict(q, yaw_locked, stamp, src)
         self._heading = None   # dict(deg, stamp)
-        self._local = None     # dict(x, y, z)
+        self._local = None     # MAVROS pose, used for visualization
+        self._metric_odom = None  # estimator odom, shared with xd_uav_track
         self._det = None       # dict(u, v, stamp)
         self._ema = None       # 平滑用的 ENU 偏移
         self._last_valid = None
@@ -172,6 +177,8 @@ class TargetGeolocationNode(object):
         rospy.Subscriber(self.gps_topic, NavSatFix, self._gps_cb, queue_size=5)
         rospy.Subscriber(self.heading_topic, Float64, self._heading_cb, queue_size=5)
         rospy.Subscriber(self.local_pose_topic, PoseStamped, self._local_cb, queue_size=5)
+        rospy.Subscriber(self.metric_odom_topic, Odometry,
+                         self._metric_odom_cb, queue_size=5)
 
         if self.gimbal_att_topic:
             if self.att_msg_type in ('imu', 'sensor_msgs/imu'):
@@ -223,6 +230,8 @@ class TargetGeolocationNode(object):
             _join(self.out_prefix, 'global_position'), NavSatFix, queue_size=5)
         self.pub_geolocated = rospy.Publisher(
             _join(self.out_prefix, 'geolocated'), GeolocatedTarget, queue_size=5)
+        self.pub_metric_target = rospy.Publisher(
+            _join(self.out_prefix, 'metric_target'), MetricTarget, queue_size=5)
         self.pub_local = rospy.Publisher(
             _join(self.out_prefix, 'local_enu'), PointStamped, queue_size=5)
         self.pub_marker = rospy.Publisher(
@@ -233,10 +242,11 @@ class TargetGeolocationNode(object):
         rospy.on_shutdown(self._on_shutdown)
         rospy.Timer(rospy.Duration(1.0 / max(self.publish_rate, 1.0)), self._tick)
 
-        rospy.loginfo('[GEO] 就绪: gps=%s range=%s -> %s and %s', self.gps_topic,
+        rospy.loginfo('[GEO] 就绪: gps=%s range=%s -> %s, %s and %s', self.gps_topic,
                       self.range_topic,
                       _join(self.out_prefix, 'global_position'),
-                      _join(self.out_prefix, 'geolocated'))
+                      _join(self.out_prefix, 'geolocated'),
+                      _join(self.out_prefix, 'metric_target'))
         rospy.loginfo('[GEO] boresight rpy=%s deg, sensor_axis=%s, 图像偏角修正=%s',
                       self.boresight_rpy, self.sensor_axis, self.use_img_offset)
 
@@ -261,10 +271,20 @@ class TargetGeolocationNode(object):
                                  stamp=rospy.Time.now())
 
     def _local_cb(self, msg):
+        stamp = _stamp_or_now(msg)
         with self._lock:
             self._rev += 1
             self._local = dict(x=msg.pose.position.x, y=msg.pose.position.y,
-                               z=msg.pose.position.z)
+                               z=msg.pose.position.z,
+                               frame_id=str(msg.header.frame_id), stamp=stamp)
+
+    def _metric_odom_cb(self, msg):
+        stamp = _stamp_or_now(msg)
+        position = msg.pose.pose.position
+        with self._lock:
+            self._rev += 1
+            self._metric_odom = dict(x=position.x, y=position.y, z=position.z,
+                                     frame_id=str(msg.header.frame_id), stamp=stamp)
 
     def _range_cb(self, msg):
         value = float(msg.range)
@@ -621,7 +641,8 @@ class TargetGeolocationNode(object):
             lat, lon, alt = res['lat'], res['lon'], res['alt']
 
         self._last_valid = now
-        self._publish(res, lat, lon, alt, east, north, up, now)
+        self._publish(res, lat, lon, alt, east, north, up, now,
+                      reference_stamp=gps['stamp'])
 
         rospy.loginfo_throttle(
             2.0, '[GEO] 目标 lat=%.7f lon=%.7f alt=%.1f | 斜距=%.1fm 平距=%.1fm '
@@ -630,7 +651,8 @@ class TargetGeolocationNode(object):
             res['bearing_deg'], res['elevation_deg'], yaw_locked)
 
     # =============================================================== 发布
-    def _publish(self, res, lat, lon, alt, east, north, up, stamp):
+    def _publish(self, res, lat, lon, alt, east, north, up, stamp,
+                 reference_stamp=None):
         fix = NavSatFix()
         fix.header.stamp = stamp
         fix.header.frame_id = 'target'
@@ -651,6 +673,7 @@ class TargetGeolocationNode(object):
         # The plain NavSatFix remains available for existing consumers.
         with self._lock:
             detection = self._det
+        geolocated = None
         if (detection is not None
                 and 'class_id' in detection
                 and int(detection['class_id']) >= 0
@@ -667,6 +690,7 @@ class TargetGeolocationNode(object):
         # 相对飞机（或本地坐标原点）的 ENU 位置，便于 RViz / 下游使用
         with self._lock:
             local = self._local
+            metric_odom = self._metric_odom
         if local is not None:
             px, py, pz = local['x'] + east, local['y'] + north, local['z'] + up
         else:
@@ -677,6 +701,35 @@ class TargetGeolocationNode(object):
         pt.header.frame_id = self.marker_frame
         pt.point.x, pt.point.y, pt.point.z = px, py, pz
         self.pub_local.publish(pt)
+
+        # Build the target point from the same estimator odometry topic used by
+        # xd_uav_track. MAVROS local_position/pose may use a body frame_id and
+        # must not be mislabeled as the estimator's world odom frame.
+        metric_odom_fresh = metric_odom is not None and \
+            metric_odom.get('frame_id') and \
+            abs((stamp - metric_odom['stamp']).to_sec()) <= self.max_input_age and \
+            (reference_stamp is None or
+             abs((metric_odom['stamp'] - reference_stamp).to_sec()) <= self.max_skew)
+        if geolocated is not None and metric_odom_fresh:
+            metric = MetricTarget()
+            metric.header.stamp = stamp
+            metric.header.frame_id = metric_odom['frame_id']
+            metric.target_id = int(geolocated.track_id)
+            metric.valid = True
+            metric.pose.pose.position.x = metric_odom['x'] + east
+            metric.pose.pose.position.y = metric_odom['y'] + north
+            metric.pose.pose.position.z = metric_odom['z'] + up
+            metric.pose.pose.orientation.w = 1.0
+            for row in range(3):
+                for column in range(3):
+                    metric.pose.covariance[row * 6 + column] = \
+                        fix.position_covariance[row * 3 + column]
+            metric.has_velocity = False
+            metric.source = 'gimbal_target_geolocation'
+            self.pub_metric_target.publish(metric)
+        elif geolocated is not None:
+            rospy.logwarn_throttle(
+                5.0, '[GEO] 未发布本地 MetricTarget：estimator odom 缺失、过期或 frame_id 为空')
 
         if self.enable_marker:
             marker = Marker()

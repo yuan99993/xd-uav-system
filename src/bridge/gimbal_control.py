@@ -292,6 +292,7 @@ GIMBAL_MANAGER_FLAGS_YAW_LOCK = 16
 MSG_GIMBAL_MANAGER_SET_ATTITUDE = 282
 MSG_GIMBAL_DEVICE_SET_ATTITUDE = 284
 MSG_GIMBAL_DEVICE_ATTITUDE_STATUS = 285
+MSG_ATTITUDE = 30
 # 这里的 1001 是 PX4 的命令枚举值，不是 MAVLink 消息 ID。
 # 实际发送时通过 MAVLink COMMAND_LONG(#76) 携带这个 command=1001。
 MAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE = 1001
@@ -326,6 +327,35 @@ def euler_to_quat_zyx(roll_rad, pitch_rad, yaw_rad):
     y = t0 * t2 * t5 + t1 * t3 * t4
     z = t1 * t2 * t4 - t0 * t3 * t5
     return [w, x, y, z]
+
+
+def quat_multiply(q1, q2):
+    """四元数乘法 [w,x,y,z]，组合先应用 q2、再应用 q1。"""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return [
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ]
+
+
+def quat_rotate_vector(q, v):
+    """用 [w,x,y,z] 姿态四元数旋转三维向量。"""
+    norm = math.sqrt(sum(float(c) * float(c) for c in q))
+    if norm < 1e-9:
+        return v
+    w, x, y, z = [float(c) / norm for c in q]
+    vx, vy, vz = v
+    return (
+        (1.0 - 2.0 * (y * y + z * z)) * vx + 2.0 * (x * y - w * z) * vy
+        + 2.0 * (x * z + w * y) * vz,
+        2.0 * (x * y + w * z) * vx + (1.0 - 2.0 * (x * x + z * z)) * vy
+        + 2.0 * (y * z - w * x) * vz,
+        2.0 * (x * z - w * y) * vx + 2.0 * (y * z + w * x) * vy
+        + (1.0 - 2.0 * (x * x + y * y)) * vz,
+    )
 
 
 # ================= 一阶低通滤波 =================
@@ -682,10 +712,15 @@ class GimbalVisualServo:
         self._gimbal_control_claimed = False
         self._gimbal_claim_retry_after = 0.0
         self._gimbal_release_retry_after = 0.0
-        # 云台姿态反馈(#285)最新值 (yaw_deg, pitch_deg, yaw_lock)。仅稳像模式订阅填充，
-        # 非稳像模式恒为 None(接管时回退到 0)。在此无条件定义，_engage_servo 才能安全读取。
+        # 云台反馈最新值：(yaw, pitch, lock flags, q, MAVLink stamp, receive time,
+        # world yaw/pitch)。仅稳像模式订阅填充，在此无条件定义以供接管逻辑读取。
         self._gimbal_fb = None
         self._gimbal_fb_lock = threading.Lock()
+        # 飞机姿态 ATTITUDE(#30) 最近样本，用于按时间戳把机体系 #285 四元数
+        # 转到 NED 世界系。只用“最新一帧”会和低频 #285 错时，快速转弯时造成跳变。
+        self._vehicle_attitudes = []  # [(stamp, q_vehicle_to_ned), ...]
+        self._vehicle_attitude_lock = threading.Lock()
+        self._gimbal_control_claimed_at = None
         # #285 反馈角速度估计(世界系, 供 ff 去耦)：云台实际世界角速度 =
         # 反馈姿态差分(≈10Hz) 低通。画面速度 = 目标世界运动 - 云台世界转动,
         # ff 用它把云台自转从画面速度中分离 → 静态目标 ff→0(断开延迟正反馈环),
@@ -696,13 +731,11 @@ class GimbalVisualServo:
         self._fb_pitch_prev = None
         self._fb_yaw_rate = 0.0
         self._fb_pitch_rate = 0.0
-        # 接管软启动(anti-overshoot)：接管瞬间误差通常很大(目标在画面边缘)，全速
-        # P+I 猛转 + 链路延迟 → 目标冲过中心来回摆(实测 ±230px 冲程、来回 3 次)。
-        # 接管后 engage_ramp_s 内 P/D/I 增益从 70% 线性恢复至 100%：kp_eff×延迟<1
-        # 即无过冲, 软启动期带宽 0.7×2.4=1.68°/s/° ×0.5s=0.84<1 ✓(原 40% 起步也
-        # 稳定但初始收敛慢: 测试10 实测 -504px 误差到中心 2.3s, 软启动期占大半;
-        # 70%+1.0s 后 ~1.4s 收敛, 全程无过冲)。前馈不过此缩放(跟踪实时性优先)。
-        self.engage_ramp_s = float(rospy.get_param("~engage_ramp_s", 1.0))
+        # 接管软启动：首框可能离中心很远，且检测/执行链路有延迟；从较低增益
+        # 缓慢升到全增益，减少首次接管时云台一下冲过目标。前馈不过此缩放。
+        self.engage_ramp_s = max(0.1, float(rospy.get_param("~engage_ramp_s", 1.5)))
+        self.engage_start_gain = self.clamp(
+            float(rospy.get_param("~engage_start_gain", 0.25)), 0.0, 1.0)
         self._engage_t = None
         self._gain_scale = 1.0
 
@@ -812,7 +845,7 @@ class GimbalVisualServo:
             "[GVS] 初始化: %dx%d, FOVx=%.1f° FOVy=%.1f°, fx=%.1f fy=%.1f, "
             "Kp(yaw=%.2f pitch=%.2f) Ki(%.1f/%.1f), invert(yaw=%s pitch=%s), "
             "slew(yaw=%.0f pitch=%.0f deg/s), ff(alpha=%.2f dz=%.0fpx max=%.0f/%.0f "
-            "gate=%.0f~%.0fpx), engage_ramp=%.1fs",
+            "gate=%.0f~%.0fpx), engage_ramp=%.1fs start=%.0f%%",
             self.width, self.height, math.degrees(self.fov_x),
             math.degrees(self.fov_y), self.fx, self.fy,
             self.kp_yaw, self.kp_pitch, self.ki_yaw, self.ki_pitch,
@@ -820,7 +853,7 @@ class GimbalVisualServo:
             self.max_slew_yaw, self.max_slew_pitch,
             self.ff_alpha, self.ff_dz_px, self.ff_max_yaw, self.ff_max_pitch,
             self.ff_gate_full_px, self.ff_gate_off_px,
-            self.engage_ramp_s)
+            self.engage_ramp_s, self.engage_start_gain * 100.0)
         rospy.loginfo(
             "[GVS] 发送后端: %s",
             ("稳像(GIMBAL_MANAGER_SET_ATTITUDE#282+YAW_LOCK, 主链路经 %s/mavlink/to, "
@@ -867,9 +900,13 @@ class GimbalVisualServo:
     def _gimbal_fb_cb(self, msg):
         """解析本机 /mavlink/from，提取 #285 云台姿态反馈。
 
-        YAW_LOCK 置位时四元数在世界系(yaw 相对正北)，否则在机体系(yaw 相对机头)。
-        记录 (yaw_deg, pitch_deg, yaw_lock) 供首次接管时初始化指令。
+        #285 的 q 使用世界系还是机体系由 YAW_LOCK 决定。机体系反馈必须与
+        #30 飞机姿态按时间戳配对，再组合成世界系光轴，不能只给 yaw 加航向。
         """
+        # /mavlink/from carries the whole vehicle stream. Only parse the vehicle
+        # attitude and gimbal status messages used for bumpless handover.
+        if msg.msgid not in (MSG_ATTITUDE, MSG_GIMBAL_DEVICE_ATTITUDE_STATUS):
+            return
         try:
             frame = self._rebuild_frame(msg)
             parsed = self._fb_parser.parse_buffer(frame)
@@ -878,28 +915,75 @@ class GimbalVisualServo:
         if not parsed:
             return
         for m in parsed:
-            if m.get_msgId() != MSG_GIMBAL_DEVICE_ATTITUDE_STATUS:
+            message_id = m.get_msgId()
+            received_at = time.time()
+            stamp = time.time()
+            try:
+                stamp = msg.header.stamp.to_sec()
+                if not math.isfinite(stamp) or stamp <= 0.0:
+                    stamp = time.time()
+            except Exception:
+                stamp = time.time()
+            if message_id == MSG_ATTITUDE:
+                rpy = (float(m.roll), float(m.pitch), float(m.yaw))
+                if all(math.isfinite(value) for value in rpy):
+                    vehicle_q = euler_to_quat_zyx(*rpy)
+                    with self._vehicle_attitude_lock:
+                        self._vehicle_attitudes.append((stamp, tuple(vehicle_q)))
+                        # #285 通常约 10 Hz；保留 1 秒历史用于匹配低频反馈。
+                        cutoff = stamp - 1.0
+                        self._vehicle_attitudes = [
+                            sample for sample in self._vehicle_attitudes
+                            if sample[0] >= cutoff]
+                continue
+            if message_id != MSG_GIMBAL_DEVICE_ATTITUDE_STATUS:
                 continue
             flags = int(m.flags)
-            q = list(m.q)  # [w, x, y, z]
+            q = [float(value) for value in m.q]  # [w, x, y, z]
+            if not all(math.isfinite(value) for value in q):
+                continue
             norm = math.sqrt(sum(v * v for v in q))
             if norm <= 0.5:
                 continue
             w, x, y, z = [v / norm for v in q]
+            q = (w, x, y, z)
             pitch_rad = math.asin(max(-1.0, min(1.0, 2.0 * (w * y - z * x))))
             yaw_rad = math.atan2(2.0 * (w * z + x * y),
                                  1.0 - 2.0 * (y * y + z * z))
             yaw_deg = math.degrees(yaw_rad)
             pitch_deg = math.degrees(pitch_rad)
             yaw_lock = bool(flags & GIMBAL_DEVICE_FLAGS_YAW_LOCK)
+            pitch_lock = bool(flags & GIMBAL_DEVICE_FLAGS_PITCH_LOCK)
+            # YAW_LOCK 决定 #285 四元数参考系。机体系反馈要和最接近的
+            # #30 姿态配对；错时超过 120 ms 时不拿它做接管起点。
+            q_world = q if yaw_lock else None
+            if not yaw_lock:
+                with self._vehicle_attitude_lock:
+                    vehicle_samples = tuple(self._vehicle_attitudes)
+                if vehicle_samples:
+                    vehicle_stamp, vehicle_q = min(
+                        vehicle_samples, key=lambda sample: abs(sample[0] - stamp))
+                    if abs(vehicle_stamp - stamp) <= 0.12:
+                        q_world = tuple(quat_multiply(vehicle_q, q))
+            world_yaw = world_pitch = None
+            if q_world is not None:
+                optical_axis = quat_rotate_vector(q_world, (1.0, 0.0, 0.0))
+                horizontal = math.hypot(optical_axis[0], optical_axis[1])
+                if horizontal >= 1e-6:
+                    world_yaw = math.degrees(
+                        math.atan2(optical_axis[1], optical_axis[0]))
+                    world_pitch = math.degrees(
+                        math.atan2(-optical_axis[2], horizontal))
             # 诊断：记录 #285 源身份与计数，证明反馈链路是否存活
             self._n285 += 1
             self._last_fb_src = (msg.sysid, msg.compid)
             rospy.loginfo_throttle(
                 5.0,
-                "[GVS_LINK] #285← 源sys/comp=%d/%d yaw=%.1f pitch=%.1f yaw_lock=%s "
+                "[GVS_LINK] #285← 源sys/comp=%d/%d yaw=%.1f pitch=%.1f "
+                "yaw_lock=%s pitch_lock=%s "
                 "(累计%d)",
-                msg.sysid, msg.compid, yaw_deg, pitch_deg, yaw_lock, self._n285)
+                msg.sysid, msg.compid, yaw_deg, pitch_deg,
+                yaw_lock, pitch_lock, self._n285)
             # 世界角速度估计(差分+低通)：供 ff 去耦(分离目标运动与云台自转)。
             # yaw 经 wrap_180 防 ±180 跳变；pitch 符号(#285 抬头为正)与画面系
             # 相反, 去耦时的符号在 ff 侧处理。
@@ -915,7 +999,9 @@ class GimbalVisualServo:
             self._fb_yaw_prev = yaw_deg
             self._fb_pitch_prev = pitch_deg
             with self._gimbal_fb_lock:
-                self._gimbal_fb = (yaw_deg, pitch_deg, yaw_lock)
+                self._gimbal_fb = (
+                    yaw_deg, pitch_deg, yaw_lock, pitch_lock, q, stamp,
+                    received_at, world_yaw, world_pitch)
 
     def _disengage_servo(self):
         """停止跟踪并归还主控权，等待下一帧有效检测重新接管。"""
@@ -949,6 +1035,7 @@ class GimbalVisualServo:
         now = time.time()
         with self._gimbal_fb_lock:
             fb = self._gimbal_fb
+        handover_frame = "internal"
 
         # 航向必须就绪才能接管：世界系指令 = 航向 + yaw_cmd。接管时罗盘若还是
         # 初始 0.0（订阅后 ~80ms 内首条 compass_hdg 未到），yaw_cmd 按 0 航向
@@ -977,16 +1064,28 @@ class GimbalVisualServo:
             hdg = self.compass_hdg
 
         if fb is not None:
-            fb_yaw, fb_pitch, yaw_lock = fb
-            if yaw_lock:
-                # 世界系反馈：world_yaw = heading + yaw_cmd + offset → 反解机体相对 yaw
-                self.yaw_cmd = self.wrap_180(fb_yaw - hdg - self.yaw_offset_deg)
-                # pitch 反馈相对地平线，构造四元数时取反(见 _send_stabilized)
-                self.pitch_cmd = -fb_pitch if self.stabilize_pitch_negate else fb_pitch
-            else:
-                # 机体系反馈：yaw 已是机体相对，可直接用；pitch 非地平线系，保守置 0
-                self.yaw_cmd = self.wrap_180(fb_yaw)
-                self.pitch_cmd = 0.0
+            (fb_yaw, fb_pitch, yaw_lock, pitch_lock, _fb_q, _fb_stamp,
+             fb_received, world_yaw, world_pitch) = fb
+            if self.stabilize:
+                # 主控权变更前的 #285 可能描述的是旧控制状态。等 ACK 后收到
+                # 新反馈再接管，避免把旧参考系姿态作为世界系命令发出去。
+                if (self._gimbal_control_claimed_at is None or
+                        fb_received < self._gimbal_control_claimed_at or
+                        now - fb_received > 0.35):
+                    rospy.logwarn_throttle(
+                        2.0, "[GVS] 等待主控权切换后的新鲜 #285 云台反馈，暂缓接管")
+                    return False
+            if world_yaw is None or world_pitch is None:
+                rospy.logwarn_throttle(
+                    2.0, "[GVS] #285机体系姿态未找到同时间的#30飞机姿态，暂缓接管")
+                return False
+            # 统一从世界系光轴恢复姿态。这样 yaw/pitch lock 是混合状态时，
+            # 也不会把机体系和世界系 Euler 分量拼在一起造成首条命令跳变。
+            self.yaw_cmd = self.wrap_180(
+                world_yaw - hdg - self.yaw_offset_deg)
+            self.pitch_cmd = (
+                -world_pitch if self.stabilize_pitch_negate else world_pitch)
+            handover_frame = "earth" if yaw_lock else "vehicle+attitude"
             self.yaw_cmd = self.clamp(self.yaw_cmd, -self.yaw_limit, self.yaw_limit)
             self.pitch_cmd = self.clamp(
                 self.pitch_cmd, self.pitch_min, self.pitch_max)
@@ -995,7 +1094,9 @@ class GimbalVisualServo:
             self.yaw_cmd = self.clamp(self.yaw_cmd, -self.yaw_limit, self.yaw_limit)
             self.pitch_cmd = self.clamp(self.pitch_cmd, self.pitch_min, self.pitch_max)
 
-        self._prev_heading_ff = None  # 复位前馈基准
+        # 把初始化用的航向作为前馈基准；若罗盘在首次发命令前已更新，仍补偿
+        # 这段航向差，保证首条 #282 的世界 yaw 与刚读到的云台姿态连续。
+        self._prev_heading_ff = hdg if self.stabilize and fb is not None else None
         # 复位微分项历史：接管后首帧 d误差/dt 取 0，避免用陈旧前值产生尖峰
         self._prev_ang_yaw = None
         self._prev_ang_pitch = None
@@ -1013,13 +1114,18 @@ class GimbalVisualServo:
         self._ff_pu = None
         self._ff_pv = None
         self._servo_engaged = True
-        self._engage_t = time.time()  # 软启动计时起点(P/I 增益 70%→100% 线性恢复)
+        self._engage_t = time.time()  # 软启动计时起点
         rospy.loginfo(
             "[GVS] 首次获得目标, 接管云台控制 (从当前姿态起步 yaw_cmd=%.1f° "
-            "pitch_cmd=%.1f°, 反馈=%s, 软启动 %.1fs 70%%→100%%)",
+            "pitch_cmd=%.1f°, 反馈 yaw_lock=%s pitch_lock=%s "
+            "world_yaw=%.1f world_pitch=%.1f frame=%s, "
+            "软启动 %.1fs %.0f%%→100%%)",
             self.yaw_cmd, self.pitch_cmd,
-            ("yaw_lock" if (fb and fb[2]) else ("follow" if fb else "无")),
-            self.engage_ramp_s)
+            bool(fb and fb[2]), bool(fb and fb[3]),
+            float(fb[7]) if fb and fb[7] is not None else float("nan"),
+            float(fb[8]) if fb and fb[8] is not None else float("nan"),
+            handover_frame, self.engage_ramp_s,
+            self.engage_start_gain * 100.0)
         return True
 
     # ================= 检测回调 =================
@@ -1304,6 +1410,7 @@ class GimbalVisualServo:
 
                 target_valid = (target is not None) and (age < self.timeout)
 
+                claim_attempted = False
                 # 首次获得有效目标才接管云台：此前【不下发任何姿态指令】，云台保持原有
                 # 姿态(不会被拉到正前方)。接管时把指令初始化到云台当前实际姿态(无跳变)。
                 if (target_valid and not self._servo_engaged and
@@ -1312,6 +1419,7 @@ class GimbalVisualServo:
                     # 等待 #285 当前姿态反馈，再以无跳变方式开始发送跟踪指令。
                     control_ready = (not self.stabilize or self._gimbal_control_claimed)
                     if self.stabilize and not self._gimbal_control_claimed:
+                        claim_attempted = True
                         control_ready = self._claim_gimbal_control()
                         if not control_ready:
                             self._gimbal_claim_retry_after = time.time() + 2.0
@@ -1322,6 +1430,13 @@ class GimbalVisualServo:
                 elif (not target_valid and self.stabilize and
                       self._gimbal_control_claimed):
                     self._release_gimbal_control()
+
+                # 抢占服务可能阻塞数百毫秒。刷新控制时间，且让首次控制只使用一
+                # 个正常周期的 dt；否则会用请求前的 now 计算负的软启动进度/大步长。
+                now = time.time()
+                if claim_attempted:
+                    dt = 1.0 / max(self.loop_hz, 1e-3)
+                    last_t = now
 
                 # command 1001 的 ACK 等待可能耗时；接管返回后重新检查框是否仍新鲜，
                 # 避免对已经超时的旧框再发送一帧控制指令。
@@ -1449,16 +1564,19 @@ class GimbalVisualServo:
                         ang_yaw_deg = math.degrees(ang_yaw)
                         ang_pitch_deg = math.degrees(ang_pitch)
 
-                        # 软启动增益(anti-overshoot, 见 __init__ 注释)：接管初期误差大,
-                        # 全速 P+I 猛转 + 链路延迟 → 冲过中心来回摆。增益 70%→100% 线性
-                        # 恢复, 初始接近速度慢、跨中心动量小。期满(或已释放)恒为 1.0。
+                        # 软启动增益(anti-overshoot)：接管初期误差大，检测/执行延迟会
+                        # 让高增益指令在目标经过中心后仍持续生效。由 engage_start_gain
+                        # 线性恢复到 100%，降低第一次接管的冲击。
                         if self._engage_t is not None:
-                            ramp_prog = (now - self._engage_t) / self.engage_ramp_s
+                            ramp_prog = self.clamp(
+                                (now - self._engage_t) / self.engage_ramp_s, 0.0, 1.0)
                             if ramp_prog >= 1.0:
                                 self._gain_scale = 1.0
                                 self._engage_t = None
                             else:
-                                self._gain_scale = 0.7 + 0.3 * ramp_prog
+                                self._gain_scale = (
+                                    self.engage_start_gain
+                                    + (1.0 - self.engage_start_gain) * ramp_prog)
 
                         # 条件积分(anti-windup, 见 __init__ 注释的四重保护)：消除飞机
                         # 匀速/转弯运动时的稳态偏差。误差方向反转时清零(过冲/目标过中心
@@ -1792,6 +1910,7 @@ class GimbalVisualServo:
         # --- 方式 A: mavros command 服务 (实际使用场景首选) ---
         if self._claim_via_mavros_cmd(retries=3):
             self._gimbal_control_claimed = True
+            self._gimbal_control_claimed_at = time.time()
             self._gimbal_claim_retry_after = 0.0
             return True
 
@@ -1799,10 +1918,12 @@ class GimbalVisualServo:
             # 仅在调试/特殊环境下显式启用，默认关闭。
             if self._use_tmux_claim and self._claim_via_tmux():
                 self._gimbal_control_claimed = True
+                self._gimbal_control_claimed_at = time.time()
                 self._gimbal_claim_retry_after = 0.0
                 return True
             if self._claim_via_raw_530(repeats=repeats):
                 self._gimbal_control_claimed = True
+                self._gimbal_control_claimed_at = time.time()
                 self._gimbal_claim_retry_after = 0.0
                 return True
 
@@ -1831,6 +1952,7 @@ class GimbalVisualServo:
 
         if released:
             self._gimbal_control_claimed = False
+            self._gimbal_control_claimed_at = None
             self._gimbal_release_retry_after = 0.0
             rospy.loginfo("[GVS] 已释放 gimbal_manager 主控权")
         else:

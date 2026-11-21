@@ -30,7 +30,7 @@ OpenCV 与 PyTorch CPU 线程数默认限制为 1，可在对应运行配置中�
 
 模式行为：
 
-- `fusion_tracker` 会按 `inference_max_fps` 请求 YOLO 检测，并发布到 `tracked_detections`。KCF 跟踪当前选中的目标；可通过点选/框选，或调用 `auto_select` 开始自动选择。尚未选中目标时，`selected_tracked_detections` 为空，但 YOLO 检测仍会发布。
+- `fusion_tracker` 会按 `inference_max_fps` 请求 YOLO 检测，并为每个 YOLO 目标维护一个模板框。每帧在各目标附近做单尺度匹配，多尺度校正按配置限频；UI 选择只决定哪个目标输出到 `selected_tracked_detections` 供云台跟踪。目标完全不可见时会标记丢失，不发布旧框。可通过点选/框选，或调用 `auto_select` 开始自动选择。尚未选中目标时，所有YOLO/模板目标仍会发布。
 - `feature_tracker` 和 `color_tracker` 不请求 YOLO 推理；共享推理服务仍保持运行，模型不会因切换模式而卸载。ColorTracker 配置了 `red/green/blue/white/black` 时，会立即把全图色块作为候选框发布到 `tracked_detections`，但不会自动选中；只有 UI 点选/框选或显式开启 `auto_select` 后，`selected_tracked_detections` 才发布目标。颜色为空或为 `custom` 时先等待 ROI，再按 ROI 学到的颜色特征跟踪。
 - 切回 `fusion_tracker` 时会检查共享 YOLO 服务。若服务不可用，模式切换会失败并返回服务地址。节点的 `fusion_evidence` 会提供 `detector_updated` 与 `inference_error`，用于区分本帧没有新推理、推理失败和推理成功但未检出目标。
 

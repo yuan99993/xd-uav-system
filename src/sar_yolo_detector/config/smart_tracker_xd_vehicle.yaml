@@ -12,7 +12,7 @@ SmartTracker:
   # Match the detector deployment profile: keep distant vehicle candidates so
   # the downstream tracker can associate them over time.
   SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.10
-  SMART_TRACKER_MAX_DETECTIONS: 30
+  SMART_TRACKER_MAX_DETECTIONS: 10
   # All four labels belong to the vehicle parent class. Suppress duplicate
   # tank/m142/etc. boxes BEFORE BoT-SORT allocates identities. A conservative
   # overlap threshold preserves nearby vehicles better than agnostic IoU=0.30.
@@ -46,7 +46,10 @@ PhaseOverlay:
 # candidate boxes immediately, but does not select one without this switch.
 AutoSelect:
   enabled_at_startup: false
-  stable_frames: 5
+  stable_frames: 1
+  # Keep the auto-selected target locked. Resume searching only after it has
+  # produced no valid tracking box for this long.
+  lost_hold_sec: 4.0
   # YOLO confidence is already filtered by its detector threshold. Color
   # components use the tracker minimum-area filter instead.
   minimum_confidence: 0.0

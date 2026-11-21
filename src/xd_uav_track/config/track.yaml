@@ -26,6 +26,8 @@ interfaces:
     gimbal_status: "track/gimbal_status"
     # Shared world-frame target hand-off used by fw_metric_* profiles.
     metric_target: "track/metric_target"
+    # target_geolocation emits the gimbal range solution in the local odom frame.
+    gimbal_metric_target: "target/metric_target"
   profiles:
     fw_metric_pursuit:
       input:
@@ -49,11 +51,11 @@ tracker:
   # false 时必须调用 ~start_tracker，避免检测器一启动飞机立即跟随。
   enabled_at_startup: false
   input_timeout_sec: 3.0
-  minimum_confidence: 0.10
-  confidence_hysteresis: 0.05
+  minimum_confidence: 0.0
+  confidence_hysteresis: 0.0
   profiles:
-    fw_metric_pursuit: {input_timeout_sec: 0.30, minimum_confidence: 0.20}
-    fw_metric_orbit: {input_timeout_sec: 0.25, minimum_confidence: 0.20}
+    fw_metric_pursuit: {input_timeout_sec: 0.30, minimum_confidence: 0.0}
+    fw_metric_orbit: {input_timeout_sec: 0.25, minimum_confidence: 0.0}
 
   # Shared multi-source identity and handover settings used by fixed-wing
   # metric pursuit/orbit. The long removal window keeps the public target ID
@@ -62,9 +64,9 @@ tracker:
   source_handover_timeout_sec: 0.75
   source_quality_handover:
     enabled: true
-    min_active_quality: 0.25
-    min_incoming_quality: 0.55
-    quality_margin: 0.10
+    min_active_quality: 0.0
+    min_incoming_quality: 0.0
+    quality_margin: 0.0
     cooldown_sec: 1.0
   source_aware: true
   source_cross_class_reject: true
@@ -80,7 +82,7 @@ tracker:
   position_filter_alpha: 0.40
   velocity_filter_alpha: 0.25
   target_x: 0.0                    # 期望框中心，normalized
-  target_y: 0.0
+  target_y: -0.10
 
   # 空=接收全部；也可锁定 eo/ir/逻辑相机名。
   image_source: ""
@@ -133,16 +135,16 @@ tracker:
     # quickly so a newly selected detector track can be followed.
     locked_target_release_timeout_sec: 0.5
   confidence:
-    new_track: 0.001             # 低置信框只能更新已有轨迹
-    update: 0.10
+    new_track: 0.0
+    update: 0.0
   lifecycle:
-    confirmation_hits: 2
+    confirmation_hits: 1
     occlusion_frames: 5            # 该阶段允许 Kalman 预测继续短时控制
     removal_frames: 1200
     reference_fps: 30.0
     # PixEagle-compatible time lifecycle; keep frame fields for older launch
     # configs while all runtime decisions use source timestamps when available.
-    occlusion_timeout_sec: 0.35
+    occlusion_timeout_sec: 2.0
     removal_timeout_sec: 40.0
     reacquisition_after_sec: 0.35
     reacquisition_confirm_hits: 3
@@ -168,7 +170,7 @@ tracker:
     lenient_iou_floor: 0.10
     appearance_distance_gate_factor: 3.0
     appearance_cosine: 0.78        # 候选含 embedding 时启用外观重识别
-    high_confidence_threshold: 0.30
+    high_confidence_threshold: 0.0
     appearance_gallery_size: 5
     confidence_smoothing_alpha: 0.80
     confidence_decay_rate: 0.05
@@ -247,7 +249,7 @@ follower:
     base_adjustment_y: 0.2
     altitude_factor: 0.005
     descend_to_target: false
-    target_altitude: 3.0
+    target_altitude: 1.0
     maximum_descent_velocity: 0.5
 
   gimbal:
@@ -336,7 +338,7 @@ follower:
     # Direct XYZ approach speed and 3D arrival tolerance.
     direct_control:
       speed_mps: 35.0
-      arrival_radius_m: 0.5
+      arrival_radius_m: 0.1
     fixed_camera:
       fov_constraint_enabled: true
       fov_margin_ratio: 0.10
@@ -443,12 +445,30 @@ follower:
     gimbal_image_alignment_rad: 0.35
     # 图像误差只补充云台视线角；云台角度保持全权重，图像修正权重为 0.30。
     image_error_weight: 0.30
+    # 丢框前图像已锁住云台画面中心时，丢框后继续跟随当前云台角度；
+    # 超时仍未重获目标则释放参考，由固定翼控制器进入盘旋。
+    aligned_loss_coast:
+      enabled: true
+      duration_sec: 60.0
+      max_image_error_x: 0.05     # 归一化图像坐标；约为图像宽度的 2.5%
+      max_image_error_y: 0.11     # 归一化图像坐标；约为图像高度的 5.5%
+      # 有新鲜测距时，丢框期间按缓存的三维目标点继续引导。
+      metric_target_enabled: true
+      metric_max_age_sec: 1.0
+      metric_max_position_sigma_m: 40.0
+      # 下降需求按空速×(目标垂直差/水平距离)计算，距离越近越大；此值只限制最大下降率。
+      max_descent_rate_mps: 14.0
+      # 进入目标附近后锁住三维点，沿当前引导方向继续下降；期间忽略识别换框。
+      terminal_approach_enter_distance_m: 350.0
+      # 终端下降目标高度，使用 state_estimator/main/odom 的 ENU Z 坐标（米）。
+      # 设成目标区域地面的 Z；不再把测得目标点的 Z 当成下降终点。
+      terminal_ground_z_m: -1.0
     pid:
-      course:     {kp: 1.2, ki: 0.01, kd: 0.07, integral_limit: 0.35}
-      climb_rate: {kp: 30.0, ki: 0.05, kd: 0.10, integral_limit: 0.8}
-    airspeed: 35.0
+      course:     {kp: 1.3, ki: 0.05, kd: 0.10, integral_limit: 0.35}
+      climb_rate: {kp: 35.0, ki: 0.05, kd: 0.10, integral_limit: 0.8}
+    airspeed: 30.0
     maximum_course_offset: 0.80
-    maximum_climb_rate: 8.0
+    maximum_climb_rate: 14.0
 
 # 5. 跨模块安全策略 -----------------------------------------------------------
 safety:

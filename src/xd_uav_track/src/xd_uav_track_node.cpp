@@ -561,6 +561,46 @@ class XdUavTrackNode {
     private_nh_.param("follower/gmfw_velocity_vector/image_error_weight",
                       config.gmfw_image_error_weight,
                       config.gmfw_image_error_weight);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/enabled",
+        config.gmfw_aligned_loss_coast_enabled,
+        config.gmfw_aligned_loss_coast_enabled);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/duration_sec",
+        config.gmfw_aligned_loss_coast_sec,
+        config.gmfw_aligned_loss_coast_sec);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/max_image_error_x",
+        config.gmfw_aligned_loss_max_image_error_x,
+        config.gmfw_aligned_loss_max_image_error_x);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/max_image_error_y",
+        config.gmfw_aligned_loss_max_image_error_y,
+        config.gmfw_aligned_loss_max_image_error_y);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/metric_target_enabled",
+        config.gmfw_metric_loss_coast_enabled,
+        config.gmfw_metric_loss_coast_enabled);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/metric_max_age_sec",
+        config.gmfw_metric_loss_max_age_sec,
+        config.gmfw_metric_loss_max_age_sec);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/metric_max_position_sigma_m",
+        config.gmfw_metric_loss_max_position_sigma_m,
+        config.gmfw_metric_loss_max_position_sigma_m);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/max_descent_rate_mps",
+        config.gmfw_loss_max_descent_rate_mps,
+        config.gmfw_loss_max_descent_rate_mps);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/terminal_approach_enter_distance_m",
+        config.gmfw_terminal_approach_enter_distance_m,
+        config.gmfw_terminal_approach_enter_distance_m);
+    private_nh_.param(
+        "follower/gmfw_velocity_vector/aligned_loss_coast/terminal_ground_z_m",
+        config.gmfw_terminal_ground_z_m,
+        config.gmfw_terminal_ground_z_m);
     // Allow the registered metric profiles to carry their own fixed-wing
     // limits while retaining fw_velocity_vector as the common fallback.
     if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
@@ -636,6 +676,9 @@ class XdUavTrackNode {
     multi_source_fusion_enabled_ = config.target_guidance.multi_source_fusion_enabled;
     controller_.reset(new xd_uav_track::TrackController(config));
     requested_profile_ = config.profile;
+    gmfw_aligned_loss_coast_enabled_ =
+        config.gmfw_aligned_loss_coast_enabled;
+    gmfw_aligned_loss_coast_sec_ = config.gmfw_aligned_loss_coast_sec;
 
     xd_uav_track::MultiTrackConfig multi_config;
     private_nh_.getParam("tracker/association/compatible_class_ids",
@@ -979,6 +1022,7 @@ class XdUavTrackNode {
     std::string gimbal_state_topic{"track/gimbal_state"};
     std::string gimbal_status_topic{"track/gimbal_status"};
     std::string metric_target_topic{"track/metric_target"};
+    std::string gimbal_metric_target_topic{"target/metric_target"};
     std::string status_topic{"track/status"};
     std::string target_mode_topic{"track/target_mode"};
     std::string reference_topic{"control/reference/setpoint"};
@@ -1001,6 +1045,9 @@ class XdUavTrackNode {
                       gimbal_status_topic);
     private_nh_.param("interfaces/input/metric_target", metric_target_topic,
                       metric_target_topic);
+    private_nh_.param("interfaces/input/gimbal_metric_target",
+                      gimbal_metric_target_topic,
+                      gimbal_metric_target_topic);
     private_nh_.param("interfaces/output/status", status_topic, status_topic);
     private_nh_.param("interfaces/input/vehicle_state", state_topic, state_topic);
     if (xd_uav_track::isMetricFixedWingProfile(config.profile)) {
@@ -1047,6 +1094,16 @@ class XdUavTrackNode {
               boost::bind(&XdUavTrackNode::metricTargetCallback, this, _1),
               ros::VoidConstPtr(), &control_queue_);
       metric_target_subscriber_ = nh_.subscribe(metric_target_options);
+    }
+    if (!perception_only_ && !gimbal_metric_target_topic.empty() &&
+        gimbal_metric_target_topic != metric_target_topic) {
+      ros::SubscribeOptions gimbal_metric_target_options =
+          ros::SubscribeOptions::create<xd_uav_track::MetricTarget>(
+              gimbal_metric_target_topic, 5,
+              boost::bind(&XdUavTrackNode::metricTargetCallback, this, _1),
+              ros::VoidConstPtr(), &control_queue_);
+      gimbal_metric_target_subscriber_ =
+          nh_.subscribe(gimbal_metric_target_options);
     }
     if (!perception_only_) {
       body_velocity_publisher_ = nh_.advertise<geometry_msgs::TwistStamped>(
@@ -2162,10 +2219,21 @@ class XdUavTrackNode {
     const std::string previous_active_source = active_source_;
     if (active_source_.empty()) active_source_ = source;
     const ros::WallTime wall_now = ros::WallTime::now();
-    if (locked_global_id_ >= 0 && locked_target_release_timeout_sec_ > 0.0 &&
+    double effective_locked_target_release_timeout_sec =
+        locked_target_release_timeout_sec_;
+    if (requested_profile_ ==
+            xd_uav_track::FollowerProfile::kGimbalFixedWingVelocityVector &&
+        gmfw_aligned_loss_coast_enabled_) {
+      effective_locked_target_release_timeout_sec = std::max(
+          effective_locked_target_release_timeout_sec,
+          gmfw_aligned_loss_coast_sec_ +
+              std::max(0.0, multi_config_.occlusion_timeout_sec));
+    }
+    if (locked_global_id_ >= 0 &&
+        effective_locked_target_release_timeout_sec > 0.0 &&
         !locked_target_last_seen_.isZero() &&
         (wall_now - locked_target_last_seen_).toSec() >
-            locked_target_release_timeout_sec_) locked_global_id_ = -1;
+            effective_locked_target_release_timeout_sec) locked_global_id_ = -1;
     auto active_receive = source_last_receive_.find(active_source_);
     const bool active_stale = active_receive == source_last_receive_.end() ||
         (wall_now - active_receive->second).toSec() > source_handover_timeout_sec_;
@@ -2372,8 +2440,16 @@ class XdUavTrackNode {
 
     xd_uav_track::TargetMeasurement measurement;
     measurement.receive_time = ros::WallTime::now().toSec();
-    measurement.observation_time = stamp.isZero()
-        ? measurement.receive_time : stamp.toSec();
+    const bool fresh_metric_position = selected->detected &&
+        !selected->predicted && selected->range_valid &&
+        selected->has_relative_position_body;
+    const ros::Time metric_position_stamp = selected->position_stamp;
+    const ros::Time image_observation_stamp = stamp;
+    measurement.observation_time = fresh_metric_position &&
+            !metric_position_stamp.isZero()
+        ? metric_position_stamp.toSec()
+        : (image_observation_stamp.isZero()
+               ? measurement.receive_time : image_observation_stamp.toSec());
     measurement.image_source = source;
     measurement.image_width = image_width;
     measurement.image_height = image_height;
@@ -2391,13 +2467,15 @@ class XdUavTrackNode {
     for (std::size_t i = 0; i < 4; ++i) {
       measurement.state_covariance[i] = selected->state_covariance[i];
     }
-    measurement.has_relative_position_body =
-        selected->has_relative_position_body;
-    measurement.has_relative_velocity_body =
+    // A predicted image track can retain the last DetectionCandidate's range
+    // fields. Only pass metric data to the controller when this frame has a
+    // real detector observation and a current range measurement.
+    measurement.has_relative_position_body = fresh_metric_position;
+    measurement.has_relative_velocity_body = fresh_metric_position &&
         selected->has_relative_velocity_body;
-    measurement.range_valid = selected->range_valid;
+    measurement.range_valid = fresh_metric_position;
     measurement.position_sigma_m = 0.0;
-    if (selected->range_valid && selected->has_relative_position_body) {
+    if (measurement.range_valid && measurement.has_relative_position_body) {
       const double covariance_max = std::max({
           static_cast<double>(selected->position_covariance[0]),
           static_cast<double>(selected->position_covariance[4]),
@@ -2406,9 +2484,11 @@ class XdUavTrackNode {
     }
     for (std::size_t i = 0; i < 3; ++i) {
       measurement.relative_position_body[i] =
-          selected->relative_position_body[i];
+          measurement.has_relative_position_body
+              ? selected->relative_position_body[i] : 0.0;
       measurement.relative_velocity_body[i] =
-          selected->relative_velocity_body[i];
+          measurement.has_relative_velocity_body
+              ? selected->relative_velocity_body[i] : 0.0;
     }
     if (source != active_source_) {
       if (multi_source_fusion_enabled_ && measurement.range_valid &&
@@ -2970,6 +3050,8 @@ class XdUavTrackNode {
     }
     const bool state_valid = have_state_ &&
         (wall_now - state_receive_time_).toSec() <= state_timeout_sec_;
+    const bool gimbal_tracking_required = requested_profile_ !=
+        xd_uav_track::FollowerProfile::kGimbalFixedWingVelocityVector;
     const bool gimbal_state_valid = have_gimbal_state_ &&
         (wall_now - gimbal_state_receive_time_).toSec() <=
             gimbal_timeout_sec_ &&
@@ -2977,7 +3059,8 @@ class XdUavTrackNode {
          (wall_now - gimbal_status_receive_time_).toSec() <=
              gimbal_timeout_sec_) &&
         (!gimbal_state_data_.status_valid ||
-         (gimbal_state_data_.healthy && gimbal_state_data_.tracking_active &&
+         (gimbal_state_data_.healthy &&
+          (!gimbal_tracking_required || gimbal_state_data_.tracking_active) &&
           gimbal_state_data_.control_authority_available));
     xd_uav_track::FollowerProfile effective_profile = requested_profile_;
     gimbal_fallback_active_ = false;
@@ -3147,6 +3230,7 @@ class XdUavTrackNode {
   ros::Subscriber gimbal_state_subscriber_;
   ros::Subscriber gimbal_status_subscriber_;
   ros::Subscriber metric_target_subscriber_;
+  ros::Subscriber gimbal_metric_target_subscriber_;
   ros::CallbackQueue perception_queue_;
   ros::CallbackQueue control_queue_;
   std::unique_ptr<ros::AsyncSpinner> perception_spinner_;
@@ -3218,6 +3302,8 @@ class XdUavTrackNode {
   double publish_rate_{30.0};
   double state_timeout_sec_{0.30};
   double gimbal_timeout_sec_{0.20};
+  bool gmfw_aligned_loss_coast_enabled_{false};
+  double gmfw_aligned_loss_coast_sec_{0.0};
   double profile_switch_min_interval_sec_{0.50};
   double profile_blend_duration_sec_{0.50};
   double state_yaw_{0.0};

@@ -375,6 +375,28 @@ TrackController::TrackController(const TrackControllerConfig& requested)
       0.01, config_.gmfw_image_alignment_rad);
   config_.gmfw_image_error_weight = clamp(
       config_.gmfw_image_error_weight, 0.0, 1.0);
+  config_.gmfw_aligned_loss_coast_sec = std::isfinite(
+      config_.gmfw_aligned_loss_coast_sec)
+      ? std::max(0.0, config_.gmfw_aligned_loss_coast_sec) : 0.0;
+  config_.gmfw_aligned_loss_max_image_error_x = clamp(
+      config_.gmfw_aligned_loss_max_image_error_x, 0.0, 2.0);
+  config_.gmfw_aligned_loss_max_image_error_y = clamp(
+      config_.gmfw_aligned_loss_max_image_error_y, 0.0, 2.0);
+  config_.gmfw_metric_loss_max_age_sec = std::isfinite(
+      config_.gmfw_metric_loss_max_age_sec)
+      ? std::max(0.0, config_.gmfw_metric_loss_max_age_sec) : 0.0;
+  config_.gmfw_metric_loss_max_position_sigma_m = std::isfinite(
+      config_.gmfw_metric_loss_max_position_sigma_m)
+      ? std::max(0.0, config_.gmfw_metric_loss_max_position_sigma_m) : 0.0;
+  config_.gmfw_loss_max_descent_rate_mps = std::isfinite(
+      config_.gmfw_loss_max_descent_rate_mps)
+      ? std::max(0.0, config_.gmfw_loss_max_descent_rate_mps) : 0.0;
+  config_.gmfw_terminal_approach_enter_distance_m = std::isfinite(
+      config_.gmfw_terminal_approach_enter_distance_m)
+      ? std::max(0.0, config_.gmfw_terminal_approach_enter_distance_m) : 0.0;
+  if (!std::isfinite(config_.gmfw_terminal_ground_z_m)) {
+    config_.gmfw_terminal_ground_z_m = 0.0;
+  }
   config_.uncertainty_nominal_sigma = std::max(
       1e-6, config_.uncertainty_nominal_sigma);
   config_.uncertainty_slow_ratio = std::max(
@@ -1125,6 +1147,31 @@ bool TrackController::updateMetricWorldTarget(
   observation.sigma_m = std::isfinite(position_sigma_m) && position_sigma_m > 1e-3
       ? position_sigma_m : 1.0;
   observation.image_source = source;
+
+  const bool gimbal_metric_source =
+      config_.profile == FollowerProfile::kGimbalFixedWingVelocityVector &&
+      config_.gmfw_metric_loss_coast_enabled &&
+      (source.find("gimbal") != std::string::npos ||
+       source.find("target_geolocation") != std::string::npos);
+  if (gimbal_metric_source && !ever_acquired_) {
+    // Do not let a pre-start or pre-selection geolocation message seed the
+    // point lock. The first active visual selection must arrive first.
+    if (rejection_reason != nullptr) rejection_reason->clear();
+    return true;
+  }
+  if (gimbal_metric_source && gmfw_terminal_approach_active_) {
+    if (rejection_reason != nullptr) rejection_reason->clear();
+    return true;
+  }
+  if (gimbal_metric_source && target_id >= 0 &&
+      gmfw_recent_metric_target_id_ >= 0 &&
+      target_id != gmfw_recent_metric_target_id_) {
+    // A recognition ID change is not an explicit retarget command. Preserve
+    // the point selected by the operator; selectTrack/reset clears this lock.
+    if (rejection_reason != nullptr) rejection_reason->clear();
+    return true;
+  }
+
   std::array<double, 3> filtered_world{{0.0, 0.0, 0.0}};
   if (!applyMetricObservation(observation, true, rejection_reason)) return false;
   filtered_world = last_metric_world_position_;
@@ -1142,8 +1189,20 @@ bool TrackController::updateMetricWorldTarget(
   have_metric_state_ = true;
   external_metric_target_active_ = true;
   metric_state_time_ = receive_time;
-  filtered_track_id_ = target_id;
-  measurement_.track_id = target_id;
+  if (gimbal_metric_source &&
+      std::all_of(last_metric_world_position_.begin(),
+                  last_metric_world_position_.end(),
+                  [](double value) { return std::isfinite(value); })) {
+    gmfw_recent_metric_target_world_ = last_metric_world_position_;
+    gmfw_recent_metric_target_receive_time_ = receive_time;
+    gmfw_recent_metric_target_sigma_m_ = last_metric_world_sigma_m_;
+    gmfw_recent_metric_target_valid_ = true;
+    if (target_id >= 0) gmfw_recent_metric_target_id_ = target_id;
+  }
+  if (!gimbal_metric_source) {
+    filtered_track_id_ = target_id;
+    measurement_.track_id = target_id;
+  }
   measurement_.image_source = source;
   measurement_.tracking_quality = 1.0;
   cleared_reason_.clear();
@@ -1205,6 +1264,25 @@ bool TrackController::updateMeasurement(
     return reject("target observation time is invalid");
   }
 
+  const bool gmfw_profile = config_.profile ==
+      FollowerProfile::kGimbalFixedWingVelocityVector;
+  if (gmfw_profile && gmfw_terminal_approach_active_) {
+    // The terminal approach owns its frozen world point and velocity command;
+    // detector updates cannot retarget or reset its course/PID state.
+    last_metric_measurement_accepted_ = false;
+    if (rejection_reason != nullptr) rejection_reason->clear();
+    return true;
+  }
+  if (gmfw_profile && gmfw_locked_visual_track_id_ >= 0 &&
+      incoming.track_id >= 0 &&
+      incoming.track_id != gmfw_locked_visual_track_id_) {
+    // A new recognition ID is not an operator retarget command. Keep the
+    // current measurement until it times out, then coast on its locked point.
+    last_metric_measurement_accepted_ = false;
+    if (rejection_reason != nullptr) rejection_reason->clear();
+    return true;
+  }
+
   const double confidence_threshold = confidence_locked_
       ? config_.minimum_confidence - config_.confidence_hysteresis
       : config_.minimum_confidence;
@@ -1230,6 +1308,7 @@ bool TrackController::updateMeasurement(
   const double measurement_dt = incoming.receive_time - previous_measurement_time_;
   if (!filter_initialized_ || target_changed || measurement_dt <= 0.0 ||
       measurement_dt > config_.target_loss_reset_sec) {
+    if (target_changed) gmfw_recent_metric_target_valid_ = false;
     filtered_center_x_ = center_x;
     filtered_center_y_ = center_y;
     filtered_velocity_x_ = 0.0;
@@ -1305,6 +1384,18 @@ bool TrackController::updateMeasurement(
         last_metric_velocity_valid_ = last_metric_world_velocity_valid_;
         last_metric_sigma_m_ = last_metric_world_sigma_m_;
       }
+      if (!incoming.predicted && std::all_of(
+              last_metric_world_position_.begin(),
+              last_metric_world_position_.end(),
+              [](double value) { return std::isfinite(value); })) {
+        // Preserve the last real range-backed target point. Image-only or
+        // predicted frames can continue briefly before clearMeasurement();
+        // they must not overwrite the metric point used during loss coast.
+        gmfw_recent_metric_target_world_ = last_metric_world_position_;
+        gmfw_recent_metric_target_receive_time_ = incoming.receive_time;
+        gmfw_recent_metric_target_sigma_m_ = last_metric_world_sigma_m_;
+        gmfw_recent_metric_target_valid_ = true;
+      }
     }
   } else if (incoming.has_relative_position_body && incoming.range_valid) {
     // Keep the image track, but never expose a rejected metric innovation to
@@ -1318,6 +1409,10 @@ bool TrackController::updateMeasurement(
   }
   previous_measurement_time_ = incoming.receive_time;
   filtered_track_id_ = incoming.track_id;
+  if (gmfw_profile && gmfw_locked_visual_track_id_ < 0 &&
+      incoming.track_id >= 0) {
+    gmfw_locked_visual_track_id_ = incoming.track_id;
+  }
   have_measurement_ = true;
   ever_acquired_ = true;
   confidence_locked_ = true;
@@ -1509,10 +1604,78 @@ TrackVelocity TrackController::compute(const double now) {
     output.input_age_sec = measurement_age;
   }
 
+  const bool gmfw_profile = config_.profile ==
+      FollowerProfile::kGimbalFixedWingVelocityVector;
+  const bool vehicle_pose_available = vehicle_state_.valid &&
+      vehicle_state_.pose_valid && std::isfinite(vehicle_state_.x) &&
+      std::isfinite(vehicle_state_.y) && std::isfinite(vehicle_state_.z) &&
+      std::isfinite(vehicle_state_.yaw);
+  if (gmfw_profile && !gmfw_terminal_approach_active_ && ever_acquired_ &&
+      config_.gmfw_aligned_loss_coast_enabled &&
+      config_.gmfw_metric_loss_coast_enabled &&
+      config_.gmfw_terminal_approach_enter_distance_m > 0.0 &&
+      vehicle_pose_available) {
+    const bool using_frozen_loss_point = gmfw_metric_loss_anchor_valid_;
+    const double metric_age = now - gmfw_recent_metric_target_receive_time_;
+    const double metric_age_limit = config_.input_timeout_sec +
+        config_.gmfw_metric_loss_max_age_sec;
+    const bool recent_point_usable = gmfw_recent_metric_target_valid_ &&
+        std::isfinite(metric_age) && metric_age >= -1e-6 &&
+        metric_age <= metric_age_limit &&
+        std::isfinite(gmfw_recent_metric_target_sigma_m_) &&
+        gmfw_recent_metric_target_sigma_m_ <=
+            config_.gmfw_metric_loss_max_position_sigma_m &&
+        std::all_of(gmfw_recent_metric_target_world_.begin(),
+                    gmfw_recent_metric_target_world_.end(),
+                    [](double value) { return std::isfinite(value); });
+    if (using_frozen_loss_point || recent_point_usable) {
+      const std::array<double, 3>& target_world = using_frozen_loss_point
+          ? gmfw_metric_loss_target_world_
+          : gmfw_recent_metric_target_world_;
+      const double dx = target_world[0] - vehicle_state_.x;
+      const double dy = target_world[1] - vehicle_state_.y;
+      const double height_above_ground = std::max(
+          0.0, vehicle_state_.z - config_.gmfw_terminal_ground_z_m);
+      const double descent_rate_limit =
+          config_.gmfw_loss_max_descent_rate_mps;
+      const double distance_to_descend = descent_rate_limit > 1e-3
+          ? 1.25 * config_.gmfw_commanded_airspeed *
+                height_above_ground / descent_rate_limit
+          : 0.0;
+      const double terminal_enter_distance = std::max(
+          config_.gmfw_terminal_approach_enter_distance_m,
+          distance_to_descend);
+      if (std::hypot(dx, dy) <= terminal_enter_distance) {
+        if (!using_frozen_loss_point) {
+          gmfw_metric_loss_target_world_ = target_world;
+          gmfw_metric_loss_origin_x_ = vehicle_state_.x;
+          gmfw_metric_loss_origin_y_ = vehicle_state_.y;
+          gmfw_metric_loss_target_distance_m_ = std::hypot(dx, dy);
+          gmfw_metric_loss_target_course_world_rad_ =
+              gmfw_metric_loss_target_distance_m_ > 1e-3
+                  ? std::atan2(dy, dx) : vehicle_state_.yaw;
+          gmfw_metric_loss_anchor_valid_ = true;
+        }
+        if (!loss_active_) {
+          loss_active_ = true;
+          loss_start_time_ = now;
+          loss_controllers_reset_ = false;
+        }
+        gmfw_terminal_approach_active_ = true;
+      }
+    }
+  }
+  if (gmfw_profile && gmfw_terminal_approach_active_) {
+    fresh = false;
+    measurement_age = std::max(0.0, now - measurement_.receive_time);
+    output.input_age_sec = measurement_age;
+  }
+
   // Optional metric guidance is evaluated before the legacy loss path.  This
   // lets a fixed-wing keep the captured inertial orbit during a bounded
   // detector gap while preserving the existing TrackVelocity interface.
   const bool guidance_enabled = !gimbal_only_control &&
+      !(gmfw_profile && gmfw_terminal_approach_active_) &&
       target_guidance_ != nullptr &&
       config_.target_guidance.enabled &&
       config_.target_guidance.mode != TargetGuidanceMode::kLegacyVisual;
@@ -1803,25 +1966,218 @@ TrackVelocity TrackController::compute(const double now) {
     }
     if (!loss_active_) {
       loss_active_ = true;
-      loss_start_time_ = now;
+      // Measure the coast window from the last received box when the whole
+      // detection stream stalled; clearMeasurement() already starts it at now.
+      loss_start_time_ = now - std::max(0.0, measurement_age);
       lateral_pid_.reset();
       vertical_pid_.reset();
       yaw_pid_.reset();
       ground_forward_pid_.reset();
       fw_course_pid_.reset();
       fw_climb_rate_pid_.reset();
-      gmfw_course_pid_.reset();
-      gmfw_climb_rate_pid_.reset();
       smoothed_left_ = 0.0;
       smoothed_up_ = 0.0;
       yaw_rate_limited_ = 0.0;
       smoothed_yaw_ = 0.0;
+      gmfw_metric_loss_anchor_valid_ = false;
+      const double metric_age = now -
+          gmfw_recent_metric_target_receive_time_;
+      const double metric_age_limit = config_.input_timeout_sec +
+          config_.gmfw_metric_loss_max_age_sec;
+      if (config_.profile ==
+              FollowerProfile::kGimbalFixedWingVelocityVector &&
+          config_.gmfw_aligned_loss_coast_enabled &&
+          config_.gmfw_metric_loss_coast_enabled &&
+          gmfw_recent_metric_target_valid_ &&
+          std::isfinite(metric_age) && metric_age >= -1e-6 &&
+          metric_age <= metric_age_limit &&
+          std::isfinite(gmfw_recent_metric_target_sigma_m_) &&
+          gmfw_recent_metric_target_sigma_m_ <=
+              config_.gmfw_metric_loss_max_position_sigma_m &&
+          vehicle_state_.valid && vehicle_state_.pose_valid &&
+          std::isfinite(vehicle_state_.x) &&
+          std::isfinite(vehicle_state_.y) &&
+          std::isfinite(vehicle_state_.z) &&
+          std::isfinite(vehicle_state_.yaw) &&
+          std::all_of(gmfw_recent_metric_target_world_.begin(),
+                      gmfw_recent_metric_target_world_.end(),
+                      [](double value) { return std::isfinite(value); })) {
+        gmfw_metric_loss_target_world_ =
+            gmfw_recent_metric_target_world_;
+        gmfw_metric_loss_origin_x_ = vehicle_state_.x;
+        gmfw_metric_loss_origin_y_ = vehicle_state_.y;
+        const double target_dx = gmfw_metric_loss_target_world_[0] -
+            gmfw_metric_loss_origin_x_;
+        const double target_dy = gmfw_metric_loss_target_world_[1] -
+            gmfw_metric_loss_origin_y_;
+        gmfw_metric_loss_target_distance_m_ = std::hypot(
+            target_dx, target_dy);
+        gmfw_metric_loss_target_course_world_rad_ =
+            gmfw_metric_loss_target_distance_m_ > 1e-3
+                ? std::atan2(target_dy, target_dx)
+                : vehicle_state_.yaw;
+        gmfw_metric_loss_anchor_valid_ = true;
+      }
     }
     output.target_loss_duration_sec = std::max(0.0, now - loss_start_time_);
     output.tracking_state = "target_lost";
     output.invalid_reason = cleared_reason_.empty()
         ? "target is unavailable" : cleared_reason_;
     if (isFixedWingProfile(config_.profile)) {
+      // Keep using the most recently received odometry pose during a bounded
+      // loss coast. Target freshness and uncertainty are checked separately;
+      // odometry timestamp age is not an additional gate here.
+      const bool metric_pose_available = vehicle_state_.valid &&
+          vehicle_state_.pose_valid &&
+          std::isfinite(vehicle_state_.x) &&
+          std::isfinite(vehicle_state_.y) &&
+          std::isfinite(vehicle_state_.z) &&
+          std::isfinite(vehicle_state_.yaw);
+      if (config_.profile ==
+              FollowerProfile::kGimbalFixedWingVelocityVector &&
+          config_.gmfw_aligned_loss_coast_enabled &&
+          config_.gmfw_metric_loss_coast_enabled &&
+          gmfw_metric_loss_anchor_valid_ && metric_pose_available &&
+          output.target_loss_duration_sec <=
+              config_.gmfw_aligned_loss_coast_sec) {
+        const double dx = gmfw_metric_loss_target_world_[0] -
+            vehicle_state_.x;
+        const double dy = gmfw_metric_loss_target_world_[1] -
+            vehicle_state_.y;
+        // Follow the locked target's horizontal location, but descend toward
+        // the configured ground plane. A noisy/high target Z must not arrest
+        // the descent above the ground.
+        const double target_down = std::max(
+            0.0, vehicle_state_.z - config_.gmfw_terminal_ground_z_m);
+        const double horizontal_distance = std::hypot(dx, dy);
+        const double cy = std::cos(vehicle_state_.yaw);
+        const double sy = std::sin(vehicle_state_.yaw);
+        const double target_forward = cy * dx + sy * dy;
+        const double target_right = -sy * dx + cy * dy;
+        const double progress =
+            (vehicle_state_.x - gmfw_metric_loss_origin_x_) *
+                std::cos(gmfw_metric_loss_target_course_world_rad_) +
+            (vehicle_state_.y - gmfw_metric_loss_origin_y_) *
+                std::sin(gmfw_metric_loss_target_course_world_rad_);
+        const bool passed_target =
+            gmfw_metric_loss_target_distance_m_ > 1e-3 &&
+            progress >= gmfw_metric_loss_target_distance_m_;
+        const double course_error = passed_target
+            ? std::atan2(
+                  std::sin(gmfw_metric_loss_target_course_world_rad_ -
+                           vehicle_state_.yaw),
+                  std::cos(gmfw_metric_loss_target_course_world_rad_ -
+                           vehicle_state_.yaw))
+            : std::atan2(target_right, target_forward);
+        const double course_offset = clamp(
+            gmfw_course_pid_.update(-course_error, dt),
+            -config_.gmfw_maximum_course_offset,
+            config_.gmfw_maximum_course_offset);
+        const double airspeed = config_.gmfw_commanded_airspeed;
+        // Reach the target's vertical coordinate at roughly the same time as
+        // its horizontal position: sink demand grows as range closes, then is
+        // limited by the independently configurable maximum descent rate.
+        const double safe_horizontal_distance = std::max(
+            1.0, horizontal_distance);
+        double climb_rate = config_.enable_vertical_control
+            ? -airspeed * target_down / safe_horizontal_distance : 0.0;
+        climb_rate = clamp(climb_rate,
+            -config_.gmfw_loss_max_descent_rate_mps,
+            config_.gmfw_maximum_climb_rate);
+        double applied_course_offset = course_offset;
+        if (config_.velocity_smoothing_enabled) {
+          const double alpha = config_.velocity_ema_alpha;
+          if (!gmfw_output_filter_initialized_) {
+            gmfw_filtered_course_offset_ = course_offset;
+            gmfw_filtered_climb_rate_ = climb_rate;
+            gmfw_output_filter_initialized_ = true;
+          } else {
+            gmfw_filtered_course_offset_ += alpha *
+                (course_offset - gmfw_filtered_course_offset_);
+            gmfw_filtered_climb_rate_ += alpha *
+                (climb_rate - gmfw_filtered_climb_rate_);
+          }
+          applied_course_offset = gmfw_filtered_course_offset_;
+          climb_rate = gmfw_filtered_climb_rate_;
+        } else {
+          gmfw_filtered_course_offset_ = course_offset;
+          gmfw_filtered_climb_rate_ = climb_rate;
+          gmfw_output_filter_initialized_ = true;
+        }
+        output.valid = true;
+        output.target_visible = false;
+        output.target_predicted = false;
+        output.tracking_state = gmfw_terminal_approach_active_
+            ? "metric_target_terminal_approach"
+            : "metric_target_loss_coast";
+        output.invalid_reason.clear();
+        output.forward = airspeed * std::cos(applied_course_offset);
+        output.left = airspeed * std::sin(applied_course_offset);
+        output.up = climb_rate;
+        output.yaw_rate = 0.0;
+        output.use_yaw_rate = false;
+        output.release_reference_on_invalid = false;
+        return output;
+      }
+      if (config_.profile == FollowerProfile::kGimbalFixedWingVelocityVector &&
+          config_.gmfw_aligned_loss_coast_enabled &&
+          gmfw_aligned_loss_coast_eligible_ &&
+          output.target_loss_duration_sec <=
+              config_.gmfw_aligned_loss_coast_sec &&
+          metric_pose_available) {
+        double yaw = 0.0;
+        double pitch = 0.0;
+        double roll = 0.0;
+        if (filteredGimbalAngles(now, &yaw, &pitch, &roll, false)) {
+          double unit_forward = 0.0;
+          double unit_right = 0.0;
+          double unit_down = 0.0;
+          gimbalToBodyVector(yaw, pitch, roll,
+                             &unit_forward, &unit_right, &unit_down);
+          const double course_error = std::atan2(unit_right, unit_forward);
+          const double climb_error = std::atan2(
+              unit_down, std::hypot(unit_forward, unit_right));
+          const double course_offset = clamp(
+              gmfw_course_pid_.update(-course_error, dt),
+              -config_.gmfw_maximum_course_offset,
+              config_.gmfw_maximum_course_offset);
+          double climb_rate = config_.enable_vertical_control
+              ? gmfw_climb_rate_pid_.update(-climb_error, dt) : 0.0;
+          climb_rate = clamp(climb_rate,
+              -config_.gmfw_loss_max_descent_rate_mps,
+              config_.gmfw_maximum_climb_rate);
+          double applied_course_offset = course_offset;
+          if (config_.velocity_smoothing_enabled) {
+            const double alpha = config_.velocity_ema_alpha;
+            if (!gmfw_output_filter_initialized_) {
+              gmfw_filtered_course_offset_ = course_offset;
+              gmfw_filtered_climb_rate_ = climb_rate;
+              gmfw_output_filter_initialized_ = true;
+            } else {
+              gmfw_filtered_course_offset_ += alpha *
+                  (course_offset - gmfw_filtered_course_offset_);
+              gmfw_filtered_climb_rate_ += alpha *
+                  (climb_rate - gmfw_filtered_climb_rate_);
+            }
+            applied_course_offset = gmfw_filtered_course_offset_;
+            climb_rate = gmfw_filtered_climb_rate_;
+          }
+          output.valid = true;
+          output.target_visible = false;
+          output.target_predicted = false;
+          output.tracking_state = "aligned_gimbal_loss_coast";
+          output.invalid_reason.clear();
+          output.forward = config_.gmfw_commanded_airspeed *
+              std::cos(applied_course_offset);
+          output.left = config_.gmfw_commanded_airspeed *
+              std::sin(applied_course_offset);
+          output.up = climb_rate;
+          output.yaw_rate = 0.0;
+          output.use_yaw_rate = false;
+          output.release_reference_on_invalid = false;
+          return output;
+        }
+      }
       // A fixed-wing cannot execute a zero-velocity stop. Mark the command
       // invalid so the node releases the stream and the downstream controller
       // transitions to its configured reference-timeout loiter.
@@ -1856,6 +2212,8 @@ TrackVelocity TrackController::compute(const double now) {
 
   loss_active_ = false;
   loss_controllers_reset_ = false;
+  gmfw_aligned_loss_coast_eligible_ = false;
+  gmfw_metric_loss_anchor_valid_ = false;
   output.target_visible = true;
   output.valid = true;
   output.target_predicted = measurement_.predicted;
@@ -2089,6 +2447,7 @@ TrackVelocity TrackController::compute(const double now) {
         double pitch = 0.0;
         double roll = 0.0;
         if (!filteredGimbalAngles(now, &yaw, &pitch, &roll, false)) {
+          gmfw_output_filter_initialized_ = false;
           output.valid = false;
           output.tracking_state = "waiting_for_gimbal_state";
           output.invalid_reason =
@@ -2137,14 +2496,49 @@ TrackVelocity TrackController::compute(const double now) {
           : fw_course_pid_.update(-course_error, dt));
       const double airspeed = use_gimbal ? config_.gmfw_commanded_airspeed
                                         : config_.fw_commanded_airspeed;
-      output.forward = airspeed * std::cos(course_offset);
-      output.left = airspeed * std::sin(course_offset);
       output.up = config_.enable_vertical_control
           ? (use_gimbal ? gmfw_climb_rate_pid_.update(-climb_error, dt)
                         : fw_climb_rate_pid_.update(-climb_error, dt)) : 0.0;
       output.up *= safety_scale;
+      double applied_course_offset = course_offset;
+      if (use_gimbal) {
+        if (config_.velocity_smoothing_enabled) {
+          const double alpha = config_.velocity_ema_alpha;
+          if (!gmfw_output_filter_initialized_) {
+            gmfw_filtered_course_offset_ = course_offset;
+            gmfw_filtered_climb_rate_ = output.up;
+            gmfw_output_filter_initialized_ = true;
+          } else {
+            gmfw_filtered_course_offset_ += alpha *
+                (course_offset - gmfw_filtered_course_offset_);
+            gmfw_filtered_climb_rate_ += alpha *
+                (output.up - gmfw_filtered_climb_rate_);
+          }
+          applied_course_offset = gmfw_filtered_course_offset_;
+          output.up = gmfw_filtered_climb_rate_;
+        } else {
+          gmfw_filtered_course_offset_ = course_offset;
+          gmfw_filtered_climb_rate_ = output.up;
+          gmfw_output_filter_initialized_ = true;
+        }
+      }
+      // Smooth GMFW's commanded course/climb while preserving its configured
+      // horizontal airspeed. The generic per-axis limits and forward ramp
+      // below are intended for multicopter profiles and must not be applied.
+      output.forward = airspeed * std::cos(applied_course_offset);
+      output.left = airspeed * std::sin(applied_course_offset);
       output.yaw_rate = 0.0;
       output.use_yaw_rate = false;
+      if (use_gimbal && vehicle_state_.valid &&
+          std::isfinite(vehicle_state_.yaw)) {
+        const bool image_aligned =
+            std::abs(output.error_x) <=
+                config_.gmfw_aligned_loss_max_image_error_x &&
+            std::abs(output.error_y) <=
+                config_.gmfw_aligned_loss_max_image_error_y;
+        gmfw_aligned_loss_coast_eligible_ =
+            image_aligned && !measurement_.predicted;
+      }
       return output;
     }
   }
@@ -2279,6 +2673,16 @@ void TrackController::resetFollowerState() {
   forward_velocity_ = config_.initial_forward_velocity;
   smoothed_left_ = 0.0;
   smoothed_up_ = 0.0;
+  gmfw_output_filter_initialized_ = false;
+  gmfw_filtered_course_offset_ = 0.0;
+  gmfw_filtered_climb_rate_ = 0.0;
+  gmfw_aligned_loss_coast_eligible_ = false;
+  gmfw_metric_loss_anchor_valid_ = false;
+  gmfw_metric_loss_target_world_ = {{0.0, 0.0, 0.0}};
+  gmfw_metric_loss_origin_x_ = 0.0;
+  gmfw_metric_loss_origin_y_ = 0.0;
+  gmfw_metric_loss_target_course_world_rad_ = 0.0;
+  gmfw_metric_loss_target_distance_m_ = 0.0;
   yaw_rate_limited_ = 0.0;
   smoothed_yaw_ = 0.0;
   gm_chase_forward_velocity_ = 0.0;
@@ -2301,6 +2705,8 @@ void TrackController::reset() {
   filtered_size_ratio_ = 0.0;
   previous_measurement_time_ = 0.0;
   filtered_track_id_ = -1;
+  gmfw_locked_visual_track_id_ = -1;
+  gmfw_terminal_approach_active_ = false;
   reidentification_time_ = -1.0;
   have_metric_state_ = false;
   external_metric_target_active_ = false;
@@ -2316,6 +2722,11 @@ void TrackController::reset() {
   last_metric_world_velocity_ = {{0.0, 0.0, 0.0}};
   last_metric_world_velocity_valid_ = false;
   last_metric_world_sigma_m_ = 1.0;
+  gmfw_recent_metric_target_valid_ = false;
+  gmfw_recent_metric_target_id_ = -1;
+  gmfw_recent_metric_target_world_ = {{0.0, 0.0, 0.0}};
+  gmfw_recent_metric_target_receive_time_ = 0.0;
+  gmfw_recent_metric_target_sigma_m_ = 0.0;
   world_filter_models_ = {{WorldFilterModel(), WorldFilterModel(),
                            WorldFilterModel()}};
   world_filter_probabilities_ = {{1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0}};

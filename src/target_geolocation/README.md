@@ -144,8 +144,14 @@ and image dimensions to correct the gimbal ray; otherwise leave that correction 
 publishes `/uav1/target/global_position` (`sensor_msgs/NavSatFix`) plus
 `/uav1/target/geolocated` (`target_geolocation/GeolocatedTarget`). The latter
 pairs the same NavSatFix with the selected box's class, confidence, sensor and
-track ID. For another gimbal detector, override the topic/type; add a class
-filter only when the image can contain unrelated detections:
+track ID. When the estimator odometry is fresh and has a frame ID, it also publishes
+`/uav1/target/metric_target` (`xd_uav_track/MetricTarget`) in the frame from
+`/uav1/state_estimator/main/odom`; `xd_uav_track` uses this point during brief
+gimbal-image loss. The metric point is built from the estimator odometry, not
+the visualization-only MAVROS local pose. Override `~metric_odom_topic` only
+when track uses a different odometry topic. For another gimbal detector,
+override the topic/type; add a class filter only when the image can contain
+unrelated detections:
 
 ```bash
 roslaunch target_geolocation target_geolocation.launch \
