@@ -19,7 +19,8 @@ def candidates(objects,proposals):
         category=int(original.get('class_id',-1));confidence=float(original.get('confidence',0))
         if box is None or category not in (0,1,2) or confidence<.50:continue
         if not np.isfinite(list(box)+[confidence]).all() or min(box[2:])<6:continue
-        row=dict(box=list(map(float,box)),class_id=category,confidence=confidence)
+        row=dict(box=list(map(float,box)),class_id=category,confidence=confidence,
+                 source_track_id=original.get('id') if original.get('kind')=='detector_track' else None)
         rows.append(row)
     kept=[]
     for row in sorted(rows,key=lambda x:x['confidence'],reverse=True):
@@ -29,7 +30,8 @@ def candidates(objects,proposals):
 
 class SoftTrackLayer:
     # Visual support cannot indefinitely renew its own detection evidence.
-    max_perception_gap_sec=3.0
+    max_perception_gap_sec=0.35
+    max_tracks=12
 
     @staticmethod
     def corners(box):
@@ -58,9 +60,18 @@ class SoftTrackLayer:
 
     @staticmethod
     def clip(box,shape):
-        h,w=shape[:2];x,y,bw,bh=box;x=max(0.,min(float(x),w-1.));y=max(0.,min(float(y),h-1.))
-        bw=min(float(bw),w-x);bh=min(float(bh),h-y)
-        return [x,y,bw,bh] if min(bw,bh)>=6 else None
+        height, width = shape[:2]
+        x, y, box_width, box_height = map(float, box)
+        if not (0 <= x + box_width / 2 < width and 0 <= y + box_height / 2 < height):
+            return None
+        left = max(0., x)
+        top = max(0., y)
+        right = min(float(width), x + box_width)
+        bottom = min(float(height), y + box_height)
+        clipped_width, clipped_height = right - left, bottom - top
+        if min(clipped_width, clipped_height) < 3:
+            return None
+        return [left, top, clipped_width, clipped_height]
 
     @staticmethod
     def crop(image,box):
@@ -85,6 +96,7 @@ class SoftTrackLayer:
         for row in rows:
             box=self.clip(row['box'],gray.shape)
             if box is None:continue
+            replaced_identifier=None
             ranked=sorted([(overlap(box,t['box']),identifier) for identifier,t in self.tracks.items()
                 if t['class_id']==row['class_id'] and identifier not in used],reverse=True)
             if ranked and ranked[0][0]>=.30:
@@ -93,18 +105,33 @@ class SoftTrackLayer:
                 original_size=self.tracks[identifier]['initial_size']
                 if (box[2]>1.6*original_size[0] or box[3]>1.6*original_size[1]
                         or box[2]*box[3]>2.0*original_size[0]*original_size[1]):
-                    del self.tracks[identifier]
+                    replaced_identifier=identifier
                     identifier=self.next_id
-                    self.next_id+=1
             else:
                 if any(overlap(box,t['box'])>.30 for t in self.tracks.values()):continue
-                if len(self.tracks)>=24:continue
-                identifier=self.next_id;self.next_id+=1
+                if len(self.tracks)>=self.max_tracks:continue
+                identifier=self.next_id
             points=self.points(gray,box)
             if points is None or len(points)<4:continue
-            initial_size=self.tracks[identifier]['initial_size'] if identifier in self.tracks else box[2:]
+            if identifier == self.next_id:
+                self.next_id+=1
+            if replaced_identifier is not None:
+                del self.tracks[replaced_identifier]
+            old=self.tracks.get(identifier)
+            initial_size=old['initial_size'] if old else box[2:]
+            velocity=np.zeros(2,dtype=np.float32)
+            if old and stamp>old['last_perception_stamp']:
+                dt=stamp-old['last_perception_stamp']
+                old_center=np.array(old['last_detection_center'])
+                center=np.array([box[0]+box[2]/2,box[1]+box[3]/2])
+                measured=(center-old_center)/dt
+                if np.linalg.norm(measured) <= 500:
+                    velocity=.5*old['velocity']+.5*measured
             self.tracks[identifier]=dict(box=box,initial_size=initial_size,class_id=row['class_id'],confidence=row['confidence'],
-                points=points,quad=self.corners(box),seed_size=box[2:],histogram=self.histogram(image,box),last_perception_stamp=stamp,visual_quality=1.)
+                points=points,quad=self.corners(box),seed_size=box[2:],histogram=self.histogram(image,box),
+                last_detection_center=[box[0]+box[2]/2,box[1]+box[3]/2],velocity=velocity,
+                source_track_id=row.get('source_track_id'),
+                last_perception_stamp=stamp,visual_quality=1.)
             used.add(identifier)
 
     def propagate(self,gray,image):
@@ -131,14 +158,14 @@ class SoftTrackLayer:
             hist=self.histogram(image,box);anchor=t['histogram']
             if hist is None or anchor is None or float(np.sqrt(hist*anchor).sum())<.60:continue
             t=dict(t,box=box,quad=quad,points=new.reshape(-1,1,2),visual_quality=float(mask.mean()))
-            if len(new)<8:
-                fresh=self.points(gray,box)
-                if fresh is not None and len(fresh)>=4:t['points']=fresh
             updated[identifier]=t
         self.tracks=updated
 
     def step(self,image,stamp,epoch,current_candidates,previous_candidates=()):
         gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
+        if len(self.tracks)>self.max_tracks:
+            keep=sorted(self.tracks,key=lambda identifier:self.tracks[identifier]['confidence'],reverse=True)[:self.max_tracks]
+            self.tracks={identifier:self.tracks[identifier] for identifier in keep}
         if self.epoch!=epoch or self.previous is None or stamp-self.stamp>.25 or stamp<=self.stamp:
             self.tracks={};self.previous=None
         elif previous_candidates:
@@ -147,7 +174,20 @@ class SoftTrackLayer:
             self.associate(self.previous_image,self.previous,previous_candidates,self.stamp)
         self.tracks={identifier:t for identifier,t in self.tracks.items()
             if stamp-t['last_perception_stamp']<=self.max_perception_gap_sec}
-        if self.previous is not None:self.propagate(gray,image)
+        if self.previous is not None:
+            before=dict(self.tracks)
+            self.propagate(gray,image)
+            dt=stamp-self.stamp
+            for identifier,track in before.items():
+                if identifier in self.tracks or stamp-track['last_perception_stamp']>self.max_perception_gap_sec:
+                    continue
+                dx,dy=track['velocity']*dt
+                matrix=np.array([[1.,0.,dx],[0.,1.,dy]],dtype=np.float32)
+                geometry=self.project_geometry(track,matrix,gray.shape)
+                if geometry is None:continue
+                box,quad=geometry
+                points=track['points']+np.array([[[dx,dy]]],np.float32)
+                self.tracks[identifier]=dict(track,box=box,quad=quad,points=points,visual_quality=.5)
         self.associate(image,gray,current_candidates,stamp)
         self.previous=gray;self.previous_image=image;self.stamp=stamp;self.epoch=epoch
         rows=[]
@@ -158,7 +198,7 @@ class SoftTrackLayer:
                 kind='soft_track',soft_lock=True,box=list(t['box']),center=[x+w/2,y+h/2],
                 confidence=min(t['confidence'],t['visual_quality']),confidence_kind='visual_support',
                 evidence_kind='current_pixels_with_perception_refresh',capture_stamp=stamp,
-                last_perception_stamp=t['last_perception_stamp']))
+                last_perception_stamp=t['last_perception_stamp'],source_track_id=t.get('source_track_id')))
         return rows
 
 

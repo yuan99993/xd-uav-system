@@ -55,7 +55,10 @@ class Preview:
         self.labels = raw_labels if isinstance(raw_labels, list) else [v.strip() for v in str(raw_labels).split(',')]
         self.soft_layer = SoftTrackLayer(self.labels)
         self.soft_raw = OrderedDict()
+        self.soft_epochs = OrderedDict()
         self.soft_display = OrderedDict()
+        self.display_ids = {}
+        self.next_display_id = 1
         self.click = rospy.Publisher(rospy.get_param('~select_pixel_topic'), PointStamped, queue_size=1)
         self.benchmark=(rospy.Publisher(rospy.get_param('~benchmark_topic','benchmark/command'),String,queue_size=1)
             if rospy.get_param('~enable_benchmark_controls',False) else None)
@@ -177,7 +180,9 @@ class Preview:
             values={int(row['id']):row for row in payload['objects']}
             with self.lock:
                 self.soft_raw[key]=payload.get("raw_selected_proposals",[])[:256]
+                self.soft_epochs[key]=payload.get('epoch')
                 while len(self.soft_raw)>64:self.soft_raw.popitem(last=False)
+                while len(self.soft_epochs)>64:self.soft_epochs.popitem(last=False)
                 self.classification[key]=values
                 while len(self.classification)>32:
                     self.classification.popitem(last=False)
@@ -224,7 +229,12 @@ class Preview:
                 primary=evidence.get('selected_id',-1)
                 current_rows=soft_candidates([o for o in self.targets.get(key,[]) if o['id']!=primary],self.soft_raw.get(key,[]))
                 previous_rows=soft_candidates([o for o in self.targets.get(previous_key,[]) if o['id']!=primary],self.soft_raw.get(previous_key,[]))
+            # Reduce display-only work when the preceding update exceeded one display period.
+            self.soft_layer.max_tracks = 4 if getattr(self, 'soft_slow', False) else 12
+            soft_started=time.monotonic()
             soft=self.soft_layer.step(frame,image.header.stamp.to_sec(),evidence.get('pipeline_epoch'),current_rows,previous_rows)
+            self.soft_elapsed_ms=(time.monotonic()-soft_started)*1000.
+            self.soft_slow=self.soft_elapsed_ms>self.poll_interval_ms
             self.soft_previous_key=key
             with self.lock:
                 self.soft_display[key]=soft
@@ -268,8 +278,31 @@ class Preview:
             stamp=output['capture_header']['stamp']
             key=stamp['secs']*1000000000+stamp['nsecs']
             output['objects']=compose_display(self.soft_display.get(key,[]),output['selected_id'],output.get('selected_box'),output.get('objects',[]))
+            for obj in output['objects']:
+                identity=('soft' if obj.get('soft_lock') else 'primary', obj['id'])
+                if identity not in self.display_ids:
+                    self.display_ids[identity]=self.next_display_id
+                    self.next_display_id+=1
+                obj['display_id']=self.display_ids[identity]
+                obj['identity_debug']={'source': identity[0],
+                                       'auxiliary_id': obj['id'] if obj.get('soft_lock') else None,
+                                       'track_id': obj.get('source_track_id') if obj.get('soft_lock') else obj['id'],
+                                       'raw_id': None, 'det_id': None,
+                                       'classification_epoch': self.soft_epochs.get(key)}
+            primary_id=output['selected_id']
+            if primary_id >= 0:
+                identity=('primary', primary_id)
+                if identity not in self.display_ids:
+                    self.display_ids[identity]=self.next_display_id
+                    self.next_display_id+=1
+                output['selected_display_id']=self.display_ids[identity]
+                output['selected_identity_debug']={'public_id': primary_id, 'track_id': primary_id,
+                                                    'raw_id': None, 'det_id': None,
+                                                    'classification_epoch': self.soft_epochs.get(key)}
             output['soft_lock_count']=sum(bool(o.get('soft_lock')) for o in output['objects'])
-            output['soft_lock_scope']='display_only_current_pixel_tracking' 
+            output['soft_lock_scope']='display_only_current_pixel_tracking'
+            output['soft_processing_ms']=getattr(self,'soft_elapsed_ms',0.)
+            output['soft_track_limit']=self.soft_layer.max_tracks
         image_bytes=output.pop('_image_bytes',None)
         if binary:output['_image_bytes']=image_bytes
         elif include_image and image_bytes is not None:output['png']=base64.b64encode(image_bytes).decode('ascii')

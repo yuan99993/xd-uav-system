@@ -26,7 +26,7 @@ class SoftDisplayTests(unittest.TestCase):
   layer=SoftTrackLayer(['car']);rows=layer.step(self.image,1,0,self.rows)
   primary=dict(id=42,box=[80,60,70,60])
   self.assertEqual(compose_display(rows,42,[115,90,70,60],[primary]),[primary])
-  self.assertEqual(layer.step(np.zeros_like(self.image),1.05,0,[]),[])
+  self.assertEqual(layer.step(np.zeros_like(self.image),1.5,0,[]),[])
  def test_epoch_clears_and_candidates_are_perception_only(self):
   layer=SoftTrackLayer(['car']);layer.step(self.image,1,0,self.rows)
   self.assertEqual(layer.step(self.image,1.05,1,[]),[])
@@ -75,5 +75,61 @@ class SoftDisplayTests(unittest.TestCase):
   b=compose_display([one,two],8,[70,30,20,20],[])
   self.assertEqual([o['id'] for o in a],[two['id']])
   self.assertEqual([o['id'] for o in b],[one['id']])
+
+ def test_edge_clipping_uses_true_image_intersection(self):
+  clip=SoftTrackLayer.clip
+  self.assertEqual(clip([-4,10,14,12],(100,100,3)),[0.,10.,10.,12.])
+  self.assertEqual(clip([10,-4,12,14],(100,100,3)),[10.,0.,12.,10.])
+  self.assertEqual(clip([92,20,12,12],(100,100,3)),[92.,20.,8.,12.])
+  self.assertIsNone(clip([-20,10,14,12],(100,100,3)))
+  self.assertIsNone(clip([94,20,16,12],(100,100,3)))
+
+ def test_prediction_is_brief_and_does_not_create_control_identity(self):
+  layer=SoftTrackLayer(['car']);initial=layer.step(self.image,1.,0,self.rows)
+  no_pixels=np.zeros_like(self.image)
+  next_rows=layer.step(no_pixels,1.1,0,[])
+  self.assertEqual(next_rows[0]['id'],initial[0]['id'])
+  self.assertEqual(next_rows[0]['last_perception_stamp'],1.)
+  self.assertEqual(layer.step(no_pixels,1.36,0,[]),[])
+ def test_edge_center_controls_removal_and_partial_box_can_remain(self):
+  clip=SoftTrackLayer.clip
+  self.assertEqual(clip([-6,10,16,12],(100,100,3)),[0.,10.,10.,12.])
+  self.assertIsNone(clip([-9,10,16,12],(100,100,3)))
+  self.assertEqual(clip([92,10,12,12],(100,100,3)),[92.,10.,8.,12.])
+  self.assertIsNone(clip([94,10,12,12],(100,100,3)))
+ def test_limit_bounds_active_tracks(self):
+  layer=SoftTrackLayer(['car']);layer.max_tracks=1
+  rng=np.random.RandomState(2);image=rng.randint(0,256,(100,100,3),dtype=np.uint8)
+  proposals=[dict(box=[10,10,20,20],class_id=0,confidence=.9),dict(box=[60,60,20,20],class_id=0,confidence=.8)]
+  self.assertEqual(len(layer.step(image,1.,0,proposals)),1)
+
+ def test_selection_preserves_nonprimary_until_detection_timeout(self):
+  rng=np.random.RandomState(27)
+  image=rng.randint(0,256,(200,300,3),dtype=np.uint8)
+  layer=SoftTrackLayer(['car'])
+  detections=[dict(box=[40,60,30,30],class_id=0,confidence=.9),
+              dict(box=[180,60,30,30],class_id=0,confidence=.8)]
+  before=layer.step(image,1.,0,detections)
+  self.assertEqual(len(before),2)
+  other=next(row for row in before if row['center'][0]>150)
+  after=layer.step(image,1.05,0,[])
+  visible=compose_display(after,15,[55,75,30,30],[])
+  self.assertEqual([row['id'] for row in visible],[other['id']])
+  self.assertEqual(visible[0]['last_perception_stamp'],1.)
+  layer.step(image,1.25,0,[])
+  self.assertEqual(layer.step(image,1.36,0,[]),[])
+
+ def test_invalid_rebuild_keeps_existing_track_until_normal_timeout(self):
+  layer=SoftTrackLayer(['car']);gray=cv2.cvtColor(self.image,cv2.COLOR_BGR2GRAY)
+  layer.step(self.image,1.0,0,self.rows)
+  original=next(iter(layer.tracks))
+  points=layer.points
+  layer.points=lambda gray,box:None
+  layer.associate(self.image,gray,[dict(box=[70,50,115,90],class_id=0,confidence=.9)],1.05)
+  self.assertIn(original,layer.tracks)
+  self.assertEqual(layer.tracks[original]['last_perception_stamp'],1.)
+  layer.points=points
+  self.assertEqual(len(layer.step(self.image,1.1,0,[])),1)
+  self.assertEqual(layer.step(self.image,1.5,0,[]),[])
 
 if __name__=='__main__':unittest.main()
