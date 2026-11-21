@@ -41,3 +41,26 @@ verification2 仍为封存的仿真实用参考版，不以本次实验覆盖或
 复测采样保留了投影代理、同步网页框、原始候选和若干 JPEG 画面。画面人工抽查发现 384 试验中有车辆辅助框，也有道路上未见清晰目标的可疑框。每 5 次扩窗直接改变该次主检测输入和融合候选，并非独立辅助池。两次自动选框产生了不同的主 ID，不能排除目标或视角差异；采样结果不足以证明零误锁、零 ID 切换、误框率达标或两配置的因果优劣。目标平台测试时应使用同一主目标和独立标注真值重新对照，记录原始采集时间、有效帧率、延迟、误锁、ID 切换及辅助框误检。
 
 `pipeline_trace` 的阶段计数及最近事件用于发现异常；同一秒内发生多次采集断档或强接管拦截时，应同步保存 `fusion_loss_history`、`fusion_evidence`、原始状态与相机消息并以采集时间关联。现有汇总不是完整逐事件历史；缺失上下文应明确标为未知。
+
+## 取证采集
+
+从已 source 的 ROS 工作区执行，输出目录必须不存在：
+
+```bash
+/usr/bin/python3 "$(rospack find sar_yolo_detector)/web/demo/capture_fusion_audit.py" \
+  --namespace /ue_test --instance dfine_v3 \
+  --image-topic /ue_test/fixed_camera/image_raw \
+  --seconds 30 --output /path/to/new-audit-directory
+```
+
+`messages.jsonl` 同时保存相机原始图像头（不保存像素）、主状态、分类证据、`fusion_evidence`、`fusion_loss_history` 与 `pipeline_trace`。每条分别记录接收时间及有明确来源时的采集时间，无法确定时为 null；trace 的时间是发布时刻。`summary.json` 分开列出状态 ID 变动、各通道计数和记录器队列丢失。采集是额外 ROS 订阅，会消耗带宽；相机订阅队列丢帧与上游断帧不能仅凭本工具区分。融合证据可能限频，因此两条证据之间的逐次拦截详情仍为未知；不要将拦截次数或选框引起的 ID 变化直接统计为误锁。
+
+使用下列离线步骤按采集时间将已记录的主状态与相机头、融合证据对齐：
+
+```bash
+/usr/bin/python3 "$(rospack find sar_yolo_detector)/web/demo/analyze_fusion_audit.py" /path/to/new-audit-directory
+```
+
+它创建 `alignment.jsonl` 和 `alignment_summary.json`，默认允许 1 ms 时间差。没有同帧融合证据时标为 unknown，trace 周期汇总与选框服务的事件不能伪造为逐帧记录。输出目录内已有对齐结果时不会覆盖。不同平台应按实际时间同步误差审查容差，并使用独立真值判定误锁。
+
+2026-11-21 当前候选做了辅助层同帧去重：仅对同一原始采集帧已检查过的同一候选跳过重复特征计算，迟到的新候选仍处理。仿真中保持同一主 ID 的两个连续 10 秒窗口，辅助处理 P50/P95 为 7.63/16.08 ms 和 7.12/12.11 ms；两窗口并非相同帧或真值对照，不代表平台验收。完整数据保存在工作区 `runtime/selection_recheck_20261121/perf_control_summary.json`。独立取证工具在 14 秒检查中接收相机头、状态、融合/丢锁/分类证据与 trace，记录器队列未丢消息；融合证据限频，仍有未匹配状态帧，不能还原所有拦截事件。

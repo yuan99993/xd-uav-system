@@ -132,4 +132,18 @@ class SoftDisplayTests(unittest.TestCase):
   self.assertEqual(len(layer.step(self.image,1.1,0,[])),1)
   self.assertEqual(layer.step(self.image,1.5,0,[]),[])
 
+ def test_previous_capture_skips_repeated_candidates_but_accepts_late_additions(self):
+  layer=SoftTrackLayer(['car'])
+  rng=np.random.RandomState(33);image=rng.randint(0,256,(200,300,3),dtype=np.uint8)
+  first=dict(box=[30,30,30,30],class_id=0,confidence=.9)
+  late=dict(box=[150,30,30,30],class_id=0,confidence=.8)
+  original=layer.points;calls=[]
+  def counted(gray,box):
+   calls.append(tuple(box));return original(gray,box)
+  layer.points=counted
+  layer.step(image,1.,0,[first]);calls.clear()
+  result=layer.step(image,1.05,0,[],[first,late])
+  self.assertEqual(len(result),2)
+  self.assertEqual(calls,[(150.,30.,30.,30.)])
+
 if __name__=='__main__':unittest.main()

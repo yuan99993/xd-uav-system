@@ -57,6 +57,19 @@ class SoftTrackLayer:
 
     def __init__(self,labels):
         self.labels=list(labels);self.next_id=1;self.tracks={};self.previous=None;self.stamp=None;self.epoch=None
+        self._processed_candidates={}
+
+    def fresh_candidates(self,stamp,rows):
+        # The previous frame can receive new detection messages late. Skip only
+        # candidates already checked on that exact capture, not late additions.
+        seen=self._processed_candidates.setdefault(stamp,set())
+        fresh=[]
+        for row in rows:
+            signature=(tuple(row['box']),row['class_id'],row['confidence'],row.get('source_track_id'))
+            if signature not in seen:
+                seen.add(signature)
+                fresh.append(row)
+        return fresh
 
     @staticmethod
     def clip(box,shape):
@@ -167,11 +180,13 @@ class SoftTrackLayer:
             keep=sorted(self.tracks,key=lambda identifier:self.tracks[identifier]['confidence'],reverse=True)[:self.max_tracks]
             self.tracks={identifier:self.tracks[identifier] for identifier in keep}
         if self.epoch!=epoch or self.previous is None or stamp-self.stamp>.25 or stamp<=self.stamp:
-            self.tracks={};self.previous=None
+            self.tracks={};self.previous=None;self._processed_candidates.clear()
         elif previous_candidates:
             # Late numeric outputs are applied to their OWN previous image,
             # then transported by current pixels. Never relabel old boxes fresh.
-            self.associate(self.previous_image,self.previous,previous_candidates,self.stamp)
+            previous_candidates=self.fresh_candidates(self.stamp,previous_candidates)
+            if previous_candidates:
+                self.associate(self.previous_image,self.previous,previous_candidates,self.stamp)
         self.tracks={identifier:t for identifier,t in self.tracks.items()
             if stamp-t['last_perception_stamp']<=self.max_perception_gap_sec}
         if self.previous is not None:
@@ -188,7 +203,9 @@ class SoftTrackLayer:
                 box,quad=geometry
                 points=track['points']+np.array([[[dx,dy]]],np.float32)
                 self.tracks[identifier]=dict(track,box=box,quad=quad,points=points,visual_quality=.5)
+        current_candidates=self.fresh_candidates(stamp,current_candidates)
         self.associate(image,gray,current_candidates,stamp)
+        self._processed_candidates={key:value for key,value in self._processed_candidates.items() if key==stamp}
         self.previous=gray;self.previous_image=image;self.stamp=stamp;self.epoch=epoch
         rows=[]
         for identifier,t in self.tracks.items():
