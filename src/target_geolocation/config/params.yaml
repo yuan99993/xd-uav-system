@@ -57,6 +57,8 @@ max_img_offset_deg: 20.0   # 目标离光轴超过该角度则不修正（测距
 det_timeout: 0.3           # 检测框过期时间 [s]
 
 # ---------------- 输出 ----------------
+metric_status_topic: ""  # std_msgs/String JSON，默认 /<uav_ns>/track/metric_target_status
+metric_status_publish_rate: 2.0  # 坐标有效/过期状态刷新频率 [Hz]
 marker_frame: "map"        # 与 mavros local_position 的坐标系一致
 marker_scale: 3.0
 range_msg_type: "Range"    # 或 "Float32"（测距用 std_msgs/Float32 发布时）

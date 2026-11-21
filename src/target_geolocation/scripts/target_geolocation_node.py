@@ -29,6 +29,7 @@
 """
 
 import math
+import json
 import os
 import struct
 import threading
@@ -38,7 +39,7 @@ from geometry_msgs.msg import PointStamped, PoseStamped, QuaternionStamped
 from mavros_msgs.msg import Mavlink
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, NavSatFix, Range
-from std_msgs.msg import Float32, Float64, Float64MultiArray
+from std_msgs.msg import Float32, Float64, Float64MultiArray, String
 from visualization_msgs.msg import Marker
 from sar_yolo_detector.msg import TrackedDetection2DArray
 from target_geolocation.msg import GeolocatedTarget
@@ -153,6 +154,11 @@ class TargetGeolocationNode(object):
         self.marker_frame = rospy.get_param('~marker_frame', 'map')
         self.marker_scale = float(rospy.get_param('~marker_scale', 3.0))
         self.range_msg_type = str(rospy.get_param('~range_msg_type', 'Range'))
+        self.metric_status_topic = (
+            rospy.get_param('~metric_status_topic', '')
+            or _join(_join(self.uav_ns, 'track'), 'metric_target_status'))
+        self.metric_status_publish_rate = max(
+            0.2, float(rospy.get_param('~metric_status_publish_rate', 2.0)))
 
         # ------------------------------------------------------------ 共享状态
         self._lock = threading.Lock()
@@ -163,6 +169,7 @@ class TargetGeolocationNode(object):
         self._local = None     # MAVROS pose, used for visualization
         self._metric_odom = None  # estimator odom, shared with xd_uav_track
         self._det = None       # dict(u, v, stamp)
+        self._last_metric_status = None
         self._ema = None       # 平滑用的 ENU 偏移
         self._last_valid = None
 
@@ -232,6 +239,8 @@ class TargetGeolocationNode(object):
             _join(self.out_prefix, 'geolocated'), GeolocatedTarget, queue_size=5)
         self.pub_metric_target = rospy.Publisher(
             _join(self.out_prefix, 'metric_target'), MetricTarget, queue_size=5)
+        self.pub_metric_status = rospy.Publisher(
+            self.metric_status_topic, String, queue_size=1, latch=True)
         self.pub_local = rospy.Publisher(
             _join(self.out_prefix, 'local_enu'), PointStamped, queue_size=5)
         self.pub_marker = rospy.Publisher(
@@ -241,12 +250,15 @@ class TargetGeolocationNode(object):
 
         rospy.on_shutdown(self._on_shutdown)
         rospy.Timer(rospy.Duration(1.0 / max(self.publish_rate, 1.0)), self._tick)
+        rospy.Timer(rospy.Duration(1.0 / self.metric_status_publish_rate),
+                    self._publish_metric_status)
 
-        rospy.loginfo('[GEO] 就绪: gps=%s range=%s -> %s, %s and %s', self.gps_topic,
+        rospy.loginfo('[GEO] 就绪: gps=%s range=%s -> %s, %s, %s and %s', self.gps_topic,
                       self.range_topic,
                       _join(self.out_prefix, 'global_position'),
                       _join(self.out_prefix, 'geolocated'),
-                      _join(self.out_prefix, 'metric_target'))
+                      _join(self.out_prefix, 'metric_target'),
+                      self.metric_status_topic)
         rospy.loginfo('[GEO] boresight rpy=%s deg, sensor_axis=%s, 图像偏角修正=%s',
                       self.boresight_rpy, self.sensor_axis, self.use_img_offset)
 
@@ -686,6 +698,12 @@ class TargetGeolocationNode(object):
             geolocated.track_id_is_stable = bool(detection['track_id_is_stable'])
             geolocated.sensor_id = str(detection['sensor_id'])
             self.pub_geolocated.publish(geolocated)
+        else:
+            rospy.logwarn_throttle(
+                2.0,
+                '[GEO] 没有新鲜的选中目标框；当前解算不绑定目标ID，也不发布目标三维点 '
+                '(det_timeout=%.2fs)',
+                self.det_timeout)
 
         # 相对飞机（或本地坐标原点）的 ENU 位置，便于 RViz / 下游使用
         with self._lock:
@@ -727,6 +745,25 @@ class TargetGeolocationNode(object):
             metric.has_velocity = False
             metric.source = 'gimbal_target_geolocation'
             self.pub_metric_target.publish(metric)
+            sigma_xy = math.sqrt(max(
+                0.0, fix.position_covariance[0], fix.position_covariance[4]))
+            with self._lock:
+                self._last_metric_status = dict(
+                    target_id=int(metric.target_id),
+                    track_id_is_stable=bool(geolocated.track_id_is_stable),
+                    frame_id=str(metric.header.frame_id),
+                    x=float(metric.pose.pose.position.x),
+                    y=float(metric.pose.pose.position.y),
+                    z=float(metric.pose.pose.position.z),
+                    sigma_xy_m=float(sigma_xy),
+                    stamp=stamp)
+            rospy.loginfo_throttle(
+                2.0,
+                '[GEO] 目标坐标有效: id=%d stable=%s xyz=(%.1f, %.1f, %.1f)m '
+                'frame=%s sigma_xy=%.1fm',
+                metric.target_id, geolocated.track_id_is_stable,
+                metric.pose.pose.position.x, metric.pose.pose.position.y,
+                metric.pose.pose.position.z, metric.header.frame_id, sigma_xy)
         elif geolocated is not None:
             rospy.logwarn_throttle(
                 5.0, '[GEO] 未发布本地 MetricTarget：estimator odom 缺失、过期或 frame_id 为空')
@@ -755,6 +792,68 @@ class TargetGeolocationNode(object):
                     res['bearing_deg'], res['elevation_deg'],
                     1.0 if res['looking_up'] else 0.0]
         self.pub_solution.publish(arr)
+
+    def _publish_metric_status(self, _event):
+        """Publish a human-readable, machine-parseable coordinate readiness string."""
+        now = rospy.Time.now()
+        with self._lock:
+            detection = None if self._det is None else dict(self._det)
+            metric = (None if self._last_metric_status is None
+                      else dict(self._last_metric_status))
+
+        visual_selected = detection is not None and int(
+            detection.get('track_id', -1)) >= 0
+        visual_age = ((now - detection['stamp']).to_sec()
+                      if detection is not None else None)
+        visual_fresh = visual_selected and visual_age is not None and \
+            0.0 <= visual_age <= self.det_timeout
+        metric_age = ((now - metric['stamp']).to_sec()
+                      if metric is not None else None)
+        metric_fresh = metric is not None and metric_age is not None and \
+            0.0 <= metric_age <= self.max_input_age
+        id_matches = visual_selected and metric is not None and \
+            int(detection['track_id']) == int(metric['target_id'])
+
+        if not visual_selected:
+            reason = 'no_selected_target'
+        elif not visual_fresh:
+            reason = 'selected_target_stale'
+        elif metric is None:
+            reason = 'waiting_for_metric_coordinate'
+        elif not metric_fresh:
+            reason = 'metric_coordinate_stale'
+        elif not id_matches:
+            reason = 'target_id_mismatch'
+        else:
+            reason = 'fresh_metric_target'
+
+        metric_valid = bool(visual_fresh and metric_fresh and id_matches)
+        payload = {
+            'valid': metric_valid,
+            'ready_to_start_track': metric_valid,
+            'visual_target_locked': bool(visual_selected),
+            'visual_fresh': bool(visual_fresh),
+            'target_id': (int(detection['track_id'])
+                          if visual_selected else -1),
+            'metric_target_id': (int(metric['target_id'])
+                                 if metric is not None else -1),
+            'track_id_is_stable': (bool(metric['track_id_is_stable'])
+                                   if metric is not None else False),
+            'id_matches': bool(id_matches),
+            'frame_id': metric['frame_id'] if metric is not None else '',
+            'x': metric['x'] if metric is not None else None,
+            'y': metric['y'] if metric is not None else None,
+            'z': metric['z'] if metric is not None else None,
+            'sigma_xy_m': (metric['sigma_xy_m']
+                           if metric is not None else None),
+            'metric_age_sec': metric_age,
+            'visual_age_sec': visual_age,
+            'reason': reason,
+        }
+        status = String()
+        status.data = json.dumps(payload, ensure_ascii=False,
+                                 separators=(',', ':'))
+        self.pub_metric_status.publish(status)
 
     def _on_shutdown(self):
         if self._last_valid is None:

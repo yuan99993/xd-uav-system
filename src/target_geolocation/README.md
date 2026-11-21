@@ -153,6 +153,15 @@ when track uses a different odometry topic. For another gimbal detector,
 override the topic/type; add a class filter only when the image can contain
 unrelated detections:
 
+The latched standard string topic `/uav1/track/metric_target_status` reports the
+selected track ID, odom-frame XYZ, position uncertainty, coordinate age, and
+whether the selected box and metric point currently match and are fresh. Its
+JSON `valid` field is `true` when those coordinate inputs are current and match;
+`ready_to_start_track` gives the same readiness result and `reason` explains
+why it is false. `xd_uav_track` still reports its own active state on
+`/uav1/track/status`. The topic name and publish rate can be set with
+`~metric_status_topic` and `~metric_status_publish_rate`.
+
 ```bash
 roslaunch target_geolocation target_geolocation.launch \
   gimbal:=true \
@@ -388,6 +397,8 @@ roslaunch target_geolocation target_geolocation.launch uav_ns:=/uav2
 | 话题 | 类型 | 说明 |
 |---|---|---|
 | `/uav1/target/global_position` | NavSatFix | 目标经纬高（主输出） |
+| `/uav1/target/metric_target` | MetricTarget | odom 坐标系的三维目标点 |
+| `/uav1/track/metric_target_status` | std_msgs/String | JSON 坐标/目标 ID/新鲜度状态，可直接 `rostopic echo` 查看 |
 | `/uav1/target/local_enu` | PointStamped | 相对飞机的 ENU 偏移 |
 | `/uav1/target/marker` | Marker | RViz 红球 |
 | `/uav1/target/solution` | Float64MultiArray | `[lat,lon,alt,e,n,u,斜距,平距,方位,仰角,向上标志]` |

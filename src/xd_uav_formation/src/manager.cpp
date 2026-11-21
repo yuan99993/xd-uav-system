@@ -3,6 +3,7 @@
 #include <ros/master.h>
 #include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
+#include <std_msgs/UInt32.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/transform_listener.h>
 #include <yaml-cpp/yaml.h>
@@ -10,6 +11,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <regex>
 #include <set>
@@ -107,6 +110,8 @@ Config parseConfig(const std::string& mode, const YAML::Node& node,
 #define XD_STRING(field, key) config.field = value<std::string>(node, key, config.field)
   XD_DOUBLE(minimum_slot_distance, "minimum_slot_distance");
   XD_DOUBLE(spacing, "spacing");
+  config.group_size = value<int>(node, "group_size", config.group_size);
+  config.group_spacing = value<double>(node, "group_spacing", config.group_spacing);
   config.follower_count = value<int>(node, "follower_count", config.follower_count);
   config.slot_index = value<int>(node, "slot_index", config.slot_index);
   XD_DOUBLE(corner_radius, "corner_radius");
@@ -232,6 +237,9 @@ class FormationManager {
       shape_subscriber_ = nh_.subscribe<std_msgs::String>(
           "/formation/shape", 1,
           &FormationManager::shapeCommandCallback, this);
+      group_size_subscriber_ = nh_.subscribe<std_msgs::UInt32>(
+          "/formation/group_size", 1,
+          &FormationManager::groupSizeCallback, this);
       path_subscriber_ = nh_.subscribe<nav_msgs::Path>(
           "/formation/path", 1,
           &FormationManager::pathCommandCallback, this);
@@ -501,6 +509,37 @@ class FormationManager {
     return true;
   }
 
+  void groupSizeCallback(const std_msgs::UInt32::ConstPtr& message) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (message->data == 0 || message->data > static_cast<std::uint32_t>(
+            std::numeric_limits<int>::max())) {
+      ROS_WARN("[xd_uav_formation] rejected group_size=%u; expected a positive integer",
+               message->data);
+      return;
+    }
+    auto config = configs_.find("consensus");
+    if (config == configs_.end()) {
+      ROS_WARN("[xd_uav_formation] ignoring group_size update without consensus config");
+      return;
+    }
+    if (!spawn_members_) {
+      ROS_WARN("[xd_uav_formation] group_size topic requires the shared C++ runtime");
+      return;
+    }
+    const int group_size = static_cast<int>(message->data);
+    auto runtime = runtimes_.find("consensus");
+    if (runtime != runtimes_.end()) {
+      std::string error;
+      if (!runtime->second->updateGroupSize(group_size, error)) {
+        ROS_WARN("[xd_uav_formation] rejected group_size=%d: %s",
+                 group_size, error.c_str());
+        return;
+      }
+    }
+    config->second.group_size = group_size;
+    ROS_INFO("[xd_uav_formation] group size set to %d", group_size);
+  }
+
   bool resolve(const std::string& mode, const std::vector<std::string>& requested,
                std::vector<std::string>& members, std::string& team,
                std::string& error) {
@@ -652,6 +691,7 @@ class FormationManager {
   ros::ServiceServer set_service_;
   ros::ServiceServer stop_service_;
   ros::Subscriber shape_subscriber_;
+  ros::Subscriber group_size_subscriber_;
   ros::Subscriber path_subscriber_;
   std::optional<std::tuple<std::string, std::string, std::vector<std::string>>> active_;
 };

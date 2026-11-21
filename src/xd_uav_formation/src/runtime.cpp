@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -46,6 +47,126 @@ bool blockingAction(const xd_uav_controller::ControlState& state) {
 std::string nodeNameForMode(const std::string& mode) {
   return mode == "consensus" ? "formation_consensus" : "formation_follower";
 }
+
+std::vector<Vec3> centeredSlots(const std::string& shape, std::size_t count,
+                               double spacing) {
+  if (count == 0) return {};
+  auto slots = formationOffsets(shape, count, spacing);
+  Vec3 mean{0.0, 0.0, 0.0};
+  for (const auto& slot : slots)
+    for (int axis = 0; axis < 3; ++axis)
+      mean[axis] += slot[axis] / static_cast<double>(slots.size());
+  for (auto& slot : slots)
+    for (int axis = 0; axis < 3; ++axis) slot[axis] -= mean[axis];
+  return slots;
+}
+
+FormationGroupPlan makeGroupPlan(const std::vector<std::string>& members,
+                                 int group_size) {
+  if (group_size < 1) throw std::invalid_argument("group_size must be positive");
+  FormationGroupPlan plan;
+  plan.group_size = group_size;
+  if (members.empty()) return plan;
+  const std::size_t count = members.size();
+  const std::size_t groups = (count + static_cast<std::size_t>(group_size) - 1) /
+      static_cast<std::size_t>(group_size);
+  const std::size_t base = count / groups;
+  const std::size_t remainder = count % groups;
+  std::size_t cursor = 0;
+  for (std::size_t index = 0; index < groups; ++index) {
+    const std::size_t size = base + (index < remainder ? 1 : 0);
+    FormationGroup group;
+    group.id = "group_" + std::to_string(index + 1);
+    group.members.insert(group.members.end(), members.begin() + cursor,
+                         members.begin() + cursor + size);
+    group.nominal_size = size;
+    cursor += size;
+    plan.groups.push_back(std::move(group));
+  }
+  return plan;
+}
+
+std::map<std::string, Vec3> hierarchicalSlots(
+    const FormationGroupPlan& plan, const std::string& shape,
+    double inner_spacing, double requested_group_spacing,
+    double minimum_distance) {
+  std::vector<const FormationGroup*> active_groups;
+  double maximum_inner_radius = 0.0;
+  std::map<std::string, std::vector<Vec3>> inner_slots;
+  for (const auto& group : plan.groups) {
+    if (group.detached) continue;
+    // Keep empty attached groups in the outer layout so a local dropout does
+    // not move the other groups into different outer slots.
+    active_groups.push_back(&group);
+    auto slots = centeredSlots(shape, group.members.size(), inner_spacing);
+    const auto nominal_slots = centeredSlots(shape,
+        std::max(group.nominal_size, group.members.size()), inner_spacing);
+    for (const auto& slot : nominal_slots)
+      maximum_inner_radius = std::max(maximum_inner_radius,
+                                      std::hypot(slot[0], slot[1]));
+    inner_slots.emplace(group.id, std::move(slots));
+  }
+  std::map<std::string, Vec3> result;
+  if (active_groups.empty()) return result;
+  if (plan.group_size == 1) {
+    // A one-aircraft group is still part of the single fleet formation. Place
+    // each group center directly on the fleet shape using the normal spacing;
+    // group_spacing only separates multi-aircraft groups from one another.
+    const auto slots = centeredSlots(shape, active_groups.size(), inner_spacing);
+    for (std::size_t i = 0; i < active_groups.size(); ++i) {
+      const auto& group = *active_groups[i];
+      if (group.members.empty()) continue;
+      if (group.members.size() != 1)
+        throw std::invalid_argument("group_size=1 requires singleton formation groups");
+      result[group.members.front()] = slots[i];
+    }
+    for (auto first = result.begin(); first != result.end(); ++first) {
+      for (auto second = std::next(first); second != result.end(); ++second) {
+        const double dx = first->second[0] - second->second[0];
+        const double dy = first->second[1] - second->second[1];
+        const double dz = first->second[2] - second->second[2];
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) < minimum_distance)
+          throw std::invalid_argument(
+              "single-aircraft formation slots are closer than minimum separation");
+      }
+    }
+    return result;
+  }
+  const double safe_pitch = 2.0 * maximum_inner_radius + minimum_distance;
+  double group_spacing = std::max(
+      requested_group_spacing > 0.0 ? requested_group_spacing : inner_spacing,
+      safe_pitch);
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    const auto outer_slots = centeredSlots(shape, active_groups.size(), group_spacing);
+    result.clear();
+    for (std::size_t group_index = 0; group_index < active_groups.size(); ++group_index) {
+      const auto& group = *active_groups[group_index];
+      const auto& locals = inner_slots.at(group.id);
+      for (std::size_t member_index = 0; member_index < group.members.size(); ++member_index) {
+        result[group.members[member_index]] = {
+            outer_slots[group_index][0] + locals[member_index][0],
+            outer_slots[group_index][1] + locals[member_index][1],
+            outer_slots[group_index][2] + locals[member_index][2]};
+      }
+    }
+    bool separated = true;
+    for (auto first = result.begin(); first != result.end() && separated; ++first) {
+      for (auto second = std::next(first); second != result.end(); ++second) {
+        const double dx = first->second[0] - second->second[0];
+        const double dy = first->second[1] - second->second[1];
+        const double dz = first->second[2] - second->second[2];
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) < minimum_distance) {
+          separated = false;
+          break;
+        }
+      }
+    }
+    if (separated) return result;
+    group_spacing *= 1.35;
+  }
+  throw std::invalid_argument("nested formation slots are closer than minimum separation");
+}
+
 XmlRpc::XmlRpcValue acquisitionPlanValue(const AcquisitionPlan& plan) {
   XmlRpc::XmlRpcValue parameter;
   parameter["members"].setSize(static_cast<int>(plan.members.size()));
@@ -76,6 +197,7 @@ XmlRpc::XmlRpcValue acquisitionPlanValue(const AcquisitionPlan& plan) {
   parameter["altitude"] = plan.altitude;
   parameter["selection_revision"] =
       static_cast<int>(plan.selection_revision);
+  parameter["group_revision"] = static_cast<int>(plan.group_revision);
   return parameter;
 }
 
@@ -115,6 +237,7 @@ Follower::Follower(ros::NodeHandle nh, const Config& config, std::string member,
   if (!geometry_) throw std::invalid_argument("formation geometry is missing");
   if (config_.mode == "consensus") {
     formation_selection_ = shared_->formationSelection();
+    formation_group_revision_ = shared_->formationGroupPlan().revision;
     if (config_.members.size() < 2 || config_.common_frame.empty()) {
       throw std::invalid_argument("consensus requires members and common_frame");
     }
@@ -446,6 +569,14 @@ void Follower::peerStatusInput(const std_msgs::String& status,
     }
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  if (enabled_ && config_.mode == "consensus" &&
+      status.data.rfind("inactive:dropout", 0) == 0) {
+    const auto own_group = formationGroupFor(member_);
+    const auto peer_group = formationGroupFor(member);
+    if (own_group && peer_group && own_group->detached &&
+        own_group->id == peer_group->id && own_group->anchor == member)
+      return;
+  }
   if (enabled_ && status.data.rfind("inactive:dropout", 0) == 0)
     markPeerDropped(member, status.data);
 }
@@ -561,12 +692,25 @@ void Follower::markPeerDropped(const std::string& member,
   active_members_dirty_ = true;
   ROS_WARN("[xd_uav_formation] excluding %s after %s",
            member.c_str(), reason.c_str());
-  if (config_.mode == "consensus" && enabled_)
+  if (config_.mode == "consensus" && enabled_ && acquire_stage_ &&
+      *acquire_stage_ != "following") {
     restartAcquisitionForMembershipChange("excluded:" + member + ":" + reason);
+  }
 }
 
 void Follower::beginDropout(const std::string& reason) {
   const bool was_enabled = enabled_;
+  const bool external_control =
+      reason.rfind("external_setpoint", 0) == 0 ||
+      reason == "external_path" || reason == "external_trajectory" ||
+      reason == "follower_flight_action" ||
+      reason.rfind("preempt:", 0) == 0 || reason.rfind("task_goal:", 0) == 0;
+  if (config_.mode == "consensus" && external_control && shared_) {
+    if (shared_->detachFormationGroup(member_)) {
+      ROS_WARN("[xd_uav_formation] detaching group containing %s; member becomes its external-control anchor",
+               member_.c_str());
+    }
+  }
   enabled_ = false;
   acquire_stage_.reset();
   acquire_started_.reset();
@@ -618,8 +762,87 @@ void Follower::publishHold() {
 void Follower::refreshMembership(const ros::Time& now,
                                  const StateSnapshot& input) {
   if (config_.mode != "consensus" || !enabled_ || !own_state_) return;
+  auto own_group = formationGroupFor(member_);
+  if (own_group && own_group->detached && own_group->anchor != member_) {
+    auto anchorUsable = [&](const std::string& name, bool external_control) {
+      const auto state = input.states.find(name);
+      const auto state_time = input.state_received.find(name);
+      const auto mavros = input.mavros.find(name);
+      const auto mavros_time = input.mavros_received.find(name);
+      if (state == input.states.end() || state_time == input.state_received.end() ||
+          !fresh(state->second.header, true, state_time->second, now) ||
+          !state->second.state_valid || state->second.header.frame_id.empty() ||
+          state->second.transition_pending ||
+          state->second.airframe_type != own_state_->airframe_type ||
+          state->second.vehicle_type != own_state_->vehicle_type ||
+          state->second.flight_regime != own_state_->flight_regime ||
+          (!external_control && blockingAction(state->second))) {
+        return false;
+      }
+      if (mavros == input.mavros.end() ||
+          mavros_time == input.mavros_received.end() ||
+          std::max(0.0, (now - mavros_time->second).toSec()) >
+              config_.mavros_timeout ||
+          !mavros->second.armed ||
+          (!external_control && mavros->second.mode != "OFFBOARD")) {
+        return false;
+      }
+      return true;
+    };
+
+    const std::string old_anchor = own_group->anchor;
+    if (!anchorUsable(old_anchor, own_group->anchor_external_control)) {
+      std::string replacement;
+      for (const auto& name : own_group->members) {
+        if (name == old_anchor) continue;
+        const auto status = input.statuses.find(name);
+        const auto status_time = input.status_received.find(name);
+        if (status == input.statuses.end() ||
+            status_time == input.status_received.end() ||
+            status->second.rfind("active:", 0) != 0 ||
+            std::max(0.0, (now - status_time->second).toSec()) >
+                config_.mavros_timeout ||
+            !anchorUsable(name, false)) {
+          continue;
+        }
+        replacement = name;
+        break;
+      }
+
+      if (!replacement.empty() &&
+          shared_->promoteDetachedGroupAnchor(old_anchor, replacement)) {
+        dropped_members_.insert(old_anchor);
+        dropped_members_.erase(replacement);
+        active_members_dirty_ = true;
+        own_group = formationGroupFor(member_);
+        ROS_WARN("[xd_uav_formation] group %s anchor %s unavailable; promoting %s",
+                 own_group ? own_group->id.c_str() : "unknown",
+                 old_anchor.c_str(), replacement.c_str());
+      } else {
+        const auto current_group = formationGroupFor(member_);
+        if (current_group && current_group->detached &&
+            current_group->anchor == old_anchor) {
+          beginDropout("detached_group_anchor_lost");
+          return;
+        }
+        if (current_group && current_group->detached &&
+            current_group->anchor != old_anchor) {
+          dropped_members_.insert(old_anchor);
+          active_members_dirty_ = true;
+        }
+        own_group = current_group;
+      }
+    }
+  }
   for (const auto& name : config_.members) {
     if (name == member_) continue;
+    const auto peer_group = formationGroupFor(name);
+    if (own_group && own_group->detached) {
+      if (!peer_group || peer_group->id != own_group->id ||
+          name == own_group->anchor) continue;
+    } else if (peer_group && peer_group->detached) {
+      continue;
+    }
     const auto status = input.statuses.find(name);
     const auto status_received = input.status_received.find(name);
     const bool status_fresh = status != input.statuses.end() &&
@@ -679,7 +902,8 @@ void Follower::refreshMembership(const ros::Time& now,
       dropped_members_.erase(name);
       active_members_dirty_ = true;
       ROS_INFO("[xd_uav_formation] restoring %s to the formation", name.c_str());
-      restartAcquisitionForMembershipChange("restored:" + name);
+      if (acquire_stage_ && *acquire_stage_ != "following")
+        restartAcquisitionForMembershipChange("restored:" + name);
     }
   }
 }
@@ -803,19 +1027,26 @@ std::optional<std::string> Follower::readiness(
     if (own.vehicle_type != state.vehicle_type ||
         own.flight_regime != state.flight_regime)
       return "same_flight_regime_required";
-    if (blockingAction(state)) return peer.name + "_flight_action";
+    const auto own_group = formationGroupFor(member_);
+    const bool external_group_anchor = own_group && own_group->detached &&
+        own_group->anchor_external_control && own_group->anchor == peer.name;
+    if (blockingAction(state) && !external_group_anchor)
+      return peer.name + "_flight_action";
     if (state.header.frame_id.empty()) return "state_frame_missing";
     if (!peer.has_mavros || !peer.mavros ||
         (now - peer.mavros_received).toSec() > config_.mavros_timeout ||
         !peer.mavros->armed ||
-        (config_.mode == "consensus" && peer.mavros->mode != "OFFBOARD")) {
+        (config_.mode == "consensus" && peer.mavros->mode != "OFFBOARD" &&
+         !external_group_anchor)) {
       return config_.mode == "leader_follow" ? "leader_armed_required" :
              "peer_offboard_required:" + peer.name;
     }
   }
   if (config_.mode == "consensus") {
+    const auto own_group = formationGroupFor(member_);
     for (const auto& name : activeMembers()) {
       if (name == member_) continue;
+      if (own_group && own_group->detached && name == own_group->anchor) continue;
       const auto center = input.centers.find(name);
       const auto received = input.center_received.find(name);
       if (center == input.centers.end() || received == input.center_received.end() ||
@@ -856,14 +1087,58 @@ Follower::StateSnapshot Follower::snapshot() const {
 }
 
 std::vector<std::string> Follower::activeMembers() const {
+  const auto plan = formationGroupPlan();
+  if (plan.revision != cached_group_revision_) {
+    active_members_dirty_ = true;
+    cached_group_revision_ = plan.revision;
+  }
   if (active_members_dirty_) {
     active_members_cache_.clear();
-    for (const auto& name : config_.members) {
-      if (!dropped_members_.count(name)) active_members_cache_.push_back(name);
+    const auto own_group = formationGroupFor(member_);
+    for (const auto& group : plan.groups) {
+      const bool own_detached_group = own_group && own_group->detached &&
+          own_group->id == group.id;
+      if (group.detached && !own_detached_group) continue;
+      if (!group.detached && own_group && own_group->detached) continue;
+      for (const auto& name : group.members) {
+        if (!dropped_members_.count(name)) active_members_cache_.push_back(name);
+      }
     }
     active_members_dirty_ = false;
   }
   return active_members_cache_;
+}
+
+FormationGroupPlan Follower::formationGroupPlan() const {
+  return shared_ ? shared_->formationGroupPlan() : FormationGroupPlan{};
+}
+
+std::optional<FormationGroup> Follower::formationGroupFor(
+    const std::string& member) const {
+  const auto plan = formationGroupPlan();
+  for (const auto& group : plan.groups) {
+    if (std::find(group.members.begin(), group.members.end(), member) !=
+        group.members.end()) return group;
+  }
+  return std::nullopt;
+}
+
+std::vector<FormationGroup> Follower::activeFormationGroups() const {
+  const auto plan = formationGroupPlan();
+  const auto own_group = formationGroupFor(member_);
+  std::vector<FormationGroup> groups;
+  for (const auto& source : plan.groups) {
+    const bool own_detached_group = own_group && own_group->detached &&
+        own_group->id == source.id;
+    if (source.detached && !own_detached_group) continue;
+    if (!source.detached && own_group && own_group->detached) continue;
+    FormationGroup group = source;
+    group.members.erase(std::remove_if(group.members.begin(), group.members.end(),
+        [&](const std::string& name) { return dropped_members_.count(name) != 0; }),
+        group.members.end());
+    if (!group.members.empty()) groups.push_back(std::move(group));
+  }
+  return groups;
 }
 
 void Follower::refreshFormationSelection(const ros::Time& now) {
@@ -877,27 +1152,72 @@ void Follower::refreshFormationSelection(const ros::Time& now) {
   paced_speed_stamp_.reset();
   progress_error_filter_.clear();
   if (enabled_) {
-    acquire_heading_.reset();
-    acquire_stage_ = "waiting_for_team";
-    acquire_started_ = now;
-    reason_ = "acquiring_waiting_for_team";
+    const auto group = formationGroupFor(member_);
+    if (group && group->detached) {
+      acquire_stage_.reset();
+      acquire_started_.reset();
+      reason_ = "following_detached_group:" + group->anchor;
+    } else {
+      acquire_heading_.reset();
+      acquire_stage_ = "waiting_for_team";
+      acquire_started_ = now;
+      reason_ = "acquiring_waiting_for_team";
+    }
     publishStatus();
   }
 }
 
 std::map<std::string, Vec3> Follower::consensusSlotOffsets() const {
-  const auto members = activeMembers();
-  std::vector<Vec3> slots;
-  if (members.size() == 1) {
-    slots.push_back({0.0, 0.0, 0.0});
-  } else if (!members.empty()) {
-    slots = formationOffsets(formation_selection_.shape, members.size(),
-                             config_.spacing);
+  const auto own_group = formationGroupFor(member_);
+  auto groups = activeFormationGroups();
+  if (own_group && own_group->detached) {
+    std::map<std::string, Vec3> offsets;
+    for (const auto& group : groups) {
+      const auto slots = centeredSlots(formation_selection_.shape,
+                                       group.members.size(), config_.spacing);
+      for (std::size_t i = 0; i < group.members.size(); ++i)
+        offsets[group.members[i]] = slots[i];
+    }
+    return offsets;
   }
-  std::map<std::string, Vec3> offsets;
-  for (std::size_t i = 0; i < members.size(); ++i)
-    offsets.emplace(members[i], slots[i]);
-  return offsets;
+  FormationGroupPlan plan = formationGroupPlan();
+  for (auto& group : plan.groups) {
+    group.members.erase(std::remove_if(group.members.begin(), group.members.end(),
+        [&](const std::string& name) {
+          return dropped_members_.count(name) != 0;
+        }), group.members.end());
+  }
+  return hierarchicalSlots(plan, formation_selection_.shape,
+      config_.spacing, config_.group_spacing,
+      std::max(config_.minimum_slot_distance,
+               config_.fixedwing_minimum_slot_distance));
+}
+
+void Follower::refreshFormationGroups(const ros::Time& now) {
+  if (config_.mode != "consensus" || !shared_) return;
+  const auto plan = shared_->formationGroupPlan();
+  if (plan.revision == formation_group_revision_) return;
+  formation_group_revision_ = plan.revision;
+  active_members_dirty_ = true;
+  const auto group = formationGroupFor(member_);
+  if (group && group->detached) {
+    if (cached_group_anchor_ && *cached_group_anchor_ != group->anchor)
+      dropped_members_.insert(*cached_group_anchor_);
+    cached_group_anchor_ = group->anchor;
+  } else {
+    cached_group_anchor_.reset();
+  }
+  if (!enabled_) return;
+  if (group && group->detached) {
+    acquire_stage_.reset();
+    acquire_started_.reset();
+    reason_ = "following_detached_group:" + group->anchor;
+    resetCatchupPid();
+    publishStatus();
+  } else {
+    restartAcquisitionForMembershipChange("group_layout_changed");
+  }
+  (void)now;
 }
 
 Vec3 Follower::leaderPoseInFollowerFrame(
@@ -1245,6 +1565,7 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
   const auto slot_offsets = consensusSlotOffsets();
   std::vector<Vec3> positions;
   positions.reserve(geometry.members.size());
+  std::map<std::string, Vec3> positions_by_member;
   std::vector<Vec3> offsets;
   offsets.reserve(geometry.members.size());
   for (const auto& name : geometry.members) {
@@ -1255,12 +1576,28 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
       if (state_it != input.states.end()) state = &state_it->second;
     }
     if (!state) throw std::invalid_argument(name + "_state_stale");
-    positions.push_back(std::get<0>(stateInCommonFrame(*state, now)));
+    const Vec3 position = std::get<0>(stateInCommonFrame(*state, now));
+    positions.push_back(position);
+    positions_by_member[name] = position;
     auto offset = slot_offsets.find(name);
     if (offset == slot_offsets.end()) throw std::invalid_argument("missing consensus slot");
     offsets.push_back(offset->second);
   }
-  const Vec3 centroid = sharedCenter(positions).first;
+  const auto groups = activeFormationGroups();
+  auto groupMeans = [](const std::vector<FormationGroup>& source,
+                       const std::map<std::string, Vec3>& points) {
+    std::vector<Vec3> means;
+    for (const auto& group : source) {
+      std::vector<Vec3> members;
+      for (const auto& name : group.members) {
+        const auto point = points.find(name);
+        if (point != points.end()) members.push_back(point->second);
+      }
+      if (!members.empty()) means.push_back(sharedCenter(members).first);
+    }
+    return means;
+  };
+  const Vec3 centroid = sharedCenter(groupMeans(groups, positions_by_member)).first;
   double maximum_slot_radius = 0.0;
   for (const auto& entry : slot_offsets) {
     maximum_slot_radius = std::max(
@@ -1291,10 +1628,11 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
           config_.lookahead, formation_selection_.loop_path);
       seed_heading = std::atan2(reference.velocity[1], reference.velocity[0]);
     }
-    std::vector<Vec3> estimates;
+    std::map<std::string, Vec3> estimates;
     for (std::size_t i = 0; i < positions.size(); ++i)
-      estimates.push_back(virtualCenter(positions[i], seed_heading, offsets[i]));
-    const Vec3 estimate = sharedCenter(estimates).first;
+      estimates[geometry.members[i]] =
+          virtualCenter(positions[i], seed_heading, offsets[i]);
+    const Vec3 estimate = sharedCenter(groupMeans(groups, estimates)).first;
     const auto reference = pathReferenceState(estimate,
         formation_selection_.waypoints, config_.cruise_speed,
         config_.lookahead, formation_selection_.loop_path);
@@ -1321,11 +1659,24 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
   }
   consensus_heading_ = geometry.heading;
   consensus_heading_stamp_ = now;
-  for (std::size_t i = 0; i < positions.size(); ++i)
-    geometry.centers.push_back(virtualCenter(positions[i], geometry.heading, offsets[i]));
-  const auto mean = sharedCenter(geometry.centers);
+  std::map<std::string, Vec3> centers_by_member;
+  for (std::size_t i = 0; i < positions.size(); ++i) {
+    const Vec3 center = virtualCenter(positions[i], geometry.heading, offsets[i]);
+    geometry.centers.push_back(center);
+    centers_by_member[geometry.members[i]] = center;
+  }
+  const auto mean = sharedCenter(groupMeans(groups, centers_by_member));
   geometry.mean = mean.first;
-  geometry.largest_error = mean.second;
+  geometry.largest_error = 0.0;
+  for (const auto& center : geometry.centers) {
+    const double dx = center[0] - geometry.mean[0];
+    const double dy = center[1] - geometry.mean[1];
+    // Acquisition deliberately assigns different altitude tiers. Use only
+    // horizontal slot-center error for the gathering/merging gate; altitude
+    // convergence is checked independently before entering following.
+    geometry.largest_error = std::max(geometry.largest_error,
+        std::hypot(dx, dy));
+  }
   return geometry;
 }
 
@@ -1357,43 +1708,20 @@ Vec3 Follower::ownCenterInCommonFrame(const ros::Time& now,
         return geometry.centers.at(static_cast<std::size_t>(i - geometry.members.begin()));
       }
     }
-    const auto active = activeMembers();
-    if (!usesFixedwingConsensusGuidance(own) && active.size() > 1) {
-      std::vector<Vec3> peer_points;
-      bool all_fresh = true;
-      for (const auto& name : active) {
-        if (name == member_) continue;
-        auto center = input.centers.find(name);
-        auto received = input.center_received.find(name);
-        if (center == input.centers.end() || received == input.center_received.end() ||
-            !fresh(center->second.header, true, received->second, now) ||
-            cleanFrame(center->second.header.frame_id) != config_.common_frame) {
-          all_fresh = false; break;
-        }
-        peer_points.push_back(pointVec(center->second.point));
-      }
-      if (all_fresh) {
-        Vec3 estimate = sharedCenter(peer_points).first;
-        Vec3 center = position;
-        for (int i = 0; i < 2; ++i) {
-          const auto path = pathReferenceState(estimate,
-              formation_selection_.waypoints, config_.cruise_speed,
-              config_.lookahead, formation_selection_.loop_path);
-          const double heading = std::atan2(path.velocity[1], path.velocity[0]);
-          center = virtualCenter(position, heading, consensus_offset);
-          auto all = peer_points; all.push_back(center);
-          estimate = sharedCenter(all).first;
-        }
-        return center;
-      }
-    }
+    Vec3 estimate = position;
     Vec3 center = position;
     for (int i = 0; i < 2; ++i) {
-      const auto path = pathReferenceState(center,
+      const auto path = pathReferenceState(estimate,
           formation_selection_.waypoints, config_.cruise_speed,
           config_.lookahead, formation_selection_.loop_path);
-      center = virtualCenter(position,
-          std::atan2(path.velocity[1], path.velocity[0]), consensus_offset);
+      const double heading = std::atan2(path.velocity[1], path.velocity[0]);
+      center = virtualCenter(position, heading, consensus_offset);
+      try {
+        const auto group_centers = teamCenterPoints(center, input);
+        if (!group_centers.empty()) estimate = sharedCenter(group_centers).first;
+      } catch (const std::exception&) {
+        break;
+      }
     }
     return center;
   }
@@ -1452,13 +1780,21 @@ std::tuple<Vec3, Vec3, double> Follower::consensusCenters(
 std::vector<Vec3> Follower::teamCenterPoints(
     const Vec3& own_center, const StateSnapshot& input) const {
   std::vector<Vec3> result;
-  for (const auto& name : activeMembers()) {
-    if (name == member_) result.push_back(own_center);
-    else {
-      auto it = input.centers.find(name);
-      if (it == input.centers.end()) throw std::invalid_argument("neighbor_center_stale:" + name);
-      result.push_back(pointVec(it->second.point));
+  for (const auto& group : activeFormationGroups()) {
+    std::vector<Vec3> group_points;
+    for (const auto& name : group.members) {
+      if (name == member_) {
+        group_points.push_back(own_center);
+      } else {
+        auto it = input.centers.find(name);
+        auto received = input.center_received.find(name);
+        if (it == input.centers.end() || received == input.center_received.end() ||
+            cleanFrame(it->second.header.frame_id) != config_.common_frame)
+          throw std::invalid_argument("neighbor_center_stale:" + name);
+        group_points.push_back(pointVec(it->second.point));
+      }
     }
+    if (!group_points.empty()) result.push_back(sharedCenter(group_points).first);
   }
   return result;
 }
@@ -1489,12 +1825,14 @@ double Follower::teamPacedSpeed(
     double turn_rate, const StateSnapshot& input,
     const xd_uav_controller::ControlState& own) {
   const double path_speed = std::hypot(path_velocity[0], path_velocity[1]);
-  const auto members = activeMembers();
+  const auto groups = activeFormationGroups();
   if (path_speed < 1e-6) return path_speed;
   const double tx = path_velocity[0] / path_speed, ty = path_velocity[1] / path_speed;
   const double nx = -ty, ny = tx;
+  if (center_points.size() != groups.size())
+    throw std::invalid_argument("group_center_count_mismatch");
   std::vector<double> progress;
-  progress.reserve(center_points.size());
+  progress.reserve(groups.size());
   for (const auto& point : center_points) {
     const double ex = mean[0] - point[0], ey = mean[1] - point[1];
     const double along = ex * tx + ey * ty;
@@ -1504,22 +1842,32 @@ double Follower::teamPacedSpeed(
   double dt = paced_speed_stamp_ ? clampValue((now - *paced_speed_stamp_).toSec(), 0.0, 0.2) : 0.0;
   const double alpha = dt / (0.8 + dt);
   for (std::size_t i = 0; i < progress.size(); ++i) {
-    auto it = progress_error_filter_.find(members[i]);
-    if (it == progress_error_filter_.end()) progress_error_filter_[members[i]] = progress[i];
+    auto it = progress_error_filter_.find(groups[i].id);
+    if (it == progress_error_filter_.end()) progress_error_filter_[groups[i].id] = progress[i];
     else it->second += alpha * (progress[i] - it->second);
-    progress[i] = progress_error_filter_[members[i]];
+    progress[i] = progress_error_filter_[groups[i].id];
   }
   std::vector<double> member_speeds;
-  member_speeds.reserve(members.size());
+  member_speeds.reserve(groups.size());
   const auto slot_offsets = consensusSlotOffsets();
-  for (const auto& name : members) {
-    const auto& state = name == member_ ? own : input.states.at(name);
-    const auto converted = stateInCommonFrame(state, now);
-    const auto velocity = std::get<1>(converted);
-    const Vec3 slot_turn = slotVelocity({0,0,0}, {0,0,0}, heading,
-        slot_offsets.at(name), 0.0, false, turn_rate, true);
-    member_speeds.push_back((velocity.x - slot_turn[0]) * tx +
-                            (velocity.y - slot_turn[1]) * ty);
+  for (const auto& group : groups) {
+    double speed_sum = 0.0;
+    std::size_t speed_count = 0;
+    for (const auto& name : group.members) {
+      const auto state_it = input.states.find(name);
+      const auto& state = name == member_ ? own :
+          (state_it != input.states.end() ? state_it->second : own);
+      if (name != member_ && state_it == input.states.end())
+        throw std::invalid_argument(name + "_state_stale");
+      const auto converted = stateInCommonFrame(state, now);
+      const auto velocity = std::get<1>(converted);
+      const Vec3 slot_turn = slotVelocity({0,0,0}, {0,0,0}, heading,
+          slot_offsets.at(name), 0.0, false, turn_rate, true);
+      speed_sum += (velocity.x - slot_turn[0]) * tx +
+                   (velocity.y - slot_turn[1]) * ty;
+      ++speed_count;
+    }
+    member_speeds.push_back(speed_count ? speed_sum / speed_count : path_speed);
   }
   const bool fixedwing = own.vehicle_type == xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
   const double minimum = fixedwing ? config_.fixedwing_min_speed : 0.0;
@@ -1530,8 +1878,13 @@ double Follower::teamPacedSpeed(
       config_.max_consensus_velocity;
   auto targets = consensusSpeedTargets(path_speed, progress, member_speeds,
       gain, max_adjust, minimum);
-  const auto member_it = std::find(members.begin(), members.end(), member_);
-  const double target = targets.at(static_cast<std::size_t>(member_it - members.begin()));
+  const auto group_it = std::find_if(groups.begin(), groups.end(),
+      [&](const FormationGroup& group) {
+        return std::find(group.members.begin(), group.members.end(), member_) !=
+            group.members.end();
+      });
+  if (group_it == groups.end()) throw std::invalid_argument("own_group_unavailable");
+  const double target = targets.at(static_cast<std::size_t>(group_it - groups.begin()));
   if (!paced_speed_ || !paced_speed_stamp_) paced_speed_ = target;
   else {
     dt = clampValue((now - *paced_speed_stamp_).toSec(), 0.0, 0.2);
@@ -1610,20 +1963,30 @@ AcquisitionPlan Follower::buildAcquisitionPlan(
   plan.shape = formation_selection_.shape;
   plan.spacing = config_.spacing;
   plan.selection_revision = formation_selection_.revision;
+  plan.group_revision = formationGroupPlan().revision;
   plan.stamp = now;
   plan.initial_positions = memberPositionsInCommonFrame(now, input);
   if (plan.initial_positions.size() != plan.members.size())
     throw std::invalid_argument("active acquisition member positions are incomplete");
-  Vec3 mean{0.0, 0.0, 0.0};
-  for (const auto& point : plan.initial_positions)
-    for (int axis = 0; axis < 3; ++axis) mean[axis] += point[axis] / plan.initial_positions.size();
+  std::map<std::string, Vec3> positions_by_member;
+  for (std::size_t i = 0; i < plan.members.size(); ++i)
+    positions_by_member[plan.members[i]] = plan.initial_positions[i];
+  std::vector<Vec3> group_centers;
+  for (const auto& group : activeFormationGroups()) {
+    std::vector<Vec3> points;
+    for (const auto& name : group.members) points.push_back(positions_by_member.at(name));
+    group_centers.push_back(sharedCenter(points).first);
+  }
+  Vec3 mean = sharedCenter(group_centers).first;
   const auto route = pathReferenceState(mean, formation_selection_.waypoints,
       config_.cruise_speed, config_.lookahead,
       formation_selection_.loop_path);
   plan.heading = std::atan2(route.velocity[1], route.velocity[0]);
   plan.altitude = route.position[2];
-  const auto offsets = formationOffsets(
-      formation_selection_.shape, plan.members.size(), config_.spacing);
+  const auto offset_map = consensusSlotOffsets();
+  std::vector<Vec3> offsets;
+  offsets.reserve(plan.members.size());
+  for (const auto& name : plan.members) offsets.push_back(offset_map.at(name));
   plan.slots = acquisitionSlots(plan.initial_positions,
                                 offsets,
                                 plan.heading, plan.altitude);
@@ -1658,6 +2021,8 @@ bool Follower::planAcquisition(const ros::Time& now,
         parsed.spacing = static_cast<double>(parameter["spacing"]);
         parsed.selection_revision = static_cast<std::uint64_t>(
             static_cast<int>(parameter["selection_revision"]));
+        parsed.group_revision = static_cast<std::uint64_t>(
+            static_cast<int>(parameter["group_revision"]));
         parsed.stamp = ros::Time(static_cast<double>(parameter["stamp"]));
         auto readPoints = [](const XmlRpc::XmlRpcValue& values) {
           std::vector<Vec3> points;
@@ -1685,6 +2050,7 @@ bool Follower::planAcquisition(const ros::Time& now,
     if (!candidate || candidate->members != members ||
         candidate->shape != formation_selection_.shape ||
         candidate->selection_revision != formation_selection_.revision ||
+        candidate->group_revision != formationGroupPlan().revision ||
         candidate->spacing != config_.spacing ||
         candidate->initial_positions.size() != count ||
         candidate->slots.size() != count || candidate->tiers.size() != count)
@@ -1844,16 +2210,14 @@ mavros_msgs::PositionTarget Follower::fixedwingConsensusTarget(
   if (!acquisition_stage &&
       (formation_selection_.shape == "column" ||
        formation_selection_.shape == "single_file")) {
+    const auto groups = activeFormationGroups();
     const auto members = activeMembers();
     const auto slot_offsets = consensusSlotOffsets();
-    std::vector<double> progresses;
-    std::vector<double> phases;
-    progresses.reserve(members.size());
-    phases.reserve(members.size());
+    std::map<std::string, double> progresses;
+    std::map<std::string, double> phases;
     Vec3 own_position{};
     double path_length = 0.0;
-    for (std::size_t i = 0; i < members.size(); ++i) {
-      const auto& name = members[i];
+    for (const auto& name : members) {
       const xd_uav_controller::ControlState* state =
           name == member_ ? &own : nullptr;
       if (!state) {
@@ -1868,46 +2232,69 @@ mavros_msgs::PositionTarget Follower::fixedwingConsensusTarget(
       const auto projection = projectPathProgress(
           position, formation_selection_.waypoints,
           formation_selection_.loop_path);
-      if (i == 0) {
+      if (path_length == 0.0) {
         path_length = projection.second;
       } else if (std::abs(projection.second - path_length) > 1e-6) {
         throw std::invalid_argument("inconsistent_column_path_length");
       }
-      progresses.push_back(projection.first);
-      phases.push_back(projection.first - slot_offsets.at(name)[0]);
+      progresses[name] = projection.first;
+      phases[name] = projection.first - slot_offsets.at(name)[0];
     }
-    if (members.empty() || path_length <= 1e-6) {
+    if (groups.empty() || path_length <= 1e-6) {
       throw std::invalid_argument("column_path_projection_unavailable");
     }
 
+    std::vector<double> group_phases;
+    group_phases.reserve(groups.size());
+    for (const auto& group : groups) {
+      const double anchor = phases.at(group.members.front());
+      double sum = 0.0;
+      for (const auto& name : group.members) {
+        double phase = phases.at(name);
+        if (formation_selection_.loop_path) {
+          double delta = std::fmod(phase - anchor + 0.5 * path_length,
+                                   path_length);
+          if (delta < 0.0) delta += path_length;
+          phase = anchor + delta - 0.5 * path_length;
+        }
+        sum += phase;
+      }
+      group_phases.push_back(sum / static_cast<double>(group.members.size()));
+    }
     double mean_phase = 0.0;
-    std::vector<double> aligned_phases = phases;
+    std::vector<double> aligned_group_phases = group_phases;
     if (formation_selection_.loop_path) {
-      double anchor = std::fmod(phases.front(), path_length);
+      double anchor = std::fmod(group_phases.front(), path_length);
       if (anchor < 0.0) anchor += path_length;
       double sum = anchor;
-      aligned_phases.front() = anchor;
-      for (std::size_t i = 1; i < phases.size(); ++i) {
-        double phase = std::fmod(phases[i], path_length);
+      aligned_group_phases.front() = anchor;
+      for (std::size_t i = 1; i < group_phases.size(); ++i) {
+        double phase = std::fmod(group_phases[i], path_length);
         if (phase < 0.0) phase += path_length;
         double delta = std::fmod(
             phase - anchor + 0.5 * path_length, path_length);
         if (delta < 0.0) delta += path_length;
         delta -= 0.5 * path_length;
-        aligned_phases[i] = anchor + delta;
-        sum += aligned_phases[i];
+        aligned_group_phases[i] = anchor + delta;
+        sum += aligned_group_phases[i];
       }
-      mean_phase = sum / static_cast<double>(phases.size());
+      mean_phase = sum / static_cast<double>(group_phases.size());
     } else {
-      for (const double phase : phases) mean_phase += phase;
-      mean_phase /= static_cast<double>(phases.size());
+      for (const double phase : group_phases) mean_phase += phase;
+      mean_phase /= static_cast<double>(group_phases.size());
     }
 
     const Vec3& own_offset = slot_offsets.at(member_);
-    const auto own_it = std::find(members.begin(), members.end(), member_);
-    const std::size_t own_index =
-        static_cast<std::size_t>(own_it - members.begin());
-    const double own_phase = aligned_phases.at(own_index);
+    const auto own_group_it = std::find_if(groups.begin(), groups.end(),
+        [&](const FormationGroup& group) {
+          return std::find(group.members.begin(), group.members.end(), member_) !=
+              group.members.end();
+        });
+    if (own_group_it == groups.end())
+      throw std::invalid_argument("own_group_unavailable");
+    const std::size_t own_group_index =
+        static_cast<std::size_t>(own_group_it - groups.begin());
+    const double own_phase = aligned_group_phases.at(own_group_index);
     const double phase_error = mean_phase - own_phase;
     const auto correction = activeConsensusCorrection();
     const double along_error = std::copysign(
@@ -1920,7 +2307,7 @@ mavros_msgs::PositionTarget Follower::fixedwingConsensusTarget(
         config_.fixedwing_min_speed,
         config_.cruise_speed + speed_adjustment);
     const double progress_offset =
-        mean_phase + own_offset[0] - progresses.at(own_index);
+        mean_phase + own_offset[0] - progresses.at(member_);
     const PathResult route_reference = pathReferenceState(
         own_position, formation_selection_.waypoints, config_.cruise_speed,
         config_.lookahead, formation_selection_.loop_path, progress_offset);
@@ -2056,7 +2443,12 @@ mavros_msgs::PositionTarget Follower::consensusTarget(
 mavros_msgs::PositionTarget Follower::formationTarget(
     const ros::Time& now, const StateSnapshot& input,
     const xd_uav_controller::ControlState& own) {
-  if (config_.mode == "consensus") return consensusTarget(now, input, own);
+  if (config_.mode == "consensus") {
+    const auto group = formationGroupFor(member_);
+    if (group && group->detached)
+      return detachedGroupTarget(now, input, own, *group);
+    return consensusTarget(now, input, own);
+  }
   if (!leader_state_) throw std::invalid_argument("leader_state_stale");
   geometry_msgs::PoseStamped pose;
   geometry_msgs::Vector3Stamped leader_velocity, leader_acceleration;
@@ -2105,6 +2497,84 @@ mavros_msgs::PositionTarget Follower::formationTarget(
                         velocity, "", own);
 }
 
+mavros_msgs::PositionTarget Follower::detachedGroupTarget(
+    const ros::Time& now, const StateSnapshot& input,
+    const xd_uav_controller::ControlState& own,
+    const FormationGroup& group) {
+  if (group.anchor.empty())
+    throw std::invalid_argument("detached_group_anchor_unavailable");
+  if (group.anchor == member_) {
+    const auto own_common = stateInCommonFrame(own, now);
+    const auto route = pathReferenceState(std::get<0>(own_common),
+        formation_selection_.waypoints, config_.cruise_speed,
+        config_.lookahead, formation_selection_.loop_path);
+    const Vec3 velocity = smoothCourseVelocity(route.velocity, now, own);
+    const double speed = std::hypot(velocity[0], velocity[1]);
+    const double heading = speed > 1e-3
+        ? std::atan2(velocity[1], velocity[0])
+        : yaw(std::get<2>(own_common));
+    return positionTarget(route.position, heading, now, velocity,
+                          config_.common_frame, own);
+  }
+  const auto members = activeMembers();
+  const auto anchor_it = std::find(members.begin(), members.end(), group.anchor);
+  const auto own_it = std::find(members.begin(), members.end(), member_);
+  if (anchor_it == members.end() || own_it == members.end())
+    throw std::invalid_argument("detached_group_member_unavailable");
+  const auto anchor_state = input.states.find(group.anchor);
+  const auto anchor_received = input.state_received.find(group.anchor);
+  if (anchor_state == input.states.end() || anchor_received == input.state_received.end() ||
+      !fresh(anchor_state->second.header, true, anchor_received->second, now))
+    throw std::invalid_argument("detached_group_anchor_state_stale");
+
+  const auto slots = centeredSlots(formation_selection_.shape, members.size(),
+                                   config_.spacing);
+  const std::size_t anchor_index = static_cast<std::size_t>(anchor_it - members.begin());
+  const std::size_t own_index = static_cast<std::size_t>(own_it - members.begin());
+  Vec3 relative_offset{};
+  for (int axis = 0; axis < 3; ++axis)
+    relative_offset[axis] = slots[own_index][axis] - slots[anchor_index][axis];
+
+  geometry_msgs::PoseStamped pose;
+  geometry_msgs::Vector3Stamped leader_velocity, leader_acceleration;
+  leaderPoseInFollowerFrame(now, anchor_state->second, own, &pose,
+                            &leader_velocity, &leader_acceleration);
+  const Vec3 position = pointVec(pose.pose.position);
+  const Vec3 velocity = vectorVec(leader_velocity.vector);
+  if (!std::all_of(velocity.begin(), velocity.end(),
+                   [](double value) { return std::isfinite(value); }))
+    throw std::invalid_argument("detached_group_anchor_velocity_invalid");
+  const bool fixedwing = own.vehicle_type ==
+      xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
+  const double speed = std::hypot(velocity[0], velocity[1]);
+  const double heading = fixedwing &&
+      speed >= config_.fixedwing_min_groundspeed_for_course
+      ? std::atan2(velocity[1], velocity[0]) : yaw(pose);
+  const auto slot = slotTarget(position, heading, relative_offset,
+                               config_.yaw_offset);
+  Vec3 acceleration = vectorVec(leader_acceleration.vector);
+  if (!anchor_state->second.acceleration_fresh) acceleration = {0.0, 0.0, 0.0};
+  std::optional<double> turn_rate;
+  if (fixedwing && !anchor_state->second.acceleration_fresh) {
+    const auto& q = pose.pose.orientation;
+    tf2::Quaternion quaternion(q.x, q.y, q.z, q.w);
+    double roll, pitch, yaw_angle;
+    tf2::Matrix3x3(quaternion).getRPY(roll, pitch, yaw_angle);
+    turn_rate = 9.8 * std::tan(roll) /
+        std::max(speed, config_.fixedwing_min_speed);
+  } else if (!fixedwing && std::isfinite(anchor_state->second.body_rate.z)) {
+    turn_rate = anchor_state->second.body_rate.z;
+  }
+  Vec3 reference_velocity = slotVelocity(velocity, acceleration, heading,
+      relative_offset, 0.0, false, turn_rate.value_or(0.0), turn_rate.has_value());
+  const Vec3 own_position = pointVec(own.position_odom);
+  reference_velocity = pidCatchupVelocity(reference_velocity,
+      {slot[0], slot[1], slot[2]}, own_position, now, own);
+  reference_velocity = smoothCourseVelocity(reference_velocity, now, own);
+  return positionTarget({slot[0], slot[1], slot[2]}, slot[3], now,
+                        reference_velocity, "", own);
+}
+
 bool Follower::ownReadinessFailure(const std::string& reason) const {
   if (config_.mode == "leader_follow" &&
       (reason == "same_airframe_type_required" || reason == "same_flight_regime_required"))
@@ -2129,6 +2599,15 @@ bool Follower::setEnabled(bool enabled, std::string& message) {
   if (enabled_) { message = "formation already active"; return true; }
   const ros::Time now = ros::Time::now();
   refreshFormationSelection(now);
+  refreshFormationGroups(now);
+  if (config_.mode == "consensus") {
+    const auto group = formationGroupFor(member_);
+    if (group && group->detached && group->anchor_external_control &&
+        group->anchor == member_) {
+      message = "external-control anchor remains outside the formation";
+      return true;
+    }
+  }
   if (last_external_reference_ &&
       (now - *last_external_reference_).toSec() < config_.external_quiet_time) {
     message = "another reference is active";
@@ -2198,6 +2677,7 @@ void Follower::tick(const ros::TimerEvent&) {
   std::lock_guard<std::mutex> lock(mutex_);
   const ros::Time now = ros::Time::now();
   refreshFormationSelection(now);
+  refreshFormationGroups(now);
   const StateSnapshot input = snapshot();
   if (config_.mode == "consensus") {
     if (!enabled_) {
@@ -2222,17 +2702,20 @@ void Follower::tick(const ros::TimerEvent&) {
     return;
   }
   const auto fresh_input = snapshot();
-  if (config_.mode == "consensus" && acquire_stage_ &&
+  const auto own_group = config_.mode == "consensus"
+      ? formationGroupFor(member_) : std::optional<FormationGroup>{};
+  const bool detached_group = own_group && own_group->detached;
+  if (config_.mode == "consensus" && !detached_group && acquire_stage_ &&
       *acquire_stage_ != "waiting_for_team" && !teamEnabled(now, fresh_input)) {
     beginDropout("peer_formation_stopped"); return;
   }
-  if (config_.mode == "consensus" && acquire_stage_ &&
+  if (config_.mode == "consensus" && !detached_group && acquire_stage_ &&
       *acquire_stage_ != "following" && acquire_started_ &&
       (now - *acquire_started_).toSec() > config_.acquire_timeout) {
     beginDropout("acquisition_timeout"); return;
   }
   try {
-    const auto target = config_.mode == "consensus"
+    const auto target = config_.mode == "consensus" && !detached_group
         ? acquisitionTarget(now, fresh_input, *own_state_)
         : formationTarget(now, fresh_input, *own_state_);
     rememberOwnReference(target);
@@ -2259,8 +2742,23 @@ FormationRuntime::FormationRuntime(ros::NodeHandle nh, Config config,
   if (config_.mode == "consensus") {
     if (config_.members.size() < 2 || config_.common_frame.empty())
       throw std::invalid_argument("consensus requires members and common_frame");
-    geometry->slots = formationOffsets(config_.shape, config_.members.size(),
-                                       config_.spacing);
+    if (config_.group_size < 1 || !std::isfinite(config_.group_spacing) ||
+        config_.group_spacing < 0.0) {
+      throw std::invalid_argument("group_size must be positive and group_spacing nonnegative");
+    }
+    auto group_plan = makeGroupPlan(config_.members, config_.group_size);
+    shared_->updateFormationGroupPlan(group_plan);
+    geometry->slots.reserve(config_.members.size());
+    const auto nested_slots = hierarchicalSlots(
+        group_plan, config_.shape, config_.spacing, config_.group_spacing,
+        std::max(config_.minimum_slot_distance,
+                 config_.fixedwing_minimum_slot_distance));
+    for (const auto& member : config_.members) {
+      const auto slot = nested_slots.find(member);
+      if (slot == nested_slots.end())
+        throw std::invalid_argument("missing nested consensus slot for " + member);
+      geometry->slots.push_back(slot->second);
+    }
     for (const auto& slot : geometry->slots) {
       if (!std::isfinite(slot[0]) || !std::isfinite(slot[1]) ||
           !std::isfinite(slot[2])) {
@@ -2463,7 +2961,12 @@ bool FormationRuntime::setMembers(bool enabled, std::string& message) {
       }
     } else completed.push_back(follower.get());
   }
-  if (config_.mode == "consensus" && !enabled) clearAcquisitionPlan();
+  if (config_.mode == "consensus" && !enabled) {
+    clearAcquisitionPlan();
+    const auto groups = shared_->formationGroupPlan();
+    shared_->updateFormationGroupPlan(
+        makeGroupPlan(config_.members, groups.group_size));
+  }
   message = enabled ? "team started" : "team stopped";
   return true;
 }
@@ -2480,8 +2983,17 @@ bool FormationRuntime::updateFormationSelection(
     selection.shape = shape;
     selection.waypoints = waypoints;
     selection.loop_path = loop_path;
-    selection.slots = formationOffsets(
-        shape, config_.members.size(), config_.spacing);
+    selection.slots.reserve(config_.members.size());
+    const auto groups = shared_->formationGroupPlan();
+    const auto slots = hierarchicalSlots(
+        groups, shape, config_.spacing, config_.group_spacing,
+        std::max(config_.minimum_slot_distance,
+                 config_.fixedwing_minimum_slot_distance));
+    for (const auto& member : config_.members) {
+      const auto slot = slots.find(member);
+      if (slot == slots.end()) continue;
+      selection.slots.push_back(slot->second);
+    }
     for (std::size_t i = 0; i < selection.slots.size(); ++i) {
       for (std::size_t j = i + 1; j < selection.slots.size(); ++j) {
         const double dx = selection.slots[i][0] - selection.slots[j][0];
@@ -2499,6 +3011,79 @@ bool FormationRuntime::updateFormationSelection(
     shared_->updateFormationSelection(std::move(selection));
     clearAcquisitionPlan();
     message = "shape and route selection updated";
+    return true;
+  } catch (const std::exception& error) {
+    message = error.what();
+    return false;
+  }
+}
+
+bool FormationRuntime::updateGroupSize(int group_size, std::string& message) {
+  if (config_.mode != "consensus") {
+    message = "group sizing is only available in consensus mode";
+    return false;
+  }
+  if (group_size < 1) {
+    message = "group_size must be positive";
+    return false;
+  }
+  try {
+    const auto selection = shared_->formationSelection();
+    {
+      // Detachment is updated by follower callbacks. Keep the snapshot and
+      // replacement atomic so a concurrent external takeover is not lost.
+      std::lock_guard<std::mutex> lock(shared_->mutex);
+      const auto current = shared_->formation_groups;
+      FormationGroupPlan next;
+      next.group_size = group_size;
+      std::set<std::string> detached_ids;
+      std::vector<std::string> movable_members;
+      for (const auto& group : current.groups) {
+        if (group.detached) {
+          next.groups.push_back(group);
+          detached_ids.insert(group.id);
+        } else {
+          movable_members.insert(movable_members.end(), group.members.begin(),
+                                 group.members.end());
+        }
+      }
+      auto resized = makeGroupPlan(movable_members, group_size);
+      std::size_t id = 1;
+      for (auto& group : resized.groups) {
+        while (detached_ids.count("group_" + std::to_string(id))) ++id;
+        group.id = "group_" + std::to_string(id++);
+        next.groups.push_back(std::move(group));
+      }
+      std::map<std::string, std::size_t> member_order;
+      for (std::size_t i = 0; i < config_.members.size(); ++i)
+        member_order[config_.members[i]] = i;
+      std::sort(next.groups.begin(), next.groups.end(), [&](const auto& first,
+                                                            const auto& second) {
+        const auto rank = [&](const FormationGroup& group) {
+          std::size_t value = config_.members.size();
+          for (const auto& member : group.members)
+            value = std::min(value, member_order.at(member));
+          return value;
+        };
+        return rank(first) < rank(second);
+      });
+      const auto slots = hierarchicalSlots(
+          next, selection.shape, config_.spacing,
+          config_.group_spacing,
+          std::max(config_.minimum_slot_distance,
+                   config_.fixedwing_minimum_slot_distance));
+      std::size_t movable_member_count = 0;
+      for (const auto& group : next.groups)
+        if (!group.detached) movable_member_count += group.members.size();
+      if (slots.size() != movable_member_count)
+        throw std::invalid_argument("active group slots are incomplete");
+      next.revision = current.revision + 1;
+      shared_->formation_groups = std::move(next);
+      shared_->markChanged();
+    }
+    config_.group_size = group_size;
+    clearAcquisitionPlan();
+    message = "group size updated; active groups are reacquiring their slots";
     return true;
   } catch (const std::exception& error) {
     message = error.what();

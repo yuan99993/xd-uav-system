@@ -26,7 +26,10 @@ consensus:
   # circle 圆形
   # rectangle_compact 网格
   shape: column
-  spacing: 100.0
+  spacing: 80.0
+  group_size: 1
+  # 0 selects a safe group spacing from the inner formation footprint.
+  group_spacing: 250.0
   acquire_tolerance: 20.0
   acquire_height_tolerance: 5.0
   acquire_vertical_spacing: 10.0

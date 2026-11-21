@@ -2321,6 +2321,27 @@ class XdUavTrackNode {
         selected = &track;
       }
     }
+    if (selected != nullptr) {
+      const char* observation_state = selected->detected
+          ? (selected->predicted ? "predicted" : "detected")
+          : "no current detection";
+      const bool control_ready = tracker_active_ &&
+          selected->control_measurement_ready;
+      ROS_INFO_THROTTLE(
+          2.0,
+          "[xd_uav_track] visual target selected: id=%d source=%s state=%s "
+          "observation=%s control_ready=%s; %s",
+          selected->track_id, source.c_str(),
+          selected->lifecycle_state.c_str(), observation_state,
+          control_ready ? "true" : "false",
+          tracker_active_ ? "tracker active"
+                          : "tracker stopped; call start_tracker when ready");
+    } else if (tracker_active_) {
+      ROS_WARN_THROTTLE(
+          2.0,
+          "[xd_uav_track] tracker active but no selected visual target in source=%s",
+          source.c_str());
+    }
     if (selected && selected->control_measurement_ready &&
         locked_global_id_ < 0) {
       locked_global_id_ = selected->track_id;
@@ -2616,6 +2637,18 @@ class XdUavTrackNode {
     if (std::isfinite(covariance_max) && covariance_max > 0.0) {
       sigma = std::sqrt(covariance_max);
     }
+    const bool guidance_ready = tracker_active_ && controller_->everAcquired();
+    ROS_INFO_THROTTLE(
+        2.0,
+        "[xd_uav_track] 3D target point present: id=%d xyz=(%.1f, %.1f, %.1f) "
+        "frame=%s sigma=%.1fm; %s",
+        static_cast<int>(message->target_id), p.x, p.y, p.z,
+        message->header.frame_id.c_str(), sigma,
+        guidance_ready
+            ? "tracker acquired; point can guide the aircraft"
+            : (tracker_active_
+                   ? "waiting for the first selected visual frame; not guiding yet"
+                   : "tracker stopped; point is not guiding the aircraft"));
     std::string reason;
     if (!controller_->updateMetricWorldTarget(
             message->target_id, receive_time, observation_time, world_position,

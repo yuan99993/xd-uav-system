@@ -17,7 +17,9 @@
 #include <tf2_ros/transform_listener.h>
 #include <trajectory_msgs/MultiDOFJointTrajectory.h>
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -44,6 +46,8 @@ struct Config {
   std::vector<Vec3> waypoints;
   double minimum_slot_distance{2.0};
   double spacing{80.0};
+  int group_size{5};
+  double group_spacing{0.0};
   int follower_count{1};
   int slot_index{1};
   double corner_radius{0.0};
@@ -107,6 +111,7 @@ struct AcquisitionPlan {
   double heading{0.0};
   double altitude{0.0};
   std::uint64_t selection_revision{0};
+  std::uint64_t group_revision{0};
 };
 
 using ControlStateMap =
@@ -135,6 +140,22 @@ struct FormationSelection {
   std::uint64_t revision{0};
 };
 
+struct FormationGroup {
+  std::string id;
+  std::vector<std::string> members;
+  // Retain the initial footprint when members drop out of this group.
+  std::size_t nominal_size{0};
+  bool detached{false};
+  bool anchor_external_control{false};
+  std::string anchor;
+};
+
+struct FormationGroupPlan {
+  int group_size{5};
+  std::vector<FormationGroup> groups;
+  std::uint64_t revision{0};
+};
+
 struct SharedData : SharedSnapshot {
   std::mutex mutex;
   std::mutex acquisition_plan_mutex;
@@ -143,6 +164,7 @@ struct SharedData : SharedSnapshot {
   std::shared_ptr<const SharedSnapshot> snapshot_cache;
   std::optional<AcquisitionPlan> acquisition_plan;
   FormationSelection formation_selection;
+  FormationGroupPlan formation_groups;
 
   FormationSelection formationSelection() {
     std::lock_guard<std::mutex> lock(mutex);
@@ -154,6 +176,66 @@ struct SharedData : SharedSnapshot {
     selection.revision = formation_selection.revision + 1;
     formation_selection = std::move(selection);
     markChanged();
+  }
+
+  FormationGroupPlan formationGroupPlan() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return formation_groups;
+  }
+
+  void updateFormationGroupPlan(FormationGroupPlan plan) {
+    std::lock_guard<std::mutex> lock(mutex);
+    plan.revision = formation_groups.revision + 1;
+    formation_groups = std::move(plan);
+    markChanged();
+  }
+
+  bool detachFormationGroup(const std::string& member) {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (auto& group : formation_groups.groups) {
+      if (std::find(group.members.begin(), group.members.end(), member) ==
+          group.members.end()) continue;
+      if (group.detached && group.anchor == member &&
+          group.anchor_external_control) return true;
+      group.detached = true;
+      group.anchor_external_control = true;
+      group.anchor = member;
+      ++formation_groups.revision;
+      markChanged();
+      return true;
+    }
+    return false;
+  }
+
+  bool promoteDetachedGroupAnchor(const std::string& old_anchor,
+                                  const std::string& new_anchor) {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (auto& group : formation_groups.groups) {
+      if (!group.detached || group.anchor != old_anchor ||
+          std::find(group.members.begin(), group.members.end(), new_anchor) ==
+              group.members.end()) continue;
+      group.anchor = new_anchor;
+      group.anchor_external_control = false;
+      ++formation_groups.revision;
+      markChanged();
+      return true;
+    }
+    return false;
+  }
+
+  void resetDetachedFormationGroups() {
+    std::lock_guard<std::mutex> lock(mutex);
+    bool changed = false;
+    for (auto& group : formation_groups.groups) {
+      changed = changed || group.detached;
+      group.detached = false;
+      group.anchor_external_control = false;
+      group.anchor.clear();
+    }
+    if (changed) {
+      ++formation_groups.revision;
+      markChanged();
+    }
   }
 
   void markChanged() { ++revision; }
@@ -288,7 +370,15 @@ class Follower {
       const ros::Time& now, const StateSnapshot& snapshot) const;
   StateSnapshot snapshot() const;
   std::vector<std::string> activeMembers() const;
+  FormationGroupPlan formationGroupPlan() const;
+  std::optional<FormationGroup> formationGroupFor(
+      const std::string& member) const;
+  std::vector<FormationGroup> activeFormationGroups() const;
   std::map<std::string, Vec3> consensusSlotOffsets() const;
+  mavros_msgs::PositionTarget detachedGroupTarget(
+      const ros::Time& now, const StateSnapshot& snapshot,
+      const xd_uav_controller::ControlState& own,
+      const FormationGroup& group);
   Vec3 leaderPoseInFollowerFrame(const ros::Time& now,
                                  const xd_uav_controller::ControlState& leader,
                                  const xd_uav_controller::ControlState& own,
@@ -375,6 +465,7 @@ class Follower {
       const xd_uav_controller::ControlState& own);
   bool ownReadinessFailure(const std::string& reason) const;
   void refreshFormationSelection(const ros::Time& now);
+  void refreshFormationGroups(const ros::Time& now);
 
   ros::NodeHandle nh_;
   const Config& config_;
@@ -408,6 +499,9 @@ class Follower {
   std::set<std::string> dropped_members_;
   mutable std::vector<std::string> active_members_cache_;
   mutable bool active_members_dirty_{true};
+  mutable std::uint64_t cached_group_revision_{0};
+  std::uint64_t formation_group_revision_{0};
+  std::optional<std::string> cached_group_anchor_;
   std::map<std::string, double> progress_error_filter_;
   mutable ros::Time common_state_cache_stamp_;
   mutable bool has_common_state_cache_stamp_{false};
@@ -460,6 +554,7 @@ class FormationRuntime {
   bool updateFormationSelection(const std::string& shape,
                                const std::vector<Vec3>& waypoints,
                                bool loop_path, std::string& message);
+  bool updateGroupSize(int group_size, std::string& message);
   void shutdown();
   void clearAcquisitionPlan();
   void stateCallback(const xd_uav_controller::ControlState::ConstPtr& message,

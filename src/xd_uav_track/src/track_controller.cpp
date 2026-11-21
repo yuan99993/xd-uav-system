@@ -1427,6 +1427,10 @@ bool TrackController::lastMetricMeasurementAccepted() const {
   return last_metric_measurement_accepted_;
 }
 
+bool TrackController::everAcquired() const {
+  return ever_acquired_;
+}
+
 TrackVelocity TrackController::baseOutput(const double now) const {
   TrackVelocity output;
   output.profile = followerProfileName(config_.profile);
@@ -2053,7 +2057,10 @@ TrackVelocity TrackController::compute(const double now) {
         const double cy = std::cos(vehicle_state_.yaw);
         const double sy = std::sin(vehicle_state_.yaw);
         const double target_forward = cy * dx + sy * dy;
-        const double target_right = -sy * dx + cy * dy;
+        // In ENU, (-sin(yaw), cos(yaw)) is the vehicle's body-left axis.
+        // TrackVelocity.left is also positive to the left, so convert this
+        // to a right-positive course error before the PID negates it below.
+        const double target_right = sy * dx - cy * dy;
         const double progress =
             (vehicle_state_.x - gmfw_metric_loss_origin_x_) *
                 std::cos(gmfw_metric_loss_target_course_world_rad_) +
@@ -2064,10 +2071,10 @@ TrackVelocity TrackController::compute(const double now) {
             progress >= gmfw_metric_loss_target_distance_m_;
         const double course_error = passed_target
             ? std::atan2(
-                  std::sin(gmfw_metric_loss_target_course_world_rad_ -
-                           vehicle_state_.yaw),
-                  std::cos(gmfw_metric_loss_target_course_world_rad_ -
-                           vehicle_state_.yaw))
+                  std::sin(vehicle_state_.yaw -
+                           gmfw_metric_loss_target_course_world_rad_),
+                  std::cos(vehicle_state_.yaw -
+                           gmfw_metric_loss_target_course_world_rad_))
             : std::atan2(target_right, target_forward);
         const double course_offset = clamp(
             gmfw_course_pid_.update(-course_error, dt),

@@ -334,6 +334,9 @@ class TrackController {
   // anchor must use this flag rather than treating the image update itself as
   // proof that the world-frame observation was accepted.
   bool lastMetricMeasurementAccepted() const;
+  // True after the controller has accepted a selected visual measurement
+  // since its last reset. Gimbal world points are held until this is true.
+  bool everAcquired() const;
   // Read-only cross-camera association gate.  It projects the candidate at
   // its capture time and compares it with the current inertial target state;
   // callers use it before allowing a standby camera to update the filter.
