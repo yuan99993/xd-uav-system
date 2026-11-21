@@ -1,0 +1,8 @@
+<launch>
+  <!-- Read-only recorder. Uses a running native RGB camera; no new flight or inference. -->
+  <arg name="UAV_NAME" default="ue_test" />
+  <arg name="output" />
+  <arg name="seconds" default="75" />
+  <node pkg="sar_yolo_detector" type="record_ue_rgb.py" name="record_ue_rgb" output="screen"
+        args="--namespace $(arg UAV_NAME) --seconds $(arg seconds) --output '$(arg output)'" />
+</launch>

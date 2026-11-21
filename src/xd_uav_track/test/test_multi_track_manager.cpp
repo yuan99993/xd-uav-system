@@ -36,6 +36,87 @@ xd_uav_track::DetectionArray frame(const double stamp,
   return result;
 }
 
+TEST(MultiTrackManager, StrictFamiliesRejectCrossFamilyEvenWithStableDetectorId) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.class_agnostic_association = true;
+  config.strict_class_family_isolation = true;
+  config.compatible_class_ids = {0, 1};
+  xd_uav_track::MultiTrackManager manager(config);
+  auto car = candidate(41, true, .4F, .9F);
+  car.class_id = 0;
+  manager.update(frame(1., {car}), 640, 640);
+  auto drone = car;
+  drone.class_id = 2;
+  const auto result = manager.update(frame(1.1, {drone}), 640, 640);
+  for (const auto& track : result.tracks.tracks) {
+    if (track.track_id == 41 && track.class_id == 0) {
+      EXPECT_FALSE(track.detected);
+      return;
+    }
+  }
+  FAIL() << "Original ground-vehicle identity must survive independently";
+}
+
+TEST(MultiTrackManager, StrictFamiliesUsePublishedClassNames) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.class_agnostic_association = true;
+  config.strict_class_family_isolation = true;
+  config.compatible_class_ids = {0, 1, 2, 3};
+  xd_uav_track::MultiTrackManager manager(config);
+  auto car = candidate(41, true, .4F, .9F);
+  car.class_id = 1;
+  auto first = frame(1., {car});
+  first.class_names = {"drone", "car", "airplane", "tank"};
+  manager.update(first, 640, 640);
+  car.class_id = 0;
+  auto next = frame(1.1, {car});
+  next.class_names = first.class_names;
+  const auto result = manager.update(next, 640, 640);
+  for (const auto& track : result.tracks.tracks) {
+    if (track.track_id == 41 && track.class_id == 1) {
+      EXPECT_FALSE(track.detected);
+      return;
+    }
+  }
+  FAIL() << "Class names must prevent cross-family rebinding";
+}
+
+TEST(MultiTrackManager, WeakObservationCannotCreateIdentity) {
+  xd_uav_track::MultiTrackConfig config;
+  config.minimum_update_confidence = .04;
+  config.minimum_new_track_confidence = .45;
+  xd_uav_track::MultiTrackManager manager(config);
+  const auto result = manager.update(frame(1., {candidate(41, true, .4F, .08F)}), 640, 640);
+  EXPECT_TRUE(result.tracks.tracks.empty());
+}
+
+TEST(MultiTrackManager, ClassIndependentLockKeepsIdentityAndStillRejectsSpatialJump) {
+  xd_uav_track::MultiTrackConfig config;
+  config.confirmation_hits = 1;
+  config.class_agnostic_association = true;
+  config.upstream_class_consensus = true;
+  xd_uav_track::MultiTrackManager manager(config);
+  manager.update(frame(1.0, {candidate(41, true, .25F, .9F)}), 640, 480);
+  auto changed = candidate(41, true, .26F, .9F);
+  changed.class_id = 42;
+  const auto current = manager.update(frame(1.1, {changed}), 640, 480);
+  ASSERT_EQ(1U, current.tracks.tracks.size());
+  EXPECT_EQ(41, current.tracks.tracks[0].track_id);
+  EXPECT_EQ(42, current.tracks.tracks[0].class_id);
+  EXPECT_TRUE(current.tracks.tracks[0].detected);
+  changed.normalized_bbox[0] = .95F;
+  const auto jumped = manager.update(frame(1.2, {changed}), 640, 480);
+  bool found_original = false;
+  for (const auto& track : jumped.tracks.tracks) {
+    if (track.track_id != 41) continue;
+    found_original = true;
+    EXPECT_FALSE(track.detected);
+  }
+  EXPECT_TRUE(found_original);
+}
+
 TEST(MultiTrackManager, PreservesStableDetectorIdsAndConfirmsTracks) {
   xd_uav_track::MultiTrackManager manager;
   auto first = manager.update(frame(1.0, {candidate(41, true, 0.25F, 0.9F),

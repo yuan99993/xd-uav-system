@@ -1,9 +1,14 @@
 <launch>
+  <arg name="feature_tracker_algorithm" default="" />
   <arg name="UAV_NAME" default="ue_test" />
   <arg name="instance_name" default="dfine_v3" />
+  <arg name="web_image_transport" default="raw" />
+  <arg name="web_image_codec" default="png" />
+  <arg name="web_fps" default="5" />
   <arg name="web_port" default="8787" />
   <arg name="enable_xd_tracking" default="true" />
   <arg name="class_consensus_enabled" default="true" />
+  <arg name="model_version" default="dfine_s_v3_16e" />
   <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
   <arg name="model_sha256" default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
   <arg name="python_executable" default="" />
@@ -17,6 +22,7 @@
   <arg name="bind_address" default="127.0.0.1" />
 
   <include file="$(find sar_yolo_detector)/launch/xd_smart_tracker_fusion_integration.launch">
+    <arg name="feature_tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="instance_name" value="$(arg instance_name)" />
     <arg name="tracking_mode" value="smart_tracker" />
@@ -28,7 +34,7 @@
     <arg name="python_executable" value="$(arg python_executable)" />
     <arg name="use_gpu" value="$(arg use_gpu)" />
     <!-- UE render/decode delivery can add 0.5–0.7 s before D-FINE starts. -->
-    <arg name="maximum_capture_age_sec" value="1.0" />
+    <arg name="maximum_capture_age_sec" value="0.75" />
     <arg name="input_image_topic" value="$(arg input_image_topic)" />
     <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
     <arg name="camera_motion_fixed_frame" value="$(arg camera_motion_fixed_frame)" />
@@ -36,8 +42,10 @@
     <arg name="image_height" value="$(arg image_height)" />
     <arg name="sensor_id" value="ue_fixed_camera" />
     <arg name="profile" value="dfine_s_v3_legacy_fourmode" />
-    <arg name="model_version" value="dfine_s_v3_16e" />
+    <arg name="model_version" value="$(arg model_version)" />
   </include>
+
+  <param name="/$(arg UAV_NAME)/perception/high_frequency_pixel_enabled" value="true" />
 
   <!-- D-FINE uses car/tank/drone; airborne IDs cannot rebind to vehicles. -->
   <rosparam param="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/FusionTracker/class_groups">[[0, 1], [2]]</rosparam>
@@ -54,6 +62,9 @@
   </group>
 
   <include file="$(find sar_yolo_detector)/launch/fusion_web_preview.launch">
+    <arg name="fps" value="$(arg web_fps)" />
+    <arg name="image_codec" value="$(arg web_image_codec)" />
+    <arg name="image_transport" value="$(arg web_image_transport)" />
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="instance_name" value="$(arg instance_name)" />
     <arg name="bind_address" value="$(arg bind_address)" />

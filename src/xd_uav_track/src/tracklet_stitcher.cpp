@@ -75,7 +75,8 @@ TrackletStitchMatch findTrackletStitchMatch(
 
     const bool same_source = identity.source == observation.source;
     const bool cross_source = !same_source;
-    const bool class_match = identity.class_id == observation.class_id;
+    const bool class_match = config.class_agnostic_association ||
+        identity.class_id == observation.class_id;
     const bool compatible_same_source_class = same_source && !class_match &&
         std::find(config.compatible_class_ids.begin(),
                   config.compatible_class_ids.end(), identity.class_id) !=

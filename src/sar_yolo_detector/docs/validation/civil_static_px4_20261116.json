@@ -1,0 +1,85 @@
+{
+  "date": "2026-11-16",
+  "pose_source": "PX4_MAVROS_actual_feedback",
+  "all_accepted": true,
+  "cases": [
+    {
+      "case": "civil_static_air_offcenter",
+      "accepted": true,
+      "correct_fraction": 1.0,
+      "size_px": [
+        21.926279857595432,
+        14.29338791461862
+      ],
+      "metrics": {
+        "visible_duration_sec": 60.00597929954529,
+        "maximum_visible_measurement_gap_sec": 0.23670697212219238,
+        "current_states_when_target_absent": 0,
+        "last_current_control_after_disappearance_sec": 0.0,
+        "disappearance_exercised": false,
+        "initialization_confirmed_before_test": true
+      },
+      "fps": 10.574340165150694,
+      "control_ms": [
+        309.5294237136841,
+        361.38347387313837
+      ],
+      "actuator_ms": [
+        429.75330352783203,
+        495.19853591918945
+      ]
+    },
+    {
+      "case": "civil_static_air_h35",
+      "accepted": true,
+      "correct_fraction": 1.0,
+      "size_px": [
+        47.364125273798095,
+        31.193838968289242
+      ],
+      "metrics": {
+        "visible_duration_sec": 60.00069284439087,
+        "maximum_visible_measurement_gap_sec": 0.23899459838867188,
+        "current_states_when_target_absent": 0,
+        "last_current_control_after_disappearance_sec": 0.0,
+        "disappearance_exercised": false,
+        "initialization_confirmed_before_test": true
+      },
+      "fps": 7.776711061872803,
+      "control_ms": [
+        372.051477432251,
+        434.8297595977783
+      ],
+      "actuator_ms": [
+        497.79653549194336,
+        562.9575729370117
+      ]
+    },
+    {
+      "case": "civil_static_air_dropout",
+      "accepted": true,
+      "correct_fraction": 1.0,
+      "size_px": [
+        21.91966514039757,
+        14.294661505514568
+      ],
+      "metrics": {
+        "visible_duration_sec": 14.961658954620361,
+        "maximum_visible_measurement_gap_sec": 0.19837331771850586,
+        "current_states_when_target_absent": 0,
+        "last_current_control_after_disappearance_sec": 0.2419600486755371,
+        "disappearance_exercised": true,
+        "initialization_confirmed_before_test": true
+      },
+      "fps": 13.1897958924695,
+      "control_ms": [
+        320.4694986343384,
+        372.3910450935364
+      ],
+      "actuator_ms": [
+        443.239688873291,
+        500.40984153747553
+      ]
+    }
+  ]
+}

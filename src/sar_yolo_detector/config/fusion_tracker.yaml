@@ -1,5 +1,6 @@
 # Additional mode only. Original YOLO/feature/color configuration is preserved.
 FusionTracker:
+  class_agnostic_lock: true
   allow_template_fallback: false
   visual_hold_sec: 1.5
   prediction_hold_sec: 0.35
@@ -29,8 +30,8 @@ FusionTracker:
   local_template_refresh_sec: 0.75
   class_groups: [[0, 1, 2, 3]]
   selection_max_age_sec: 0.75
-  selection_max_frames: 24
-  selection_max_bytes: 25165824
+  selection_max_frames: 32
+  selection_max_bytes: 50331648
   # Late detections require validated frame-to-frame LK alignment, never a
   # raw old-frame box relabelled with a new timestamp. All caches are bounded.
   async_max_result_age_sec: 0.75

@@ -1,0 +1,334 @@
+{
+  "name": "AirGroundStressV1",
+  "units": "meters_NED",
+  "duration_sec": 7200,
+  "observer": {
+    "name": "Observer",
+    "speed_mps": 5,
+    "route": [
+      [
+        -55,
+        -35,
+        -30
+      ],
+      [
+        55,
+        -35,
+        -30
+      ],
+      [
+        55,
+        40,
+        -40
+      ],
+      [
+        -55,
+        40,
+        -40
+      ],
+      [
+        -55,
+        -35,
+        -30
+      ]
+    ]
+  },
+  "entities": [
+    {
+      "id": "AG_BM_Car_Primary",
+      "class": "car",
+      "position": [
+        220,
+        150,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.8,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 90,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV",
+      "trajectory": {
+        "kind": "sine",
+        "amplitude_m": [
+          0,
+          40,
+          0
+        ],
+        "period_sec": 12.566370614359172,
+        "phase_rad": 1.5707963267948966
+      }
+    },
+    {
+      "id": "AG_BM_Drone_Primary",
+      "class": "drone",
+      "position": [
+        260,
+        150,
+        -15
+      ],
+      "size": [
+        1.5,
+        1.5,
+        0.4
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "AG_BM_Car_Decoy",
+      "class": "car",
+      "position": [
+        225,
+        170,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.8,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 90,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_Hatchback.SM_Hatchback"
+    },
+    {
+      "id": "AG_BM_Car_Occlusion",
+      "class": "car",
+      "position": [
+        320,
+        150,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.8,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 90,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV"
+    },
+    {
+      "id": "AG_ObserverDrone",
+      "class": "drone",
+      "position": [
+        -55,
+        -35,
+        -0.7
+      ],
+      "size": [
+        1.5,
+        1.5,
+        0.4
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "role": "observer"
+    },
+    {
+      "id": "AG_Demo_Car_01",
+      "class": "car",
+      "position": [
+        205,
+        178,
+        -0.9
+      ],
+      "size": [
+        4.5,
+        1.9,
+        1.8
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 60,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_Pickup.SM_Pickup"
+    },
+    {
+      "id": "AG_Demo_Car_02",
+      "class": "car",
+      "position": [
+        237,
+        178,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.9,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 105,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_Hatchback.SM_Hatchback"
+    },
+    {
+      "id": "AG_Demo_Car_03",
+      "class": "car",
+      "position": [
+        211,
+        207,
+        -0.7
+      ],
+      "size": [
+        4.5,
+        1.9,
+        1.4
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 30,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_SportsCar.SM_SportsCar"
+    },
+    {
+      "id": "AG_Demo_Car_04",
+      "class": "car",
+      "position": [
+        238,
+        207,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.9,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 140,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV"
+    },
+    {
+      "id": "AG_Demo_Car_05",
+      "class": "car",
+      "position": [
+        199,
+        195,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.9,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 85,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_Hatchback.SM_Hatchback"
+    },
+    {
+      "id": "AG_Demo_Car_06",
+      "class": "car",
+      "position": [
+        232,
+        227,
+        -0.9
+      ],
+      "size": [
+        4.5,
+        1.9,
+        1.8
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 100,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_Pickup.SM_Pickup"
+    },
+    {
+      "id": "AG_Demo_Car_07",
+      "class": "car",
+      "position": [
+        248,
+        193,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.9,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 15,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV"
+    }
+  ],
+  "asset_meshes": {
+    "car": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV"
+  },
+  "note": "Civilian observation only: car and drone targets; no parking or speeding decisions.",
+  "level_path": "/Game/AirGround/Demos/LightGrassMultiCar_20261120",
+  "create_level": false,
+  "require_airsim": false,
+  "mission": {
+    "home_ned_m": [
+      180,
+      150,
+      -0.7
+    ],
+    "cruise_altitude_m": 60,
+    "vertical_speed_mps": 3,
+    "speed_mps": 5,
+    "hover_sec": 7200,
+    "waypoints_ned_m": [
+      [
+        180,
+        150,
+        -60
+      ]
+    ],
+    "initial_yaw_ned_deg": 0.0
+  },
+  "observer_visual_actor": "AG_ObserverDrone",
+  "four_mode_test_note": "Same UE AirGroundRange scene and assets; 45 s PX4 hover at inspection waypoint 3 allows SmartTracker, FeatureTracker, ColorTracker, and FusionTracker to be sampled on the same view.",
+  "benchmark": {
+    "manual_start": true,
+    "evaluation_truth": false,
+    "primary_entity": "AG_BM_Car_Primary",
+    "case_id": "interactive_light_grass_multicar",
+    "target_peak_speed_mps": 20,
+    "declared_scope": "Interactive visualization only; no benchmark acceptance claim",
+    "gimbal_config": "benchmark_cases/civil_car_fast_gimbal.json"
+  }
+}

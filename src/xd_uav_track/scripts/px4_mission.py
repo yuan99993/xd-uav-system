@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 import time
 from xd_uav_track.mission_io import write_json
-from xd_uav_track.px4_pose import map_to_enu,enu_to_map
+from xd_uav_track.px4_pose import map_to_enu,enu_to_map,ned_yaw_to_enu,enu_heading_for_delta
 
 
 def main():
@@ -14,12 +14,14 @@ def main():
     p.add_argument('--scene',type=Path,required=True)
     p.add_argument('--namespace',default='/uav1');p.add_argument('--out',type=Path,required=True)
     p.add_argument('--status-namespace',default='ue_test')
+    p.add_argument('--perception-ready-topic',default='')
+    p.add_argument('--perception-ready-timeout',type=float,default=240.)
     p.add_argument('--stage-timeout',type=float,default=100.)
-    a=p.parse_args()
     import rospy
+    a=p.parse_args(rospy.myargv()[1:])
     from geometry_msgs.msg import PoseStamped
     from mavros_msgs.msg import State,ExtendedState
-    from mavros_msgs.srv import CommandBool,SetMode,ParamSet
+    from mavros_msgs.srv import CommandBool,SetMode,ParamSet,ParamPull,ParamGet
     from mavros_msgs.msg import ParamValue
     from gazebo_msgs.srv import GetModelState
     from std_msgs.msg import String
@@ -34,13 +36,18 @@ def main():
             raise RuntimeError('Expected local simulation vehicle did not spawn')
         time.sleep(.2)
     cfg=json.loads(a.scene.read_text())['mission'];home=cfg['home_ned_m']
-    latest={'state':None,'pose':None,'received':0.,'landed':None}
+    latest={'state':None,'pose':None,'received':0.,'landed':None,'perception':{}}
     def pose(msg):latest.update(pose=msg,received=time.monotonic())
     def state(msg):latest['state']=msg
     def landed(msg):latest['landed']=msg.landed_state
     subs=[rospy.Subscriber(a.namespace+'/mavros/local_position/pose',PoseStamped,pose,queue_size=1),
           rospy.Subscriber(a.namespace+'/mavros/state',State,state,queue_size=1),
           rospy.Subscriber(a.namespace+'/mavros/extended_state',ExtendedState,landed,queue_size=1)]
+    if a.perception_ready_topic:
+        def perception(msg):
+            try:latest['perception']=json.loads(msg.data)
+            except ValueError:pass
+        subs.append(rospy.Subscriber(a.perception_ready_topic,String,perception,queue_size=1))
     publisher=rospy.Publisher(a.namespace+'/mavros/setpoint_position/local',PoseStamped,queue_size=1)
     status_pub=rospy.Publisher('/'+a.status_namespace.strip('/')+'/px4_mission_status',String,queue_size=1,latch=True)
     arm=rospy.ServiceProxy(a.namespace+'/mavros/cmd/arming',CommandBool)
@@ -51,6 +58,18 @@ def main():
         if time.monotonic()>deadline:raise RuntimeError('PX4 connection/pose timeout')
         time.sleep(.1)
     initial=latest['pose'].pose.position;origin=[initial.x,initial.y,initial.z]
+    # The combined launcher starts MAVROS and the mission together. A heartbeat
+    # is available before MAVROS has downloaded the FCU parameter table; setting
+    # an uncached parameter is rejected locally even if PX4 supports it.
+    rospy.wait_for_service(a.namespace+'/mavros/param/pull',timeout=60)
+    pull=rospy.ServiceProxy(a.namespace+'/mavros/param/pull',ParamPull)
+    get=rospy.ServiceProxy(a.namespace+'/mavros/param/get',ParamGet)
+    deadline=time.monotonic()+60
+    while not rospy.is_shutdown():
+        result=pull(force_pull=True)
+        if result.success and get(param_id='COM_RCL_EXCEPT').success:break
+        if time.monotonic()>deadline:raise RuntimeError('PX4 parameter synchronization timeout')
+        time.sleep(.5)
     # This exception is scoped to OFFBOARD in our owned simulator, which has no RC.
     result=rospy.ServiceProxy(a.namespace+'/mavros/param/set',ParamSet)(
         param_id='COM_RCL_EXCEPT',value=ParamValue(integer=4,real=0.))
@@ -85,7 +104,9 @@ def main():
         return actual
     try:
         # Stream setpoints before OFFBOARD; PX4 rejects mode switching without this.
-        target=home[:];desired=origin[:];heading=0.
+        # Preserve legacy east-facing missions unless an initial NED heading
+        # is explicitly supplied. Civil hover scenes use north, like UE.
+        target=home[:];desired=origin[:];heading=ned_yaw_to_enu(float(cfg.get('initial_yaw_ned_deg',90.)))
         def stream(_event):
             msg=PoseStamped();msg.header.stamp=rospy.Time.now()
             msg.pose.position.x,msg.pose.position.y,msg.pose.position.z=desired
@@ -94,7 +115,17 @@ def main():
         timer=rospy.Timer(rospy.Duration(.05),stream)
         for _ in range(60):
             msg=PoseStamped();msg.header.stamp=rospy.Time.now();msg.pose.position.x,msg.pose.position.y,msg.pose.position.z=desired
-            msg.pose.orientation.w=1.;publisher.publish(msg);update('prestream',0,target);time.sleep(.05)
+            msg.pose.orientation.z=math.sin(heading/2);msg.pose.orientation.w=math.cos(heading/2)
+            publisher.publish(msg);update('prestream',0,target);time.sleep(.05)
+        if a.perception_ready_topic:
+            ready_deadline=time.monotonic()+a.perception_ready_timeout
+            while not rospy.is_shutdown():
+                evidence=latest['perception']
+                age=rospy.Time.now().to_sec()-evidence.get('last_capture_stamp',0.)
+                inferred=any(v.get('backend_call',0)>0 for v in evidence.get('stage_counts_by_mode',{}).values())
+                if inferred and 0<=age<1.0:break
+                if time.monotonic()>ready_deadline:raise RuntimeError('Fresh RGB inference not ready; takeoff withheld')
+                update('waiting_perception',0,home);time.sleep(.05)
         last_request=0.;stage_index=0;stage_started=time.monotonic();reached_since=None
         while not rospy.is_shutdown() and stage_index<len(stages):
             tick=time.monotonic();stage,target,hold=stages[stage_index]
@@ -105,14 +136,14 @@ def main():
                     if stage_index>0:raise RuntimeError('PX4 unexpectedly disarmed')
                     armed_by_us=arm(True).success
                 last_request=tick
-            if tick-stage_started>a.stage_timeout:raise RuntimeError('PX4 stage timeout: '+stage)
+            if tick-stage_started>a.stage_timeout+hold:raise RuntimeError('PX4 stage timeout: '+stage)
             target_enu=map_to_enu(target,origin,home)
             # Limit setpoint velocity independently of slower UE capture calls.
             delta=[b-c for b,c in zip(target_enu,desired)]
             horizontal=math.hypot(delta[0],delta[1]);horizontal_step=cfg['speed_mps']*.05
             if horizontal>0:
                 ratio=min(1.,horizontal_step/horizontal);desired[0]+=delta[0]*ratio;desired[1]+=delta[1]*ratio
-                heading=math.atan2(delta[1],delta[0])
+                heading=enu_heading_for_delta(delta[0],delta[1],heading)
             desired[2]+=max(-cfg['vertical_speed_mps']*.05,min(cfg['vertical_speed_mps']*.05,delta[2]))
             msg=PoseStamped();msg.header.stamp=rospy.Time.now();msg.pose.position.x,msg.pose.position.y,msg.pose.position.z=desired
             msg.pose.orientation.z=math.sin(heading/2);msg.pose.orientation.w=math.cos(heading/2);publisher.publish(msg)

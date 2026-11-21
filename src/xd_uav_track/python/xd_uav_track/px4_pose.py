@@ -28,6 +28,19 @@ def map_to_enu(position, origin, home):
     return [origin[0]+position[1]-home[1],origin[1]+position[0]-home[0],origin[2]-position[2]+home[2]]
 
 
+def ned_yaw_to_enu(yaw_deg):
+    """Map a north-clockwise heading to ROS east-counterclockwise radians."""
+    if not math.isfinite(yaw_deg):raise ValueError('Initial NED yaw must be finite')
+    heading=math.pi/2-math.radians(yaw_deg)
+    return math.atan2(math.sin(heading),math.cos(heading))
+
+
+def enu_heading_for_delta(dx,dy,previous):
+    """Numerical position roundoff at a hover is not a new flight heading."""
+    if not all(math.isfinite(v) for v in (dx,dy,previous)):raise ValueError('Nonfinite heading input')
+    return math.atan2(dy,dx) if math.hypot(dx,dy)>1e-6 else previous
+
+
 class PoseFeedback:
     def __init__(self, namespace, home, rospy, status_namespace="ue_test"):
         from geometry_msgs.msg import PoseStamped

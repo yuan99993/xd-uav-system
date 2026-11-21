@@ -46,8 +46,8 @@
        accepted; the existing detector/tracker remains available for A/B. -->
   <!-- Release gate: real cross-source identity/latency acceptance is pending. -->
   <arg name="enable_perception_modes" default="false"/>
-  <!-- Experimental until same-scene non-regression acceptance passes. -->
-  <arg name="enable_high_frequency_pixels" default="false"/>
+  <!-- Pixel assistance runs at camera cadence when perception modes are enabled. -->
+  <arg name="enable_high_frequency_pixels" default="true"/>
   <arg name="initial_perception_mode" default="detect"/>
   <arg name="perception_frame_cache_size" default="15"/>
 

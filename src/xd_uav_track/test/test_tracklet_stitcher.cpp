@@ -40,6 +40,18 @@ xd_uav_track::TrackletObservation observation(
   return result;
 }
 
+TEST(TrackletStitcher, ClassIndependentImageLockRetainsMetricAndAppearanceGates) {
+  const auto previous = identity(21, 1.0, 0.0, 1.0, "fixed", {1.0F, 0.0F});
+  auto current = observation(2.0, 1.0, 1.0, "fixed", {1.0F, 0.0F});
+  current.class_id = 42;
+  xd_uav_track::TrackletStitchConfig config;
+  EXPECT_LT(xd_uav_track::findTrackletStitchMatch(current, {previous}, config).identity_id, 0);
+  config.class_agnostic_association = true;
+  EXPECT_EQ(21, xd_uav_track::findTrackletStitchMatch(current, {previous}, config).identity_id);
+  current.world_position[0] = 100000.0;
+  EXPECT_LT(xd_uav_track::findTrackletStitchMatch(current, {previous}, config).identity_id, 0);
+}
+
 TEST(TrackletStitcher, PredictsInertialMotionInsteadOfUsingNearestPosition) {
   const auto moving = identity(21, 1.0, 0.0, 1.0, "fixed", {1.0F, 0.0F});
   const auto distractor = identity(22, 1.0, 3.0, -1.0, "fixed", {0.0F, 1.0F});

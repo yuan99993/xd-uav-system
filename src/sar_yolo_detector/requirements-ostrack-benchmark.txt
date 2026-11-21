@@ -1,0 +1,4 @@
+# Optional offline comparison only, in a separate Python 3.10 environment.
+# Use the torch/torchvision/numpy/OpenCV stack from requirements-dfine-v3.txt.
+timm==0.4.12
+easydict==1.13

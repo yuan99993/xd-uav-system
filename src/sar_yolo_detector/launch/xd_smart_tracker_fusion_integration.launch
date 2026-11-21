@@ -3,6 +3,7 @@
   <!-- Packaged D-FINE-S V3 inference for the XD detection/localization stack.
        This replaces the synthetic red-box detector but leaves xd_uav_detect
        independently configured and running. -->
+  <arg name="feature_tracker_algorithm" default="" />
   <arg name="UAV_NAME" default="$(optenv UAV_NAME uav1)" />
   <!-- Unique suffix for a second (for example gimbal) camera instance. -->
   <arg name="instance_name" default="smart" /> 
@@ -46,6 +47,7 @@
 
   <group ns="$(arg UAV_NAME)">
     <include file="$(find sar_yolo_detector)/launch/smart_tracker_fusion.launch">
+    <arg name="feature_tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
       <arg name="tracking_mode" value="$(arg tracking_mode)" />
       <arg name="fusion_config" value="$(arg fusion_config)" />
       <arg name="node_name" value="sar_yolo_smart_tracker_$(arg instance_name)" />

@@ -8,6 +8,7 @@ import time
 import unittest
 
 import numpy as np
+import rospy
 
 from sar_yolo_detector.pixeagle.detection_adapter import NormalizedDetection
 
@@ -45,6 +46,11 @@ class _Publisher:
 
 
 class PredictionRoiClassBridgeTest(unittest.TestCase):
+    def setUp(self):
+        # Exercise callback logic with ROS time available without depending on
+        # a running master or the host's wall clock configuration.
+        rospy.rostime.set_rostime_initialized(True)
+
     @staticmethod
     def pixel_counters(node):
         fields = ("pixel_tracking_attempts", "pixel_tracking_valid",
@@ -69,6 +75,7 @@ class PredictionRoiClassBridgeTest(unittest.TestCase):
             "roi_hits": 0,
         }}
         node._tracking_lock = threading.Lock()
+        node._gpu_lock = threading.Lock()
         node._tracked_boxes = {
             "fixed": ((100, 100, 140, 140), 2, time.monotonic())}
         node._priority_source_timeout_sec = 1.0

@@ -13,6 +13,7 @@ sar_yolo_multi_source_detection:
   engine_builder_optimization_level: 1
   use_gpu: true
   fallback_to_cpu: false
+  maximum_capture_age_sec: 0.75
   maximum_batch_size: 1
   batch_wait_ms: 4.0
   startup_warmup_frames: 1
@@ -29,8 +30,8 @@ sar_yolo_multi_source_detection:
       sensor_id: fixed_camera
       reid_enabled: true
       reid_model_profile: xd_vehicle_train7
-      discovery_max_fps: 4.0
-      priority_max_fps: 4.0
+      discovery_max_fps: 15.0
+      priority_max_fps: 20.0
       standby_max_fps: 4.0
       roi_recovery_enabled: true
       roi_padding_ratio: 1.0
@@ -42,8 +43,8 @@ sar_yolo_multi_source_detection:
       sensor_id: gimbal_camera
       reid_enabled: true
       reid_model_profile: xd_vehicle_train7
-      discovery_max_fps: 4.0
-      priority_max_fps: 4.0
+      discovery_max_fps: 15.0
+      priority_max_fps: 20.0
       standby_max_fps: 4.0
       # Retain the conservative gimbal ROI default pending motion acceptance.
       roi_recovery_enabled: false
@@ -67,8 +68,8 @@ track:
     body_frd: $(arg UAV_NAME)/base_link_frd
 
 perception:
-  # Preserve the previously released default; the high-rate worker is opt-in.
-  high_frequency_pixel_enabled: false
+  # High-frequency visual assistance fills intervals between detections.
+  high_frequency_pixel_enabled: true
 
 perception_mode_manager:
   initial_mode: detect

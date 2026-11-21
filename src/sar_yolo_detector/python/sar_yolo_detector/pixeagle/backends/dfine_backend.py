@@ -25,11 +25,15 @@ class DFineBackend(RTDetrBackend):
         self._class_consensus=TemporalDetectionEvidence(birth_confirmation=False, class_consensus=True)
         self._last_tracking_capture_stamp=None
         self.last_classification_evidence=[]
+        self.last_timings={}
 
     def stage_trace(self):
         """Actual detector/NMS/tracker call counts for the live pipeline."""
         with self._stage_lock:
-            return {'counts': dict(self._stage_counts), 'last': dict(self._stage_last)}
+            model=getattr(getattr(self,'_model',None),'model',None)
+            return {'counts': dict(self._stage_counts), 'last': dict(self._stage_last), 'timings':dict(getattr(self,'last_timings',{})),
+                    'cuda_graph_active':bool(getattr(model,'_sar_graph',None)),
+                    'cuda_graph_error':str(getattr(model,'cuda_graph_error',''))}
 
     def _record_stage(self, stage, **detail):
         # Some small unit fixtures construct this backend through __new__.
@@ -56,6 +60,18 @@ class DFineBackend(RTDetrBackend):
             # Official inference conversion: fuse reparameterizable branches
             # and discard unused decoder heads; checkpoint/precision unchanged.
             model.deploy()
+        model.use_cuda_graph=bool(self._config.get('SMART_TRACKER_DFINE_CUDA_GRAPH',False))
+        if model.use_cuda_graph and str(target_device).startswith('cuda'):
+            # Capture the graph and finish CUDA lazy initialization before
+            # image workers expose frames for operator selection.
+            from .dfine_runtime import infer, normalized_rows
+            size=self._resolve_image_size(None)
+            warm_frame=np.zeros((size,size,3),dtype=np.uint8)
+            warm_output=infer(model,post,warm_frame,size,target_device)
+            normalized_rows(warm_output,size,size,.04,50)
+            for roi_size in (256,384,512):
+                warm_output=infer(model,post,np.zeros((roi_size,roi_size,3),dtype=np.uint8),size,target_device)
+                normalized_rows(warm_output,roi_size,roi_size,.04,50)
         candidate=SimpleNamespace(model=model,post=post,device=target_device,task='detect',
             names=dict(enumerate(manifest['class_names'])),variant=manifest['variant'],
             native_deploy=native_deploy,
@@ -77,7 +93,7 @@ class DFineBackend(RTDetrBackend):
             area=max(0,x2-x1)*max(0,y2-y1)
             duplicate=False
             for selected in kept:
-                if not self._agnostic_nms and candidate.class_id!=selected.class_id:continue
+                if not self._agnostic_nms and candidate.class_id!=selected.class_id and not {candidate.class_id, selected.class_id} <= {0, 1}:continue
                 sx1,sy1,sx2,sy2=selected.aabb_xyxy
                 intersection=max(0,min(x2,sx2)-max(x1,sx1))*max(0,min(y2,sy2)-max(y1,sy1))
                 union=area+max(0,sx2-sx1)*max(0,sy2-sy1)-intersection
@@ -99,13 +115,16 @@ class DFineBackend(RTDetrBackend):
         # default 640 inference remains on its cached path.
         runtime.model.encoder.eval_spatial_size=(runtime.encoder_eval_spatial_size if size==640 else None)
         runtime.model.decoder.eval_spatial_size=(runtime.decoder_eval_spatial_size if size==640 else None)
+        measured=time.perf_counter()
         result=infer(runtime.model,runtime.post,frame,size,runtime.device)
+        inference_queued=time.perf_counter()
         self._record_stage('dfine_infer', image_width=w, image_height=h, image_size=size)
         records=[]
         # Decode the bounded postprocessor pool before limiting output. Taking
         # the top max_det first lets duplicate/class-filtered queries consume
         # the budget and erase otherwise valid small targets.
-        for label,score,bbox in normalized_rows(result,w,h,conf,len(result['scores'])):
+        for label,score,bbox in normalized_rows(result,w,h,conf,max_det,self._allowed_class_ids,iou,self._agnostic_nms,
+                [[0, 1], [2]] if not self._agnostic_nms else None):
             if self._allowed_class_ids is not None and label not in self._allowed_class_ids:continue
             records.append(NormalizedDetection(track_id=-1,class_id=label,confidence=score,aabb_xyxy=bbox,
                 center_xy=((bbox[0]+bbox[2])//2,(bbox[1]+bbox[3])//2),track_id_is_stable=False))
@@ -113,8 +132,11 @@ class DFineBackend(RTDetrBackend):
         # backend: run the configured NMS before boxes reach BoT-SORT. The
         # transformer postprocessor can emit the same object under multiple
         # classes; without agnostic NMS these become separate tracked IDs.
-        kept=self._configured_nms(records,iou)[:max(0,int(max_det))]
-        self._record_stage('configured_nms', input_boxes=len(records), output_boxes=len(kept),
+        transferred=time.perf_counter()
+        kept=records
+        self.last_timings=dict(infer_host_ms=(inference_queued-measured)*1000.,transfer_decode_ms=(transferred-inference_queued)*1000.,nms_ms=(time.perf_counter()-transferred)*1000.)
+        self.last_timings.update(getattr(runtime.model,'runtime_host_timings',{}))
+        self._record_stage('configured_nms', input_queries=len(result['scores']), output_boxes=len(kept),
             class_agnostic=bool(self._agnostic_nms), iou_threshold=float(iou))
         return 'detect',kept
 
@@ -157,7 +179,9 @@ class DFineBackend(RTDetrBackend):
         h,w=frame.shape[:2]
         rows=np.asarray([[*d.aabb_xyxy,d.confidence,d.class_id] for d in detections],dtype=np.float32).reshape(-1,6)
         tracker=self._get_external_tracker(tracker_type,(h,w))
+        association_started=time.perf_counter()
         tracked=tracker.update(Boxes(torch.from_numpy(rows),orig_shape=(h,w)),frame)
+        self.last_timings["botsort_ms"]=(time.perf_counter()-association_started)*1000.
         self._record_stage('external_tracker_update', tracker_type=str(tracker_type),
             input_boxes=len(detections), tracked_rows=len(tracked))
         output=[]

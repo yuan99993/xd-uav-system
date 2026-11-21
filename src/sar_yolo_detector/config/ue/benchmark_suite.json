@@ -1,0 +1,55 @@
+{
+  "level": "/Game/AirGround/Benchmarks/AirGroundStressV1",
+  "cases": [
+    {
+      "id": "ground_2mps_h30_close",
+      "scene": "benchmark_cases/ground_2mps_h30_close.json",
+      "primary": "AG_BM_Car_Primary"
+    },
+    {
+      "id": "ground_2mps_h60",
+      "scene": "benchmark_cases/ground_2mps_h60.json",
+      "primary": "AG_BM_Car_Primary"
+    },
+    {
+      "id": "ground_6mps_h60",
+      "scene": "benchmark_cases/ground_6mps_h60.json",
+      "primary": "AG_BM_Car_Primary"
+    },
+    {
+      "id": "ground_12mps_h60",
+      "scene": "benchmark_cases/ground_12mps_h60.json",
+      "primary": "AG_BM_Car_Primary"
+    },
+    {
+      "id": "ground_20mps_h60",
+      "scene": "benchmark_cases/ground_20mps_h60.json",
+      "primary": "AG_BM_Car_Primary"
+    },
+    {
+      "id": "air_2mps_h35",
+      "scene": "benchmark_cases/air_2mps_h35.json",
+      "primary": "AG_BM_Drone_Primary"
+    },
+    {
+      "id": "air_6mps_h60",
+      "scene": "benchmark_cases/air_6mps_h60.json",
+      "primary": "AG_BM_Drone_Primary"
+    },
+    {
+      "id": "air_12mps_h60",
+      "scene": "benchmark_cases/air_12mps_h60.json",
+      "primary": "AG_BM_Drone_Primary"
+    },
+    {
+      "id": "occlusion_6mps_h60",
+      "scene": "benchmark_cases/occlusion_6mps_h60.json",
+      "primary": "AG_BM_Car_Occlusion"
+    },
+    {
+      "id": "small_ground_6mps_h160",
+      "scene": "benchmark_cases/small_ground_6mps_h160.json",
+      "primary": "AG_BM_Car_Primary"
+    }
+  ]
+}

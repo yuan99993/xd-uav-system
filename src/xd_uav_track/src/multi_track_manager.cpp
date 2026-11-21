@@ -301,21 +301,38 @@ bool metricRelativeXY(const xd_uav_track::DetectionCandidate& candidate,
 }
 
 bool compatibleClass(const int first, const int second,
-                     const std::vector<int>& family) {
-  if (first == second) return true;
+                     const std::vector<int>& family, const bool class_agnostic = false) {
+  if (class_agnostic || first == second) return true;
   return first >= 0 && second >= 0 &&
       std::find(family.begin(), family.end(), first) != family.end() &&
       std::find(family.begin(), family.end(), second) != family.end();
+}
+
+bool sameClassFamily(const int first, const int second,
+                     const std::vector<std::string>& names,
+                     const std::vector<int>& legacy_family) {
+  if (first < 0 || second < 0) return first == second;
+  if (first >= static_cast<int>(names.size()) || second >= static_cast<int>(names.size()))
+    return compatibleClass(first, second, legacy_family, false);
+  const auto family = [](const std::string& name) {
+    if (name == "car" || name == "ar-car" || name == "tank" || name == "m142") return 0;
+    if (name == "drone" || name == "airplane") return 1;
+    return -1;
+  };
+  const int first_family = family(names[first]);
+  const int second_family = family(names[second]);
+  return first_family >= 0 ? first_family == second_family : names[first] == names[second];
 }
 
 bool sameReacquisitionCandidate(const NormalizedBox& previous_box,
                                 const xd_uav_track::DetectionCandidate& previous,
                                 const PreparedDetection& current,
                                 const double minimum_iou,
-                                const std::vector<int>& compatible_classes) {
+                                const std::vector<int>& compatible_classes,
+                                const bool class_agnostic) {
   if (previous.class_id >= 0 && current.message.class_id >= 0 &&
       !compatibleClass(previous.class_id, current.message.class_id,
-                       compatible_classes)) return false;
+                       compatible_classes, class_agnostic)) return false;
   if (previous.track_id_is_stable && current.message.track_id_is_stable &&
       previous.track_id >= 0 && current.message.track_id >= 0)
     return previous.track_id == current.message.track_id;
@@ -549,7 +566,7 @@ ManagedDetectionFrame MultiTrackManager::update(
         std::any_of(unique.begin(), unique.end(), [&](const PreparedDetection& other) {
           return other.message.measurement_source != "visual_tracker" &&
               compatibleClass(item.message.class_id, other.message.class_id,
-                              impl_->config.compatible_class_ids) &&
+                              impl_->config.compatible_class_ids, impl_->config.class_agnostic_association) &&
               intersectionOverUnion(item.box, other.box) > impl_->config.duplicate_iou_threshold;
         });
     if (duplicate) {
@@ -615,7 +632,12 @@ ManagedDetectionFrame MultiTrackManager::update(
       const auto& detection = prepared[detection_indices[row]];
       for (std::size_t column = 0; column < track_ids.size(); ++column) {
         const auto& track = impl_->tracks.at(track_ids[column]);
-        if (track.class_id >= 0 && detection.message.class_id >= 0 &&
+        if (impl_->config.strict_class_family_isolation &&
+            track.class_id >= 0 && detection.message.class_id >= 0 &&
+            !sameClassFamily(track.class_id, detection.message.class_id,
+                             detections.class_names, impl_->config.compatible_class_ids)) continue;
+        if (!impl_->config.class_agnostic_association &&
+            track.class_id >= 0 && detection.message.class_id >= 0 &&
             track.class_id != detection.message.class_id) {
           const bool recent_class_match = impl_->config.flexible_class_matching &&
               std::find(track.class_history.begin(), track.class_history.end(),
@@ -623,12 +645,20 @@ ManagedDetectionFrame MultiTrackManager::update(
           const bool configured_family_match =
               impl_->config.flexible_class_matching &&
               compatibleClass(track.class_id, detection.message.class_id,
-                              impl_->config.compatible_class_ids);
+                              impl_->config.compatible_class_ids, impl_->config.class_agnostic_association);
           if (!recent_class_match && !configured_family_match) continue;
         }
         const NormalizedBox predicted = track.filter.box();
         const double overlap = intersectionOverUnion(predicted, detection.box);
         const double distance = normalizedCenterDistance(predicted, detection.box);
+        if (detection.message.confidence < impl_->config.minimum_new_track_confidence) {
+          const double area_ratio = detection.box.width * detection.box.height /
+              std::max(1e-9, predicted.width * predicted.height);
+          if (track.hits < static_cast<std::uint32_t>(impl_->config.confirmation_hits) || track.missing_seconds > impl_->config.occlusion_timeout_sec ||
+              overlap < 0.35 || area_ratio < 0.60 || area_ratio > 1.60 ||
+              !compatibleClass(track.class_id, detection.message.class_id,
+                               impl_->config.compatible_class_ids, false)) continue;
+        }
         double appearance = cosineSimilarity(
             track.appearance, detection.message.appearance_embedding);
         for (const auto& prototype : track.appearance_gallery)
@@ -849,7 +879,7 @@ ManagedDetectionFrame MultiTrackManager::update(
       const bool same_candidate = track.have_reacquisition_candidate &&
           sameReacquisitionCandidate(track.reacquisition_box,
               track.reacquisition_candidate, prepared[index], 0.05,
-              impl_->config.compatible_class_ids);
+              impl_->config.compatible_class_ids, impl_->config.class_agnostic_association);
       track.reacquisition_hits = same_candidate
           ? track.reacquisition_hits + 1 : 1;
       track.reacquisition_box = prepared[index].box;
@@ -899,7 +929,7 @@ ManagedDetectionFrame MultiTrackManager::update(
         prepared[index].message.track_id_is_stable &&
         prepared[index].message.class_id >= 0 &&
         compatibleClass(track.class_id, prepared[index].message.class_id,
-                        impl_->config.compatible_class_ids)) {
+                        impl_->config.compatible_class_ids, impl_->config.class_agnostic_association)) {
       track.class_id = prepared[index].message.class_id;
     }
     if (detector_measurement && prepared[index].message.class_id >= 0 &&

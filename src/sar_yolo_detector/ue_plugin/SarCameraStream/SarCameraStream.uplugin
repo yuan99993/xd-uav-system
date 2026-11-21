@@ -1,0 +1,1 @@
+{"FileVersion":3,"Version":1,"VersionName":"1.0","FriendlyName":"SAR Camera Stream","Description":"Bounded asynchronous GPU readback and timestamped local camera streaming","Category":"Robotics","CanContainContent":false,"Installed":false,"Modules":[{"Name":"SarCameraStream","Type":"Runtime","LoadingPhase":"Default"}]}

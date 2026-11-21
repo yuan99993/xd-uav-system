@@ -71,6 +71,42 @@ class SelectedPipelineIntegrityTest(unittest.TestCase):
         message.point.x, message.point.y = x, y
         self.node._select_pixel_callback(message)
 
+    def test_pose_uses_both_capture_calibrations_and_never_latest_for_missing_frame(self):
+        from sar_yolo_detector.camera_calibration import CalibrationCache
+        from sensor_msgs.msg import CameraInfo
+        from types import SimpleNamespace as NS
+        node=NODE.SmartTrackerNode.__new__(NODE.SmartTrackerNode)
+        node._calibration_cache=CalibrationCache();node._motion_fixed_frame='world'
+        node._tf_buffer=NS(lookup_transform=lambda *args:NS(transform=NS(rotation=NS(x=0,y=0,z=0,w=1),translation=NS(x=0,y=0,z=0))))
+        infos=[]
+        for seq,fx in [(1,480.),(2,490.)]:
+            m=CameraInfo();m.header.frame_id='camera';m.header.stamp=rospy.Time(100,seq)
+            m.width=960;m.height=540;m.K=[fx,0,480,0,fx,270,0,0,1];m.D=[0]*5
+            node._calibration_cache.add(m);infos.append(m)
+        node._motion_header=infos[0].header
+        image=Image();image.header=infos[1].header;image.width=960;image.height=540
+        matrix=node._pose_rotation(image)
+        expected=np.array(infos[1].K).reshape(3,3)@np.linalg.inv(np.array(infos[0].K).reshape(3,3))
+        np.testing.assert_allclose(matrix,expected,atol=1e-8)
+        self.assertTrue(node._pose_calibration_changed)
+        image.header=copy.copy(image.header);image.header.stamp=rospy.Time(100,3)
+        self.assertIsNone(node._pose_rotation(image));self.assertFalse(node._pose_calibration_changed)
+
+    def test_high_fps_manual_cache_retains_displayed_frame_under_all_bounds(self):
+        node=NODE.SmartTrackerNode.__new__(NODE.SmartTrackerNode)
+        node._manual_snapshots=deque();node._fusion_snapshot_max_frames=32
+        node._fusion_snapshot_max_age=.75;node._fusion_snapshot_max_bytes=50331648
+        frame=np.zeros((540,960,3),np.uint8)
+        for seq in range(30):
+            image=Image();image.header.stamp=rospy.Time.from_sec(100.+seq/30.)
+            node._cache_manual_snapshot(image,frame,None)
+        stamps=[item[0].stamp.to_sec() for item in node._manual_snapshots]
+        self.assertIn(rospy.Time.from_sec(100.+14/30.).to_sec(),stamps)
+        self.assertGreater(len(stamps),8)
+        self.assertLessEqual(len(stamps),32)
+        self.assertLessEqual(sum(x[1].nbytes for x in node._manual_snapshots),50331648)
+        self.assertLessEqual(stamps[-1]-stamps[0],.75)
+
     def test_web_click_initializes_original_kalman_and_state_manager(self):
         self.click()
         self.assertEqual(self.tracker.tracking_manager.selected_track_id, 5)

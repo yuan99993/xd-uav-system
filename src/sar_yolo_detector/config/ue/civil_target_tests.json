@@ -1,0 +1,38 @@
+{
+  "model_targets": {
+    "case_id": "civil_car_static",
+    "launch_file": "ue_civil_moving_targets.launch",
+    "target_class": "model_supported",
+    "motion_state": "operator_selected",
+    "declared_peak_speed_mps": 0,
+    "note": "All current model categories are eligible; operator click/ROI confirms the selected target"
+  },
+  "car_static": {
+    "case_id": "civil_car_static",
+    "launch_file": "ue_civil_moving_targets.launch",
+    "target_class": "car",
+    "motion_state": "stationary",
+    "declared_peak_speed_mps": 0
+  },
+  "car_fast": {
+    "case_id": "civil_car_fast",
+    "launch_file": "ue_civil_moving_targets.launch",
+    "target_class": "car",
+    "motion_state": "moving",
+    "declared_peak_speed_mps": 20
+  },
+  "drone_fast": {
+    "case_id": "civil_drone_fast",
+    "launch_file": "ue_civil_moving_targets.launch",
+    "target_class": "drone",
+    "motion_state": "moving",
+    "declared_peak_speed_mps": 12
+  },
+  "drone_static": {
+    "case_id": "civil_static_air_h60",
+    "launch_file": "ue_civil_static_lock.launch",
+    "target_class": "drone",
+    "motion_state": "stationary",
+    "declared_peak_speed_mps": 0
+  }
+}

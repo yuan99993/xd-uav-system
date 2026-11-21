@@ -24,6 +24,13 @@ from xd_uav_track.msg import DetectionArray, TrackStateArray
 from sar_yolo_detector.pipeline_metrics import XDChainMetrics
 
 
+def overlap(a,b):
+    left,top=max(a[0],b[0]),max(a[1],b[1])
+    right,bottom=min(a[0]+a[2],b[0]+b[2]),min(a[1]+a[3],b[1]+b[3])
+    intersection=max(0.,right-left)*max(0.,bottom-top)
+    return intersection/max(1.,a[2]*a[3]+b[2]*b[3]-intersection)
+
+
 REQUIRED = {
     'smart_tracker': ['backend_call', 'smart_manager_update'],
     'feature_tracker': ['camera_motion_update', 'manual_feature_update'],
@@ -41,15 +48,20 @@ def main():
     parser.add_argument('--instance', default='dfine_v3')
     parser.add_argument('--web-url', default='http://127.0.0.1:8787')
     parser.add_argument('--startup-timeout', type=float, default=180.)
+    parser.add_argument('--minimum-lock-ratio',type=float,default=.75)
+    parser.add_argument('--external-camera',action='store_true')
+    parser.add_argument('--input-fps',type=float,default=5.)
     parser.add_argument('--per-mode-sec', type=float, default=8.)
     parser.add_argument('--output', type=Path, default=Path('dfine_pipeline_verification.json'))
     args = parser.parse_args()
+    if not 1 <= args.input_fps <= 60:parser.error("input-fps must be between 1 and 60")
     package = Path(rospkg.RosPack().get_path('sar_yolo_detector'))
     image = cv2.imread(str(package/'test/fixtures/dfine_v3_ue.jpg'))
     assert image is not None, 'Bundled smoke image missing'
     rospy.init_node('verify_dfine_pipeline', anonymous=True)
     prefix = '/'+args.namespace.strip('/')
     traces, events, locks, bridge = [], [], Counter(), XDChainMetrics()
+    fusion_evidence=[]
     trace_lock, stop = threading.Lock(), threading.Event()
 
     def trace(message):
@@ -57,12 +69,17 @@ def main():
             traces.append(json.loads(message.data))
             del traces[:-512]
 
+    def fusion_trace(message):
+        fusion_evidence.append(json.loads(message.data))
+        del fusion_evidence[:-1024]
+
     subscriptions = [
+        rospy.Subscriber(prefix+'/sar_yolo_smart_tracker_'+args.instance+'/fusion_evidence',String,fusion_trace,queue_size=5),
         rospy.Subscriber(prefix+'/sar_yolo_smart_tracker_'+args.instance+'/pipeline_trace', String, trace, queue_size=5),
         rospy.Subscriber(prefix+'/detect/input/detections_2d', DetectionArray, bridge.receive_input, queue_size=10),
         rospy.Subscriber(prefix+'/track/tracks_by_source', TrackStateArray, bridge.receive_output, queue_size=10)]
-    camera = rospy.Publisher(prefix+'/fixed_camera/image_raw', Image, queue_size=1)
-    info = rospy.Publisher(prefix+'/fixed_camera/camera_info', CameraInfo, queue_size=1)
+    camera = None if args.external_camera else rospy.Publisher(prefix+'/fixed_camera/image_raw', Image, queue_size=1)
+    info = None if args.external_camera else rospy.Publisher(prefix+'/fixed_camera/camera_info', CameraInfo, queue_size=1)
     transform = TransformStamped()
     transform.header.stamp = rospy.Time.now()
     transform.header.frame_id = 'world'
@@ -70,7 +87,7 @@ def main():
     transform.transform.translation.z = 50.
     transform.transform.rotation.w = 1.
     broadcaster = tf2_ros.StaticTransformBroadcaster()
-    broadcaster.sendTransform(transform)
+    if not args.external_camera:broadcaster.sendTransform(transform)
 
     def publish():
         seq = 0
@@ -88,7 +105,7 @@ def main():
             calibration.D = [0.,0.,0.,0.,0.]
             info.publish(calibration); camera.publish(message)
             seq += 1
-            stop.wait(.2)
+            stop.wait(1./args.input_fps)
 
     def request(body=None):
         path = '/api/frame' if body is None else '/api/command'
@@ -96,7 +113,8 @@ def main():
         with urlopen(Request(args.web_url+path, data=data, headers={'Content-Type':'application/json'}), timeout=4.) as response:
             return json.load(response)
 
-    publisher = threading.Thread(target=publish, daemon=True); publisher.start()
+    publisher = None if args.external_camera else threading.Thread(target=publish, daemon=True)
+    if publisher is not None:publisher.start()
     report = dict(passed=False, test='ROS/Web four-mode smoke; no flight or accuracy claim', modes={})
     try:
         deadline = time.monotonic()+args.startup_timeout
@@ -106,12 +124,16 @@ def main():
                 frame = request()
                 objects = [obj for obj in frame.get('objects',[]) if obj.get('kind')=='detector_track']
                 if frame.get('ready') and objects:
-                    anchor = max(objects,key=lambda obj: obj.get('confidence',0.))['box']; break
+                    anchor = max(objects,key=lambda obj: obj.get('confidence',0.)*obj['box'][2]*obj['box'][3])['box']; break
             except (OSError, ValueError):
                 pass
             time.sleep(.2)
         assert anchor is not None, 'No D-FINE detection reached the web within startup timeout'
         for mode in REQUIRED:
+            if args.external_camera:
+                previous=request()
+                if previous.get('selected_box') and previous.get('control_target_valid'):
+                    cx,cy,w,h=previous['selected_box'];anchor=[cx-w/2,cy-h/2,w,h]
             result = request(dict(action='mode', mode=mode, color_name='roi'))
             assert result.get('success'), str(result)
             selected, last_command, seen = False, 0., set()
@@ -134,16 +156,25 @@ def main():
                         candidates=[obj for obj in frame.get('objects',[]) if obj.get('kind')=='detector_track']
                         if not candidates:
                             time.sleep(.1); continue
-                        box=max(candidates,key=lambda obj:obj.get('confidence',0.))['box']
+                        if args.external_camera:
+                            # Keep the same observed target across mode changes;
+                            # do not select an unrelated larger detection after recentering.
+                            target=max(candidates,key=lambda obj:overlap(obj['box'],anchor))
+                            if overlap(target['box'],anchor)<.15:
+                                time.sleep(.1);continue
+                            box=target['box']
+                        else:
+                            box=max(candidates,key=lambda obj:obj.get('confidence',0.)*obj['box'][2]*obj['box'][3])['box']
                         action=dict(action='click',frame_token=token,point=[box[0]+box[2]/2.,box[1]+box[3]/2.])
                     try:
                         response=request(action); selected=bool(response.get('success'))
-                    except (OSError, ValueError):
-                        pass
+                    except (OSError, ValueError) as error:
+                        if hasattr(error,"read"):print("Selection response:",error.read().decode(),flush=True)
                     last_command=time.monotonic()
                 time.sleep(.1)
             report['modes'][mode]=dict(selected_via_web=selected,valid_lock_web_updates=locks[mode],web_updates=len(seen))
             assert selected and locks[mode]>0, 'No valid selection in '+mode
+            assert locks[mode]/max(1,len(seen)) >= args.minimum_lock_ratio, 'Insufficient sustained lock ratio in '+mode
             print(mode, report['modes'][mode], flush=True)
         time.sleep(1.5)
         counts, backend = {}, Counter()
@@ -174,10 +205,12 @@ def main():
         report['error']=str(error)
         raise
     finally:
-        stop.set(); publisher.join(timeout=3.)
+        stop.set()
+        if publisher is not None:publisher.join(timeout=3.)
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(report,indent=2)+'\n')
         args.output.with_suffix('.trace.json').write_text(json.dumps(traces,indent=2)+'\n')
+        args.output.with_suffix('.fusion.json').write_text(json.dumps(fusion_evidence,indent=2)+'\n')
         args.output.with_suffix('.web.json').write_text(json.dumps(events,indent=2)+'\n')
         for subscription in subscriptions:subscription.unregister()
         print('Report:',args.output,flush=True)

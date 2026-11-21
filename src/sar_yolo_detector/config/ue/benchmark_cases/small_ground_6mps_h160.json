@@ -1,0 +1,187 @@
+{
+  "name": "AirGroundStressV1",
+  "units": "meters_NED",
+  "duration_sec": 180,
+  "observer": {
+    "name": "Observer",
+    "speed_mps": 5,
+    "route": [
+      [
+        -55,
+        -35,
+        -30
+      ],
+      [
+        55,
+        -35,
+        -30
+      ],
+      [
+        55,
+        40,
+        -40
+      ],
+      [
+        -55,
+        40,
+        -40
+      ],
+      [
+        -55,
+        -35,
+        -30
+      ]
+    ]
+  },
+  "entities": [
+    {
+      "id": "AG_BM_Car_Primary",
+      "class": "car",
+      "position": [
+        220,
+        150,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.8,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 90,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV",
+      "trajectory": {
+        "kind": "sine",
+        "amplitude_m": [
+          0,
+          40,
+          0
+        ],
+        "period_sec": 41.88790204786391,
+        "phase_rad": 1.5707963267948966
+      }
+    },
+    {
+      "id": "AG_BM_Drone_Primary",
+      "class": "drone",
+      "position": [
+        260,
+        150,
+        -15
+      ],
+      "size": [
+        1.5,
+        1.5,
+        0.4
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "AG_BM_Car_Decoy",
+      "class": "car",
+      "position": [
+        225,
+        170,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.8,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 90,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_Hatchback.SM_Hatchback"
+    },
+    {
+      "id": "AG_BM_Car_Occlusion",
+      "class": "car",
+      "position": [
+        320,
+        150,
+        -0.8
+      ],
+      "size": [
+        4.5,
+        1.8,
+        1.6
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "yaw_deg": 90,
+      "mesh": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV"
+    },
+    {
+      "id": "AG_ObserverDrone",
+      "class": "drone",
+      "position": [
+        -55,
+        -35,
+        -0.7
+      ],
+      "size": [
+        1.5,
+        1.5,
+        0.4
+      ],
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "role": "observer"
+    }
+  ],
+  "asset_meshes": {
+    "car": "/Game/VehicleVarietyPack/Meshes/SM_SUV.SM_SUV",
+    "tank": "/Game/AirGround/FreeAssets/Tanks/SM_QTank.SM_QTank"
+  },
+  "note": "Detailed Khronos concept car and dannzjs M1A2 tanks, 2K PBR textures; other vehicle types retained for visual variety.",
+  "level_path": "/Game/AirGround/Benchmarks/AirGroundStressV1",
+  "create_level": false,
+  "require_airsim": false,
+  "mission": {
+    "home_ned_m": [
+      180,
+      150,
+      -0.7
+    ],
+    "cruise_altitude_m": 160,
+    "vertical_speed_mps": 3,
+    "speed_mps": 5,
+    "hover_sec": 300,
+    "waypoints_ned_m": [
+      [
+        180,
+        150,
+        -160
+      ]
+    ]
+  },
+  "observer_visual_actor": "AG_ObserverDrone",
+  "four_mode_test_note": "Same UE AirGroundRange scene and assets; 45 s PX4 hover at inspection waypoint 3 allows SmartTracker, FeatureTracker, ColorTracker, and FusionTracker to be sampled on the same view.",
+  "benchmark": {
+    "manual_start": true,
+    "evaluation_truth": true,
+    "primary_entity": "AG_BM_Car_Primary",
+    "case_id": "small_ground_6mps_h160",
+    "target_peak_speed_mps": 6,
+    "declared_scope": "procedural visual-target motion; not target PX4 dynamics; centre-ray visibility proxy, no pixel masks",
+    "gimbal_config": "benchmark_cases/small_ground_6mps_h160_gimbal.json"
+  }
+}

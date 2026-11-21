@@ -1,0 +1,16 @@
+<launch>
+  <arg name="bag" />
+  <arg name="UAV_NAME" default="rgb_replay" />
+  <arg name="rate" default="1.0" />
+  <arg name="web_port" default="8788" />
+  <arg name="python_executable" default="" />
+  <arg name="output" default="$(env HOME)/.ros/sar_rgb_replay/$(anon run)" />
+  <include file="$(find sar_yolo_detector)/launch/ue_rgb_replay.launch">
+    <arg name="bag" value="$(arg bag)" />
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="rate" value="$(arg rate)" />
+    <arg name="web_port" value="$(arg web_port)" />
+    <arg name="python_executable" value="$(arg python_executable)" />
+    <arg name="output" value="$(arg output)" />
+  </include>
+</launch>

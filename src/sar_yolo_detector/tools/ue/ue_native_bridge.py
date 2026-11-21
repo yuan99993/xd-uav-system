@@ -10,9 +10,12 @@ import math
 from pathlib import Path
 import time
 import uuid
+import sys
 import shutil
 import cv2
 import statistics
+import threading
+from gimbal_selection import SelectionSightline
 import subprocess
 import numpy as np
 from common import ROOT,workload_lock,write_json
@@ -44,6 +47,16 @@ def exchange(root,request,timeout=180):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--transport',choices=['files','tcp'],default='files')
+    p.add_argument('--stream-connection',choices=['auto','direct','windows-relay'],default='auto')
+    p.add_argument('--stream-host',default='')
+    p.add_argument('--stream-codec',choices=['bgr8','bgra8','jpeg'],default='bgra8')
+    p.add_argument('--ros-send-buffer-bytes',type=int,default=0,help='Opt-in TCPROS per-peer send buffer bound; 0 preserves OS default')
+    p.add_argument('--stream-quality',type=int,default=90,help='Native source JPEG quality (1..100), independent of web preview')
+    p.add_argument('--allow-fov-control',action='store_true',help='Opt in to bounded ROS camera/fov_target_deg commands')
+    p.add_argument('--fov-profile',default='fixed',help='fixed, zoom_test, or explicit JSON profile (native TCP only)')
+    p.add_argument('--save-first-frame',action='store_true')
+    p.add_argument('--max-delivery-age',type=float,default=.3)
     p.add_argument("--project",type=Path,required=True)
     p.add_argument("--scene",type=Path)
     p.add_argument("--out",type=Path,required=True)
@@ -63,7 +76,22 @@ def main():
     p.add_argument("--pose-source",choices=["kinematic","px4"],default="kinematic")
     p.add_argument("--mavros-namespace",default="/uav1")
     p.add_argument("--namespace",default="ue_test")
-    a=p.parse_args()
+    p.add_argument('--virtual-gimbal',action='store_true')
+    p.add_argument('--gimbal-config',type=Path)
+    p.add_argument('--instance-name',default='dfine_v3')
+    argv=sys.argv
+    if '--ros' in argv:
+        import rospy
+        argv=rospy.myargv(argv=argv)
+    a=p.parse_args(argv[1:])
+    if a.ros_send_buffer_bytes and not 16384<=a.ros_send_buffer_bytes<=1048576:p.error('ros-send-buffer-bytes must be 0 or within 16384..1048576')
+    if not 1<=a.stream_quality<=100:p.error('stream-quality must be within 1..100')
+    if a.allow_fov_control and (not a.ros or a.transport!='tcp'):p.error('FOV control requires ROS and native TCP')
+    if a.transport!='tcp' and a.fov_profile!='fixed':p.error('Variable FOV tests require native TCP capture')
+    if a.transport=='tcp' and a.camera=='both':p.error('Native stream currently requires one explicit camera')
+    if a.virtual_gimbal and (not a.ros or a.camera=='both'):
+        p.error('Virtual gimbal requires --ros and one camera')
+    gimbal_config=json.loads(a.gimbal_config.read_text()) if a.gimbal_config else {}
     if a.out.exists():p.error("Use a new recording directory")
     if a.seconds<=0 or a.fps<=0:p.error("seconds/fps must be positive")
     if not 320<=a.width<=1920 or not 240<=a.height<=1080:p.error("Capture dimensions outside supported bounds")
@@ -89,7 +117,7 @@ def main():
     mission=Mission(spec['mission']) if 'mission' in spec else None
     all_cameras=[("down",-70.,"fixed_camera"),("front",-10.,"gimbal_camera")]
     cameras=[camera for camera in all_cameras if a.camera=='both' or camera[0]==a.camera]
-    pubs={}
+    pubs={};camera_tf=None;mission_pub=None
     if a.ros:
         import rospy
         from sensor_msgs.msg import Image,CameraInfo
@@ -115,7 +143,46 @@ def main():
             except RuntimeError:
                 if time.monotonic()>deadline:raise
                 time.sleep(.1)
+    if a.transport=='tcp':
+        from ue_stream_client import run_stream
+        return run_stream(a,spec,mission,feedback,pubs,camera_tf,mission_pub,gimbal_config,ready)
     session=uuid.uuid4().hex;a.out.mkdir(parents=True)
+    sightline=SelectionSightline(gimbal_config.get('measurement_timeout_sec',1.2))
+    gimbal_sequence=[0]
+    gimbal_lock=threading.RLock()
+    gimbal_timer=None
+    if a.virtual_gimbal:
+        from sar_yolo_detector.msg import SmartTrackerState
+        geometry_pub=rospy.Publisher('/'+a.namespace+'/target_geometry',String,queue_size=1)
+        gimbal_pub=rospy.Publisher(f'/{a.namespace}/gimbal/state',String,queue_size=1)
+        def selected_state(message):
+            command=sightline.observe(dict(stamp=message.header.stamp.to_sec(),
+                frame_id=message.header.frame_id,class_id=message.selected_class_id,class_name=message.selected_class_name,
+                track_id=message.selected_track_id,
+                tracker_type=message.tracker_type,has_selection=message.has_selection,
+                measurement_current=message.measurement_current,control_ready=message.control_measurement_ready,
+                association_method=message.association_method,
+                prediction_only=message.prediction_only,stale=message.data_is_stale,tentative=message.tentative,
+                confidence=message.confidence,center=[message.selected_bbox.center.x,message.selected_bbox.center.y]),time.time())
+            if command is None:return
+            evidence=command.pop('geometry',None)
+            if evidence is not None:geometry_pub.publish(String(data=json.dumps(evidence)))
+            with gimbal_lock:
+                gimbal_sequence[0]+=1
+                command.update(session=session,sequence=gimbal_sequence[0],sent_wall=time.time())
+                write_json(root/'gimbal_command.json',command)
+        selected_sub=rospy.Subscriber(f'/{a.namespace}/sar_yolo_detector/{a.instance_name}/state',
+                                     SmartTrackerState,selected_state,queue_size=1)
+        def publish_gimbal(event):
+            try:
+                value=json.loads((root/'gimbal_feedback.json').read_text())
+                if value.get('session')!=session:return
+                value['feedback_age_sec']=time.time()-value['wall_stamp']
+                value['selection_counts']=dict(sightline.counts)
+                value['feedback_fresh']=0 <= value['feedback_age_sec'] <= .5
+                gimbal_pub.publish(String(data=json.dumps(value)))
+            except (OSError,ValueError,KeyError):pass
+        gimbal_timer=rospy.Timer(rospy.Duration(.05),publish_gimbal)
     write_json(a.out/'run.json',{"scene":spec,"cameras":[camera[0] for camera in cameras],"kind":"UE5.5_PX4_Gazebo_feedback_capture" if feedback else "UE5.5_native_editor_kinematic_capture",
         "ground_truth":"3D object poses; no visibility masks or calibrated 3D detector positions",
         "recognition_validated":False,"flight_dynamics_validated":False,"session":session})
@@ -151,7 +218,9 @@ def main():
                         objects[spec['observer_visual_actor']]=position
                     # Stabilized gimbal: fixed pitch/roll, measured body heading.
                     camera_position=[position[0]+1.2*math.cos(yaw),position[1]+1.2*math.sin(yaw),position[2]+.2]
-                    response=exchange(root,{"id":request_id,"session":session,"op":"capture","objects":objects,
+                    response=exchange(root,{"camera_key":name,
+                        "virtual_gimbal":a.virtual_gimbal,"gimbal_config":gimbal_config,
+                        "body_yaw_deg":math.degrees(yaw),"id":request_id,"session":session,"op":"capture","objects":objects,
                         "object_yaw_deg":{spec["observer_visual_actor"]:math.degrees(yaw)} if spec.get("observer_visual_actor") else {},
                         "object_rotation_deg":{spec["observer_visual_actor"]:status["rotation_deg"]} if feedback and spec.get("observer_visual_actor") else {},
                         "camera_position_ned_m":camera_position,"camera_pitch_yaw_deg":[pitch,math.degrees(yaw)],
@@ -172,6 +241,8 @@ def main():
                         copy_ms=(time.perf_counter()-copy_started)*1000.
                     try:source.unlink(missing_ok=True)
                     except PermissionError:pass
+                    if a.virtual_gimbal:
+                        sightline.capture(response,f'{a.namespace}_{name}_optical')
                     publish_started=time.perf_counter()
                     if a.ros:
                         stamp=rospy.Time.from_sec(response['capture_wall_start'])
@@ -225,6 +296,13 @@ def main():
                                      'latest age:',round(latencies[-1],3),flush=True)
                 time.sleep(max(0,1/a.fps-(time.monotonic()-tick)))
         finally:
+            if gimbal_timer:gimbal_timer.shutdown()
+            if a.virtual_gimbal:
+                with gimbal_lock:
+                    gimbal_sequence[0]+=1
+                    write_json(root/'gimbal_command.json',dict(session=session,sequence=gimbal_sequence[0],
+                        cancel=True,sent_wall=time.time()))
+                write_json(a.out/'gimbal_selection_counts.json',dict(sightline.counts))
             try:exchange(root,{"id":request_id+1,"session":session,"op":"reset"},timeout=5)
             except Exception as error:print('Reset:',error)
     def percentiles(values):

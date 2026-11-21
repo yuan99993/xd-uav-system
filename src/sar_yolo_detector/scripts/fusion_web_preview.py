@@ -3,7 +3,10 @@
 import base64
 import copy
 import json
+import io
 import math
+import os
+import socket
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,12 +15,13 @@ import time
 import uuid
 from urllib.parse import urlparse
 
+import numpy as np
 import cv2
 from cv_bridge import CvBridge
 import rospkg
 import rospy
 from geometry_msgs.msg import PointStamped
-from sensor_msgs.msg import Image, RegionOfInterest
+from sensor_msgs.msg import CompressedImage, Image, RegionOfInterest
 from std_msgs.msg import String
 from sar_yolo_detector.interactive_view import FramePair
 from sar_yolo_detector.msg import SmartTrackerState, TrackedDetection2DArray
@@ -28,7 +32,10 @@ from sar_yolo_detector.srv import (SelectFusionROI, SelectFusionROIRequest,
 
 class Preview:
     def __init__(self):
-        self.frames = FramePair()
+        self.image_codec=str(rospy.get_param('~image_codec','png')).lower()
+        if self.image_codec not in ('png','jpeg'):raise ValueError('image_codec must be png or jpeg')
+        self.source_overlay=bool(rospy.get_param("~source_image_overlay",False))
+        self.frames = FramePair(image_limit=16 if self.source_overlay else 1)
         self.lock = threading.Lock()
         self.commands = threading.Lock()
         self.targets = OrderedDict()
@@ -46,20 +53,27 @@ class Preview:
         raw_labels = rospy.get_param('~class_names', ['car', 'ar-car', 'tank', 'm142'])
         self.labels = raw_labels if isinstance(raw_labels, list) else [v.strip() for v in str(raw_labels).split(',')]
         self.click = rospy.Publisher(rospy.get_param('~select_pixel_topic'), PointStamped, queue_size=1)
+        self.benchmark=(rospy.Publisher(rospy.get_param('~benchmark_topic','benchmark/command'),String,queue_size=1)
+            if rospy.get_param('~enable_benchmark_controls',False) else None)
         self.manual_roi = rospy.Publisher(rospy.get_param('~manual_roi_topic'), RegionOfInterest, queue_size=1)
         self.roi = rospy.ServiceProxy(rospy.get_param('~select_roi_service'), SelectFusionROI)
         self.manual_select = rospy.ServiceProxy(rospy.get_param('~select_manual_roi_service'), SelectFusionROI)
         self.select = rospy.ServiceProxy(rospy.get_param('~select_service'), SelectSmartTrack)
         self.switch = rospy.ServiceProxy(rospy.get_param('~mode_service'), SwitchTrackingMode)
+        transport=str(rospy.get_param('~image_transport','raw'))
+        if transport not in ('raw','compressed'):raise ValueError('image_transport must be raw or compressed')
+        image_topic=rospy.get_param('~image_topic')+('/compressed' if transport=='compressed' else '')
         self.subscribers = [
-            rospy.Subscriber(rospy.get_param('~image_topic'), Image, self.image, queue_size=1, buff_size=4*1024*1024),
+            rospy.Subscriber(image_topic, CompressedImage if transport=='compressed' else Image, self.image, queue_size=1, buff_size=16*1024*1024, tcp_nodelay=True),
             rospy.Subscriber(rospy.get_param('~state_topic'), SmartTrackerState, self.state, queue_size=1),
             rospy.Subscriber(rospy.get_param('~mission_topic'), String, self.mission, queue_size=1),
             rospy.Subscriber(rospy.get_param('~targets_topic'), TrackedDetection2DArray, self.objects, queue_size=1)]
         classification_topic=rospy.get_param('~classification_topic','')
         if classification_topic:
             self.subscribers.append(rospy.Subscriber(classification_topic,String,self.classification_evidence,queue_size=1))
-        self.timer = rospy.Timer(rospy.Duration(1./max(1., min(10., float(rospy.get_param('~fps', 5.))))), self.encode)
+        fps=max(1.,min(10.,float(rospy.get_param('~fps',5.))))
+        self.poll_interval_ms=int(round(1000./fps))
+        self.timer = rospy.Timer(rospy.Duration(1./fps),self.encode)
 
     def image(self, message):
         if len(message.data) <= 16*1024*1024:
@@ -72,6 +86,7 @@ class Preview:
         box = message.selected_bbox
         evidence = dict(capture_header=dict(seq=h.seq, frame_id=h.frame_id,
                 stamp=dict(secs=h.stamp.secs, nsecs=h.stamp.nsecs)),
+            overlay_capture_stamp=dict(secs=h.stamp.secs, nsecs=h.stamp.nsecs),
             mode=mode, selected_id=message.selected_track_id if message.has_selection else -1,
             source=message.association_method or 'none', reason=message.freshness_reason or '',
             selected_box=[box.center.x, box.center.y, box.size_x, box.size_y]
@@ -83,6 +98,14 @@ class Preview:
             model_path=message.model_path, processing_ms=float(message.frame_processing_ms),
             inference_ms=float(message.inference_ms),
             pipeline_epoch=epoch, capture_segment=epoch)
+        # A delayed detector correction or explicit clear may refer to an
+        # already displayed capture. Apply metadata immediately, without
+        # resurrecting an older image or changing its selection token.
+        if getattr(self,'source_overlay',False):
+            with self.lock:
+                if self.current is not None and self.current.get('capture_header')==evidence['capture_header']:
+                    for key,value in evidence.items():
+                        if key in self.current:self.current[key]=value
         try:
             self.frames.add_evidence(evidence)
         except (KeyError, TypeError, ValueError):
@@ -121,6 +144,9 @@ class Preview:
         with self.lock:
             key=message.header.stamp.to_nsec()
             self.targets[key] = self._attach_classification(key,objects)
+            if self.current is not None:
+                stamp=self.current.get('capture_header',{}).get('stamp',{})
+                if stamp.get('secs',0)*1000000000+stamp.get('nsecs',0)==key:self.current['objects']=self.targets[key]
             while len(self.targets) > 32:
                 self.targets.popitem(last=False)
 
@@ -164,9 +190,24 @@ class Preview:
             return
         image, evidence = pair
         try:
-            frame = self.bridge.imgmsg_to_cv2(image, desired_encoding='bgr8')
-            # Level 1 limits CPU work; PNG remains lossless at every level.
-            ok, png = cv2.imencode('.png', frame, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+            is_compressed=isinstance(image,CompressedImage)
+            codec=getattr(self,'image_codec','png')
+            if is_compressed and codec=='jpeg' and 'jpeg' in image.format.lower():
+                # The browser decodes these exact JPEG bytes. The ROS web
+                # worker needs only validated dimensions for ROI coordinates.
+                from PIL import Image as EncodedImage
+                if image.data[:2]!=b'\xff\xd8' or image.data[-2:]!=b'\xff\xd9':raise ValueError('Incomplete JPEG preview')
+                with EncodedImage.open(io.BytesIO(image.data)) as encoded:
+                    width,height=encoded.size
+                    if encoded.format!='JPEG' or min(width,height)<1 or width*height>16777216:
+                        raise ValueError('Invalid JPEG preview geometry')
+                ok,png=True,np.frombuffer(image.data,np.uint8)
+            else:
+                frame = (self.bridge.compressed_imgmsg_to_cv2(image,desired_encoding='bgr8') if is_compressed else
+                    self.bridge.imgmsg_to_cv2(image,desired_encoding='bgr8'))
+                height,width=frame.shape[:2]
+                extension,options=('.jpg',[cv2.IMWRITE_JPEG_QUALITY,90]) if codec=='jpeg' else ('.png',[cv2.IMWRITE_PNG_COMPRESSION,1])
+                ok,png=cv2.imencode(extension,frame,options)
             if not ok:
                 return
             with self.lock:
@@ -178,8 +219,11 @@ class Preview:
                 self.serial += 1
                 token = '{}:{}'.format(self.session, self.serial)
                 self.current = dict(frame_token=token, capture_header=evidence['capture_header'],
-                    width=image.width, height=image.height,
-                    png=base64.b64encode(png).decode('ascii'), image_mime='image/png',
+                    source_image_overlay=getattr(self,"source_overlay",False),
+                    image_capture_stamp=dict(secs=image.header.stamp.secs, nsecs=image.header.stamp.nsecs),
+                    overlay_capture_stamp=evidence.get("overlay_capture_stamp"),
+                    width=width, height=height,
+                    _image_bytes=png.tobytes(), image_mime='image/jpeg' if codec=='jpeg' else 'image/png',
                     selected_id=evidence.get('selected_id', -1), source=evidence.get('source'),
                     reason=evidence.get('reason'), mode=evidence.get('mode'),
                     selected_box=evidence.get('selected_box'),
@@ -192,20 +236,31 @@ class Preview:
                     objects=self.targets.get(image.header.stamp.to_nsec(), []),
                     flight=copy.deepcopy(self.flight),
                     stamp=image.header.stamp.to_sec(), received_wall=time.monotonic())
-                self.history[token] = copy.deepcopy(evidence['capture_header']), image.width, image.height
+                self.history[token] = copy.deepcopy(evidence['capture_header']), width, height
                 while len(self.history) > 24:
                     self.history.popitem(last=False)
         except Exception as exc:
             rospy.logwarn_throttle(5., 'Web PNG conversion failed: %s', exc)
 
-    def snapshot(self):
+    def snapshot(self, include_image=True, binary=False):
         with self.lock:
             if self.current is None:
                 return dict(ready=False)
             output = dict(self.current)
+        image_bytes=output.pop('_image_bytes',None)
+        if binary:output['_image_bytes']=image_bytes
+        elif include_image and image_bytes is not None:output['png']=base64.b64encode(image_bytes).decode('ascii')
+        if not include_image:output.pop('png',None)
         output['ready'] = True
-        output['video_stale'] = time.monotonic()-output.pop('received_wall') > 2.
+        output['benchmark_controls']=getattr(self,'benchmark',None) is not None
+        output['poll_interval_ms']=getattr(self,'poll_interval_ms',200)
         output['age_ms'] = max(0., (rospy.Time.now().to_sec()-output['stamp'])*1000.)
+        output['control_max_age_ms']=500.
+        output['video_stale'] = (time.monotonic()-output.pop('received_wall') > 2.
+                                 or output['age_ms'] > self.max_age*1000.)
+        # A once-current state does not remain a current control observation
+        # while its paired display frame ages in a browser or transport queue.
+        if output['video_stale'] or output['age_ms']>output['control_max_age_ms']:output['control_target_valid']=False
         return output
 
     def command(self, body):
@@ -213,6 +268,14 @@ class Preview:
             return 409, dict(success=False, message='BUSY: previous command is still running')
         try:
             action = body.get('action')
+            if action == 'benchmark':
+                command=str(body.get('command',''))
+                if command not in ('start','hold'):raise ValueError('Unknown scene motion command')
+                publisher=getattr(self,'benchmark',None)
+                if publisher is None or not publisher.get_num_connections():
+                    return 409,dict(success=False,message='UE 场景运动控制尚未连接')
+                publisher.publish(String(data=command))
+                return 200,dict(success=True,message='目标运动已启动' if command=='start' else '目标运动已暂停')
             if action == 'mode':
                 mode = str(body.get('mode', '')).strip().lower()
                 allowed = {'smart_tracker', 'feature_tracker', 'color_tracker', 'fusion_tracker'}
@@ -343,6 +406,7 @@ class Server(ThreadingHTTPServer):
     def process_request_thread(self, request, address):
         try:
             request.settimeout(5.)
+            request.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
             super().process_request_thread(request, address)
         finally:
             self.slots.release()
@@ -355,6 +419,7 @@ def main():
     html = (Path(rospkg.RosPack().get_path('sar_yolo_detector'))/'web/dist/index.html').read_bytes()
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version='HTTP/1.1'
         def log_message(self, *args):
             pass
 
@@ -376,6 +441,25 @@ def main():
                 self.reply(200, html, 'text/html; charset=utf-8')
             elif self.path == '/api/frame':
                 self.reply(200, preview.snapshot())
+            elif self.path == '/api/image':
+                packet=preview.snapshot(include_image=False,binary=True)
+                data=packet.pop('_image_bytes',None)
+                if data is None:
+                    self.reply(503,dict(ready=False));return
+                # The metadata may change after the image was displayed.
+                # Return fresh metadata without retransmitting identical pixels.
+                if self.headers.get('X-SAR-Displayed-Frame') == packet['frame_token']:
+                    data=b''
+                self.send_response(200)
+                self.send_header('Content-Type',packet['image_mime'])
+                self.send_header('Content-Length',str(len(data)))
+                self.send_header('Cache-Control','no-store')
+                self.send_header('X-SAR-Frame',base64.b64encode(json.dumps(packet,ensure_ascii=True,separators=(',',':')).encode()).decode('ascii'))
+                self.end_headers()
+                try:self.wfile.write(data)
+                except (BrokenPipeError,ConnectionResetError):pass
+            elif self.path == '/api/telemetry':
+                self.reply(200, preview.snapshot(include_image=False))
             else:
                 self.reply(404, dict(message='Not found'))
 
@@ -398,16 +482,22 @@ def main():
                 self.reply(400, dict(success=False, message=str(exc)))
 
     host, port = rospy.get_param('~bind_address', '127.0.0.1'), int(rospy.get_param('~port', 8787))
-    server = Server((host, port), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    hosts=[host]
+    local_host=os.environ.get('SAR_LOCAL_WEB_HOST','')
+    if host in ('127.0.0.1','localhost') and local_host and local_host not in hosts:hosts.append(local_host)
+    servers=[]
+    for address in hosts:
+        server=Server((address,port),Handler)
+        servers.append(server)
+        threading.Thread(target=server.serve_forever,daemon=True).start()
     rospy.loginfo('Fusion web preview: http://%s:%d (no second inference model)', host, port)
     try:
         rospy.spin()
     finally:
         preview.timer.shutdown()
-        server.shutdown()
-        server.server_close()
+        for server in servers:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == '__main__':

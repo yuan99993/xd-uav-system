@@ -2,7 +2,7 @@
 import math
 import unittest
 from xd_uav_track.mission import Mission
-from xd_uav_track.px4_pose import enu_to_map, map_to_enu, ue_rotation_deg
+from xd_uav_track.px4_pose import enu_to_map, map_to_enu, ue_rotation_deg, ned_yaw_to_enu, enu_heading_for_delta
 
 
 class AirgroundMissionTest(unittest.TestCase):
@@ -18,6 +18,20 @@ class AirgroundMissionTest(unittest.TestCase):
         self.assertAlmostEqual(angles['yaw'],0.)
         self.assertAlmostEqual(angles['roll'],0.)
         self.assertAlmostEqual(angles['pitch'],0.)
+
+    def test_initial_ned_heading_round_trips_through_mavros_quaternion(self):
+        for desired in [0.,90.,180.,-90.]:
+            angle=ned_yaw_to_enu(desired)
+            actual=ue_rotation_deg([0.,0.,math.sin(angle/2),math.cos(angle/2)])['yaw']
+            self.assertAlmostEqual((actual-desired+180)%360-180,0.)
+        with self.assertRaises(ValueError):ned_yaw_to_enu(float('nan'))
+
+    def test_hover_roundoff_preserves_initial_heading(self):
+        initial=ned_yaw_to_enu(0.)
+        self.assertEqual(enu_heading_for_delta(1e-14,-1e-14,initial),initial)
+        self.assertEqual(enu_heading_for_delta(0.,0.,initial),initial)
+        self.assertAlmostEqual(enu_heading_for_delta(5.,0.,initial),0.)
+        self.assertAlmostEqual(enu_heading_for_delta(0.,5.,0.),math.pi/2)
 
     def test_route_returns_home_and_has_finite_continuous_poses(self):
         mission=Mission(dict(home_ned_m=[0,0,-.7],cruise_altitude_m=10,

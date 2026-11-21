@@ -1,0 +1,18 @@
+{
+  "guide_sha256": "825c89c4f01b1a6a37013553aeb1b83dd551ad4d40334cd6ca0b0fd8a1854905",
+  "training_runs": [
+    "experiments/dfine_guide_domain_head_20261119",
+    "experiments/dfine_guide_roi_head_20261119"
+  ],
+  "executed_epochs": 15,
+  "selected_checkpoint_lineage_epochs": 11,
+  "backbone_and_encoder_frozen": true,
+  "annotation_source": "UE projected 3D AABB synthetic labels; not human pixel annotations",
+  "train_images": 150,
+  "validation_images": 30,
+  "validation_session_disjoint": true,
+  "production_validated": false,
+  "online_tracking_acceptance": false,
+  "source_manifest_sha256": "fa70362869550d6cdf3812ce60bcc91be2fd4af5b5589c940c258cec6b03866e",
+  "packaged_manifest_sha256": "12c57947540ab280ac7da123012fc63233ffa79ad2d9663acd9a9181d696eaa3"
+}

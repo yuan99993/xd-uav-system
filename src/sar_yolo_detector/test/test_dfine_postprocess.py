@@ -12,6 +12,16 @@ except ImportError:
 
 @unittest.skipIf(torch is None, 'D-FINE torch runtime unavailable in ROS system Python')
 class DFinePostprocessTest(unittest.TestCase):
+    @unittest.skipUnless(torch is not None and torch.cuda.is_available(),'Requires CUDA')
+    def test_gpu_family_nms_and_invalid_rows_preserve_exact_public_candidates(self):
+        from sar_yolo_detector.pixeagle.backends.dfine_runtime import normalized_rows
+        result=dict(boxes=torch.tensor([[10.,10.,30.,30.]]*5,device='cuda'),
+            labels=torch.tensor([0,1,2,0,2],device='cuda'),
+            scores=torch.tensor([.9,.8,.7,.01,float('nan')],device='cuda'))
+        rows=normalized_rows(result,100,100,.04,50,nms_iou=.5,class_groups=((0,1),(2,)))
+        self.assertEqual([0,2],[row[0] for row in rows])
+        self.assertEqual([(10,10,30,30)]*2,[row[2] for row in rows])
+
     def backend(self):
         from sar_yolo_detector.pixeagle.backends.dfine_backend import DFineBackend
         backend = DFineBackend.__new__(DFineBackend)
@@ -27,6 +37,20 @@ class DFinePostprocessTest(unittest.TestCase):
     def output(self):
         return dict(boxes=torch.tensor([[10.,10.,30.,30.],[10.,10.,30.,30.],[55.,10.,75.,30.]]),
                     scores=torch.tensor([.95,.9,.8]),labels=torch.tensor([0,1,0]))
+
+    def test_unrestricted_lock_policy_reaches_backend_without_filtering_model_categories(self):
+        from sar_yolo_detector.pixeagle.parameters import Parameters
+        from sar_yolo_detector.pixeagle.backends.dfine_backend import DFineBackend
+        original={'SMART_TRACKER_ALLOWED_CLASS_IDS':[2]}
+        output=dict(boxes=torch.tensor([[5.,5.,20.,20.],[35.,5.,50.,20.],[65.,5.,80.,20.]]),
+                    scores=torch.tensor([.9,.9,.9]),labels=torch.tensor([0,1,2]))
+        for unrestricted,expected in [(True,{0,1,2}),(False,{2})]:
+            config=Parameters.for_lock_policy(original,unrestricted)
+            backend=DFineBackend(config);backend._model=self.backend()._model
+            with patch('sar_yolo_detector.pixeagle.backends.dfine_runtime.infer',return_value=output):
+                _,rows=backend.detect(np.zeros((100,100,3),np.uint8))
+            self.assertEqual({d.class_id for d in rows},expected)
+        self.assertEqual(original['SMART_TRACKER_ALLOWED_CLASS_IDS'],[2])
 
     def test_duplicate_queries_do_not_consume_distinct_target_budget(self):
         backend = self.backend()

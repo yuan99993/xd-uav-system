@@ -1,0 +1,9 @@
+{
+  "architecture": "NanoTrack v2",
+  "source": "https://github.com/HonglinChu/SiamTrackers",
+  "commit": "248663fde6bf7c40190cf10ee396d5662919ecd3",
+  "files": {
+    "nanotrack_head_sim.onnx": "0d8c0637be849f092cc7236cae02e55c8b9455ebe37ba50601d6115db4247cd9",
+    "nanotrack_backbone_sim.onnx": "530bdd0cd00f19afab79a863e71ba71e3312395a5dc9151af675082bdaaa2fc4"
+  }
+}

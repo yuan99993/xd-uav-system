@@ -590,6 +590,10 @@ class XdUavTrackNode {
     private_nh_.param("tracker/classification/upstream_consensus",
                      multi_config.upstream_class_consensus, false);
     upstream_class_consensus_ = multi_config.upstream_class_consensus;
+    private_nh_.param("tracker/association/class_agnostic",
+                     multi_config.class_agnostic_association, false);
+    tracklet_stitch_config_.class_agnostic_association =
+        multi_config.class_agnostic_association;
     private_nh_.getParam("tracker/association/compatible_class_ids",
                          multi_config.compatible_class_ids);
     private_nh_.param("tracker/association/duplicate_iou_threshold",
@@ -783,6 +787,8 @@ class XdUavTrackNode {
                       multi_config.removal_frames, multi_config.removal_frames);
     private_nh_.param("tracker/lifecycle/reference_fps",
                       multi_config.reference_fps, multi_config.reference_fps);
+    private_nh_.param("tracker/association/strict_class_family_isolation",
+                      multi_config.strict_class_family_isolation, false);
     private_nh_.param("tracker/lifecycle/occlusion_timeout_sec",
                       multi_config.occlusion_timeout_sec,
                       multi_config.occlusion_timeout_sec);
@@ -1368,7 +1374,8 @@ class XdUavTrackNode {
         const bool same_family =
             std::find(compatible.begin(), compatible.end(), before.class_id) != compatible.end() &&
             std::find(compatible.begin(), compatible.end(), after.class_id) != compatible.end();
-        if (before.class_id >= 0 && after.class_id >= 0 &&
+        if (!tracklet_stitch_config_.class_agnostic_association &&
+            before.class_id >= 0 && after.class_id >= 0 &&
             before.class_id != after.class_id && !same_family)
           return fail("entity class conflict");
         if (before.has_world && after.has_world) {
@@ -1615,7 +1622,7 @@ class XdUavTrackNode {
   }
 
   bool classCompatible(const int first, const int second) const {
-    if (first == second) return true;
+    if (tracklet_stitch_config_.class_agnostic_association || first == second) return true;
     const auto& family = tracklet_stitch_config_.compatible_class_ids;
     return first >= 0 && second >= 0 &&
         std::find(family.begin(), family.end(), first) != family.end() &&
@@ -1851,7 +1858,7 @@ class XdUavTrackNode {
               active_in_source = true;
               const auto observed = currently_detected.find(
                   local_mapping.first.second);
-              if (candidate.class_id == track.class_id &&
+              if (classCompatible(candidate.class_id, track.class_id) &&
                   observed != currently_detected.end() && !observed->second)
                 waiting_for_lost_same_source_identity = true;
               break;
@@ -2008,7 +2015,8 @@ class XdUavTrackNode {
     // re-acquisition. Spatial consistency is still enforced by the shared
     // world-filter innovation gate in TrackController.
     if (!std::isfinite(age) || age > source_identity_max_age_sec_) return true;
-    if (source_cross_class_reject_ && metric_identity_class_id_ >= 0 &&
+    if (!tracklet_stitch_config_.class_agnostic_association &&
+        source_cross_class_reject_ && metric_identity_class_id_ >= 0 &&
         measurement.class_id >= 0 &&
         measurement.class_id != metric_identity_class_id_) {
       const auto& compatible = tracklet_stitch_config_.compatible_class_ids;

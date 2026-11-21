@@ -183,3 +183,5 @@ rosrun sar_yolo_detector verify_dfine_pipeline.py --namespace deploy_check \
 V3 manifest 的部署路径改成包内 URI，故 manifest SHA 与训练目录版本不同；
 **模型张量、解析配置及 89 个原生 Python 文件的 SHA 均与训练产物相同**。
 历史配置可显式指定旧模型，不参与这个默认入口。
+
+UE 云台升级见 [UE 虚拟云台](ue_virtual_gimbal.md)；独立检测调度、分支可信度和可选局部跟踪器见 [Fusion 第二阶段](fusion_async_reliability.md)。

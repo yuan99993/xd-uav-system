@@ -1,0 +1,1561 @@
+{
+  "date": "2026-11-14",
+  "stage_order": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "stage1": {
+    "passed": true,
+    "first_actual_ue_run": true,
+    "final_install_space": {
+      "passed": true,
+      "valid_visual_measurements": 95,
+      "valid_web_ratio": 0.9900990099009901,
+      "initial_error_norm": 0.4731860830911227,
+      "final_error_norm": 0.004831472781351166,
+      "yaw_excursion_deg": 58.04998579257525,
+      "observer": "kinematic hover; actual UE rendered moving target",
+      "measured_max_acceleration_deg_s2": 90.00000000000003
+    }
+  },
+  "stage2": {
+    "passed": true,
+    "regression_tests": 169,
+    "input_replay_fps": 30,
+    "ue_capture_fps": 5,
+    "kcf_modes": {
+      "smart_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 50,
+        "web_updates": 51
+      },
+      "feature_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 47,
+        "web_updates": 49
+      },
+      "color_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 47,
+        "web_updates": 48
+      },
+      "fusion_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 48,
+        "web_updates": 50
+      }
+    },
+    "nano_install_modes": {
+      "smart_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 49,
+        "web_updates": 51
+      },
+      "feature_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 46,
+        "web_updates": 48
+      },
+      "color_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 48,
+        "web_updates": 49
+      },
+      "fusion_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 46,
+        "web_updates": 49
+      }
+    },
+    "fusion_stages": {
+      "detector_job_submitted": 76,
+      "camera_motion_update": 300,
+      "visual_flow_update": 333,
+      "fusion_candidate_filter": 333,
+      "fusion_output_deduplication": 333,
+      "tracked_output": 333,
+      "selected_output": 333,
+      "detector_job_deferred": 224,
+      "backend_call": 44,
+      "fusion_smart_manager_update": 44,
+      "xd_observation_output": 44,
+      "fusion_smart_manager_seed": 1,
+      "fusion_roi_color_seed": 1,
+      "fusion_roi_color_update": 288,
+      "fusion_arbiter_step": 319,
+      "fusion_feature_update": 288
+    },
+    "xd_counts": {
+      "input_frames": 718,
+      "input_candidates": 916,
+      "output_frames": 718,
+      "output_tracks": 1067,
+      "classification_matches": 246
+    },
+    "optional_comparison": {
+      "kind": "controlled synthetic UE-texture tracking stress; not real-map accuracy",
+      "results": {
+        "background_change": {
+          "kcf": {
+            "p50_ms": 4.34372999916377,
+            "p95_ms": 5.926449199796479,
+            "mean_iou": 0.4379488053534982,
+            "success_iou50": 0.5562130177514792,
+            "valid_visible_frames": 94,
+            "visible_frames": 169,
+            "false_valid_occluded_frames": 0,
+            "active_algorithm": "kcf",
+            "device": "cpu"
+          },
+          "csrt": {
+            "p50_ms": 19.701524999618414,
+            "p95_ms": 24.50351910047175,
+            "mean_iou": 0.9449052020988242,
+            "success_iou50": 1.0,
+            "valid_visible_frames": 169,
+            "visible_frames": 169,
+            "false_valid_occluded_frames": 10,
+            "active_algorithm": "csrt",
+            "device": "cpu"
+          },
+          "nano": {
+            "p50_ms": 8.36595100008708,
+            "p95_ms": 9.771469199949934,
+            "mean_iou": 0.9369704349859574,
+            "success_iou50": 1.0,
+            "valid_visible_frames": 169,
+            "visible_frames": 169,
+            "false_valid_occluded_frames": 10,
+            "active_algorithm": "nano",
+            "device": "cpu"
+          },
+          "ostrack": {
+            "p50_ms": 28.37175900094735,
+            "p95_ms": 36.60609679991467,
+            "mean_iou": 0.5370713462929297,
+            "success_iou50": 0.5562130177514792,
+            "valid_visible_frames": 96,
+            "visible_frames": 169,
+            "false_valid_occluded_frames": 6,
+            "active_algorithm": "ostrack_256",
+            "device": "cuda"
+          }
+        },
+        "small_target": {
+          "kcf": {
+            "p50_ms": 1.0250550003547687,
+            "p95_ms": 1.3744666997808963,
+            "mean_iou": 0.3793114162895172,
+            "success_iou50": 0.5562130177514792,
+            "valid_visible_frames": 94,
+            "visible_frames": 169,
+            "false_valid_occluded_frames": 0,
+            "active_algorithm": "kcf",
+            "device": "cpu"
+          },
+          "csrt": {
+            "p50_ms": 17.030774999511777,
+            "p95_ms": 21.603807401152153,
+            "mean_iou": 0.8679710931323815,
+            "success_iou50": 1.0,
+            "valid_visible_frames": 169,
+            "visible_frames": 169,
+            "false_valid_occluded_frames": 10,
+            "active_algorithm": "csrt",
+            "device": "cpu"
+          },
+          "nano": {
+            "p50_ms": 8.585038000092027,
+            "p95_ms": 10.741867798788007,
+            "mean_iou": 0.9189098914119816,
+            "success_iou50": 1.0,
+            "valid_visible_frames": 169,
+            "visible_frames": 169,
+            "false_valid_occluded_frames": 10,
+            "active_algorithm": "nano",
+            "device": "cpu"
+          },
+          "ostrack": {
+            "p50_ms": 31.03906099931919,
+            "p95_ms": 41.98708529911528,
+            "mean_iou": 0.5286373026690563,
+            "success_iou50": 0.5562130177514792,
+            "valid_visible_frames": 109,
+            "visible_frames": 169,
+            "false_valid_occluded_frames": 5,
+            "active_algorithm": "ostrack_256",
+            "device": "cuda"
+          }
+        }
+      }
+    }
+  },
+  "comparison_hardware": "NVIDIA GeForce RTX 3050 Laptop GPU; OpenCV CPU backend for KCF/CSRT/NanoTrack, CUDA for OSTrack",
+  "stage3": {
+    "passed": true,
+    "stage": 3,
+    "fixed_horizontal_fov_deg": 90,
+    "regression_tests": 198,
+    "capture": {
+      "transport": "SRF1",
+      "connection": "direct_tcp",
+      "clock_alignment": {
+        "ue_minus_host_sec": -0.0010159015655517578,
+        "uncertainty_sec": 0.001,
+        "samples": 7,
+        "utc_resolution_floor_sec": 0.001
+      },
+      "requested_fps": 30.0,
+      "ros_enabled": true,
+      "received_frames": 5210,
+      "delivered_frames": 5193,
+      "published_frames": 5193,
+      "effective_fps": 29.161584709256577,
+      "dropped_latest": 17,
+      "dropped_out_of_order": 0,
+      "dropped_stale": 0,
+      "wrong_session": 0,
+      "feedback_messages": 3580,
+      "errors": [],
+      "capture_to_delivery": {
+        "samples": 5193,
+        "p50_ms": 57.294607162475586,
+        "p95_ms": 78.42183113098145
+      },
+      "capture_to_ros": {
+        "samples": 5193,
+        "p50_ms": 57.294607162475586,
+        "p95_ms": 78.42183113098145
+      },
+      "gpu_readback": {
+        "samples": 5193,
+        "p50_ms": 41.414737701416016,
+        "p95_ms": 58.72840881347656
+      },
+      "wire": {
+        "samples": 5193,
+        "p50_ms": 0.8051395416259766,
+        "p95_ms": 2.0758628845214844
+      },
+      "decode": {
+        "samples": 5193,
+        "p50_ms": 2.3162610013969243,
+        "p95_ms": 4.84533060225658
+      },
+      "capture_to_control": {
+        "samples": 2318,
+        "p50_ms": 228.47628593444824,
+        "p95_ms": 316.96497201919556
+      },
+      "capture_to_actuator": {
+        "samples": 1898,
+        "p50_ms": 338.8174772262573,
+        "p95_ms": 430.4332137107849
+      },
+      "selection_counts": {
+        "accepted": 2318,
+        "not_measurement": 10,
+        "cancelled": 1
+      }
+    },
+    "gimbal": {
+      "passed": true,
+      "kind": "UE visual gimbal smoke; no flight-control or target-speed acceptance",
+      "valid_visual_measurements": 398,
+      "initial_error_norm": 0.4248275845446002,
+      "final_error_norm": 0.0026822049723475793,
+      "valid_web_ratio": 0.99,
+      "yaw_excursion_deg": 52.94531818022861
+    },
+    "four_modes": {
+      "smart_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 56,
+        "web_updates": 58
+      },
+      "feature_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 52,
+        "web_updates": 54
+      },
+      "color_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 51,
+        "web_updates": 54
+      },
+      "fusion_tracker": {
+        "selected_via_web": true,
+        "valid_lock_web_updates": 55,
+        "web_updates": 57
+      }
+    },
+    "algorithm_stages": {
+      "smart_tracker": {
+        "detector_job_submitted": 958,
+        "backend_call": 198,
+        "smart_manager_update": 197,
+        "tracked_output": 197,
+        "xd_observation_output": 197,
+        "selected_output": 197
+      },
+      "feature_tracker": {
+        "camera_motion_update": 306,
+        "manual_feature_update": 306,
+        "tracked_output": 306,
+        "xd_observation_output": 306,
+        "selected_output": 306,
+        "backend_call": 1
+      },
+      "color_tracker": {
+        "camera_motion_update": 311,
+        "manual_colour_update": 311,
+        "tracked_output": 311,
+        "xd_observation_output": 311,
+        "selected_output": 311
+      },
+      "fusion_tracker": {
+        "detector_job_submitted": 80,
+        "camera_motion_update": 227,
+        "visual_flow_update": 229,
+        "fusion_candidate_filter": 229,
+        "fusion_output_deduplication": 229,
+        "tracked_output": 229,
+        "selected_output": 229,
+        "detector_job_deferred": 147,
+        "backend_call": 29,
+        "fusion_smart_manager_update": 29,
+        "xd_observation_output": 15,
+        "fusion_smart_manager_seed": 1,
+        "fusion_roi_color_seed": 1,
+        "fusion_roi_color_update": 213,
+        "fusion_arbiter_step": 214,
+        "fusion_feature_update": 213
+      }
+    },
+    "backend_counts": {
+      "dfine_infer": 228,
+      "configured_nms": 228,
+      "external_tracker_update": 228,
+      "temporal_class_consensus": 228
+    },
+    "xd": {
+      "counts": {
+        "input_frames": 705,
+        "input_candidates": 895,
+        "output_frames": 705,
+        "output_tracks": 1072,
+        "classification_matches": 300
+      },
+      "candidate_sources": {
+        "detector": 307,
+        "visual_tracker": 588
+      },
+      "lifecycle_observations": {
+        "confirmed": 300,
+        "occluded": 89,
+        "tentative": 64,
+        "lost": 619
+      },
+      "bridge_to_xd": {
+        "p50_ms": 10.45748700198601,
+        "p95_ms": 15.357080999820028
+      },
+      "capture_to_xd": {
+        "p50_ms": 239.668846,
+        "p95_ms": 326.135874
+      },
+      "matched_latency_samples": 705,
+      "notes": "Passive topic arrival timings; lifecycle counts are observations, not unique IDs. Standalone manual visual ROIs do not create detector identities in XD."
+    },
+    "web5": {
+      "passed": true,
+      "duration_sec": 15.03618854099841,
+      "counts": {
+        "states": 239,
+        "current_visual": 239,
+        "feedback": 300
+      },
+      "image_fps": 26.613,
+      "state_fps": 15.2355,
+      "current_visual_fps": 15.2355,
+      "feedback_fps": 19.3549,
+      "web_fps": 5.054472401218877,
+      "capture_to_visual_p95_ms": 359.729,
+      "camera_info_fps": 26.613,
+      "unique_processed_capture_fps": 15.2355,
+      "max_capture_to_visual_ms": 402.432,
+      "measurement_backend": "roscpp"
+    },
+    "web1": {
+      "passed": true,
+      "duration_sec": 15.062546069999371,
+      "counts": {
+        "states": 269,
+        "current_visual": 269,
+        "feedback": 303
+      },
+      "image_fps": 26.6136,
+      "state_fps": 17.3962,
+      "current_visual_fps": 17.3962,
+      "feedback_fps": 19.3436,
+      "web_fps": 1.0622374149525617,
+      "capture_to_visual_p95_ms": 336.504,
+      "camera_info_fps": 27.2628,
+      "unique_processed_capture_fps": 17.3962,
+      "max_capture_to_visual_ms": 377.317,
+      "measurement_backend": "roscpp"
+    },
+    "standalone_matrix": [
+      {
+        "name": "jpeg30_960",
+        "exit_code": 0,
+        "summary": {
+          "transport": "SRF1",
+          "connection": "direct_tcp",
+          "clock_alignment": {
+            "ue_minus_host_sec": -0.0009783506393432617,
+            "uncertainty_sec": 0.001,
+            "samples": 7,
+            "utc_resolution_floor_sec": 0.001
+          },
+          "requested_fps": 30.0,
+          "ros_enabled": false,
+          "received_frames": 358,
+          "delivered_frames": 354,
+          "published_frames": 0,
+          "effective_fps": 29.993294345550648,
+          "dropped_latest": 4,
+          "dropped_out_of_order": 0,
+          "dropped_stale": 0,
+          "wrong_session": 0,
+          "feedback_messages": 0,
+          "errors": [],
+          "capture_to_delivery": {
+            "samples": 354,
+            "p50_ms": 51.55479907989502,
+            "p95_ms": 62.632846832275376
+          },
+          "capture_to_ros": null,
+          "gpu_readback": {
+            "samples": 354,
+            "p50_ms": 40.755391120910645,
+            "p95_ms": 49.72068071365355
+          },
+          "wire": {
+            "samples": 354,
+            "p50_ms": 0.19729137420654297,
+            "p95_ms": 0.6652116775512693
+          },
+          "decode": {
+            "samples": 354,
+            "p50_ms": 1.5162560011958703,
+            "p95_ms": 1.8374134486293767
+          },
+          "capture_to_control": {
+            "samples": 0,
+            "p50_ms": null,
+            "p95_ms": null
+          },
+          "capture_to_actuator": {
+            "samples": 0,
+            "p50_ms": null,
+            "p95_ms": null
+          },
+          "selection_counts": {}
+        }
+      },
+      {
+        "name": "raw30_640",
+        "exit_code": 0,
+        "summary": {
+          "transport": "SRF1",
+          "connection": "direct_tcp",
+          "clock_alignment": {
+            "ue_minus_host_sec": -0.0013785362243652344,
+            "uncertainty_sec": 0.001,
+            "samples": 7,
+            "utc_resolution_floor_sec": 0.001
+          },
+          "requested_fps": 30.0,
+          "ros_enabled": false,
+          "received_frames": 358,
+          "delivered_frames": 354,
+          "published_frames": 0,
+          "effective_fps": 30.011861764196563,
+          "dropped_latest": 4,
+          "dropped_out_of_order": 0,
+          "dropped_stale": 0,
+          "wrong_session": 0,
+          "feedback_messages": 0,
+          "errors": [],
+          "capture_to_delivery": {
+            "samples": 354,
+            "p50_ms": 57.38985538482666,
+            "p95_ms": 69.781494140625
+          },
+          "capture_to_ros": null,
+          "gpu_readback": {
+            "samples": 354,
+            "p50_ms": 40.303707122802734,
+            "p95_ms": 50.07904767990112
+          },
+          "wire": {
+            "samples": 354,
+            "p50_ms": 8.62264633178711,
+            "p95_ms": 11.629796028137207
+          },
+          "decode": {
+            "samples": 354,
+            "p50_ms": 0.13849350034433883,
+            "p95_ms": 0.24347274938918417
+          },
+          "capture_to_control": {
+            "samples": 0,
+            "p50_ms": null,
+            "p95_ms": null
+          },
+          "capture_to_actuator": {
+            "samples": 0,
+            "p50_ms": null,
+            "p95_ms": null
+          },
+          "selection_counts": {}
+        }
+      },
+      {
+        "name": "jpeg60_960",
+        "exit_code": 0,
+        "summary": {
+          "transport": "SRF1",
+          "connection": "direct_tcp",
+          "clock_alignment": {
+            "ue_minus_host_sec": -0.001383662223815918,
+            "uncertainty_sec": 0.001,
+            "samples": 7,
+            "utc_resolution_floor_sec": 0.001
+          },
+          "requested_fps": 60.0,
+          "ros_enabled": false,
+          "received_frames": 438,
+          "delivered_frames": 438,
+          "published_frames": 0,
+          "effective_fps": 36.62879963843438,
+          "dropped_latest": 0,
+          "dropped_out_of_order": 0,
+          "dropped_stale": 0,
+          "wrong_session": 0,
+          "feedback_messages": 0,
+          "errors": [],
+          "capture_to_delivery": {
+            "samples": 438,
+            "p50_ms": 50.719618797302246,
+            "p95_ms": 61.62286996841431
+          },
+          "capture_to_ros": null,
+          "gpu_readback": {
+            "samples": 438,
+            "p50_ms": 40.37189483642578,
+            "p95_ms": 49.84470605850219
+          },
+          "wire": {
+            "samples": 438,
+            "p50_ms": -0.23126602172851562,
+            "p95_ms": 0.31890869140625
+          },
+          "decode": {
+            "samples": 438,
+            "p50_ms": 1.5314764987124363,
+            "p95_ms": 2.0083674013221744
+          },
+          "capture_to_control": {
+            "samples": 0,
+            "p50_ms": null,
+            "p95_ms": null
+          },
+          "capture_to_actuator": {
+            "samples": 0,
+            "p50_ms": null,
+            "p95_ms": null
+          },
+          "selection_counts": {}
+        }
+      },
+      {
+        "name": "relay30_960",
+        "exit_code": 0,
+        "summary": {
+          "transport": "SRF1",
+          "connection": "windows_localhost_relay",
+          "clock_alignment": {
+            "ue_minus_host_sec": -0.0009742975234985352,
+            "uncertainty_sec": 0.001,
+            "samples": 7,
+            "utc_resolution_floor_sec": 0.001
+          },
+          "requested_fps": 30.0,
+          "ros_enabled": false,
+          "received_frames": 355,
+          "delivered_frames": 355,
+          "published_frames": 0,
+          "effective_fps": 29.772325936696173,
+          "dropped_latest": 0,
+          "dropped_out_of_order": 0,
+          "dropped_stale": 0,
+          "wrong_session": 0,
+          "feedback_messages": 0,
+          "errors": [],
+          "capture_to_delivery": {
+            "samples": 355,
+            "p50_ms": 49.407958984375,
+            "p95_ms": 63.87808322906494
+          },
+          "capture_to_ros": null,
+          "gpu_readback": {
+            "samples": 355,
+            "p50_ms": 39.26253318786621,
+            "p95_ms": 51.21448040008545
+          },
+          "wire": {
+            "samples": 355,
+            "p50_ms": 0.18739700317382812,
+            "p95_ms": 0.7316112518310548
+          },
+          "decode": {
+            "samples": 355,
+            "p50_ms": 1.5348689994425513,
+            "p95_ms": 2.0769843002199195
+          },
+          "capture_to_control": {
+            "samples": 0,
+            "p50_ms": null,
+            "p95_ms": null
+          },
+          "capture_to_actuator": {
+            "samples": 0,
+            "p50_ms": null,
+            "p95_ms": null
+          },
+          "selection_counts": {}
+        }
+      }
+    ],
+    "validation_scope": "Real UE rendered moving targets; controlled kinematic hover; four modes on the same observed target. Cadence test uses Feature mode, independent Fusion/gimbal acceptance above. No flight-speed or general model-accuracy certification.",
+    "known_accuracy_observations": "Separate off-centre/edge-target runs lost visual identity or detector confirmation. Rejection gates remain active; their failures are retained in reports rather than treated as passing tracking."
+  },
+  "stage4": {
+    "date": "2026-11-14",
+    "passed": true,
+    "stage": 4,
+    "requires_stage3_passed": true,
+    "scope": "Actual UE rendered moving targets and virtual lens, kinematic hover; separate fixed-FOV kinematic exploration route. Not PX4 flight-dynamics or general detection-accuracy acceptance.",
+    "zoom": {
+      "passed": true,
+      "scope": "Real UE virtual lens and image-space tracking; no optical hardware or flight-speed claim",
+      "selected_initial_box": [
+        666.819580078125,
+        285.8104248046875,
+        43.6044921875,
+        75.5152587890625
+      ],
+      "selection_rule": "Fully visible detector ROI; confidence divided by one plus squared normalized centre distance",
+      "phases": [
+        {
+          "target_fov": 90.0,
+          "start": 1794650532.660678,
+          "updates": 11,
+          "valid": 11,
+          "ratio": 1.0
+        },
+        {
+          "target_fov": 60.0,
+          "start": 1794650534.6917572,
+          "updates": 41,
+          "valid": 41,
+          "ratio": 1.0
+        },
+        {
+          "target_fov": 90.0,
+          "start": 1794650542.7581456,
+          "updates": 41,
+          "valid": 41,
+          "ratio": 1.0
+        }
+      ],
+      "selected_id": 1,
+      "current_visual_measurements": 245,
+      "calibrated_measurements": 245,
+      "min_fov_deg": 59.96352767944336,
+      "max_fov_deg": 90.02217102050781,
+      "pixel_center_p95_norm": 0.012975347763627854,
+      "algorithm_stage_counts": {
+        "detector_job_submitted": 123,
+        "camera_motion_update": 285,
+        "visual_flow_update": 288,
+        "fusion_candidate_filter": 288,
+        "fusion_output_deduplication": 288,
+        "tracked_output": 288,
+        "selected_output": 288,
+        "detector_job_deferred": 162,
+        "backend_call": 81,
+        "fusion_smart_manager_update": 79,
+        "xd_observation_output": 78,
+        "fusion_smart_manager_seed": 1,
+        "fusion_roi_color_seed": 1,
+        "fusion_roi_color_update": 271,
+        "fusion_arbiter_step": 273,
+        "fusion_feature_update": 271,
+        "fusion_calibrated_projection_proposed": 4,
+        "fusion_calibrated_projection_verified": 4,
+        "camera_calibration_update": 204,
+        "fusion_color_lens_update": 204,
+        "fusion_lens_template_refresh": 204
+      },
+      "window_start": 1794650532.660678,
+      "window_end": 1794650550.8626034
+    },
+    "capture_calibration_crosscheck": {
+      "passed": true,
+      "valid_measurement_states": 245,
+      "unique_capture_times": 244,
+      "matched_native_metadata": 244,
+      "max_fx_error_pixels": 0
+    },
+    "four_modes": {
+      "passed": true,
+      "test": "ROS/Web four-mode smoke; no flight or accuracy claim",
+      "modes": {
+        "smart_tracker": {
+          "selected_via_web": true,
+          "valid_lock_web_updates": 54,
+          "web_updates": 57
+        },
+        "feature_tracker": {
+          "selected_via_web": true,
+          "valid_lock_web_updates": 57,
+          "web_updates": 59
+        },
+        "color_tracker": {
+          "selected_via_web": true,
+          "valid_lock_web_updates": 57,
+          "web_updates": 59
+        },
+        "fusion_tracker": {
+          "selected_via_web": true,
+          "valid_lock_web_updates": 56,
+          "web_updates": 59
+        }
+      },
+      "stage_counts_by_mode": {
+        "smart_tracker": {
+          "detector_job_submitted": 394,
+          "backend_call": 81,
+          "smart_manager_update": 79,
+          "tracked_output": 79,
+          "xd_observation_output": 79,
+          "selected_output": 79
+        },
+        "fusion_tracker": {
+          "detector_job_submitted": 631,
+          "camera_motion_update": 2070,
+          "visual_flow_update": 2217,
+          "fusion_candidate_filter": 2217,
+          "fusion_output_deduplication": 2217,
+          "tracked_output": 2217,
+          "selected_output": 2217,
+          "detector_job_deferred": 1439,
+          "backend_call": 264,
+          "fusion_smart_manager_update": 262,
+          "xd_observation_output": 221,
+          "fusion_smart_manager_seed": 2,
+          "fusion_roi_color_seed": 2,
+          "fusion_roi_color_update": 414,
+          "fusion_arbiter_step": 417,
+          "fusion_feature_update": 414,
+          "fusion_calibrated_projection_proposed": 4,
+          "fusion_calibrated_projection_verified": 4,
+          "camera_calibration_update": 1424,
+          "fusion_color_lens_update": 346,
+          "fusion_lens_template_refresh": 346
+        },
+        "feature_tracker": {
+          "backend_call": 1,
+          "camera_motion_update": 295,
+          "manual_feature_update": 295,
+          "tracked_output": 295,
+          "xd_observation_output": 295,
+          "selected_output": 295,
+          "camera_calibration_update": 289,
+          "manual_lens_template_refresh": 289
+        },
+        "color_tracker": {
+          "camera_motion_update": 343,
+          "manual_colour_update": 343,
+          "tracked_output": 343,
+          "xd_observation_output": 343,
+          "selected_output": 343,
+          "camera_calibration_update": 328,
+          "manual_lens_template_refresh": 328
+        }
+      },
+      "backend_counts": {
+        "dfine_infer": 346,
+        "configured_nms": 346,
+        "external_tracker_update": 346,
+        "temporal_class_consensus": 346
+      },
+      "xd": {
+        "counts": {
+          "input_frames": 732,
+          "input_candidates": 1097,
+          "output_frames": 732,
+          "output_tracks": 1631,
+          "classification_matches": 420
+        },
+        "candidate_sources": {
+          "detector": 478,
+          "visual_tracker": 619
+        },
+        "lifecycle_observations": {
+          "confirmed": 1087,
+          "occluded": 57,
+          "lost": 477,
+          "tentative": 10
+        },
+        "bridge_to_xd": {
+          "p50_ms": 0.7494579986087047,
+          "p95_ms": 7.154216000344604
+        },
+        "capture_to_xd": {
+          "p50_ms": 177.029133,
+          "p95_ms": 321.107388
+        },
+        "matched_latency_samples": 664,
+        "notes": "Passive topic arrival timings; lifecycle counts are observations, not unique IDs. Standalone manual visual ROIs do not create detector identities in XD."
+      },
+      "smart_manager": {
+        "update_calls": 341,
+        "selected_id": 2,
+        "kalman_active": true,
+        "appearance_active": true
+      }
+    },
+    "default_route": {
+      "passed": true,
+      "kind": "Actual UE kinematic exploration route, fixed FOV; no PX4 dynamics acceptance",
+      "mission_samples": 743,
+      "camera_info_samples": 709,
+      "position_extents_ned_m": [
+        46.31108698584292,
+        45.0,
+        5.0
+      ],
+      "stages": [
+        "inspect_02",
+        "inspect_03",
+        "transit_02",
+        "transit_03"
+      ],
+      "fov_control_subscribers": 0,
+      "fov_min_deg": 90.0,
+      "fov_max_deg": 90.0
+    },
+    "stream": {
+      "transport": "SRF1",
+      "connection": "direct_tcp",
+      "clock_alignment": {
+        "ue_minus_host_sec": -0.0011074542999267578,
+        "uncertainty_sec": 0.001,
+        "samples": 7,
+        "utc_resolution_floor_sec": 0.001
+      },
+      "requested_fps": 30.0,
+      "fov_profile": "fixed",
+      "fov_control_enabled": true,
+      "fov_commands": {
+        "accepted": 3,
+        "rejected": 1
+      },
+      "fov_min_deg": 59.96352767944336,
+      "fov_max_deg": 90.03999328613281,
+      "ros_enabled": true,
+      "received_frames": 16877,
+      "delivered_frames": 16857,
+      "published_frames": 16857,
+      "effective_fps": 28.10006904492791,
+      "dropped_latest": 13,
+      "dropped_out_of_order": 0,
+      "dropped_stale": 7,
+      "wrong_session": 0,
+      "feedback_messages": 11942,
+      "errors": [],
+      "capture_to_delivery": {
+        "samples": 16857,
+        "p50_ms": 74.74994659423828,
+        "p95_ms": 91.53499603271483
+      },
+      "capture_to_ros": {
+        "samples": 16857,
+        "p50_ms": 74.74994659423828,
+        "p95_ms": 91.53499603271483
+      },
+      "gpu_readback": {
+        "samples": 16857,
+        "p50_ms": 55.98282814025879,
+        "p95_ms": 68.93539428710938
+      },
+      "wire": {
+        "samples": 16857,
+        "p50_ms": 1.051187515258789,
+        "p95_ms": 3.828334808349608
+      },
+      "decode": {
+        "samples": 16857,
+        "p50_ms": 2.8104830016673077,
+        "p95_ms": 6.1515255983977095
+      },
+      "capture_to_control": {
+        "samples": 5598,
+        "p50_ms": 201.28369331359863,
+        "p95_ms": 263.84987831115717
+      },
+      "capture_to_actuator": {
+        "samples": 5332,
+        "p50_ms": 310.28950214385986,
+        "p95_ms": 375.4005789756775
+      },
+      "selection_counts": {
+        "accepted": 5598,
+        "duplicate": 35,
+        "cancelled": 4,
+        "not_measurement": 1777
+      }
+    },
+    "regression": {
+      "unique_checks": 230,
+      "ros_python38": {
+        "tests": 230,
+        "passed": 221,
+        "skipped_model_runtime": 9
+      },
+      "model_python310": {
+        "tests": 10,
+        "passed": 10,
+        "overlap_with_ros_passed": 1
+      }
+    },
+    "integrity": {
+      "models/dfine_s_v3_16e": {
+        "model.safetensors": true,
+        "config.json": true
+      },
+      "ue_plugin/SarCameraStream": {
+        "Binaries/Win64/UnrealEditor-SarCameraStream.dll": true,
+        "Binaries/Win64/UnrealEditor.modules": true
+      }
+    },
+    "builds": {
+      "main_workspace_catkin_install": "passed",
+      "isolated_install_space": "passed"
+    },
+    "evidence": [
+      "primed_zoom_acceptance/result.json",
+      "capture_calibration_crosscheck.json",
+      "final_four_modes.json",
+      "primed_live_zoom/capture_summary.json",
+      "default_route_acceptance.json",
+      "default_route_live/capture_summary.json",
+      "default_route_cadence.json",
+      "final_regression.log",
+      "model_runtime_regression.log",
+      "main_workspace_build.log",
+      "kcf_reseed_before.log",
+      "kcf_reseed_after.log"
+    ]
+  },
+  "last_updated": "2026-11-15",
+  "stage5": {
+    "stage": 5,
+    "date": "2026-11-15",
+    "passed": true,
+    "scope": "Actual UE RGB image-sightline follow for detected ground vehicle and detected airborne UAV under PX4/Gazebo dynamics; metric localization and target-dependent flight chase remain disabled.",
+    "ground": {
+      "passed": true,
+      "kind": "UE visual gimbal smoke; no flight-control or target-speed acceptance",
+      "selection_rule": "Closest fully visible requested-class detection to image centre",
+      "selected_initial_box": [
+        397.397216796875,
+        223.86659240722656,
+        77.92074584960938,
+        30.047592163085938
+      ],
+      "selected_initial_id": 1,
+      "valid_visual_measurements": 113,
+      "initial_error_norm": 0.13951640481564506,
+      "final_error_norm": 0.0039248198854293075,
+      "valid_web_ratio": 0.9863013698630136,
+      "yaw_excursion_deg": 13.694611160603971,
+      "last_feedback": {
+        "mode": "HOLD",
+        "applied_sequence": 116,
+        "yaw_deg": -12.58573148003402,
+        "pitch_deg": -65.71868441760279,
+        "yaw_world_deg": 77.42792611028383,
+        "yaw_rate_deg_s": 0,
+        "pitch_rate_deg_s": 0,
+        "saturated": false,
+        "limits": {
+          "yaw_deg": [
+            -160,
+            160
+          ],
+          "pitch_deg": [
+            -89,
+            45
+          ],
+          "max_rate_deg_s": 30,
+          "max_accel_deg_s2": 90
+        },
+        "command_delay_sec": 0.08,
+        "applied_wall": 1794713832.305836,
+        "command_received_wall": 1794713832.176,
+        "command_capture_wall": null,
+        "command_created_wall": 1794713832.175921,
+        "horizontal_fov_deg": 90,
+        "measured_rotation_deg": {
+          "pitch": -65.71868133544918,
+          "yaw": 77.42792510986322,
+          "roll": 2.3203466858540515e-14
+        },
+        "session": "32bfe430e0ad4f898821d4798e7f325b",
+        "wall_stamp": 1794713834.1175003,
+        "monotonic_stamp": 2399.875,
+        "camera": "down",
+        "kind": "gimbal",
+        "native_stream_stats": {
+          "captured": 16945,
+          "readback_complete": 16943,
+          "sent": 16913,
+          "dropped_latest": 27,
+          "readback_busy": 36,
+          "errors": 3,
+          "readbacks_inflight": 2
+        },
+        "ue_send_wall": 1794713834.118,
+        "ue_wall_stamp": 1794713834.116169,
+        "feedback_age_sec": 0.00290679931640625,
+        "feedback_fresh": true,
+        "selection_counts": {
+          "accepted": 115,
+          "cancelled": 1
+        },
+        "clock_alignment": {
+          "ue_minus_host_sec": -0.0013314485549926758,
+          "uncertainty_sec": 0.001,
+          "samples": 7,
+          "utc_resolution_floor_sec": 0.001
+        }
+      },
+      "classification_observations": {
+        "car": 19,
+        "tank": 94
+      },
+      "geometry_samples": 113,
+      "class_name": "car",
+      "geometry_domains": [
+        "ground_candidate"
+      ]
+    },
+    "air": {
+      "passed": true,
+      "kind": "UE visual gimbal smoke; no flight-control or target-speed acceptance",
+      "selection_rule": "Closest fully visible requested-class detection to image centre",
+      "selected_initial_box": [
+        504.45404052734375,
+        129.92611694335938,
+        55.8861083984375,
+        42.89360046386719
+      ],
+      "selected_initial_id": 3,
+      "valid_visual_measurements": 152,
+      "initial_error_norm": 0.4422810565924258,
+      "final_error_norm": 0.0023306683798048704,
+      "valid_web_ratio": 0.9864864864864865,
+      "yaw_excursion_deg": 11.845744373344711,
+      "last_feedback": {
+        "mode": "HOLD",
+        "applied_sequence": 155,
+        "yaw_deg": 10.715799200858038,
+        "pitch_deg": -55.66750156539645,
+        "yaw_world_deg": 100.71203869951374,
+        "yaw_rate_deg_s": 0,
+        "pitch_rate_deg_s": 0,
+        "saturated": false,
+        "limits": {
+          "yaw_deg": [
+            -160,
+            160
+          ],
+          "pitch_deg": [
+            -89,
+            45
+          ],
+          "max_rate_deg_s": 30,
+          "max_accel_deg_s2": 90
+        },
+        "command_delay_sec": 0.08,
+        "applied_wall": 1794714174.3194938,
+        "command_received_wall": 1794714174.204,
+        "command_capture_wall": null,
+        "command_created_wall": 1794714174.2026606,
+        "horizontal_fov_deg": 90,
+        "measured_rotation_deg": {
+          "pitch": -55.66750335693356,
+          "yaw": 100.71203613281247,
+          "roll": 0
+        },
+        "session": "d14d2a593ea04e6f96260b6e37c9380c",
+        "wall_stamp": 1794714176.1740112,
+        "monotonic_stamp": 2741.921,
+        "camera": "down",
+        "kind": "gimbal",
+        "native_stream_stats": {
+          "captured": 24400,
+          "readback_complete": 24398,
+          "sent": 24363,
+          "dropped_latest": 31,
+          "readback_busy": 41,
+          "errors": 4,
+          "readbacks_inflight": 2
+        },
+        "ue_send_wall": 1794714176.174,
+        "ue_wall_stamp": 1794714176.1727746,
+        "feedback_age_sec": 0.001074075698852539,
+        "feedback_fresh": true,
+        "selection_counts": {
+          "accepted": 154,
+          "duplicate": 1,
+          "cancelled": 1
+        },
+        "clock_alignment": {
+          "ue_minus_host_sec": -0.0012366771697998047,
+          "uncertainty_sec": 0.001,
+          "samples": 7,
+          "utc_resolution_floor_sec": 0.001
+        }
+      },
+      "classification_observations": {
+        "drone": 151
+      },
+      "geometry_samples": 151,
+      "class_name": "drone",
+      "geometry_domains": [
+        "airborne"
+      ]
+    },
+    "metric_contract": {
+      "packets": 66,
+      "candidates": 345,
+      "managed_tracks": 396,
+      "violations": 0,
+      "classes": {
+        "car": 33,
+        "drone": 109,
+        "tank": 203
+      },
+      "perception_only": true,
+      "publish_control_reference": false,
+      "passed": true
+    },
+    "px4_complete_mission": {
+      "passed": true,
+      "final_status": {
+        "stage": "complete",
+        "elapsed_sec": 213.84437190800008,
+        "progress": 1.0,
+        "complete": true,
+        "local_origin_enu_m": [
+          0.007990135811269283,
+          0.00023219516151584685,
+          -0.04318130388855934
+        ],
+        "target_ned_m": [
+          -35,
+          -28,
+          -0.7
+        ],
+        "observer_ned_m": [
+          -34.981321388535434,
+          -28.117995194159448,
+          -0.8477905623614788
+        ],
+        "mode": "AUTO.LAND",
+        "armed": false,
+        "position_error_m": 0.19003632993217962,
+        "pose_source": "PX4_MAVROS_actual_feedback"
+      },
+      "physics": "PX4 v1.13.2 + Gazebo Classic ODE",
+      "ue_collision_meshes_shared": false
+    },
+    "regression_tests": 233,
+    "bridge_rostest_tests": 4,
+    "artifacts": {
+      "ground": "car_09_installed",
+      "air": "drone_11_region",
+      "complete_flight": "px4_live_09_installed_px4/result.json"
+    },
+    "known_classification_limits": [
+      "Vehicle car/tank labels can still change within the compatible ground group.",
+      "A UAV ground shadow was sometimes misclassified. Failed shadow selections are preserved; positive airborne test selects the actual visible UAV image region, not simulator target coordinates."
+    ],
+    "order": "Completed stage5 before any stage6 implementation",
+    "default_px4_route": {
+      "passed": true,
+      "pose_source": "PX4_MAVROS_actual_feedback",
+      "default_launch_arguments": {
+        "pose_source": "px4",
+        "start_px4": true,
+        "start_mission": true,
+        "capture_fps": 30
+      },
+      "mission_samples": 5120,
+      "position_extents_ned_m": [
+        86.42037788033485,
+        61.94421911239624,
+        34.59691224992275
+      ],
+      "stages": [
+        "approach_land",
+        "inspect_01",
+        "inspect_02",
+        "inspect_03",
+        "inspect_04",
+        "land",
+        "prestream",
+        "return",
+        "takeoff",
+        "transit_01",
+        "transit_02",
+        "transit_03",
+        "transit_04",
+        "waiting_perception"
+      ],
+      "fov_min_deg": 90,
+      "fov_max_deg": 90,
+      "capture_fps": 28.989231542106538,
+      "capture_errors": [],
+      "mission_result": {
+        "passed": true,
+        "final_status": {
+          "stage": "complete",
+          "elapsed_sec": 264.8348905490002,
+          "progress": 1.0,
+          "complete": true,
+          "local_origin_enu_m": [
+            0.008158895187079906,
+            0.00032384326914325356,
+            -0.01253432221710682
+          ],
+          "target_ned_m": [
+            -55,
+            -35,
+            -0.7
+          ],
+          "observer_ned_m": [
+            -55.00941616023192,
+            -35.048599301837385,
+            -0.8035361904650926
+          ],
+          "mode": "AUTO.LAND",
+          "armed": false,
+          "position_error_m": 0.11476192290397715,
+          "pose_source": "PX4_MAVROS_actual_feedback"
+        },
+        "physics": "PX4 v1.13.2 + Gazebo Classic ODE",
+        "ue_collision_meshes_shared": false
+      }
+    }
+  },
+  "stage6": {
+    "stage": 6,
+    "date": "2026-11-15",
+    "passed": true,
+    "scope": "RGB provenance, faithful input recording and metadata, analysis export, retimed camera-only replay, complete D-FINE-S V3 four-mode/SAR-to-XD recomputation. No infrared or spatial target-chase acceptance.",
+    "stage5_completed_before_stage6_implementation": true,
+    "recording": {
+      "schema_version": 1,
+      "validated": true,
+      "modality": "rgb",
+      "source": {
+        "schema_version": 1,
+        "modality": "rgb",
+        "producer": "UE.SceneCapture2D.FinalColorLDR",
+        "thermal_sensor_model": false,
+        "is_replay": false,
+        "encoding": "bgr8",
+        "session": "806ddea90585400baecbbb6d1360ab7b",
+        "frame_id": "ue_test_down_optical",
+        "image_topic": "/ue_test/fixed_camera/image_raw",
+        "camera_info_topic": "/ue_test/fixed_camera/camera_info",
+        "transport": "SRF1"
+      },
+      "bag_file": "hover_rgb.bag",
+      "bag_sha256": "6d2c2293aa9c4507bc15d5aed0275634b4b0e936ebaec846421697c7ee704417",
+      "summary": {
+        "frames": 1971,
+        "paired_calibrations": 1971,
+        "paired_camera_poses": 1971,
+        "first_capture_nsec": 1794714833099781513,
+        "last_capture_nsec": 1794714907893339157,
+        "duration_sec": 74.793557644,
+        "effective_fps": 26.339166929012034,
+        "dimensions": [
+          [
+            960,
+            540
+          ]
+        ]
+      },
+      "timing": "Original capture-time Image/CameraInfo/camera TF; bag receive times retained separately",
+      "infrared_validated": false
+    },
+    "additional_px4_recording": {
+      "schema_version": 1,
+      "validated": true,
+      "modality": "rgb",
+      "source": {
+        "modality": "rgb",
+        "thermal_sensor_model": false,
+        "encoding": "bgr8",
+        "is_replay": false,
+        "producer": "UE.SceneCapture2D.FinalColorLDR",
+        "image_topic": "/ue_test/fixed_camera/image_raw",
+        "camera_info_topic": "/ue_test/fixed_camera/camera_info",
+        "frame_id": "ue_test_down_optical",
+        "session": "d14d2a593ea04e6f96260b6e37c9380c",
+        "provenance": "Legacy capture: gimbal session matched to actual production run.json"
+      },
+      "bag_file": "actual_ue_rgb.bag",
+      "bag_sha256": "e09245cd2ce8dedbafaeacdf002543c6a639ea48a8bdf2bf96392796a3870105",
+      "summary": {
+        "frames": 561,
+        "paired_calibrations": 561,
+        "paired_camera_poses": 561,
+        "first_capture_nsec": 1794714324689463138,
+        "last_capture_nsec": 1794714344236273527,
+        "duration_sec": 19.546810389,
+        "effective_fps": 28.649175433509136,
+        "dimensions": [
+          [
+            960,
+            540
+          ]
+        ]
+      },
+      "timing": "Original capture-time Image/CameraInfo/camera TF; bag receive times retained separately",
+      "infrared_validated": false
+    },
+    "replay": {
+      "passed": true,
+      "modality": "rgb",
+      "is_replay": true,
+      "rate": 1.0,
+      "frames": 1971,
+      "published_topics": [
+        "/rgb_replay/fixed_camera/image_raw",
+        "/rgb_replay/fixed_camera/camera_info",
+        "/tf",
+        "/rgb_replay/camera/source"
+      ],
+      "recorded_algorithm_outputs_republished": false,
+      "flight_control_started": false,
+      "late_frames_over_50ms": 0,
+      "maximum_schedule_lateness_ms": 31.939963000240823,
+      "input_span_sec": 74.793557644
+    },
+    "four_modes": {
+      "passed": true,
+      "test": "ROS/Web four-mode smoke; no flight or accuracy claim",
+      "modes": {
+        "smart_tracker": {
+          "selected_via_web": true,
+          "valid_lock_web_updates": 39,
+          "web_updates": 40
+        },
+        "feature_tracker": {
+          "selected_via_web": true,
+          "valid_lock_web_updates": 38,
+          "web_updates": 39
+        },
+        "color_tracker": {
+          "selected_via_web": true,
+          "valid_lock_web_updates": 38,
+          "web_updates": 39
+        },
+        "fusion_tracker": {
+          "selected_via_web": true,
+          "valid_lock_web_updates": 37,
+          "web_updates": 40
+        }
+      },
+      "stage_counts_by_mode": {
+        "smart_tracker": {
+          "detector_job_submitted": 382,
+          "backend_call": 130,
+          "smart_manager_update": 130,
+          "tracked_output": 130,
+          "selected_output": 130,
+          "xd_observation_output": 129
+        },
+        "feature_tracker": {
+          "camera_motion_update": 214,
+          "manual_feature_update": 214,
+          "tracked_output": 214,
+          "xd_observation_output": 214,
+          "selected_output": 214,
+          "backend_call": 1
+        },
+        "color_tracker": {
+          "camera_motion_update": 207,
+          "manual_colour_update": 207,
+          "tracked_output": 207,
+          "xd_observation_output": 207,
+          "selected_output": 207
+        },
+        "fusion_tracker": {
+          "detector_job_submitted": 58,
+          "camera_motion_update": 131,
+          "visual_flow_update": 135,
+          "fusion_candidate_filter": 135,
+          "fusion_output_deduplication": 135,
+          "tracked_output": 135,
+          "selected_output": 135,
+          "detector_job_deferred": 73,
+          "backend_call": 41,
+          "fusion_smart_manager_update": 41,
+          "xd_observation_output": 41,
+          "fusion_smart_manager_seed": 1,
+          "fusion_roi_color_seed": 1,
+          "fusion_roi_color_update": 121,
+          "selected_target_flow_update": 121,
+          "fusion_arbiter_step": 123,
+          "fusion_feature_update": 121
+        }
+      },
+      "backend_counts": {
+        "dfine_infer": 172,
+        "configured_nms": 172,
+        "external_tracker_update": 172,
+        "temporal_class_consensus": 172
+      },
+      "xd": {
+        "counts": {
+          "output_frames": 541,
+          "output_tracks": 1125,
+          "input_frames": 541,
+          "input_candidates": 796,
+          "classification_matches": 366
+        },
+        "candidate_sources": {
+          "detector": 391,
+          "visual_tracker": 405
+        },
+        "lifecycle_observations": {
+          "confirmed": 794,
+          "lost": 288,
+          "occluded": 41,
+          "tentative": 2
+        },
+        "bridge_to_xd": {
+          "p50_ms": 0.4849060001106409,
+          "p95_ms": 5.3189019999990705
+        },
+        "capture_to_xd": {
+          "p50_ms": 41.302251,
+          "p95_ms": 404.634285
+        },
+        "matched_latency_samples": 495,
+        "notes": "Passive topic arrival timings; lifecycle counts are observations, not unique IDs. Standalone manual visual ROIs do not create detector identities in XD."
+      },
+      "smart_manager": {
+        "update_calls": 171,
+        "selected_id": 1,
+        "kalman_active": true,
+        "appearance_active": true
+      }
+    },
+    "live_replay_isolation": {
+      "passed": true,
+      "images": 284,
+      "paired_k_and_tf": 284,
+      "missing_pairs": [],
+      "source": {
+        "modality": "rgb",
+        "thermal_sensor_model": false,
+        "encoding": "bgr8",
+        "is_replay": true,
+        "producer": "RGB recording replay",
+        "image_topic": "/rgb_replay/fixed_camera/image_raw",
+        "camera_info_topic": "/rgb_replay/fixed_camera/camera_info",
+        "frame_id": "rgb_replay_down_optical",
+        "session": "d14d2a593ea04e6f96260b6e37c9380c",
+        "provenance": "Legacy capture: gimbal session matched to actual production run.json",
+        "transport": "rosbag_retimed_rgb",
+        "original_source": {
+          "modality": "rgb",
+          "thermal_sensor_model": false,
+          "encoding": "bgr8",
+          "is_replay": false,
+          "producer": "UE.SceneCapture2D.FinalColorLDR",
+          "image_topic": "/ue_test/fixed_camera/image_raw",
+          "camera_info_topic": "/ue_test/fixed_camera/camera_info",
+          "frame_id": "ue_test_down_optical",
+          "session": "d14d2a593ea04e6f96260b6e37c9380c",
+          "provenance": "Legacy capture: gimbal session matched to actual production run.json"
+        },
+        "bag_sha256": "e09245cd2ce8dedbafaeacdf002543c6a639ea48a8bdf2bf96392796a3870105"
+      },
+      "image_publishers": [
+        "/rgb_recording_input"
+      ],
+      "forbidden_live_or_control_topics": [],
+      "perception_only": true,
+      "publish_control_reference": false,
+      "optical_frames": [
+        "rgb_replay_down_optical"
+      ],
+      "camera_world_frames": [
+        "rgb_replay_world"
+      ]
+    },
+    "regression_tests": 242,
+    "bridge_rostest_tests": 4,
+    "rgb_export": {
+      "passed": true,
+      "frames": 1971,
+      "width": 960,
+      "height": 540,
+      "modality": "rgb",
+      "infrared_validated": false,
+      "video_fps": 26.339166929012034,
+      "original_capture_span_sec": 74.793557644,
+      "timing": "MP4 uses average capture FPS for visual analysis; exact variable capture times/K/pose are in frames.jsonl and the lossless rosbag",
+      "bag_sha256": "6d2c2293aa9c4507bc15d5aed0275634b4b0e936ebaec846421697c7ee704417"
+    },
+    "infrared_validated": false,
+    "hardware_and_dataset_scope": "Actual local UE5.5.4 rendered RGB inputs; 75 s kinematic-hover clip for four-mode replay; separate 20 s PX4-flight clip for dynamic-pose/isolation audit. Ground/air closed-loop and actual default PX4 route validated in stage5 reports.",
+    "evidence": [
+      "hover_rgb.bag.manifest.json",
+      "hover_rgb.mp4.frames.jsonl",
+      "replay_02/replay_summary.json",
+      "final_four_modes.json",
+      "actual_replay_isolation.json",
+      "replay_03_actual/replay_summary.json",
+      "final_regression.log",
+      "final_bridge_rostest.log"
+    ]
+  }
+}

@@ -10,6 +10,87 @@ from sar_yolo_detector.manual_box_tracker import ManualBoxTracker
 
 
 class ManualBoxTrackerTest(unittest.TestCase):
+    def test_subpixel_camera_motion_keeps_real_current_kcf_measurements(self):
+        old_threads=cv2.getNumThreads();cv2.setNumThreads(1)
+        try:
+            original=np.full((240,360,3),35,np.uint8)
+            original[90:130,140:190]=np.random.RandomState(31).randint(0,255,(40,50,3),dtype=np.uint8)
+            tracker=ManualBoxTracker({'feature_tracker':{'tracker_algorithm':'kcf','require_opencv_tracker':True,
+                'motion_local_warp':True,'minimum_motion_warp_px':.5}})
+            tracker.initialize(original,(140,90,50,40));previous=original;offset=0.;deferred=0
+            for n in range(1,31):
+                current_offset=.18 if n%2 else -.18
+                delta=current_offset-offset;H=np.array([[1.,0.,delta],[0.,1.,0.],[0.,0.,1.]])
+                tracker.compensate_motion(previous,H)
+                deferred+=getattr(tracker,'last_motion_resample','')=='subpixel_search'
+                current=cv2.warpPerspective(original,np.array([[1.,0.,current_offset],[0.,1.,0.],[0.,0.,1.]]),(360,240))
+                result=tracker.update(current)
+                self.assertTrue(result.valid);self.assertLess(abs(result.bbox[0]-(140+current_offset)),1.5)
+                self.assertEqual(tracker.tracker_name,'kcf')
+                previous=current;offset=current_offset
+            self.assertGreater(deferred,20)
+        finally:cv2.setNumThreads(old_threads)
+
+    @unittest.skipUnless(callable(getattr(cv2,'TrackerNano_create',None)),'OpenCV NanoTrack unavailable')
+    def test_local_nano_warp_preserves_full_warp_neural_search_response(self):
+        old_threads=cv2.getNumThreads();cv2.setNumThreads(1)
+        try:
+            frame=np.random.RandomState(129).randint(0,255,(480,640,3),dtype=np.uint8)
+            box=(250.,180.,40.,30.);matrix=np.array([[1.,.003,3.],[-.003,1.,2.],[0.,0.,1.]])
+            pair=[ManualBoxTracker({'feature_tracker':{'tracker_algorithm':'nano','require_opencv_tracker':True,
+                'motion_local_warp':bounded}}) for bounded in [False,True]]
+            current=cv2.warpPerspective(frame,matrix,(640,480));results=[]
+            for tracker in pair:
+                self.assertTrue(tracker.initialize(frame,box).valid)
+                self.assertTrue(tracker.compensate_motion(frame,matrix))
+                results.append(tracker.update(current))
+                self.assertEqual(tracker.tracker_name,'nano')
+            self.assertTrue(all(r.valid for r in results))
+            np.testing.assert_allclose(results[0].bbox,results[1].bbox,atol=.02)
+            self.assertAlmostEqual(results[0].confidence,results[1].confidence,places=5)
+        finally:cv2.setNumThreads(old_threads)
+
+    def test_local_colour_processing_matches_full_image_mask_geometry_and_confidence(self):
+        rng=np.random.RandomState(91)
+        background=np.zeros((480,640,3),np.uint8)
+        background[:,:,1]=rng.randint(70,130,(480,640)).astype(np.uint8)
+        def image(shift=0,present=True):
+            frame=background.copy()
+            if present:frame[180:210,250+shift:290+shift]=(15,20,190)
+            return frame
+        full=ManualBoxTracker({'tracker_type':'color_tracker'})
+        local=ManualBoxTracker({'tracker_type':'color_tracker','color_tracker':{'local_processing':True}})
+        for tracker in (full,local):self.assertTrue(tracker.initialize(image(),(250,180,40,30)).valid)
+        for shift in [0,2,4,6]:
+            a,b=full.update(image(shift)),local.update(image(shift))
+            self.assertTrue(a.valid);self.assertTrue(b.valid)
+            np.testing.assert_allclose(a.bbox,b.bbox,atol=1e-6)
+            self.assertAlmostEqual(a.confidence,b.confidence,places=7)
+        self.assertFalse(full.update(image(present=False)).valid)
+        self.assertFalse(local.update(image(present=False)).valid)
+    def test_local_motion_warp_keeps_global_coordinates_and_identical_tracker_context(self):
+        frame=np.random.RandomState(29).randint(0,255,(480,640,3)).astype(np.uint8)
+        tracker=ManualBoxTracker({'feature_tracker':{'tracker_algorithm':'kcf','motion_local_warp':True}})
+        box=(250.,180.,40.,30.)
+        self.assertTrue(tracker.initialize(frame,box).valid)
+        captured=[];initialize=tracker.initialize
+        def capture(image,roi):
+            captured.append((image.copy(),roi));return initialize(image,roi)
+        tracker.initialize=capture
+        matrix=np.array([[1.,.003,3.],[-.003,1.,2.],[0.,0.,1.]])
+        self.assertTrue(tracker.compensate_motion(frame,matrix))
+        image,roi=captured[-1]
+        full=cv2.warpPerspective(frame,matrix,(640,480))
+        x,y,w,h=roi;pad=int(2*max(w,h))
+        left,top=int(x)-pad,int(y)-pad;right,bottom=int(x+w)+pad,int(y+h)+pad
+        np.testing.assert_array_equal(image[top:bottom,left:right],full[top:bottom,left:right])
+        self.assertEqual(image.shape,frame.shape)
+        # Both paths must actually execute KCF and produce the same response.
+        reference=ManualBoxTracker({'feature_tracker':{'tracker_algorithm':'kcf'}})
+        reference.initialize(frame,box);reference.compensate_motion(frame,matrix)
+        a,b=tracker.update(full),reference.update(full)
+        self.assertTrue(a.valid);self.assertTrue(b.valid)
+        np.testing.assert_allclose(a.bbox,b.bbox,atol=.05)
     def test_template_tracker_follows_a_textured_roi(self):
         random = np.random.RandomState(7)
         texture = random.randint(0, 256, (20, 24, 3), dtype=np.uint8)
@@ -244,3 +325,19 @@ class ManualBoxTrackerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ColourReliabilityTest(unittest.TestCase):
+    def test_colour_loses_trust_when_new_background_matches_target(self):
+        tracker=ManualBoxTracker({'tracker_type':'color_tracker','color_tracker':{'color':'roi','min_area_px':20}})
+        frame=np.full((180,240,3),(35,135,35),np.uint8)
+        frame[65:105,90:120]=(25,25,210)
+        self.assertTrue(tracker.initialize(frame,(90,65,30,40)).valid)
+        first=tracker.update(frame)
+        self.assertTrue(first.valid)
+        self.assertGreater(first.diagnostics['local_contrast'],.5)
+        changed=np.full_like(frame,(25,25,210))
+        result=tracker.update(changed)
+        self.assertFalse(result.valid)
+        self.assertFalse(result.diagnostics['accepted'])
+        self.assertEqual(result.diagnostics['score'],0.)

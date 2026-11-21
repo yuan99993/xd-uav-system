@@ -1,4 +1,7 @@
 <launch>
+  <arg name="image_transport" default="raw" />
+  <arg name="image_codec" default="png" />
+  <arg name="fps" default="5" />
   <arg name="UAV_NAME" default="moving_uav_search" />
   <arg name="instance_name" default="fusion_fixed" />
   <arg name="bind_address" default="127.0.0.1" />
@@ -21,7 +24,9 @@
       <param name="mode_service" value="/$(arg UAV_NAME)/sar_yolo_smart_tracker_$(arg instance_name)/switch_tracking_mode" />
       <param name="initial_mode" value="smart_tracker" />
       <param name="class_names" value="$(arg class_names)" />
-      <param name="fps" value="5.0" />
+      <param name="image_transport" value="$(arg image_transport)" />
+      <param name="image_codec" value="$(arg image_codec)" />
+      <param name="fps" value="$(arg fps)" />
     </node>
   </group>
 </launch>

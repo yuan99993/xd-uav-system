@@ -1,5 +1,6 @@
 <launch>
   <!-- D-FINE-S V3 four-mode fusion runtime; unique name avoids archived launch collisions. -->
+  <arg name="feature_tracker_algorithm" default="" />
   <arg name="config" default="$(find sar_yolo_detector)/config/dfine_v3.yaml" />
   <arg name="node_name" default="sar_yolo_smart_tracker" />
   <arg name="overlay_config" default="" />
@@ -70,5 +71,7 @@
            name="SmartTracker/SMART_TRACKER_CPU_MODEL_PATH" value="$(arg model_path)" />
     <param if="$(eval arg('model_sha256') != '')"
            name="SmartTracker/SMART_TRACKER_MODEL_SHA256" value="$(arg model_sha256)" />
+    <param if="$(eval arg('feature_tracker_algorithm') != '')"
+           name="ManualBoxTracker/feature_tracker/tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
   </node>
 </launch>

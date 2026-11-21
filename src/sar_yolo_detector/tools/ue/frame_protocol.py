@@ -26,3 +26,12 @@ def image_complete(path):
             stream.seek(-2,2)
             return stream.read(2)==b'\xff\xd9'
     except (OSError,ValueError):return False
+
+
+def claim_request(state,request,native=False):
+    """Native captures must never re-arm a persisted legacy file command."""
+    if native:return True
+    key=(request.get('session'),request.get('id'))
+    if key in (state.get('last_id'),state.get('startup_ignored_key')):return False
+    state['last_id']=key
+    return True

@@ -16,16 +16,18 @@ tracker:
     maximum_count: 1
     idle_ttl_sec: 30.0
   confidence:
-    new_track: 0.25
-    update: 0.10
+    new_track: 0.45
+    update: 0.04
   association:
+    strict_class_family_isolation: true
+    class_agnostic: false
     high_confidence_threshold: 0.25
     compatible_class_ids: [0, 1]
     duplicate_iou_threshold: 0.85
   lifecycle:
     confirmation_hits: 2
     reference_fps: 5.0
-    occlusion_timeout_sec: 0.6
+    occlusion_timeout_sec: 0.80
     reacquisition_after_sec: 0.6
     removal_timeout_sec: 5.0
   global_identity:

@@ -1,0 +1,14 @@
+<launch>
+  <arg name="ue_project" />
+  <arg name="python_executable" default="" />
+  <arg name="pose_source" default="px4" />
+  <arg name="UAV_NAME" default="ue_test" />
+  <arg name="seconds" default="360" />
+  <include file="$(find sar_yolo_detector)/launch/ue_civil_static_lock.launch">
+    <arg name="ue_project" value="$(arg ue_project)" />
+    <arg name="python_executable" value="$(arg python_executable)" />
+    <arg name="pose_source" value="$(arg pose_source)" />
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="seconds" value="$(arg seconds)" />
+  </include>
+</launch>

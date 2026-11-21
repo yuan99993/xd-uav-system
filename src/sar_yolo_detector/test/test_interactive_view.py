@@ -11,6 +11,24 @@ class InteractiveViewTest(unittest.TestCase):
     def evidence(self, sec=1):
         return dict(capture_header=dict(seq=7, frame_id='camera', stamp=dict(secs=sec, nsecs=2)))
 
+    def test_delayed_tracking_evidence_pairs_original_frame_without_regressing(self):
+        cache=FramePair(image_limit=4,maximum_image_bytes=10)
+        for sec in range(1,5):
+            image=self.image(sec);image.data=b'12';cache.add_image(image)
+        cache.add_evidence(self.evidence(2))
+        pair=cache.take();self.assertEqual(pair[0].header.stamp.secs,2)
+        cache.add_evidence(self.evidence(4));self.assertEqual(cache.take()[0].header.stamp.secs,4)
+        cache.add_evidence(self.evidence(3));self.assertIsNone(cache.take())
+        self.assertFalse(cache.images)
+
+    def test_buffered_images_are_bounded_by_bytes_and_count(self):
+        cache=FramePair(image_limit=10,maximum_image_bytes=5)
+        for sec in range(1,20):
+            image=self.image(sec);image.data=b'123';cache.add_image(image)
+        self.assertEqual(len(cache.images),1)
+        cache.add_evidence(self.evidence(18));self.assertIsNone(cache.take())
+        cache.add_evidence(self.evidence(19));self.assertIsNotNone(cache.take())
+
     def test_original_pixel_mapping(self):
         self.assertEqual(image_point(400, 300, 800, 600, 640, 480), (320, 240))
         self.assertEqual(image_point(0, 0, 640, 480, 640, 480), (0, 0))
@@ -43,6 +61,15 @@ class InteractiveViewTest(unittest.TestCase):
             cache.add_evidence(self.evidence(sec))
         self.assertEqual(len(cache.metadata), 3)
         self.assertEqual(cache.take()[0].header.stamp.secs, 99)
+
+    def test_completed_pair_survives_faster_unmatched_next_image(self):
+        cache=FramePair()
+        cache.add_image(self.image(1));cache.add_evidence(self.evidence(1))
+        cache.add_image(self.image(2))
+        self.assertEqual(cache.take()[0].header.stamp.secs,1)
+        self.assertIsNone(cache.take())
+        cache.add_evidence(self.evidence(2))
+        self.assertEqual(cache.take()[0].header.stamp.secs,2)
 
     def test_selected_output_duplicate_does_not_change_input_gates(self):
         boxes = [Candidate((10, 10, 40, 40), 2, .8, 5),

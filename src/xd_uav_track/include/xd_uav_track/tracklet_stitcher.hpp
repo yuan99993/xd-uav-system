@@ -65,6 +65,7 @@ struct TrackletStitchConfig {
   double motion_only_max_velocity_delta_mps{6.0};
   double minimum_score{0.45};
   double minimum_score_margin{0.15};
+  bool class_agnostic_association{false};
   // Optional same-source class family for viewpoint-dependent label changes.
   std::vector<int> compatible_class_ids;
 };

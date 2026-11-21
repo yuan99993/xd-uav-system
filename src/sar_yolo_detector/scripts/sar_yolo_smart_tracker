@@ -2,6 +2,11 @@
 set -euo pipefail
 
 export YOLO_AUTOINSTALL=false
+# Keep inference math libraries from oversubscribing the render/ROS/control
+# cores. Explicit deployment choices remain authoritative.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-2}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 
 package_dir="$(rospack find sar_yolo_detector)"
 script_dir="$(cd "$(dirname "$0")" && pwd)"

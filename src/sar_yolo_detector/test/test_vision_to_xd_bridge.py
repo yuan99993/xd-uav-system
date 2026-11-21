@@ -138,6 +138,28 @@ class VisionToXdBridgeTest(unittest.TestCase):
         self.assertEqual(candidate.track_id, -1)
         self.assertFalse(candidate.range_valid)
 
+    def test_ground_and_air_classes_never_promote_hypothesis_pose_to_range(self):
+        self.assertTrue(self._wait(lambda:self._tracked_input.get_num_connections()>0))
+        for class_id in (0,1,2):
+            packet=TrackedDetection2DArray();packet.header.stamp=rospy.Time.now()
+            packet.header.frame_id='camera_optical'
+            tracked=TrackedDetection2D();tracked.track_id=600+class_id;tracked.track_id_is_stable=True
+            tracked.detection.bbox.center.x=120;tracked.detection.bbox.center.y=150
+            tracked.detection.bbox.size_x=40;tracked.detection.bbox.size_y=30
+            hypothesis=ObjectHypothesisWithPose(id=class_id,score=.95)
+            # Detection hypotheses may contain an unvalidated pose. It is not
+            # metric evidence and must never escape through this 2-D bridge.
+            hypothesis.pose.pose.position.x=100
+            hypothesis.pose.pose.position.z=30
+            tracked.detection.results=[hypothesis];packet.detections=[tracked]
+            self._tracked_input.publish(packet)
+            self.assertTrue(self._wait(lambda:any(v.header.stamp==packet.header.stamp for v in self._tracked_outputs)))
+            output=next(v for v in self._tracked_outputs if v.header.stamp==packet.header.stamp)
+            self.assertEqual(output.candidates[0].class_id,class_id)
+            self.assertFalse(output.candidates[0].range_valid)
+            self.assertFalse(output.candidates[0].has_relative_position_body)
+            self.assertFalse(output.candidates[0].has_relative_velocity_body)
+
     def test_tracked_detection_preserves_identity_and_provenance(self):
         self.assertTrue(self._wait(
             lambda: self._tracked_input.get_num_connections() > 0 and

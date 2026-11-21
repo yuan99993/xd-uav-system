@@ -55,6 +55,16 @@ class RoiColourTracker:
 
 
 class FusionAdapterTest(unittest.TestCase):
+    def test_manual_reselection_strong_vehicle_is_not_blocked_by_weak_alternative_label(self):
+        from sar_yolo_detector.box_fusion import Candidate
+        self.node._fusion.config['fast_reacquire_confidence']=.60
+        box=(50.,50.,40.,40.)
+        strong=Candidate(box,0,.868,5,True,self.image.header.stamp.to_sec())
+        weak=Candidate(box,2,.085,-1,False,self.image.header.stamp.to_sec())
+        result=self.node._initialize_fusion_selection((self.image.header,self.frame,[strong,weak]),box)
+        self.assertEqual(0,result.class_id)
+        self.assertEqual(5,result.local_id)
+
     @classmethod
     def setUpClass(cls):
         # __new__ fixtures skip the production constructor's OpenCV limit.
@@ -148,6 +158,20 @@ class FusionAdapterTest(unittest.TestCase):
         self.assertTrue(event['first_diagnostics']['no_detector_candidates'])
         self.assertEqual(event['first_reason'], 'no_trusted_visual_observation')
 
+    def test_control_deadline_blocks_all_selected_outputs_even_when_pixels_matched(self):
+        from unittest.mock import patch
+        self.process();self.select()
+        self.node._civil_control_deadline=.5
+        stamp=self.node._fusion.stamp+.1
+        self.image.header.stamp=rospy.Time.from_sec(stamp)
+        with patch.object(NODE.rospy.Time,'now',return_value=rospy.Time.from_sec(stamp+.6)):
+            self.node._process_fusion(self.image,self.frame,detections=self.detections)
+        state=self.node._state_publisher.messages[-1]
+        self.assertFalse(state.control_measurement_ready)
+        self.assertTrue(state.data_is_stale)
+        self.assertEqual(state.freshness_reason,'control_capture_deadline_exceeded')
+        self.assertFalse(self.node._selected_detections_publisher.messages[-1].detections)
+
     def select(self):
         request = SelectSmartTrackRequest(use_target_id=True, target_id=5)
         response = self.node._select(request)
@@ -212,6 +236,43 @@ class FusionAdapterTest(unittest.TestCase):
         self.assertTrue(evidence["diagnostics"]["color_selected_observation"])
         self.assertEqual(evidence["diagnostics"]["color_support"], "local_visual_agreement")
 
+    def test_civil_roi_restarts_pose_history_at_exact_displayed_capture(self):
+        node=self.node
+        node._fusion=BoxFusion({'civil_static_small_lock':{'enabled':True}},
+            manual_config={'feature_tracker':{'tracker_algorithm':'kcf'}})
+        node._camera_motion=CameraMotion()
+        stamp=self.image.header.stamp.to_sec()
+        node._camera_motion.update(self.frame,stamp+.2)
+        node._motion_header=copy.deepcopy(self.image.header)
+        node._motion_header.stamp=rospy.Time.from_sec(stamp+.2)
+        node._initialize_fusion_selection((self.image.header,self.frame,[]),(55.,55.,12.,8.))
+        self.assertEqual(node._motion_header.stamp,self.image.header.stamp)
+        self.assertEqual(node._camera_motion.stamp,stamp)
+        node._camera_motion.update(self.frame,stamp+.3,[(55,55,12,8)],
+            pose_rotation=np.eye(3),pure_rotation=True)
+        self.assertIsNotNone(node._camera_motion.between(stamp,stamp+.3))
+        self.assertIsNone(node._camera_motion.between(stamp+.2,stamp+.3))
+
+    def test_civil_selection_caches_reference_pose_instead_of_requerying_expired_tf(self):
+        node=self.node
+        node._fusion=BoxFusion({'civil_static_small_lock':{'enabled':True}},
+            manual_config={'feature_tracker':{'tracker_algorithm':'kcf'}})
+        node._camera_motion=CameraMotion();node._tf_buffer=object()
+        seed=self.image.header.stamp.to_sec();queries=[]
+        def pose(message):
+            stamp=message.header.stamp.to_sec()
+            if queries and stamp==seed:raise AssertionError('Expired reference TF queried again')
+            queries.append(stamp)
+            return dict(K=np.eye(3),R=np.eye(3),position=np.zeros(3))
+        node._capture_camera_pose=pose
+        node._initialize_fusion_selection((self.image.header,self.frame,[]),(55.,55.,12.,8.))
+        self.image.header.stamp=rospy.Time.from_sec(seed+.2)
+        node._process_fusion(self.image,self.frame,detections=[],detector_updated=False)
+        self.assertEqual(queries,[seed,seed+.2])
+        evidence=json.loads(node._fusion_evidence_publisher.messages[-1].data)
+        self.assertEqual(evidence['diagnostics']['civil_static_small_lock']['reference_source'],
+            'capture_calibration_rotation')
+
     def test_fusion_selection_seeds_smart_manager_and_roi_colour_from_same_frame(self):
         self.process()
         tracker = self.node._tracker
@@ -227,6 +288,44 @@ class FusionAdapterTest(unittest.TestCase):
         self.assertEqual(tracker._selection_seed[2]["snapshot_shape"], self.frame.shape[:2])
         self.assertTrue(color.active)
         self.assertIsNotNone(color._colour_histogram)
+
+    def test_civil_manual_roi_does_not_snap_to_weak_large_detector_box(self):
+        self.node._fusion=BoxFusion({'civil_static_small_lock':{'enabled':True}},
+            manual_config={'feature_tracker':{'tracker_algorithm':'kcf'}})
+        self.node._camera_motion=CameraMotion()
+        manual=(55.,55.,12.,8.)
+        candidate=Candidate((40.,40.,40.,40.),2,.3,5,True,self.image.header.stamp.to_sec())
+        self.node._initialize_fusion_selection((self.image.header,self.frame,[candidate]),manual)
+        self.assertEqual(self.node._fusion.box,manual)
+        self.assertEqual(self.node._fusion.class_id,-1)
+        self.assertEqual(self.node._fusion.last_detection_stamp,0.)
+
+    def test_all_model_categories_remain_candidates_until_operator_selects_and_clears(self):
+        self.node._tracker.allowed_class_ids=None
+        self.node._fusion=BoxFusion({'class_agnostic_lock':True},
+            manual_config={'feature_tracker':{'tracker_algorithm':'kcf'}})
+        texture=self.frame[50:90,50:90].copy();self.detections=[]
+        for category,x in enumerate([10,80,150]):
+            self.frame[50:90,x:x+40]=texture
+            self.detections.append(NormalizedDetection(10+category,category,.95,
+                (x,50,x+40,90),(x+20,70)))
+        self.process()
+        self.assertEqual({d.detection.results[0].id for d in self.node._tracked_publisher.messages[-1].detections},{0,1,2})
+        self.assertFalse(self.node._state_publisher.messages[-1].has_selection)
+        self.assertFalse(self.node._state_publisher.messages[-1].control_measurement_ready)
+        self.assertFalse(self.node._selected_detections_publisher.messages[-1].detections)
+        for category in range(3):
+            response=self.node._select(SelectSmartTrackRequest(use_target_id=True,target_id=10+category))
+            self.assertTrue(response.success,response.message)
+            self.assertEqual(self.node._fusion.class_id,category)
+            self.assertEqual(self.node._fusion.public_id,10+category)
+            self.process()
+            self.assertTrue(self.node._state_publisher.messages[-1].has_selection)
+            self.assertTrue(self.node._select(SelectSmartTrackRequest(clear_selection=True)).success)
+            self.process()
+            self.assertFalse(self.node._state_publisher.messages[-1].has_selection)
+            self.assertFalse(self.node._state_publisher.messages[-1].control_measurement_ready)
+            self.assertFalse(self.node._selected_detections_publisher.messages[-1].detections)
 
     def test_no_selection_keeps_all_yolo_targets(self):
         output_image = self.process()
@@ -556,6 +655,30 @@ class FusionAdapterTest(unittest.TestCase):
         selected = self.node._render_overlay(self.frame.copy(), ('boxes', [self.detection], {2: 'tank'}, 5, ''))
         self.assertEqual(tuple(selected[50, 70]), (0, 255, 100))
 
+    def test_selection_replays_cached_images_and_keeps_previous_lock_on_gap(self):
+        node = self.node
+        node._fusion.config['replay_selection_history'] = True
+        node._camera_motion = SimpleNamespace(
+            between=lambda a, b: np.eye(3),
+            calibration_between=lambda a, b: False)
+        stamp = rospy.Time.from_sec(time.time() - .2)
+        original = copy.deepcopy(self.image.header)
+        original.stamp = stamp
+        later = copy.deepcopy(original)
+        later.stamp += rospy.Duration.from_sec(.08)
+        seed = (original, self.frame, ())
+        node._fusion_snapshots.extend([seed, (later, self.frame.copy(), ())])
+        selected = node._initialize_fusion_selection(seed, (50, 50, 40, 40))
+        self.assertTrue(selected.observed)
+        self.assertAlmostEqual(node._fusion.stamp, later.stamp.to_sec(), places=6)
+        active = node._fusion
+        discontinuity = copy.deepcopy(later)
+        discontinuity.stamp += rospy.Duration.from_sec(active.max_gap + .1)
+        node._fusion_snapshots.append((discontinuity, self.frame.copy(), ()))
+        with self.assertRaisesRegex(ValueError, "capture gap"):
+            node._initialize_fusion_selection(seed, (50, 50, 40, 40))
+        self.assertIs(node._fusion, active)
+
     def test_click_original_frame_initializes_selection(self):
         self.process()
         click = PointStamped(header=copy.deepcopy(self.image.header))
@@ -631,6 +754,7 @@ class FusionAdapterTest(unittest.TestCase):
         node._result_mailbox = LatestMailbox()
         node._publication_context = threading.local()
         node._pipeline_current = None
+        node._detector_schedule = NODE.DetectorSchedule(8.)
         node._last_input_stamp = rospy.Time(0)
         node._last_capture_stamp = rospy.Time(0)
         node._maximum_age, node._reject_out_of_order = 2., True
@@ -692,6 +816,66 @@ class FusionAdapterTest(unittest.TestCase):
             release_inference.set()
             node.close()
         self.assertFalse(any(worker.is_alive() for worker in node._workers))
+
+
+    def test_new_delayed_packet_renews_actual_detector_time_only_after_verified_flow(self):
+        self.process();self.select()
+        original=self.node._fusion.last_detection_stamp
+        source=original+.1;current=original+.2
+        self.image.header.stamp=rospy.Time.from_sec(current)
+        self.node._flow.detector_stamp=source
+        cue=SimpleNamespace(**vars(self.detection),measurement_source='visual_tracker',
+            detector_stamp=source,flow_quality=.9)
+        self.node._process_fusion(self.image,self.frame,detections=[cue],
+            detector_updated=True,detector_capture_stamp=source)
+        self.assertAlmostEqual(self.node._fusion.last_detection_stamp,source)
+        self.assertLess(self.node._fusion.last_detection_stamp,current)
+        evidence=json.loads(self.node._fusion_evidence_publisher.messages[-1].data)
+        self.assertTrue(evidence['diagnostics']['delayed_detector_evidence'])
+        self.assertFalse(evidence['diagnostics']['detector_capture_current'])
+        self.assertEqual(evidence['source'],'visual')
+
+    def test_selected_raw_packet_bypasses_manager_and_preserves_capture_time(self):
+        self.process();self.select()
+        original=self.node._fusion.last_detection_stamp
+        source=original+.1;current=original+.2
+        self.image.header.stamp=rospy.Time.from_sec(current)
+        cue=copy.copy(self.detection)
+        cue.track_id=-1
+        cue.track_id_is_stable=False
+        cue.selected_public_id=self.node._fusion.public_id
+        cue.detector_stamp=source
+        cue.capture_box=(50.,50.,40.,40.)
+        self.node._tracker.track_and_draw=lambda *a,**k: self.fail('Selected raw packet reached global manager')
+        self.node._process_fusion(self.image,self.frame,detections=[cue],
+            detector_updated=True,detector_capture_stamp=source,selected_detector_packet=True)
+        self.assertAlmostEqual(self.node._fusion.last_detection_stamp,source)
+        self.assertEqual(self.node._fusion.last_detector_candidate.capture_box,cue.capture_box)
+        self.assertEqual(cue.track_id,-1)
+        self.assertFalse(cue.track_id_is_stable)
+        self.assertLess(self.node._fusion.last_detection_stamp,current)
+
+    def test_selected_empty_raw_packet_does_not_refresh_detector_or_run_manager(self):
+        self.process();self.select()
+        original=self.node._fusion.last_detection_stamp
+        self.image.header.stamp=rospy.Time.from_sec(original+.1)
+        self.node._tracker.track_and_draw=lambda *a,**k: self.fail('Empty selected packet reached global manager')
+        self.node._process_fusion(self.image,self.frame,detections=[],
+            detector_updated=True,detector_capture_stamp=original+.1,selected_detector_packet=True)
+        self.assertEqual(self.node._fusion.last_detection_stamp,original)
+
+    def test_delayed_packet_without_flow_support_cannot_renew_identity(self):
+        self.process();self.select()
+        original=self.node._fusion.last_detection_stamp
+        source=original+.1;current=original+.2
+        self.image.header.stamp=rospy.Time.from_sec(current)
+        self.node._flow.detector_stamp=source
+        cue=SimpleNamespace(**vars(self.detection),measurement_source='visual_tracker',
+            detector_stamp=source,flow_quality=.1)
+        self.node._process_fusion(self.image,self.frame,detections=[cue],
+            detector_updated=True,detector_capture_stamp=source)
+        self.assertEqual(self.node._fusion.last_detection_stamp,original)
+
 
 
 if __name__ == "__main__":

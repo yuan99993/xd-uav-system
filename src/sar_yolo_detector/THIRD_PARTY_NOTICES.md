@@ -46,3 +46,19 @@ The source is distributed under Apache-2.0; see `third_party/D-FINE/LICENSE`
 and upstream attribution in the source headers. The trained safetensors are
 loaded locally with per-artifact and per-source SHA256 checks. Ultralytics is
 still used for BoT-SORT, not for detection in this entry.
+
+## Optional NanoTrack v2 local tracker
+
+`models/nanotrack_v2` contains the unmodified ONNX backbone/head from
+https://github.com/HonglinChu/SiamTrackers, commit
+`248663fde6bf7c40190cf10ee396d5662919ecd3`, `NanoTrack/models/nanotrackv2`.
+The accompanying Apache-2.0 license and SHA256 manifest are included.
+This is an optional single-object tracker, independent of the D-FINE detector.
+
+## Optional offline OSTrack comparator
+
+`python/sar_yolo_detector/ostrack_candidate.py` adapts crop/normalization, CE mask,
+Hann window and coordinate mapping from https://github.com/botaoye/OSTrack,
+commit `33b5e12586216b7fd0e95d255bd01ba44cbec759`. Copyright (c) 2022 Botao Ye;
+MIT license reproduced in `LICENSES/OSTrack-MIT.txt`. Native source and checkpoint
+are supplied explicitly for offline comparison and are not default ROS runtime dependencies.

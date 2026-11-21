@@ -12,10 +12,10 @@ SmartTracker:
   - 0
   - 1
   - 2
-  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.1
-  SMART_TRACKER_IOU_THRESHOLD: 0.6
-  SMART_TRACKER_MAX_DETECTIONS: 30
-  SMART_TRACKER_AGNOSTIC_NMS: true
+  SMART_TRACKER_CONFIDENCE_THRESHOLD: 0.04
+  SMART_TRACKER_IOU_THRESHOLD: 0.5
+  SMART_TRACKER_MAX_DETECTIONS: 50
+  SMART_TRACKER_AGNOSTIC_NMS: false
   SMART_TRACKER_SELECTED_APPEARANCE_ENABLED: true
   ENABLE_APPEARANCE_MODEL: true
   APPEARANCE_FEATURE_TYPE: histogram
@@ -75,3 +75,7 @@ ManualBoxTracker:
 profile: dfine_s_v3_legacy_fourmode
 model_version: dfine_s_v3_16e
 Default_Tracker: SmartTracker
+
+# Detection cadence is independent of the per-capture local tracking worker.
+AsyncPipeline:
+  fusion_detector_max_fps: 0.0

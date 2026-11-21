@@ -54,6 +54,33 @@ class LatestMailbox:
             self._condition.notify_all()
 
 
+class DetectorSchedule:
+    """Capture-clock scheduling. Local tracking never consults this gate."""
+    def __init__(self, fusion_max_fps=0.):
+        if not np.isfinite(fusion_max_fps) or not 0 <= fusion_max_fps <= 120:
+            raise ValueError('Invalid Fusion detector frequency')
+        self.period = 1./fusion_max_fps if fusion_max_fps else 0.
+        self.generation = None
+        self.last_stamp = None
+        self.submitted = self.deferred = 0
+
+    def submit(self, mode, stamp, epoch):
+        generation = (mode,epoch)
+        if self.generation != generation or (self.last_stamp is not None and stamp < self.last_stamp):
+            self.last_stamp = None
+            self.generation = generation
+        if mode == 'fusion_tracker' and self.last_stamp is not None and stamp-self.last_stamp < self.period-1e-6:
+            self.deferred += 1
+            return False
+        self.last_stamp = stamp
+        self.submitted += 1
+        return True
+
+    def diagnostics(self):
+        return dict(fusion_max_fps=1./self.period if self.period else 0.,
+                    submitted=self.submitted,deferred=self.deferred)
+
+
 @dataclass(frozen=True)
 class InferencePacket:
     image: object
@@ -62,6 +89,7 @@ class InferencePacket:
     epoch: int
     processing_ms: float
     error: str = ""
+    selected_public_id: int = -1
 
 
 class FlowDetections:
@@ -208,7 +236,8 @@ class FlowDetections:
                 continue
             observed_now = stamp == detection.detector_stamp
             # Unstable list-position IDs cannot become persistent via LK.
-            if not observed_now and (not detection.track_id_is_stable or detection.track_id < 0):
+            if (not observed_now and (not detection.track_id_is_stable or detection.track_id < 0)
+                    and getattr(detection, "selected_public_id", -1) < 0):
                 continue
             values = dict(vars(detection))
             values.update(aabb_xyxy=tuple(box), center_xy=tuple((box[:2]+box[2:])/2),

@@ -1,0 +1,16 @@
+<launch>
+  <arg name="ue_project" />
+  <arg name="python_executable" default="" />
+  <arg name="pose_source" default="px4" />
+  <arg name="seconds" default="360" />
+  <arg name="scene" default="$(find sar_yolo_detector)/config/ue/benchmark_cases/civil_car_fast.json" />
+  <arg name="gimbal_config" default="$(find sar_yolo_detector)/config/ue/benchmark_cases/civil_car_fast_gimbal.json" />
+  <include file="$(find sar_yolo_detector)/launch/ue_civil_moving_targets.launch">
+    <arg name="ue_project" value="$(arg ue_project)" />
+    <arg name="python_executable" value="$(arg python_executable)" />
+    <arg name="pose_source" value="$(arg pose_source)" />
+    <arg name="seconds" value="$(arg seconds)" />
+    <arg name="scene" value="$(arg scene)" />
+    <arg name="gimbal_config" value="$(arg gimbal_config)" />
+  </include>
+</launch>

@@ -1,0 +1,20 @@
+<launch>
+  <!-- Controlled visual benchmark. Production ue_dfine_v3_live remains PX4 by default. -->
+  <arg name="ue_project" />
+  <arg name="case" default="ground_2mps_h60" />
+  <arg name="pose_source" default="kinematic" />
+  <arg name="python_executable" default="" />
+  <arg name="output" default="$(env HOME)/.ros/sar_ue/$(anon benchmark)" />
+  <arg name="seconds" default="360" />
+  <arg name="capture_fps" default="30" />
+  <include file="$(find sar_yolo_detector)/launch/ue_dfine_v3_live.launch">
+    <arg name="ue_project" value="$(arg ue_project)" />
+    <arg name="pose_source" value="$(arg pose_source)" />
+    <arg name="python_executable" value="$(arg python_executable)" />
+    <arg name="output" value="$(arg output)" />
+    <arg name="seconds" value="$(arg seconds)" />
+    <arg name="capture_fps" value="$(arg capture_fps)" />
+    <arg name="scene" value="$(find sar_yolo_detector)/config/ue/benchmark_cases/$(arg case).json" />
+    <arg name="gimbal_config" value="$(find sar_yolo_detector)/config/ue/benchmark_cases/$(arg case)_gimbal.json" />
+  </include>
+</launch>

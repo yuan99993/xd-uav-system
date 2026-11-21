@@ -2,6 +2,12 @@
 > 使用 `roslaunch xd_uav_track dfine_v3_four_modes.launch` 启动检测、跟踪、融合、bridge、XD 和网页。
 > 先按 [D-FINE-S V3 部署说明](docs/dfine_v3_deployment.md) 安装独立 Python 运行环境；下文中的 YOLO 配置属于历史/其他任务入口。
 
+> UE 原生持续取流、独立网页帧率及完整云台控制通道见[低延迟相机部署说明](docs/ue_low_latency_stream.md)。
+
+> 默认固定 90°；显式镜头控制、标定/尺度同步与往返变焦测试见[UE 虚拟镜头说明](docs/ue_virtual_zoom.md)。
+
+> 民用静止小目标的人工 ROI 验证入口：`ue_civil_static_lock.launch`，使用当前像素核验、独立网页压缩和默认 PX4；见[运行与验收说明](docs/civil_static_small_lock.md)。
+
 # sar_yolo_detector
 
 ## 当前正式方案：PixEagle/PT 四模式（2026-10-09 确认）
@@ -772,3 +778,11 @@ homography 用于真实相机。
   重新做精度、吞吐和温升验收。
 - 检测结果只能进入 Tracker/任务管理器，不能直接触发飞行、下降或物资投放。
 - 端到端验收应记录人员召回率、误报/分钟、P95 推理时延、丢帧率和首次发现时间。
+
+空地目标的视线/距离约束与默认 PX4 完整启动入口：[ue_ground_air_geometry.md](docs/ue_ground_air_geometry.md)。默认动力学使用实际 MAVROS 反馈；图像锁定不等同于空间定位。
+
+RGB 录像、原帧标定/姿态核验、视频导出与 D-FINE-S V3 四模式独立回放：[使用说明](docs/ue_rgb_recording.md)。当前 UE 来源明确为 RGB，未启用红外传感器模型。
+
+UE 增补测试区、速度/高度/遮挡场景及完整链路审计：[操作说明](docs/ue_stress_benchmark.md)。测试预设不等于通过验收。
+
+2026-11-15 参考视频能力差距与新增区实测：[评估报告](docs/video_reference_gap_20261115.md)。

@@ -49,6 +49,8 @@ struct MultiTrackConfig {
   double metric_relative_max_speed_mps{8.0};
   double metric_relative_jump_tolerance_m{2.0};
   bool flexible_class_matching{true};
+  bool class_agnostic_association{false};
+  bool strict_class_family_isolation{false};
   // Class IDs in this configured family may represent the same object across
   // viewpoint-dependent detector label flips. Geometry/ReID gates still apply.
   std::vector<int> compatible_class_ids;

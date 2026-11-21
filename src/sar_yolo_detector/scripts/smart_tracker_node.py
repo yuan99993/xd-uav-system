@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import math
+import sys
 import threading
 import time
 import uuid
 import json
 import copy
-from collections import Counter, deque
+from dataclasses import replace
+from collections import Counter, deque, OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -20,10 +22,12 @@ import numpy as np
 import rospkg
 import rospy
 from geometry_msgs.msg import PointStamped
-from sensor_msgs.msg import Image, RegionOfInterest, CameraInfo
+from sensor_msgs.msg import CompressedImage, Image, RegionOfInterest, CameraInfo
 from std_msgs.msg import String
 from vision_msgs.msg import BoundingBox2D, Detection2D, ObjectHypothesisWithPose
 
+from sar_yolo_detector.ros_transport import bound_ros_send_buffers
+from sar_yolo_detector.publication_lifecycle import PublicationGate
 from sar_yolo_detector.msg import (
     PerceptionIdentity,
     SmartTrackerState,
@@ -33,11 +37,14 @@ from sar_yolo_detector.msg import (
     FusionDetection2DArray,
 )
 from sar_yolo_detector.manual_box_tracker import ManualBoxTracker, ManualTrackResult
-from sar_yolo_detector.box_fusion import BoxFusion, Candidate, class_duplicate_indices, iou, valid_box
-from sar_yolo_detector.async_pipeline import LatestMailbox, InferencePacket, FlowDetections
-from sar_yolo_detector.camera_motion import CameraMotion, quaternion_rotation, rotation_homography
+from sar_yolo_detector.box_fusion import BoxFusion, Candidate, class_duplicate_indices, iou, valid_box, appearance, center
+from sar_yolo_detector.async_pipeline import LatestMailbox, InferencePacket, FlowDetections, DetectorSchedule
+from sar_yolo_detector.camera_calibration import CalibrationCache
+from sar_yolo_detector.camera_motion import CameraMotion, quaternion_rotation, rotation_homography, transport_box
 from sar_yolo_detector.capture_clock import CaptureClock
 from sar_yolo_detector.loss_journal import LossJournal
+from sar_yolo_detector.focused_roi import crop_focused_roi
+from sar_yolo_detector.roi_selection import unique_roi_matches
 from sar_yolo_detector.pixeagle.parameters import Parameters
 from sar_yolo_detector.pixeagle.detection_adapter import NormalizedDetection
 from sar_yolo_detector.pixeagle.smart_tracker import SmartTracker
@@ -158,11 +165,29 @@ def _bgr_to_image(frame: np.ndarray, header) -> Image:
     return message
 
 
+def _decode_pipeline_image(message, maximum_bytes, jpeg_decoder=None):
+    """Decode latest compressed capture on the worker, retaining its header."""
+    if isinstance(message, CompressedImage):
+        frame=(jpeg_decoder(message.data) if jpeg_decoder is not None and "jpeg" in message.format.lower() else cv2.imdecode(np.frombuffer(message.data,np.uint8),cv2.IMREAD_COLOR))
+        if frame is None or frame.nbytes>maximum_bytes:
+            raise ValueError("Invalid or oversized compressed image")
+        return _bgr_to_image(frame,message.header),frame
+    return message,_image_to_bgr(message)
+
+
 class SmartTrackerNode:
     def __init__(self) -> None:
         # OpenCV otherwise may create a large CPU pool on WSL and contend with
         # CUDA/ROS/Gazebo. Keep the local-image budget explicit.
         cv2.setNumThreads(max(1, min(4, int(rospy.get_param("~opencv_threads", 1)))))
+        # Let capture callbacks and local tracking run between short CUDA
+        # submission calls from the Python inference thread.
+        switch_interval=float(rospy.get_param('~python_switch_interval_sec', .001))
+        if not math.isfinite(switch_interval) or not .0001<=switch_interval<=.01:
+            raise ValueError('python_switch_interval_sec must be within .0001.. .01')
+        sys.setswitchinterval(switch_interval)
+        self._closing = False
+        self._publication_gate = PublicationGate(lambda: rospy.is_shutdown() or rospy.core.is_shutdown_requested())
         self._lock = threading.RLock()
         self._backend_lock = threading.Lock()
         self._commit_lock = threading.RLock()
@@ -176,6 +201,8 @@ class SmartTrackerNode:
         self._result_mailbox = LatestMailbox()
         self._publication_context = threading.local()
         self._pipeline_current = None
+        self._detector_schedule = DetectorSchedule(float(rospy.get_param('~AsyncPipeline/fusion_detector_max_fps',0.)))
+        self._high_frequency_pixels = bool(rospy.get_param("perception/high_frequency_pixel_enabled", True))
         self._last_input_stamp = rospy.Time(0)
         self._inference_ms = 0.
         self._package_root = Path(
@@ -308,6 +335,8 @@ class SmartTrackerNode:
         self._motion_header = None
         self._motion_frame = None
         self._camera_info = None
+        self._calibration_cache = CalibrationCache()
+        self._pose_calibration_changed = False
         self._motion_fixed_frame = str(rospy.get_param("~camera_motion_fixed_frame", "world"))
         self._tf_buffer = self._tf_listener = None
         if self._camera_motion.enabled and self._motion_fixed_frame:
@@ -315,7 +344,7 @@ class SmartTrackerNode:
             self._tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(3.))
             self._tf_listener = tf2_ros.TransformListener(self._tf_buffer)
 
-        smart_config = dict(rospy.get_param("~SmartTracker", {}))
+        smart_config = Parameters.for_lock_policy(rospy.get_param("~SmartTracker", {}),self._fusion.class_agnostic_lock)
         if not smart_config.get("SMART_TRACKER_ENABLED", True):
             raise RuntimeError("SmartTracker is disabled by configuration")
         smart_config["SMART_TRACKER_MODELS_ROOT"] = str(self._package_root)
@@ -377,6 +406,10 @@ class SmartTrackerNode:
         self._annotated_publisher = rospy.Publisher(
             annotated_topic, Image, queue_size=1
         )
+        self._compressed_preview_publisher = (rospy.Publisher(annotated_topic+'/compressed',CompressedImage,queue_size=1)
+            if rospy.get_param('~publish_compressed_preview',False) else None)
+        self._compressed_preview_interval=1./max(1.,min(10.,float(rospy.get_param('~compressed_preview_fps',5.))))
+        self._compressed_preview_last=0.
         self._selected_detections_publisher = rospy.Publisher(
             selected_detections_topic, TrackedDetection2DArray, queue_size=3
         )
@@ -392,9 +425,20 @@ class SmartTrackerNode:
         )
         self._fusion_roi_service = rospy.Service("~select_fusion_roi", SelectFusionROI, self._select_fusion_roi)
         self._manual_roi_service = rospy.Service("~select_manual_roi", SelectFusionROI, self._select_manual_roi)
+        transport=rospy.get_param("~input_image_transport","raw")
+        if transport not in ("raw","compressed"):raise ValueError("input_image_transport must be raw or compressed")
+        self._civil_control_deadline=float(rospy.get_param("~control_maximum_capture_age_sec",0.))
+        from sar_yolo_detector.jpeg_decode import JPEGDecoder
+        self._jpeg_decoder=JPEGDecoder(str(rospy.get_param("~jpeg_decode_device","cpu")),self._maximum_image_bytes)
+        self._decoded_mailbox=LatestMailbox() if rospy.get_param("~async_decode",False) else None
+        self._preview_mailbox=LatestMailbox() if rospy.get_param("~async_preview",False) else None
+        self._preview_send_buffer=int(rospy.get_param("~preview_send_buffer_bytes",0))
+        self._preview_send_sockets=set()
+        self._input_arrival_times=OrderedDict()
+        self._input_decode_times=OrderedDict()
         self._subscriber = rospy.Subscriber(
-            self._input_topic,
-            Image,
+            self._input_topic+("/compressed" if transport=="compressed" else ""),
+            CompressedImage if transport=="compressed" else Image,
             self._image_callback,
             queue_size=1,
             buff_size=16 * 1024 * 1024,
@@ -428,6 +472,10 @@ class SmartTrackerNode:
         rospy.on_shutdown(self.close)
         self._workers = [threading.Thread(target=self._frame_loop, name="sar-image", daemon=True),
                          threading.Thread(target=self._inference_loop, name="sar-yolo", daemon=True)]
+        if self._decoded_mailbox is not None:
+            self._workers.insert(0,threading.Thread(target=self._decode_loop,name="sar-decode",daemon=True))
+        if self._preview_mailbox is not None:
+            self._workers.append(threading.Thread(target=self._preview_loop,name="sar-preview",daemon=True))
         for worker in self._workers:
             worker.start()
         rospy.loginfo(
@@ -445,6 +493,10 @@ class SmartTrackerNode:
         )
 
     def close(self) -> None:
+        self._closing = True
+        gate = getattr(self, "_publication_gate", None)
+        if gate is not None:
+            gate.close()
         timer = getattr(self, "_diagnostic_timer", None)
         if timer is not None:
             timer.shutdown()
@@ -454,7 +506,7 @@ class SmartTrackerNode:
             if subscriber is not None:
                 subscriber.unregister()
         # Stop submissions first; do not hold the state lock while joining.
-        for name in ("_image_mailbox", "_inference_mailbox", "_result_mailbox"):
+        for name in ("_image_mailbox", "_decoded_mailbox", "_preview_mailbox", "_inference_mailbox", "_result_mailbox"):
             mailbox = getattr(self, name, None)
             if mailbox is not None:
                 mailbox.close()
@@ -487,29 +539,50 @@ class SmartTrackerNode:
     def _camera_info_callback(self, message):
         # CameraInfo is immutable after receipt. No image/model lock required.
         self._camera_info = message
+        self._calibration_cache.add(message)
+
+    def _capture_camera_pose(self,message):
+        cache=getattr(self,'_calibration_cache',None)
+        if getattr(self,'_tf_buffer',None) is None or cache is None:return None
+        calibration=cache.get(message.header,message.width,message.height)
+        if calibration is None:return None
+        try:
+            transform=self._tf_buffer.lookup_transform(self._motion_fixed_frame,
+                message.header.frame_id,message.header.stamp,rospy.Duration(0))
+            q=transform.transform.rotation;t=transform.transform.translation
+            position=np.array([t.x,t.y,t.z])
+            if not np.isfinite(position).all():return None
+            return dict(K=np.array(calibration.K,copy=True),
+                R=quaternion_rotation((q.x,q.y,q.z,q.w)),position=position)
+        except Exception:return None
+
+    def _capture_pose_rotation(self, previous, message):
+        cache=getattr(self,'_calibration_cache',None)
+        if getattr(self,'_tf_buffer',None) is None or previous is None or cache is None:return None,None,False
+        if previous.frame_id!=message.header.frame_id:return None,None,False
+        current=cache.get(message.header,message.width,message.height)
+        prior=cache.get(previous,message.width,message.height)
+        if current is None or prior is None:return None,None,False
+        changed=not np.allclose(prior.K,current.K,rtol=1e-9,atol=1e-9)
+        try:
+            rotations=[];positions=[]
+            for stamp in (previous.stamp,message.header.stamp):
+                transform=self._tf_buffer.lookup_transform(self._motion_fixed_frame,
+                    message.header.frame_id,stamp,rospy.Duration(0))
+                q=transform.transform.rotation;t=transform.transform.translation
+                positions.append(np.array([t.x,t.y,t.z]))
+                rotations.append(quaternion_rotation((q.x,q.y,q.z,q.w)))
+            displacement=float(np.linalg.norm(positions[1]-positions[0]))
+            if not math.isfinite(displacement):return None,None,False
+            return rotation_homography(prior.K,*rotations,current_intrinsics=current.K),displacement,changed
+        except Exception:
+            return None,None,False
 
     def _pose_rotation(self, message):
-        info, previous = self._camera_info, self._motion_header
-        if (self._tf_buffer is None or info is None or previous is None
-                or previous.frame_id != message.header.frame_id
-                or info.header.frame_id != message.header.frame_id
-                or (info.width, info.height) != (message.width, message.height)
-                or any(abs(value) > 1e-8 for value in info.D)):
-            return None
-        if not info.header.stamp.is_zero() and abs((message.header.stamp-info.header.stamp).to_sec()) > .5:
-            return None
-        try:
-            rotations = []
-            for stamp in (previous.stamp, message.header.stamp):
-                transform = self._tf_buffer.lookup_transform(self._motion_fixed_frame,
-                    message.header.frame_id, stamp, rospy.Duration(0))
-                q = transform.transform.rotation
-                rotations.append(quaternion_rotation((q.x, q.y, q.z, q.w)))
-            return rotation_homography(info.K, *rotations)
-        except Exception:
-            # Missing/extrapolated TF never blocks the image worker. Background
-            # estimation remains available; neither path claims metric depth.
-            return None
+        matrix,displacement,changed=self._capture_pose_rotation(self._motion_header,message)
+        self._pose_calibration_changed=changed
+        self._pose_pure_rotation=displacement is not None and displacement<1e-6
+        return matrix
 
     def _manual_roi_callback(self, message: RegionOfInterest) -> None:
         """Initialize the already-selected manual mode, or clear its target."""
@@ -584,12 +657,155 @@ class SmartTrackerNode:
 
     def _image_callback(self, message: Image) -> None:
         # ROS transport never waits for CUDA, KCF, rendering, or a mode service.
+        cache=getattr(self,"_input_arrival_times",None)
+        if cache is not None:
+            h=message.header;key=(h.frame_id,h.stamp.secs,h.stamp.nsecs)
+            cache[key]=(time.perf_counter(),(time.time()-h.stamp.to_sec())*1000.,len(message.data))
+            while len(cache)>64:cache.popitem(last=False)
         self._image_mailbox.put(message)
 
-    def _infer(self, frame, capture_stamp=None):
+    def _infer(self, frame, capture_stamp=None, selection=None):
         tracker = self._tracker
         arguments = dict(conf=tracker.conf_threshold, iou=tracker.iou_threshold, max_det=tracker.max_det)
-        if tracker._should_run_track_api():
+        if selection is not None:
+            # Preserve body/part alternatives until target-aware local
+            # deduplication can prefer the locked geometry over raw score.
+            if self._tracking_mode=='fusion_tracker':
+                arguments['iou']=float(self._fusion.config.get('selected_proposal_nms_iou',.95))
+            target_id, reference, class_id, groups, anchor, appearance_gate, quality_gate, public_id = selection[:8]
+            motion=selection[8] if len(selection)>8 else None
+            if getattr(self, "_roi_selected_id", None) != (self._epoch, self._tracking_mode, public_id):
+                self._roi_selected_id, self._roi_misses = (self._epoch, self._tracking_mode, public_id), 0
+                self._roi_search_hint=None
+                self._roi_search_hint_steps=0
+            use_crop = (bool(self._fusion.config.get("focused_roi_enabled", True))
+                        and self._roi_misses < int(self._fusion.config.get("roi_miss_limit", 3)))
+            margin=0.
+            search_reference=reference
+            if motion is not None and self._tracking_mode=='fusion_tracker':
+                speed=float(np.linalg.norm(motion['velocity']))
+                lag=max(0.,min(.25,(capture_stamp or motion['stamp'])-motion['stamp']))
+                search_reference=tuple(np.asarray(reference)+np.array([
+                    motion['velocity'][0]*lag,motion['velocity'][1]*lag,0.,0.]))
+                margin=min(128.,speed*float(self._fusion.config.get('roi_motion_margin_sec',.15)))
+                if (motion['lost'] and self._roi_misses>=1 and capture_stamp is not None
+                        and capture_stamp-motion['last_detection_stamp']>.20):use_crop=False
+            crop, offset = (frame, (0, 0))
+            hint=getattr(self,'_roi_search_hint',None)
+            hint_used=hint is not None and valid_box(hint,frame.shape)
+            if hint_used:use_crop=True
+            self._roi_search_hint=None
+            if use_crop:
+                crop, offset = crop_focused_roi(frame, hint if hint_used else search_reference,
+                    float(self._fusion.config.get("roi_crop_scale", 3.)),
+                    int(self._fusion.config.get("roi_min_crop_size", 256)),
+                    motion_margin_px=margin,size_bins=(256,384,512,640) if motion is not None else ())
+            _, proposals = tracker.backend.detect(crop, **arguments)
+            mapped = []
+            for proposal in proposals:
+                proposal = copy.copy(proposal)
+                x1, y1, x2, y2 = proposal.aabb_xyxy
+                ox, oy = offset
+                proposal.aabb_xyxy = (x1 + ox, y1 + oy, x2 + ox, y2 + oy)
+                proposal.center_xy = ((x1 + x2) / 2 + ox, (y1 + y2) / 2 + oy)
+                mapped.append(proposal)
+            proposals = mapped
+            if self._tracking_mode == "fusion_tracker":
+                for proposal in proposals:
+                    proposal.selected_public_id = public_id
+                    proposal.capture_box = self._fusion_candidate(proposal).box
+                target_seen = any(
+                    iou(self._fusion_candidate(proposal).box, reference) >= .35
+                    and (class_id < 0 or proposal.class_id == class_id or any(
+                        class_id in group and proposal.class_id in group for group in groups))
+                    and (proposal.confidence>=self._fusion.min_detector_conf or
+                        class_id>=0 and capture_stamp is not None
+                        and 0<=capture_stamp-getattr(self._fusion,'last_detection_stamp',0.)<=.15
+                        and self._fusion.result.source in ('yolo','fused','visual')
+                        and .60<=self._fusion_candidate(proposal).box[2]*self._fusion_candidate(proposal).box[3]/max(1.,reference[2]*reference[3])<=1.60)
+                    for proposal in proposals)
+                self._roi_misses = 0 if target_seen else self._roi_misses + 1
+                if not use_crop and not target_seen and class_id>=0 and anchor is not None:
+                    predicted=np.array(center(reference))
+                    detector_reference=getattr(self._fusion,'_detector_reference_box',None)
+                    if detector_reference is not None:
+                        age=max(0.,(capture_stamp or 0.)-getattr(self._fusion,'_detector_reference_stamp',0.))
+                        predicted=center(detector_reference)+self._fusion._detector_velocity*min(age,self._fusion.motion_horizon)
+                    radius=max(128.,float(self._fusion.config.get('roi_min_crop_size',256))/2.)
+                    hints=[]
+                    for proposal in sorted(proposals,key=lambda p:p.confidence,reverse=True):
+                        candidate=self._fusion_candidate(proposal)
+                        compatible=candidate.class_id==class_id or any(class_id in g and candidate.class_id in g for g in groups)
+                        if not compatible or not valid_box(candidate.box,frame.shape):continue
+                        distance=float(np.linalg.norm(center(candidate.box)-predicted))
+                        if distance>radius:continue
+                        hints.append((distance,candidate))
+                        if len(hints)>=5:break
+                    scored=[]
+                    for distance,candidate in hints:
+                        feature,_=appearance(frame,candidate.box)
+                        similarity=float(np.dot(feature,anchor)) if feature is not None else 0.
+                        if similarity>=appearance_gate:
+                            scored.append((.6*similarity+.3*(1.-distance/radius)+.1*candidate.confidence,candidate.box))
+                    if scored:
+                        self._roi_search_hint=max(scored,key=lambda item:item[0])[1]
+                        self._roi_search_hint_steps=0
+                        self._record_stage('global_candidate_search_hint',semantic_observation=False)
+                if hint_used and not target_seen:
+                    # Keep the untrusted search window just long enough for
+                    # the arbiter's independent fresh-detection confirmations.
+                    # It never changes identity, observation time or the lock.
+                    continuations=[self._fusion_candidate(p) for p in proposals
+                        if p.confidence>=.50 and (p.class_id==class_id or any(
+                            class_id in g and p.class_id in g for g in groups))
+                        and iou(self._fusion_candidate(p).box,hint)>=.35]
+                    continuations.sort(key=lambda c:iou(c.box,hint),reverse=True)
+                    unique=bool(continuations and all(iou(c.box,continuations[0].box)>=.50
+                        for c in continuations[1:]))
+                    steps=getattr(self,'_roi_search_hint_steps',0)
+                    if unique and steps<int(self._fusion.config.get('reacquire_confirm_frames',3)):
+                        self._roi_search_hint=continuations[0].box
+                        self._roi_search_hint_steps=steps+1
+                        self._record_stage('candidate_search_hint_confirmation',
+                            semantic_observation=False,attempt=self._roi_search_hint_steps)
+                self._record_stage("focused_roi_inference", cropped=use_crop, offset=list(offset),
+                    crop_width=crop.shape[1], crop_height=crop.shape[0], misses=self._roi_misses,
+                    search_hint_used=hint_used,motion_margin_px=margin)
+                self._record_stage("backend_call", method="selected_raw_detect_without_botsort",
+                    output_boxes=len(proposals))
+                return tuple(proposals)
+            ranked = []
+            for proposal in proposals:
+                candidate = self._fusion_candidate(proposal)
+                compatible = class_id < 0 or candidate.class_id == class_id or any(
+                    class_id in group and candidate.class_id in group for group in groups)
+                if not compatible or iou(candidate.box, reference) < .35:
+                    continue
+                if candidate.confidence < self._fusion.min_detector_conf:
+                    ratio = candidate.box[2] * candidate.box[3] / max(1., reference[2] * reference[3])
+                    if (class_id < 0 or (self._tracking_mode == "fusion_tracker"
+                            and self._fusion.result.source in ("lost", "ambiguous", "idle"))
+                            or not .60 <= ratio <= 1.60):
+                        continue
+                feature, quality = appearance(frame, candidate.box)
+                similarity = float(np.dot(feature, anchor)) if anchor is not None else 0.
+                if quality < quality_gate or similarity < appearance_gate:
+                    continue
+                ranked.append((.5 * iou(candidate.box, reference) + .5 * similarity, proposal))
+            ranked.sort(key=lambda item: item[0], reverse=True)
+            detections = []
+            if ranked and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= self._fusion.margin):
+                accepted = copy.copy(ranked[0][1])
+                accepted.selected_public_id = public_id
+                accepted.track_id = target_id
+                accepted.track_id_is_stable = True
+                detections.append(accepted)
+            self._roi_misses = 0 if detections else self._roi_misses + 1
+            self._record_stage('focused_roi_inference', cropped=use_crop, offset=list(offset),
+                crop_width=crop.shape[1], crop_height=crop.shape[0], misses=self._roi_misses)
+            self._record_stage('selected_detector_gate', proposals=len(proposals), accepted=len(detections))
+            backend_method = 'selected_detect_without_botsort'
+        elif tracker._should_run_track_api():
             tracker_arguments=dict(tracker.tracker_args or {})
             if getattr(tracker.backend,'backend_name','') == 'dfine' and capture_stamp is not None:
                 tracker_arguments['_capture_stamp']=capture_stamp
@@ -642,6 +858,10 @@ class SmartTrackerNode:
                 stage_counts_by_mode=counts,
                 last_stage_by_mode=last,
                 dfine_backend=backend_trace,
+                scheduling=(self._detector_schedule.diagnostics() if hasattr(self,'_detector_schedule') else {}),
+                mailboxes=dict(image_replaced=self._image_mailbox.replaced,
+                               inference_replaced=self._inference_mailbox.replaced,
+                               result_replaced=self._result_mailbox.replaced),
                 smart_manager=dict(
                     update_calls=getattr(tracker, '_tracking_manager_update_calls', 0),
                     selected_id=getattr(manager, 'selected_track_id', None),
@@ -652,10 +872,11 @@ class SmartTrackerNode:
                             source=self._fusion.result.source,
                             camera_motion_source=self._camera_motion.source,
                             flow_active_tracks=len(self._flow.items)),
+                high_frequency_pixel_enabled=getattr(self, "_high_frequency_pixels", True),
                 manual=dict(active=self._manual_active,
                             tracker_type=getattr(self._current_manual_tracker(), 'tracker_type', None)),
             )
-        publisher.publish(String(data=json.dumps(payload, allow_nan=False, separators=(',', ':'))))
+        self._publish_live(publisher, String(data=json.dumps(payload, allow_nan=False, separators=(',', ':'))))
 
     def _inference_loop(self):
         backend_epoch = None
@@ -663,37 +884,76 @@ class SmartTrackerNode:
             job = self._inference_mailbox.get(.25)
             if job is None:
                 continue
-            epoch, message, frame = job
+            epoch, message, frame, selection = job
             started, error, detections = time.perf_counter(), "", ()
             with self._backend_lock:
                 if epoch != self._epoch or self._model_busy:
+                    continue
+                if selection is not None and (self._fusion.public_id if self._tracking_mode == 'fusion_tracker'
+                        else self._tracker.selected_object_id) != selection[7]:
+                    # A newly selected target must not wait for an obsolete
+                    # queued target's backend call. Keep the post-infer check.
                     continue
                 try:
                     generation = (epoch, frame.shape[:2])
                     if backend_epoch != generation:
                         self._tracker.backend.reset_tracking()
                         backend_epoch = generation
-                    detections = self._infer(frame, message.header.stamp.to_sec())
+                    detections = self._infer(frame, message.header.stamp.to_sec(), selection)
                     if epoch == self._epoch and getattr(self,'_classification_publisher',None) is not None:
-                        evidence=getattr(self._tracker.backend,'last_classification_evidence',[])
-                        self._classification_publisher.publish(String(data=json.dumps(dict(
+                        raw_selected = selection is not None and self._tracking_mode == 'fusion_tracker'
+                        evidence=[] if raw_selected else getattr(self._tracker.backend,'last_classification_evidence',[])
+                        self._publish_live(self._classification_publisher, String(data=json.dumps(dict(
                             schema_version=1, epoch=epoch, frame_id=message.header.frame_id,
                             stamp=dict(secs=message.header.stamp.secs,nsecs=message.header.stamp.nsecs),
                             class_consensus_enabled=getattr(self._tracker.backend,'_class_consensus_enabled',False),
-                            objects=evidence),allow_nan=False)))
+                            objects=evidence,
+                            selected_public_id=selection[7] if raw_selected else -1,
+                            raw_selected_proposals=[dict(class_id=int(d.class_id),
+                                confidence=float(d.confidence),aabb_xyxy=list(d.aabb_xyxy))
+                                for d in detections] if raw_selected else []),allow_nan=False)))
                 except Exception as exc:
                     error = "inference failed: %s" % type(exc).__name__
                     rospy.logerr_throttle(2., error)
-            if epoch != self._epoch:
+            if epoch != self._epoch or (selection is not None and (self._fusion.public_id if self._tracking_mode == "fusion_tracker"
+                    else self._tracker.selected_object_id) != selection[7]):
                 continue
             packet = InferencePacket(message, frame, detections, epoch,
-                                     (time.perf_counter()-started)*1000., error)
+                                     (time.perf_counter()-started)*1000., error,
+                                     selection[7] if selection is not None else -1)
             self._result_mailbox.put(packet)
-            self._image_mailbox.wake()
+            (getattr(self,"_decoded_mailbox",None) or self._image_mailbox).wake()
+
+    def _decode_input_frame(self,message):
+        if len(message.data)>self._maximum_image_bytes:raise ValueError('image_byte_limit')
+        decode_started=time.perf_counter()
+        message,frame=_decode_pipeline_image(message,self._maximum_image_bytes,getattr(self,"_jpeg_decoder",None))
+        h=message.header;key=(h.frame_id,h.stamp.secs,h.stamp.nsecs)
+        arrived=getattr(self,"_input_arrival_times",{}).get(key)
+        timings=getattr(self,"_input_decode_times",None)
+        if arrived is not None and timings is not None:
+            timings[key]=dict(received_capture_age_ms=arrived[1],payload_bytes=arrived[2],
+                mailbox_wait_ms=(decode_started-arrived[0])*1000.,decode_ms=(time.perf_counter()-decode_started)*1000.,jpeg_decode_device=getattr(getattr(self,"_jpeg_decoder",None),"device","cpu"),jpeg_decode_fallback=getattr(getattr(self,"_jpeg_decoder",None),"error",""))
+            while len(timings)>64:timings.popitem(last=False)
+        return message,frame
+
+    def _decode_loop(self):
+        while not self._image_mailbox.closed:
+            message=self._image_mailbox.get(.25)
+            if message is None:continue
+            try:self._decoded_mailbox.put(self._decode_input_frame(message))
+            except Exception as exc:
+                with self._lock:
+                    self._rejected_frames+=1;self._note_frame_rejection('decode_'+type(exc).__name__)
+                self._last_error='Image decode failed: '+type(exc).__name__
+                rospy.logwarn_throttle(2.,self._last_error)
 
     def _frame_loop(self):
+        decoded=getattr(self,"_decoded_mailbox",None)
+        frame_queue=decoded if decoded is not None else self._image_mailbox
         while not self._image_mailbox.closed:
-            message = self._image_mailbox.get(.25)
+            item=frame_queue.get(.25)
+            message,frame=(item if item is not None else (None,None)) if decoded is not None else (item,None)
             packet = self._result_mailbox.get()
             try:
                 if message is not None:
@@ -703,7 +963,7 @@ class SmartTrackerNode:
                             self._note_frame_rejection("image_byte_limit")
                         self._last_error = "image exceeds configured byte limit"
                         continue
-                    frame = _image_to_bgr(message)
+                    if frame is None:message,frame=self._decode_input_frame(message)
                     with self._lock:
                         decision = self._capture_clock.observe(message.header.stamp.to_sec(),
                             message.header.seq, message.header.frame_id,
@@ -720,21 +980,94 @@ class SmartTrackerNode:
                         self._last_error = decision.reason if not decision.accepted else "image exceeds configured byte limit"
                         if packet is not None:
                             self._result_mailbox.put(packet)
-                            self._image_mailbox.wake()
+                            (getattr(self,"_decoded_mailbox",None) or self._image_mailbox).wake()
                         continue
                     self._last_input_stamp = message.header.stamp
                     self._pipeline_current = (epoch, message, frame)
                     if mode in ("smart_tracker", "fusion_tracker") and not self._model_busy:
-                        self._inference_mailbox.put((epoch, message, frame))
+                        schedule = getattr(self,'_detector_schedule',None)
+                        if schedule is None or schedule.submit(mode,message.header.stamp.to_sec(),epoch):
+                            selection = None
+                            fusion = self._fusion
+                            if (mode == 'fusion_tracker' and fusion.public_id >= 0
+                                    and fusion.box is not None
+                                    and getattr(self._tracker.backend, 'backend_name', '') == 'dfine'):
+                                selection = (fusion.local_id if fusion.local_id >= 0 else fusion.public_id,
+                                    tuple(fusion.box), fusion.class_id, tuple(tuple(g) for g in fusion.class_groups),
+                                    fusion.anchor.copy() if fusion.anchor is not None else None,
+                                    fusion.appearance_gate, fusion.quality_gate, fusion.public_id,
+                                    dict(velocity=tuple(fusion._detector_velocity),stamp=fusion.stamp,
+                                        last_detection_stamp=fusion.last_detection_stamp,
+                                        lost=fusion.result.source in ('lost','ambiguous')))
+                            if (mode == "smart_tracker" and self._tracker.selected_object_id is not None
+                                    and self._tracker.selected_bbox is not None
+                                    and getattr(self._tracker.backend, "backend_name", "") == "dfine"):
+                                target_id = self._tracker.selected_object_id
+                                x1, y1, x2, y2 = self._tracker.selected_bbox
+                                reference = (x1, y1, x2 - x1, y2 - y1)
+                                if valid_box(reference, frame.shape):
+                                    anchor_key = (epoch, target_id)
+                                    if getattr(self, "_smart_detector_anchor_key", None) != anchor_key:
+                                        self._smart_detector_anchor, _ = appearance(frame, reference)
+                                        self._smart_detector_anchor_key = anchor_key
+                                    selection = (target_id, reference, self._tracker.selected_class_id,
+                                        tuple(tuple(g) for g in fusion.class_groups),
+                                        self._smart_detector_anchor.copy(), fusion.appearance_gate,
+                                        fusion.quality_gate, target_id)
+                            self._inference_mailbox.put((epoch, message, frame, selection))
+                            self._record_stage('detector_job_submitted')
+                        else:
+                            self._record_stage('detector_job_deferred')
                 current = self._pipeline_current
                 if current is None or current[0] != self._epoch or self._model_busy:
                     continue
                 if packet is not None and packet.epoch != self._epoch:
                     packet = None
+                if (packet is not None and getattr(packet, 'selected_public_id', -1) >= 0
+                        and self._tracking_mode == 'fusion_tracker'
+                        and packet.selected_public_id != self._fusion.public_id):
+                    # A result committed to the mailbox before reselection is
+                    # still owned by the old target. Never advance the new
+                    # target's capture clock with that packet.
+                    self._record_stage('old_selection_packet_discarded')
+                    packet = None
                 if self._tracking_mode == "smart_tracker":
                     if packet is not None:
                         self._process_image(packet.image, packet.frame, packet=packet, expected_epoch=packet.epoch)
-                elif message is not None or packet is not None:
+                elif (self._tracking_mode == "fusion_tracker"
+                        and (not getattr(self, "_high_frequency_pixels", True)
+                             or self._fusion.config.get('detector_primary_processing',False))):
+                    if packet is not None:
+                        if packet.image.header.stamp > self._last_capture_stamp:
+                            self._process_image(packet.image, packet.frame, packet=packet,
+                                                expected_epoch=packet.epoch)
+                        elif (self._fusion.config.get('strong_takeover_safety_enabled', False)
+                                and not self._fusion.result.observed):
+                            # An unobserved fallback already advanced the public clock.
+                            # Do not keep advancing it with old packets: the next
+                            # original detector capture must be able to catch up.
+                            if packet.image.header.stamp == self._last_capture_stamp:
+                                self._process_image(packet.image, packet.frame, packet=packet,
+                                    result_only=True, expected_epoch=packet.epoch)
+                            else:
+                                self._record_stage('stale_detector_after_loss_discarded')
+                        else:
+                            self._process_image(current[1],current[2],packet=packet,
+                                result_only=current[1].header.stamp==self._last_capture_stamp,
+                                expected_epoch=packet.epoch)
+                            self._record_stage('detector_primary_delayed_packet_processed')
+                    elif (message is not None and getattr(self,'_high_frequency_pixels',True)
+                            and not (self._fusion.config.get('strong_takeover_safety_enabled', False)
+                                     and not self._fusion.result.observed)
+                            and self._fusion.public_id>=0
+                            and not (self._fusion.class_id < 0 and self._fusion.last_detection_stamp <= 0)
+                            and message.header.stamp.to_sec()-(self._fusion.last_detection_stamp or self._fusion.selection_stamp)>float(self._fusion.config.get('visual_fallback_gap_sec',.25))
+                            and message.header.stamp.to_sec()-self._fusion.stamp>=1./15.):
+                        self._process_image(current[1],current[2],expected_epoch=current[0])
+                        self._record_stage('detector_gap_visual_fallback')
+                elif ((message is not None or packet is not None)
+                        and (getattr(self, "_high_frequency_pixels", True)
+                             or self._tracking_mode != "fusion_tracker" or packet is not None)):
                     self._process_image(current[1], current[2], packet=packet,
                                         result_only=message is None, expected_epoch=current[0])
             except Exception as exc:
@@ -742,11 +1075,22 @@ class SmartTrackerNode:
                 self._last_error = "image worker failed: %s" % type(exc).__name__
                 rospy.logerr_throttle(2., "%s: %s", self._last_error, exc)
 
+    def _publish_live(self, publisher, message):
+        if getattr(self, "_closing", False):
+            return False
+        gate = getattr(self, "_publication_gate", None)
+        if gate is None:
+            publisher.publish(message)
+            return True
+        return gate.call(publisher.publish, message)
+
     def _emit(self, publisher, message):
+        if getattr(self, "_closing", False):
+            return
         context = getattr(self, "_publication_context", None)
         batch = getattr(context, "batch", None)
         if batch is None:
-            publisher.publish(message)
+            self._publish_live(publisher, message)
         else:
             batch.append((publisher, message))
 
@@ -788,6 +1132,12 @@ class SmartTrackerNode:
             if self._tracker is None or self._model_busy or (expected_epoch is not None and expected_epoch != self._epoch):
                 self._publication_context.batch = None
                 return
+            if (packet is not None and self._tracking_mode == 'fusion_tracker'
+                    and getattr(packet, 'selected_public_id', -1) >= 0
+                    and packet.selected_public_id != self._fusion.public_id):
+                self._publication_context.batch = None
+                self._record_stage('old_selection_packet_discarded')
+                return
             valid, reason = self._valid_timestamp(message)
             if result_only and message.header.stamp == self._last_capture_stamp:
                 valid = True
@@ -815,21 +1165,89 @@ class SmartTrackerNode:
                 if manual_tracker is not None and manual_tracker._last_bbox is not None:
                     boxes.append(manual_tracker._last_bbox)
                 pose_rotation = self._pose_rotation(message) if boxes else None
+                strong_packet = (packet is not None and self._fusion.config.get('strong_detector_takeover_enabled',False)
+                    and getattr(packet,'selected_public_id',-1)==self._fusion.public_id
+                    and any(d.confidence>=.50 for d in packet.detections))
                 motion_matrix = self._camera_motion.update(frame, message.header.stamp.to_sec(),
-                    boxes, pose_rotation, estimate=bool(boxes))
+                    boxes, pose_rotation, estimate=bool(boxes),
+                    calibration_changed=getattr(self,"_pose_calibration_changed",False),
+                    pure_rotation=getattr(self,"_pose_pure_rotation",False),
+                    estimate_background=not strong_packet)
                 self._record_stage('camera_motion_update',
                     pose_tf_available=pose_rotation is not None,
                     transform_available=motion_matrix is not None,
-                    source=self._camera_motion.source)
+                    source=self._camera_motion.source,calibration_changed=self._camera_motion.calibration_changed)
+                if self._camera_motion.calibration_changed:self._record_stage('camera_calibration_update')
                 self._motion_header, self._motion_frame = message.header, frame
             if self._tracking_mode == "fusion_tracker":
                 fresh = packet is not None and packet.image.header.stamp <= message.header.stamp
-                detections = self._flow.update(frame, message.header.stamp.to_sec(),
-                    packet.detections if fresh else None,
-                    packet.frame if fresh else None,
-                    packet.image.header.stamp.to_sec() if fresh else None, motion=self._camera_motion)
-                self._record_stage('visual_flow_update', fresh_detector_packet=fresh,
-                    output_boxes=len(detections), active_tracks=len(self._flow.items))
+                raw_scope = getattr(packet, "selected_public_id", -1) if fresh else -1
+                raw_selected = self._fusion.public_id >= 0 and (
+                    raw_scope == self._fusion.public_id
+                    or getattr(self, "_raw_flow_selection", None) == self._fusion.public_id)
+                if raw_selected:
+                    if getattr(self, "_raw_flow_selection", None) != self._fusion.public_id:
+                        self._flow.reset()
+                        self._raw_flow_selection = self._fusion.public_id
+                    detections = []
+                    if fresh and raw_scope == self._fusion.public_id:
+                        measured = packet.image.header.stamp.to_sec()
+                        current_stamp = message.header.stamp.to_sec()
+                        age = current_stamp - measured
+                        matrix = self._camera_motion.between(measured, current_stamp) if age > 0 else np.eye(3)
+                        if matrix is None and age>0:
+                            prior_pose=self._capture_camera_pose(packet.image)
+                            current_pose=self._capture_camera_pose(message)
+                            if (prior_pose is not None and current_pose is not None
+                                    and np.linalg.norm(prior_pose['position']-current_pose['position'])<1e-6):
+                                matrix=rotation_homography(prior_pose['K'],prior_pose['R'],current_pose['R'],current_intrinsics=current_pose['K'])
+                        if 0 <= age <= self._flow.max_age and CameraMotion.validate(matrix, frame.shape):
+                            for proposal in packet.detections:
+                                original_box=self._fusion_candidate(proposal).box
+                                box = original_box if age==0 else transport_box(original_box, matrix)
+                                if box is None:
+                                    continue
+                                x, y, w, h = box
+                                projected = copy.copy(proposal)
+                                # Do not feed the arbiter's velocity back into
+                                # its detector measurements. It estimates that
+                                # velocity from accepted observations itself.
+                                projected.aabb_xyxy = (x, y, x+w, y+h)
+                                projected.detector_stamp = measured
+                                detections.append(projected)
+                            # One selected-target LK observation transports a
+                            # delayed detection using actual current pixels.
+                            # Never extrapolate detector evidence with the
+                            # fusion velocity that it will subsequently update.
+                            if (age > 0 and getattr(self, '_high_frequency_pixels', True)
+                                    and self._fusion.config.get('detector_pixel_transport_enabled', False)):
+                                from sar_yolo_detector.selected_flow import selected_flow
+                                eligible = [d for d in detections
+                                    if d.confidence >= self._fusion.min_detector_conf
+                                    and self._fusion._class_compatible(int(d.class_id))
+                                    and iou(self._fusion_candidate(d).box, self._fusion.box) >= .35]
+                                if eligible:
+                                    best = max(eligible, key=lambda d: d.confidence)
+                                    current_box, status = selected_flow(packet.frame, frame,
+                                        best.capture_box, local_crop=True, initial_transform=matrix)
+                                    if current_box is not None and status.get('valid'):
+                                        x, y, w, h = current_box
+                                        best.aabb_xyxy = (x, y, x+w, y+h)
+                                    self._record_stage('selected_detector_pixel_transport',
+                                        accepted=bool(current_box is not None and status.get('valid')),
+                                        reason=status.get('reason', 'unknown'))
+                    self._record_stage("selected_raw_detector_handoff", output_boxes=len(detections))
+                else:
+                    if getattr(self, "_raw_flow_selection", None) is not None:
+                        self._flow.reset()
+                        self._raw_flow_selection = None
+                    detections = self._flow.update(frame, message.header.stamp.to_sec(),
+                        packet.detections if fresh else None,
+                        packet.frame if fresh else None,
+                        packet.image.header.stamp.to_sec() if fresh else None, motion=self._camera_motion)
+                if not raw_selected:
+                    self._record_stage('visual_flow_update', fresh_detector_packet=fresh,
+                        output_boxes=len(detections), active_tracks=len(self._flow.items))
                 if fresh:
                     self._inference_ms = packet.processing_ms
                 annotated = self._process_fusion(message, frame, detections=detections,
@@ -838,8 +1256,9 @@ class SmartTrackerNode:
                     manager_frame=packet.frame if fresh else None,
                     manager_detections=packet.detections if fresh else None,
                     camera_motion_matrix=motion_matrix, previous_frame=previous_frame,
+                    detector_capture_header=packet.image.header if fresh else None,
                     inference_error=packet.error if fresh else "",
-                    processing_started=started)
+                    processing_started=started, selected_detector_packet=raw_selected and fresh)
                 if fresh:
                     self._inference_ms = packet.processing_ms
                     self._last_error = packet.error
@@ -849,7 +1268,9 @@ class SmartTrackerNode:
             elif manual_tracker is not None:
                 self._cache_manual_snapshot(message, frame, motion_matrix)
                 if motion_matrix is not None and previous_frame is not None:
-                    manual_tracker.compensate_motion(previous_frame, motion_matrix)
+                    changed=bool(getattr(getattr(self,"_camera_motion",None),"calibration_changed",False))
+                    updated=manual_tracker.compensate_motion(previous_frame,motion_matrix,force_scale=changed)
+                    if changed and updated:self._record_stage("manual_lens_template_refresh")
                 pending_roi = self._manual_pending_roi
                 self._manual_pending_roi = None
                 result = (
@@ -921,19 +1342,50 @@ class SmartTrackerNode:
             epoch = self._epoch
         batch, self._publication_context.batch = self._publication_context.batch, None
         with self._commit_lock:
-            if epoch != self._epoch:
+            if epoch != self._epoch or getattr(self, "_closing", False):
                 return
             for publisher, output_message in batch:
-                publisher.publish(output_message)
-        # Render/serialize only when requested, with immutable final boxes and
-        # the exact capture header. Never draw by querying a newer live state.
-        if self._publish_annotated and self._annotated_publisher.get_num_connections() > 0:
+                self._publish_live(publisher, output_message)
+        preview=getattr(self,"_preview_mailbox",None)
+        if preview is None:
+            self._publish_preview(message,frame,overlay,epoch)
+        else:
+            # Pixel ownership is immutable after this point. Rendering and JPEG
+            # encoding run independently; a slow browser replaces pending work.
+            preview.put((message,frame,overlay,epoch))
+        # Diagnostics already run on the 1 Hz timer; never invoke them on
+        # the frame worker's critical path.
+
+    def _preview_loop(self):
+        while not self._preview_mailbox.closed:
+            item=self._preview_mailbox.get(.25)
+            if item is None:continue
+            try:self._publish_preview(*item)
+            except Exception as exc:
+                rospy.logwarn_throttle(2.,"Preview worker failed: %s",type(exc).__name__)
+
+    def _publish_preview(self,message,frame,overlay,epoch):
+        # A preview retains the numeric result's exact capture and epoch.
+        if epoch!=self._epoch or getattr(self, "_closing", False):return
+        compressed=getattr(self,'_compressed_preview_publisher',None)
+        raw_wanted=self._annotated_publisher.get_num_connections()>0
+        compressed_wanted=(compressed is not None and compressed.get_num_connections()>0 and
+            time.perf_counter()-getattr(self,'_compressed_preview_last',0.)>=getattr(self,'_compressed_preview_interval',.2))
+        if self._publish_annotated and (raw_wanted or compressed_wanted):
             annotated = self._render_overlay(frame.copy(), overlay)
-            video = _bgr_to_image(annotated, message.header)
+            video = _bgr_to_image(annotated, message.header) if raw_wanted else None
+            compact=None
+            if compressed_wanted:
+                ok,encoded=cv2.imencode('.jpg',annotated,[cv2.IMWRITE_JPEG_QUALITY,90])
+                if ok:
+                    compact=CompressedImage(header=copy.copy(message.header),format='jpeg',data=encoded.tobytes())
+                    self._compressed_preview_last=time.perf_counter()
             with self._commit_lock:
                 if epoch == self._epoch:
-                    self._annotated_publisher.publish(video)
-        self._updater.update()
+                    if video is not None:self._publish_live(self._annotated_publisher, video)
+                    if compact is not None:
+                        bound_ros_send_buffers(compressed,getattr(self,"_preview_send_buffer",0),getattr(self,"_preview_send_sockets",set()))
+                        self._publish_live(compressed, compact)
 
     @classmethod
     def _render_overlay(cls, frame, payload):
@@ -969,13 +1421,17 @@ class SmartTrackerNode:
         return Candidate((float(x1), float(y1), float(x2 - x1), float(y2 - y1)),
                          int(detection.class_id), float(detection.confidence),
                          int(detection.track_id), bool(detection.track_id_is_stable),
-                         getattr(detection, "detector_stamp", None))
+                         getattr(detection, "detector_stamp", None),
+                         selected_public_id=getattr(detection, "selected_public_id", -1),
+                         capture_box=getattr(detection, "capture_box", None))
 
 
     def _process_fusion(self, image, frame, detections=None, detector_updated=True,
                         result_only=False, defer_overlay=False, detector_capture_stamp=None,
                         processing_started=None, inference_error="", camera_motion_matrix=None,
-                        previous_frame=None, manager_frame=None, manager_detections=None):
+                        detector_capture_header=None,
+                        previous_frame=None, manager_frame=None, manager_detections=None,
+                        selected_detector_packet=False):
         started = time.perf_counter() if processing_started is None else processing_started
         error = inference_error
         shape = frame.shape[:2]
@@ -984,6 +1440,7 @@ class SmartTrackerNode:
             self._fusion_snapshots.clear()
         self._fusion_input_shape = shape
         suppressed_class_duplicates = 0
+        manager_ms=colour_ms=arbiter_ms=0.
         try:
             if detections is None:
                 detections = self._infer(frame,image.header.stamp.to_sec())
@@ -1014,13 +1471,21 @@ class SmartTrackerNode:
         stamp = image.header.stamp.to_sec()
         capture_is_current = (bool(detector_updated) and
             (detector_capture_stamp is None or abs(float(detector_capture_stamp)-stamp) <= 1e-6))
+        delayed_packet_valid = (bool(detector_updated) and detector_capture_stamp is not None
+            and 0 <= stamp-float(detector_capture_stamp) <= self._flow.max_age
+            and (selected_detector_packet or abs(self._flow.detector_stamp-float(detector_capture_stamp)) <= 1e-6))
+        new_detector_evidence = capture_is_current or delayed_packet_valid
         # Reuse the fresh D-FINE/BoT-SORT packet. SmartTracker's manager is an
         # identity gate here, never a second detector call. Stale LK results
         # and propagated boxes are deliberately excluded from this update.
         manager_current = False
         manager_id = getattr(self._tracker, "selected_object_id", None)
         manager_detection = None
-        manager_available = callable(getattr(self._tracker, "track_and_draw", None))
+        selected_proposals = self._fusion.public_id >= 0 and any(
+            getattr(d, "selected_public_id", -1) == self._fusion.public_id
+            for d in (manager_detections or detections))
+        manager_available = (not selected_detector_packet and not selected_proposals
+            and callable(getattr(self._tracker, "track_and_draw", None)))
         if detector_updated and manager_available:
             manager_input = detections if manager_detections is None else manager_detections
             fresh_manager_detections = [d for d in manager_input
@@ -1028,9 +1493,11 @@ class SmartTrackerNode:
                 and (detector_capture_stamp is None or
                      abs(float(getattr(d, "detector_stamp", detector_capture_stamp))-detector_capture_stamp) <= 1e-6)]
             try:
+                manager_started=time.perf_counter()
                 manager_before = getattr(self._tracker, "_tracking_manager_update_calls", 0)
                 self._tracker.track_and_draw(manager_frame if manager_frame is not None else frame,
                     detections=fresh_manager_detections, draw=False)
+                manager_ms=(time.perf_counter()-manager_started)*1000.
                 manager_after = getattr(self._tracker, "_tracking_manager_update_calls", 0)
                 manager_id = getattr(self._tracker, "selected_object_id", None)
                 manager_current = bool(getattr(self._tracker, "_last_measurement_current", False))
@@ -1047,8 +1514,10 @@ class SmartTrackerNode:
             # Cached LK targets are display observations, not repeated detector
             # confirmations. Only a NEW inference packet may rebind an ID.
             measured_candidates = [candidate for candidate, detection in zip(candidates, detections)
-                if capture_is_current
-                and getattr(detection, "measurement_source", "detector") == "detector"
+                if new_detector_evidence
+                and (selected_detector_packet or (getattr(detection, "measurement_source", "detector") == "detector" if capture_is_current else
+                     getattr(detection, "measurement_source", "") == "visual_tracker"
+                     and getattr(detection,"flow_quality",0.) >= .60))
                 and (detector_capture_stamp is None or candidate.detector_stamp == detector_capture_stamp)]
             # Only a current Smart/BoT-SORT manager observation may renew the
             # selected Fusion identity. The manager's selected ID is allowed
@@ -1066,6 +1535,24 @@ class SmartTrackerNode:
                         if candidate.local_id == manager_candidate.local_id]
             else:
                 measured_candidates = []
+            if (not result_only and delayed_packet_valid and manager_current and manager_detection is not None
+                    and self._fusion.result.observed and self._fusion.local_id>=0
+                    and int(manager_detection.track_id)==self._fusion.local_id
+                    and not any(c.local_id==self._fusion.local_id for c in measured_candidates)
+                    and detector_capture_header is not None and hasattr(self,'_calibration_cache')):
+                cache=self._calibration_cache
+                prior=cache.get(detector_capture_header,image.width,image.height)
+                current=cache.get(image.header,image.width,image.height)
+                matrix=self._camera_motion.between(detector_capture_stamp,stamp)
+                if prior is not None and current is not None and CameraMotion.validate(matrix,frame.shape):
+                    original=self._fusion_candidate(manager_detection)
+                    projected=transport_box(original.box,matrix)
+                    if valid_box(projected,frame.shape):
+                        measured_candidates.append(Candidate(projected,original.class_id,original.confidence,
+                            original.local_id,original.stable,detector_capture_stamp,camera_projected=True))
+                        self._record_stage('fusion_calibrated_projection_proposed',
+                            selected_id=original.local_id,original_detector_stamp=detector_capture_stamp,
+                            lk_rejections=dict(self._flow.diagnostics.get('rejected',{})))
             # Feed the already validated same-identity LK observation to the
             # selected SOT arbiter as well. It remains visual evidence, not a
             # detector confirmation, including on same-capture corrections.
@@ -1078,13 +1565,37 @@ class SmartTrackerNode:
             color_tracker = self._manual_trackers.get("color_tracker")
             color_result = None
             if color_tracker is not None and color_tracker.active and not result_only:
-                if camera_motion_matrix is not None and previous_frame is not None:
-                    color_tracker.compensate_motion(previous_frame, camera_motion_matrix)
+                colour_started=time.perf_counter()
+                color_previous=getattr(self,"_fusion_color_frame",previous_frame)
+                color_stamp=getattr(self,"_fusion_color_stamp",None)
+                color_motion=(self._camera_motion.between(color_stamp,stamp)
+                    if color_stamp is not None and hasattr(self,"_camera_motion") else camera_motion_matrix)
+                changed=(self._camera_motion.calibration_between(color_stamp,stamp)
+                    if color_stamp is not None and hasattr(self,"_camera_motion") else False)
+                if color_motion is not None and color_previous is not None:
+                    updated=color_tracker.compensate_motion(color_previous,color_motion,force_scale=changed)
+                    if changed and updated:self._record_stage("fusion_color_lens_update")
                 color_result = color_tracker.update(frame)
+                colour_ms=(time.perf_counter()-colour_started)*1000.
+                self._fusion_color_frame=frame;self._fusion_color_stamp=stamp
                 self._record_stage("fusion_roi_color_update", valid=bool(color_result.valid),
-                    reason=color_result.reason)
+                    reason=color_result.reason,
+                    confidence=float(color_result.confidence),
+                    reliability=getattr(color_result,'diagnostics',{}))
+            static_reference=None
+            if (self._fusion.small_lock.enabled and not result_only
+                    and getattr(self,"_tf_buffer",None) is not None):
+                reference=getattr(self,"_civil_reference_camera_pose",None)
+                current_pose=self._capture_camera_pose(image)
+                matrix,translation=None,None
+                if reference is not None and current_pose is not None:
+                    matrix=rotation_homography(reference["K"],reference["R"],current_pose["R"],current_intrinsics=current_pose["K"])
+                    translation=float(np.linalg.norm(reference["position"]-current_pose["position"]))
+                static_reference=dict(matrix=matrix,translation_m=translation,maximum_translation_m=.25)
+            arbiter_started=time.perf_counter()
             result = self._fusion.step(frame, stamp, measured_candidates,
-                                      detector_updated=capture_is_current,
+                                      static_reference=static_reference,
+                                      detector_updated=new_detector_evidence,
                                       same_frame_correction=result_only,
                                       visual_observation=self._fusion_candidate(flow_detection) if flow_detection is not None else None,
                                       visual_quality=getattr(flow_detection, 'flow_quality', 0.),
@@ -1097,22 +1608,42 @@ class SmartTrackerNode:
                                       color_quality=(color_result.confidence if color_result is not None
                                           and color_result.valid else 0.),
                                       camera_motion_reliable=getattr(getattr(self, '_camera_motion', None),
-                                          'source', '') in ('background', 'pose_seeded_background'),
+                                          'source', '') in ('background', 'pose_seeded_background','calibrated_pose'),
+                                      camera_calibration_changed=self._camera_motion.calibration_between(self._fusion.stamp,stamp)
+                                      if hasattr(self,"_camera_motion") and not result_only else False,
                                       camera_transform=self._camera_motion.between(self._fusion.stamp, stamp)
                                       if hasattr(self, "_camera_motion") and not result_only else None)
+            arbiter_ms=(time.perf_counter()-arbiter_started)*1000.
+            if getattr(getattr(self._fusion,'small_lock',None),'enabled',False):
+                self._record_stage('civil_static_small_lock_update',**self._fusion.diagnostics.get('civil_static_small_lock',{}))
+            if self._fusion.diagnostics.get('selected_target_flow') and self._fusion.diagnostics['selected_target_flow'].get('reason')!='not_eligible':
+                self._record_stage('selected_target_flow_update',**self._fusion.diagnostics['selected_target_flow'])
+            if self._fusion.diagnostics.get('continuous_selected_flow_verified'):
+                self._record_stage('selected_target_flow_continuity_verified')
+            if self._fusion.diagnostics.get('camera_projection_verified'):
+                self._record_stage('fusion_calibrated_projection_verified',selected_id=result.public_id)
+            if self._fusion.diagnostics.get('lens_template_refreshed'):
+                self._record_stage('fusion_lens_template_refresh')
+            if color_result is not None:
+                self._fusion.diagnostics['branches']['color']['context'] = getattr(color_result,'diagnostics',{})
             self._record_stage('fusion_arbiter_step', source=result.source,
-                observed=bool(result.observed), detector_updated=bool(capture_is_current),
+                observed=bool(result.observed), detector_updated=bool(new_detector_evidence),
                 selected_id=result.public_id)
             if self._fusion.diagnostics.get('local_tracker_executed'):
                 self._record_stage('fusion_feature_update',
                     algorithm=getattr(self._fusion.tracker, 'algorithm', 'unknown'),
-                    result=self._fusion.diagnostics.get('local_tracker', 'unknown'))
+                    result=self._fusion.diagnostics.get('local_tracker', 'unknown'),
+                    reliability=self._fusion.diagnostics.get('branches',{}).get('feature',{}))
             if self._fusion.diagnostics.get('identity_rebound'):
                 self._fusion.diagnostics['lk_reseeded'] = self._flow.reseed_identity(
                     frame, stamp, self._fusion.diagnostics['previous_local_id'], result.local_id,
                     self._fusion.diagnostics['rebound_box'])
         else:
             result = self._fusion.result
+        deadline=getattr(self,"_civil_control_deadline",0.)
+        capture_age=(rospy.Time.now()-image.header.stamp).to_sec()
+        if result.observed and deadline>0 and not 0<=capture_age<=deadline:
+            result=replace(result,box=None,source="lost",reason="control_capture_deadline_exceeded",confidence=0.)
         # A bounded original-image cache is used only by frame-bound selection.
         self._cache_fusion_snapshot(image, frame, candidates)
         # Raw BoT-SORT output must not bypass a rejected selected-entity gate.
@@ -1121,7 +1652,8 @@ class SmartTrackerNode:
             # The new local ID is an uncommitted hypothesis for this selected
             # entity, not a second display target with the same pixels.
             bound_ids.add(self._fusion.pending_id)
-        output = [d for d in detections if int(d.track_id) not in bound_ids]
+        output = [d for d in detections if int(d.track_id) not in bound_ids
+                  and getattr(d, "selected_public_id", -1) < 0]
         if result.observed:
             # Replace, never append a duplicate selected local YOLO track.
             output = [d for d in output if int(d.track_id) != result.local_id]
@@ -1157,11 +1689,18 @@ class SmartTrackerNode:
                         pipeline_epoch=getattr(self, "_epoch", 0),
                         capture_segment=getattr(getattr(self, "_capture_clock", None), "segment", 0))
         evidence['diagnostics'] = dict(self._fusion.diagnostics,
+            stage_processing_ms=dict(smart_manager=manager_ms,roi_colour=colour_ms,fusion_arbiter=arbiter_ms),
+            backend_timing=dict(getattr(self._tracker.backend,'last_timings',{})),
+            input_timing=getattr(self,"_input_decode_times",{}).get((image.header.frame_id,image.header.stamp.secs,image.header.stamp.nsecs),{}),
+            capture_age_at_publication_ms=(rospy.Time.now().to_sec()-stamp)*1000.,
+            class_agnostic_lock=bool(self._fusion.class_agnostic_lock),
+            allowed_class_ids=(sorted(self._tracker.allowed_class_ids) if getattr(self._tracker,"allowed_class_ids",None) is not None else None),
             smart_manager_available=bool(manager_available),
             smart_manager_updated=bool(detector_updated and manager_available),
             smart_manager_measurement_current=bool(manager_current),
             smart_manager_selected_id=(int(manager_id) if manager_id is not None else None),
             detector_capture_current=bool(capture_is_current),
+            delayed_detector_evidence=bool(delayed_packet_valid and not capture_is_current),
             inference_error=error,
             camera_motion_source=getattr(getattr(self, '_camera_motion', None), 'source', 'unavailable'),
             input_rejections=dict(getattr(self, '_input_rejection_counts', {})),
@@ -1183,7 +1722,14 @@ class SmartTrackerNode:
             self._last_loss_publish_wall = history_now
         self._last_processing_ms = (time.perf_counter()-started)*1000.
         evidence['processing_ms'] = self._last_processing_ms
-        self._emit(self._fusion_evidence_publisher, String(data=json.dumps(evidence, allow_nan=False)))
+        evidence_rate=float(self._fusion.config.get('healthy_evidence_max_fps',0.))
+        evidence_key=(result.public_id,result.source,result.reason)
+        urgent=(not result.observed or error or evidence_key!=getattr(self,'_last_evidence_key',None)
+            or rospy.Time.now().to_sec()-stamp>.13)
+        if urgent or evidence_rate<=0 or history_now-getattr(self,'_last_evidence_wall',0.)>=1./evidence_rate:
+            self._emit(self._fusion_evidence_publisher, String(data=json.dumps(evidence, allow_nan=False)))
+            self._last_evidence_wall=history_now
+        self._last_evidence_key=evidence_key
         self._publish_detections(image, output)
         selected_detection = next((d for d in output if int(d.track_id) == result.public_id), None) if result.observed else None
         self._publish_selected_detections(image, selected_detection)
@@ -1233,8 +1779,9 @@ class SmartTrackerNode:
     def _cache_manual_snapshot(self, image, frame, motion_matrix):
         snapshots = self._manual_snapshots
         snapshots.append((copy.copy(image.header), frame.copy(),
-                          None if motion_matrix is None else motion_matrix.copy()))
-        while snapshots and (len(snapshots) > min(self._fusion_snapshot_max_frames, 8)
+                          None if motion_matrix is None else motion_matrix.copy(),
+                          bool(getattr(getattr(self,"_camera_motion",None),"calibration_changed",False))))
+        while snapshots and (len(snapshots) > self._fusion_snapshot_max_frames
                              or (image.header.stamp-snapshots[0][0].stamp).to_sec() > self._fusion_snapshot_max_age
                              or sum(item[1].nbytes for item in snapshots) > self._fusion_snapshot_max_bytes):
             snapshots.popleft()
@@ -1279,9 +1826,11 @@ class SmartTrackerNode:
             result = trial.initialize(snapshots[index][1], box)
             if result.valid:
                 previous = snapshots[index][1]
-                for _, current, motion_matrix in snapshots[index+1:]:
+                for snapshot in snapshots[index+1:]:
+                    _,current,motion_matrix=snapshot[:3]
+                    changed=bool(snapshot[3]) if len(snapshot)>3 else False
                     if motion_matrix is not None:
-                        trial.compensate_motion(previous, motion_matrix)
+                        trial.compensate_motion(previous, motion_matrix,force_scale=changed)
                     result = trial.update(current)
                     if not result.valid:
                         break
@@ -1300,13 +1849,24 @@ class SmartTrackerNode:
 
     def _initialize_fusion_selection(self, snapshot, box):
         header, frame, candidates = snapshot
+        previous_public_id = self._fusion.public_id
         if not valid_box(box, frame.shape):
             raise ValueError("ROI must lie inside the original image and be at least 4x4 pixels")
         # Do not initialize a large background ROI if it contains a unique YOLO box.
         matches = [(c, iou(c.box, box)) for c in candidates if iou(c.box, box) >= .15 or
                    (box[0] <= c.box[0] + c.box[2] / 2 <= box[0] + box[2] and
                     box[1] <= c.box[1] + c.box[3] / 2 <= box[1] + box[3])]
+        matches = unique_roi_matches(matches, self._fusion.class_groups)
         matches.sort(key=lambda item: (item[1], item[0].confidence), reverse=True)
+        strong_matches=[item for item in matches
+            if item[0].confidence>=float(self._fusion.config.get('fast_reacquire_confidence',1.01))
+            and item[1]>=.35 and .40<=item[0].box[2]*item[0].box[3]/(box[2]*box[3])<=2.5]
+        if len(strong_matches)==1:
+            # Explicit manual ROI supplies the new identity scope. Weak
+            # alternative labels cannot veto its unique, well-fitting strong
+            # detection; two real strong candidates still use ambiguity gates.
+            matches=strong_matches
+            self._record_stage('fusion_roi_strong_selection',capture_stamp=header.stamp.to_sec())
         # A click on a detector box can overlap another box. Its exact ROI is
         # still unambiguous when one candidate fits much better; a broad ROI
         # containing two comparably fitting objects remains rejected.
@@ -1314,12 +1874,56 @@ class SmartTrackerNode:
                                      matches[0][1]-matches[1][1] >= .20):
             raise ValueError("ROI contains multiple targets; select one detector box more tightly")
         candidate = matches[0][0] if matches else None
+        if (getattr(getattr(self._fusion,'small_lock',None),'enabled',False)
+                or self._fusion.config.get('strict_manual_selection',False)) and candidate is not None:
+            # An accurate small manual ROI must not expand to a weak, much
+            # larger detector box just because that box centre lies inside it.
+            if iou(candidate.box,box)<.65 or candidate.confidence<self._fusion.min_detector_conf:
+                candidate=None
         if candidate is not None:
             box = candidate.box
         if self._fusion_next_id > 2147483647:
             raise ValueError("Fusion identity range exhausted; restart with a new session")
         public_id = candidate.local_id if candidate is not None and candidate.stable and candidate.local_id >= 0 else self._fusion_next_id
-        result = self._fusion.initialize(frame, box, header.stamp.to_sec(), public_id, candidate)
+        reference_pose=None
+        if self._fusion.small_lock.enabled and getattr(self,"_tf_buffer",None) is not None:
+            reference_pose=self._capture_camera_pose(SimpleNamespace(header=header,width=frame.shape[1],height=frame.shape[0]))
+            if reference_pose is None:raise ValueError("Selection capture calibration/pose unavailable; refresh the image")
+        if self._fusion.config.get("replay_selection_history", False):
+            snapshots = tuple(self._fusion_snapshots)
+            later = [item for item in snapshots if item[0].stamp > header.stamp]
+            trial = BoxFusion(self._fusion.config, self._fusion.tracker.config)
+            result = trial.initialize(frame, box, header.stamp.to_sec(), public_id, candidate)
+            motion = self._camera_motion
+            for replay_header, replay_frame, _ in later:
+                stamp = replay_header.stamp.to_sec()
+                if replay_header.frame_id != header.frame_id or stamp - trial.stamp > trial.max_gap:
+                    raise ValueError("Selection history has a capture gap; select on a fresh frame")
+                transform = motion.between(trial.stamp, stamp)
+                result = trial.step(replay_frame, stamp, (), detector_updated=False,
+                                    camera_transform=transform,
+                                    camera_motion_reliable=transform is not None,
+                                    camera_calibration_changed=motion.calibration_between(trial.stamp, stamp))
+            if (later and not result.observed
+                    and trial.diagnostics.get("local_tracker") != "valid"):
+                raise ValueError("Selected ROI did not retain visual support through the latest cached frame")
+            deadline = getattr(self, "_civil_control_deadline", 0.)
+            if deadline > 0 and (rospy.Time.now().to_sec() - trial.stamp) > deadline:
+                raise ValueError("Selection processing exceeded the capture deadline; retry on a fresh frame")
+            self._fusion = trial
+            self._record_stage("fusion_selection_replay", captures=len(later))
+        else:
+            result = self._fusion.initialize(frame, box, header.stamp.to_sec(), public_id, candidate)
+        self._civil_reference_camera_pose=reference_pose
+        if getattr(getattr(self._fusion,'small_lock',None),'enabled',False):
+            # A displayed detector frame need not be an endpoint in the local
+            # worker's motion history. Start both witnesses on the SAME capture,
+            # so the first pose transform has an exact, calibrated origin.
+            self._civil_reference_header=copy.copy(header)
+            self._camera_motion.reset()
+            self._camera_motion.update(frame,header.stamp.to_sec(),[box],estimate=False)
+            self._motion_header,self._motion_frame=header,frame
+            self._record_stage('civil_roi_camera_history_seed',capture_stamp=header.stamp.to_sec())
         # Seed the same SmartTracker state manager used by smart_tracker mode
         # from the exact displayed capture, so its ID/appearance association
         # can arbitrate future detector packets for this selected object.
@@ -1345,14 +1949,50 @@ class SmartTrackerNode:
             try:
                 color_tracker.configure_colour("")
                 color_result = color_tracker.initialize(frame, box)
+                self._fusion_color_frame=frame
+                self._fusion_color_stamp=header.stamp.to_sec()
                 self._record_stage("fusion_roi_color_seed", valid=bool(color_result.valid),
-                    reason=color_result.reason)
+                    reason=color_result.reason,
+                    confidence=float(color_result.confidence),
+                    reliability=getattr(color_result,'diagnostics',{}))
             except Exception as exc:
                 color_tracker.reset()
                 self._record_stage("fusion_roi_color_seed_error", error=type(exc).__name__)
         if public_id == self._fusion_next_id:
             self._fusion_next_id += 1
+        if previous_public_id >= 0:
+            self._refresh_selected_detector()
         return result
+
+
+    def _refresh_selected_detector(self):
+        """Submit the newest original capture for a just-committed selection.
+
+        Called under the existing selection lock; backend work stays on its
+        original worker. The original epoch/public-ID and commit checks apply.
+        """
+        current = getattr(self, '_pipeline_current', None)
+        mailbox = getattr(self, '_inference_mailbox', None)
+        fusion = self._fusion
+        if (current is None or mailbox is None or getattr(self, '_closing', False)
+                or getattr(self._tracker.backend, 'backend_name', '') != 'dfine'
+                or self._tracking_mode != 'fusion_tracker' or fusion.public_id < 0
+                or fusion.box is None or current[0] != self._epoch
+                or current[1].header.stamp.to_sec() < fusion.stamp):
+            return False
+        epoch, message, frame = current
+        selection = (fusion.local_id if fusion.local_id >= 0 else fusion.public_id,
+            tuple(fusion.box), fusion.class_id, tuple(tuple(g) for g in fusion.class_groups),
+            fusion.anchor.copy() if fusion.anchor is not None else None,
+            fusion.appearance_gate, fusion.quality_gate, fusion.public_id,
+            dict(velocity=tuple(fusion._detector_velocity), stamp=fusion.stamp,
+                 last_detection_stamp=fusion.last_detection_stamp,
+                 lost=fusion.result.source in ('lost', 'ambiguous')))
+        submitted = mailbox.put((epoch, message, frame, selection))
+        if submitted:
+            self._record_stage('selection_detector_refresh', selected_id=fusion.public_id,
+                capture_stamp=message.header.stamp.to_sec())
+        return submitted
 
 
     def _select_fusion_roi(self, request):
@@ -1631,9 +2271,18 @@ class SmartTrackerNode:
         if self._tracking_mode == "fusion_tracker":
             result = self._fusion.result
             bound = {value for value in (result.public_id, result.local_id, self._fusion.pending_id) if value is not None and value >= 0}
-            output = [item for item in detections if item.track_id not in bound]
+            output = [item for item in detections if item.track_id not in bound
+                and getattr(item, "selected_public_id", -1) < 0]
             if result.observed and result.last_detection_stamp == stamp.to_sec():
                 selected = next((item for item in detections if item.track_id == result.local_id), None)
+                accepted = getattr(self._fusion, "last_detector_candidate", None)
+                if (selected is None and accepted is not None
+                        and accepted.selected_public_id == result.public_id
+                        and accepted.detector_stamp == stamp.to_sec()
+                        and accepted.capture_box is not None):
+                    x, y, w, h = accepted.capture_box
+                    selected = NormalizedDetection(result.public_id, result.class_id,
+                        accepted.confidence, (x, y, x+w, y+h), (x+w/2, y+h/2))
                 if selected is not None:
                     selected = copy.copy(selected)
                     selected.track_id, selected.class_id = result.public_id, result.class_id
@@ -2144,7 +2793,7 @@ class SmartTrackerNode:
         """Called under state lock; old in-flight CUDA results cannot commit."""
         with getattr(self, "_commit_lock", self._lock):
             self._epoch = getattr(self, "_epoch", 0) + 1
-        for name in ("_inference_mailbox", "_result_mailbox"):
+        for name in ("_decoded_mailbox", "_preview_mailbox", "_inference_mailbox", "_result_mailbox"):
             mailbox = getattr(self, name, None)
             if mailbox is not None:
                 mailbox.clear()

@@ -33,6 +33,27 @@ class Proxy:
 
 
 class WebCommandTest(unittest.TestCase):
+    def test_same_capture_clear_updates_overlay_without_replacing_image(self):
+        preview=WEB.Preview.__new__(WEB.Preview)
+        preview.lock=threading.Lock();preview.source_overlay=True
+        preview.active_mode='fusion_tracker';preview.mode_epoch=0
+        preview.frames=FramePair()
+        message=SmartTrackerState()
+        message.header=Header(seq=9,stamp=rospy.Time(10,20),frame_id='camera')
+        header=dict(seq=9,stamp=dict(secs=10,nsecs=20),frame_id='camera')
+        preview.current=dict(capture_header=header,frame_token='keep',png='keep-image',
+            selected_id=123,selected_box=[10,10,4,4],control_target_valid=True)
+        preview.state(message)
+        self.assertEqual(preview.current['selected_id'],-1)
+        self.assertIsNone(preview.current['selected_box'])
+        self.assertFalse(preview.current['control_target_valid'])
+        self.assertEqual(preview.current['frame_token'],'keep')
+        self.assertEqual(preview.current['png'],'keep-image')
+        message.header.stamp=rospy.Time(9)
+        message.has_selection=True;message.selected_track_id=88
+        preview.state(message)
+        self.assertEqual(preview.current['selected_id'],-1)
+
     def setUp(self):
         rospy.rostime.set_rostime_initialized(True)
         self.preview = WEB.Preview.__new__(WEB.Preview)
@@ -50,12 +71,50 @@ class WebCommandTest(unittest.TestCase):
         self.messages = []
         self.preview.click = SimpleNamespace(get_num_connections=lambda: 1, publish=self.messages.append)
 
+    def test_telemetry_keeps_exact_capture_without_reencoding_image(self):
+        import time
+        self.preview.current=dict(png='unchanged-image',stamp=rospy.Time.now().to_sec(),
+            received_wall=time.monotonic(),frame_token='session:1',capture_header=self.header)
+        telemetry=self.preview.snapshot(include_image=False)
+        self.assertNotIn('png',telemetry)
+        self.assertEqual(telemetry['capture_header'],self.header)
+        self.assertEqual(self.preview.snapshot()['png'],'unchanged-image')
+
     def test_click_binds_served_frame(self):
         status, result = self.preview.command(dict(action='click', frame_token='session:1', point=[40, 50]))
         self.assertEqual(status, 202)
         self.assertTrue(result['sent'])
         self.assertEqual(self.messages[0].header.frame_id, 'fixed_camera')
         self.assertEqual(self.messages[0].header.seq, 123)
+
+    def test_scene_motion_controls_are_explicit_bounded_and_require_live_producer(self):
+        sent=[]
+        self.preview.benchmark=SimpleNamespace(get_num_connections=lambda:1,publish=sent.append)
+        status,result=self.preview.command(dict(action='benchmark',command='start'))
+        self.assertEqual(status,200);self.assertTrue(result['success'])
+        self.assertEqual(sent[-1].data,'start')
+        self.assertEqual(self.preview.command(dict(action='benchmark',command='invalid'))[0],409)
+        self.assertEqual(len(sent),1)
+        self.preview.benchmark.get_num_connections=lambda:0
+        self.assertEqual(self.preview.command(dict(action='benchmark',command='hold'))[0],409)
+        self.assertEqual(len(sent),1)
+
+    def test_continuously_received_old_capture_is_never_displayed_as_current_lock(self):
+        import time
+        self.preview.current=dict(stamp=rospy.Time.now().to_sec()-1.,
+            received_wall=time.monotonic(),control_target_valid=True)
+        value=self.preview.snapshot()
+        self.assertTrue(value['video_stale'])
+        self.assertFalse(value['control_target_valid'])
+
+    def test_selectable_display_does_not_extend_control_deadline(self):
+        import time
+        self.preview.current=dict(stamp=rospy.Time.now().to_sec()-.6,
+            received_wall=time.monotonic(),control_target_valid=True)
+        value=self.preview.snapshot()
+        self.assertFalse(value['video_stale'])
+        self.assertFalse(value['control_target_valid'])
+        self.assertEqual(value['control_max_age_ms'],500.)
 
     def test_raw_and_stable_class_join_only_the_same_capture(self):
         from std_msgs.msg import String
@@ -176,6 +235,43 @@ class WebCommandTest(unittest.TestCase):
             self.assertNotIn('jpeg', packet)
             self.assertEqual(packet['capture_header'], self.header)
 
+    def test_jpeg_preview_preserves_capture_dimensions_and_roi_coordinates(self):
+        preview=self.preview;preview.image_codec='jpeg';preview.frames=FramePair();preview.bridge=CvBridge()
+        preview.targets=OrderedDict();preview.history=OrderedDict();preview.segment=None
+        preview.session='jpeg-display';preview.serial=0;preview.current=None
+        image=preview.bridge.cv2_to_imgmsg(np.full((47,61,3),110,np.uint8),encoding='bgr8')
+        image.header=Header(seq=self.header['seq'],frame_id=self.header['frame_id'],
+            stamp=rospy.Time(self.header['stamp']['secs'],self.header['stamp']['nsecs']))
+        preview.frames.add_image(image);preview.frames.add_evidence(dict(capture_header=self.header,selected_id=-1))
+        preview.encode(None);packet=preview.snapshot();raw=base64.b64decode(packet['png'])
+        self.assertEqual(packet['image_mime'],'image/jpeg');self.assertEqual(raw[:2],b'\xff\xd8')
+        self.assertEqual(cv2.imdecode(np.frombuffer(raw,np.uint8),cv2.IMREAD_COLOR).shape[:2],(47,61))
+        self.assertEqual((packet['width'],packet['height']),(61,47));self.assertEqual(packet['capture_header'],self.header)
+
+    def test_compressed_ros_preview_registers_selectable_original_frame(self):
+        from sensor_msgs.msg import CompressedImage
+        preview=self.preview;preview.image_codec='jpeg';preview.frames=FramePair();preview.bridge=CvBridge()
+        preview.targets=OrderedDict();preview.history=OrderedDict();preview.segment=None
+        preview.session='compressed-input';preview.serial=0;preview.current=None
+        ok,data=cv2.imencode('.jpg',np.full((47,61,3),110,np.uint8))
+        image=CompressedImage(header=Header(seq=999,frame_id=self.header['frame_id'],
+            stamp=rospy.Time(self.header['stamp']['secs'],self.header['stamp']['nsecs'])),format='jpeg',data=data.tobytes())
+        preview.frames.add_image(image);preview.frames.add_evidence(dict(capture_header=self.header,selected_id=-1))
+        from unittest.mock import patch
+        with patch.object(preview.bridge,'compressed_imgmsg_to_cv2',side_effect=AssertionError('Unexpected duplicate JPEG decode')) as decoder:
+            preview.encode(None)
+            decoder.assert_not_called()
+        packet=preview.snapshot()
+        self.assertIn(packet['frame_token'],preview.history)
+        self.assertEqual(preview.history[packet['frame_token']],(self.header,61,47))
+        self.assertEqual(packet['capture_header']['seq'],self.header['seq'])
+        self.assertEqual(base64.b64decode(packet['png']),image.data)
+        binary=preview.snapshot(include_image=False,binary=True)
+        self.assertEqual(binary.pop('_image_bytes'),image.data)
+        self.assertNotIn('png',binary)
+        self.assertEqual(binary['frame_token'],packet['frame_token'])
+        self.assertEqual(binary['capture_header'],packet['capture_header'])
+
     def test_page_defaults_to_native_size_and_keeps_coordinate_mapping(self):
         html = (Path(__file__).resolve().parents[1]/'web/dist/index.html').read_text()
         self.assertIn('fit.checked=false;', html)
@@ -184,7 +280,8 @@ class WebCommandTest(unittest.TestCase):
         self.assertIn('ctx.drawImage(bitmap,0,0)', html)
         self.assertIn('canvas.width/r.width', html)
         self.assertIn('canvas.height/r.height', html)
-        self.assertIn("'data:image/png;base64,'+p.png", html)
+        self.assertIn("fetch('/api/image'",html)
+        self.assertIn("URL.createObjectURL(blob)",html)
 
 
 if __name__ == '__main__':

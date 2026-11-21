@@ -230,5 +230,26 @@ class AsyncPipelineTest(unittest.TestCase):
         self.assertEqual(fusion.public_id, 99)
 
 
+
+
+
+class DetectorScheduleTest(unittest.TestCase):
+    def test_detector_is_paced_independently_from_capture(self):
+        from sar_yolo_detector.async_pipeline import DetectorSchedule
+        schedule=DetectorSchedule(8.)
+        accepted=[i for i in range(120) if schedule.submit('fusion_tracker',100+i/30.,0)]
+        self.assertGreater(len(accepted),20)
+        self.assertLessEqual(len(accepted),32)
+        self.assertEqual(schedule.submitted+schedule.deferred,120)
+        self.assertTrue(schedule.submit('fusion_tracker',104.,1))
+        self.assertTrue(schedule.submit('fusion_tracker',1.,1))
+
+    def test_smart_mode_and_unlimited_remain_full_rate(self):
+        from sar_yolo_detector.async_pipeline import DetectorSchedule
+        for mode,fps in [('smart_tracker',8.),('fusion_tracker',0.)]:
+            schedule=DetectorSchedule(fps)
+            self.assertTrue(all(schedule.submit(mode,100+i/30.,0) for i in range(30)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,12 @@
 > 使用 `roslaunch xd_uav_track dfine_v3_four_modes.launch` 启动检测、跟踪、融合、bridge、XD 和网页。
 > 先按 [D-FINE-S V3 部署说明](../sar_yolo_detector/docs/dfine_v3_deployment.md) 安装独立 Python 运行环境；下文中的 YOLO 配置属于历史/其他任务入口。
 
+> UE 原生持续取流、独立网页帧率及完整云台控制通道见[低延迟相机部署说明](../sar_yolo_detector/docs/ue_low_latency_stream.md)。
+
+> 默认固定 90°；显式镜头控制、标定/尺度同步与往返变焦测试见[UE 虚拟镜头说明](../sar_yolo_detector/docs/ue_virtual_zoom.md)。
+
+> 民用静止小目标入口：`roslaunch xd_uav_track dfine_v3_civil_static_lock.launch ue_project:=/mnt/d/UE/Project/pro1`，默认 PX4。模型环境、人工选框与验收方法见[说明](../sar_yolo_detector/docs/civil_static_small_lock.md)。
+
 # xd_uav_track
 
 完整启动、三模式、接口字段、网页接入和跨主机部署说明见
@@ -421,3 +427,13 @@ YOLO 检测模型和 TensorRT engine 不受这个配置切换影响。
 光流只更新已有 ID，不创建身份，也不进入 ReID 特征库。前后向误差、运动一致性、
 速度、时间间隔、状态新鲜度及与其他检测框碰撞检查仍会拒绝不可信位移；YOLO
 保持运行以搜索新目标和校正漂移。
+
+空地目标的视线/距离约束与默认 PX4 完整启动入口：[SAR 说明](../sar_yolo_detector/docs/ue_ground_air_geometry.md)。默认动力学使用实际 MAVROS 反馈；图像锁定不等同于空间定位。
+
+RGB 录像、原帧标定/姿态核验、视频导出与 D-FINE-S V3 四模式独立回放：[使用说明](docs/ue_rgb_replay.md)。当前 UE 来源明确为 RGB，未启用红外传感器模型。
+
+UE 增补测试区、速度/高度/遮挡场景及完整链路审计：[操作说明](../sar_yolo_detector/docs/ue_stress_benchmark.md)。测试预设不等于通过验收。
+
+2026-11-15 参考视频能力差距与新增区实测：[评估报告](../sar_yolo_detector/docs/video_reference_gap_20261115.md)。
+
+类别不限制的图像锁定入口见 [测试说明](../sar_yolo_detector/docs/civil_target_tests.md)。当前默认关联配置 `tracker/association/class_agnostic: true` 使类别建议变化不单独阻断同一目标的关联、连续恢复与身份拼接；空间、外观、源身份及歧义检查保留。SAR 对应参数为 `FusionTracker/class_agnostic_lock: true`。原四模式的人工 ROI 视觉跟踪保留，类别仍由模型证据提供。检测候选需由操作者选定后才成为锁定目标。

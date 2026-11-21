@@ -1,19 +1,57 @@
 <launch>
+  <arg name="feature_tracker_algorithm" default="" />
   <arg name="ue_project" />
   <arg name="UAV_NAME" default="ue_test" />
   <arg name="scene" default="$(find sar_yolo_detector)/config/ue/airground_scene.json" />
   <arg name="output" default="$(env HOME)/.ros/sar_ue/$(anon capture)" />
   <arg name="pose_source" default="px4" />
+  <arg name="start_px4" default="$(eval arg('pose_source') == 'px4')" />
+  <arg name="start_mission" default="$(arg start_px4)" />
+  <arg name="px4_autopilot_dir" default="$(optenv PX4_AUTOPILOT_DIR)" />
   <arg name="mavros_namespace" default="/uav1" />
-  <arg name="seconds" default="180" />
-  <arg name="capture_fps" default="5" />
+  <arg name="seconds" default="600" />
+  <arg name="virtual_gimbal" default="true" />
+  <arg name="gimbal_config" default="$(find sar_yolo_detector)/config/ue/virtual_gimbal.json" />
+  <arg name="gimbal_flags" default="$(eval '--virtual-gimbal' if arg('virtual_gimbal') else '')" />
+  <arg name="allow_fov_control" default="false" />
+  <arg name="fov_flags" default="$(eval '--allow-fov-control' if arg('allow_fov_control') else '')" />
+  <arg name="fov_profile" default="fixed" />
+  <arg name="transport" default="tcp" />
+  <arg name="stream_codec" default="bgr8" />
+  <arg name="ros_send_buffer_bytes" default="0" />
+  <arg name="stream_quality" default="90" />
+  <arg name="stream_connection" default="auto" />
+  <arg name="capture_fps" default="30" />
+  <arg name="image_width" default="640" />
+  <arg name="image_height" default="640" />
+  <arg name="web_image_transport" default="raw" />
+  <arg name="web_image_codec" default="png" />
+  <arg name="web_fps" default="5" />
   <arg name="web_port" default="8787" />
   <arg name="python_executable" default="" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
+  <arg name="model_sha256" default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
+  <arg name="model_version" default="dfine_s_v3_16e" />
+  <!-- The owned SITL instance uses /uav1. External PX4 may be selected with start_px4:=false. -->
+  <include if="$(arg start_px4)" file="$(find xd_uav_track)/launch/px4_ue_sitl.launch">
+    <arg name="px4_autopilot_dir" value="$(arg px4_autopilot_dir)" />
+  </include>
+  <node if="$(arg start_mission)" pkg="xd_uav_track" type="px4_mission.py" name="ue_px4_mission"
+        output="screen" args="--scene '$(arg scene)' --namespace $(arg mavros_namespace) --status-namespace $(arg UAV_NAME) --out '$(arg output)_px4' --perception-ready-topic /$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/pipeline_trace" />
   <include file="$(find sar_yolo_detector)/launch/ue_dfine_v3_legacy_four_modes.launch">
+    <arg name="feature_tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="image_width" value="$(arg image_width)" />
+    <arg name="image_height" value="$(arg image_height)" />
+    <arg name="web_fps" value="$(arg web_fps)" />
+    <arg name="web_image_codec" value="$(arg web_image_codec)" />
+    <arg name="web_image_transport" value="$(arg web_image_transport)" />
     <arg name="web_port" value="$(arg web_port)" />
     <arg name="python_executable" value="$(arg python_executable)" />
+    <arg name="model_path" value="$(arg model_path)" />
+    <arg name="model_sha256" value="$(arg model_sha256)" />
+    <arg name="model_version" value="$(arg model_version)" />
   </include>
-  <node pkg="sar_yolo_detector" type="ue_camera_bridge" name="ue_camera_bridge" output="screen"
-        args="--project '$(arg ue_project)' --scene '$(arg scene)' --out '$(arg output)' --seconds $(arg seconds) --fps $(arg capture_fps) --camera down --ros --pose-source $(arg pose_source) --mavros-namespace $(arg mavros_namespace) --namespace $(arg UAV_NAME) --stream-only" />
+  <node pkg="sar_yolo_detector" type="ue_camera_bridge" name="ue_camera_bridge" output="screen" required="true"
+        args="--project '$(arg ue_project)' --scene '$(arg scene)' --out '$(arg output)' --seconds $(arg seconds) --fps $(arg capture_fps) --width $(arg image_width) --height $(arg image_height) --camera down --ros --pose-source $(arg pose_source) --mavros-namespace $(arg mavros_namespace) --namespace $(arg UAV_NAME) --stream-only $(arg fov_flags) --fov-profile '$(arg fov_profile)' --transport $(arg transport) --stream-codec $(arg stream_codec) --stream-quality $(arg stream_quality) --ros-send-buffer-bytes $(arg ros_send_buffer_bytes) --stream-connection $(arg stream_connection) $(arg gimbal_flags) --gimbal-config '$(arg gimbal_config)'" />
 </launch>

@@ -1,0 +1,24 @@
+<launch>
+  <!-- Candidate for reviewing this guide's changes; online acceptance has failed. -->
+  <arg name="ue_project"/>
+  <arg name="python_executable" default=""/>
+  <arg name="pose_source" default="kinematic"/>
+  <arg name="UAV_NAME" default="ue_test"/>
+  <arg name="seconds" default="360"/>
+  <arg name="output" default="$(env HOME)/.ros/sar_ue/$(anon guide_candidate)"/>
+  <arg name="scene" default="$(find sar_yolo_detector)/config/ue/benchmark_cases/civil_car_fast.json"/>
+  <arg name="gimbal_config" default="$(find sar_yolo_detector)/config/ue/benchmark_cases/civil_car_fast_gimbal.json"/>
+  <include file="$(find sar_yolo_detector)/launch/ue_civil_moving_targets.launch">
+    <arg name="ue_project" value="$(arg ue_project)"/>
+    <arg name="python_executable" value="$(arg python_executable)"/>
+    <arg name="pose_source" value="$(arg pose_source)"/>
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)"/>
+    <arg name="seconds" value="$(arg seconds)"/>
+    <arg name="output" value="$(arg output)"/>
+    <arg name="scene" value="$(arg scene)"/>
+    <arg name="gimbal_config" value="$(arg gimbal_config)"/>
+    <arg name="model_path" value="$(find sar_yolo_detector)/models/dfine_s_v3_ue_head11_roi/manifest.json"/>
+    <arg name="model_sha256" value="12c57947540ab280ac7da123012fc63233ffa79ad2d9663acd9a9181d696eaa3"/>
+    <arg name="model_version" value="dfine_s_v3_ue_head11_roi"/>
+  </include>
+</launch>

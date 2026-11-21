@@ -297,7 +297,12 @@ target_link_libraries(sar_vision_to_xd_bridge
   ${catkin_LIBRARIES}
 )
 
-install(TARGETS sar_yolo_postprocessor sar_yolo_inference_backend sar_model_integrity sar_mission_state_store sar_yolo_detector_node sar_task_point_generator sar_yolo_image_replay sar_detection_late_fusion sar_flood_region_extractor sar_segformer_inference sar_decision_bridge sar_vision_to_xd_bridge
+add_executable(sar_camera_stream_probe src/camera_stream_probe_node.cpp)
+add_dependencies(sar_camera_stream_probe ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_compile_features(sar_camera_stream_probe PRIVATE cxx_std_14)
+target_link_libraries(sar_camera_stream_probe ${catkin_LIBRARIES})
+
+install(TARGETS sar_yolo_postprocessor sar_yolo_inference_backend sar_model_integrity sar_mission_state_store sar_yolo_detector_node sar_task_point_generator sar_yolo_image_replay sar_detection_late_fusion sar_flood_region_extractor sar_segformer_inference sar_decision_bridge sar_vision_to_xd_bridge sar_camera_stream_probe
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -305,10 +310,15 @@ install(TARGETS sar_yolo_postprocessor sar_yolo_inference_backend sar_model_inte
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
 )
-install(DIRECTORY config launch training models docs web third_party tools
+install(DIRECTORY config launch training models docs web third_party tools ue_plugin
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
+  PATTERN "Intermediate" EXCLUDE
+  PATTERN "*.pdb" EXCLUDE
+)
+install(FILES scripts/build_ue_stream_plugin.ps1
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 install(DIRECTORY archive/launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/archive
@@ -316,17 +326,24 @@ install(DIRECTORY archive/launch
 install(DIRECTORY test/fixtures
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/test
 )
+install(FILES test/test_ue_virtual_gimbal.py test/test_target_geometry.py test/test_selected_flow.py
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/test
+)
 install(FILES README.md LICENSE THIRD_PARTY_NOTICES.md
-  requirements-smart-tracker.txt requirements-tensorrt-cu12.txt requirements-dfine-v3.txt
+  requirements-smart-tracker.txt requirements-tensorrt-cu12.txt requirements-dfine-v3.txt requirements-ostrack-benchmark.txt
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
-install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt
+install(FILES LICENSES/PixEagle-Apache-2.0.txt LICENSES/Ultralytics-AGPL-3.0.txt LICENSES/OSTrack-MIT.txt
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/LICENSES
 )
 install(PROGRAMS
   scripts/setup_dfine_v3.sh
   scripts/check_dfine_v3.py
   scripts/verify_dfine_pipeline.py
+  scripts/benchmark_local_trackers.py
+  scripts/verify_ue_zoom.py
+  scripts/verify_ue_stream.py
+  scripts/verify_ue_gimbal.py
   scripts/ue_camera_bridge
   scripts/install_ue_capture.py
   scripts/sar_yolo_smart_tracker
@@ -342,6 +359,19 @@ install(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 catkin_install_python(PROGRAMS
+  scripts/verify_ue_transport_stall.py
+  scripts/run_civil_target_test.py
+  scripts/run_ue_stress_suite.py
+  scripts/run_ue_fov_ladder.py
+  scripts/augment_ue_benchmark.py
+  scripts/verify_ue_stress_case.py
+  scripts/verify_ue_rgb_replay.py
+  scripts/record_ue_rgb.py
+  scripts/replay_ue_rgb.py
+  scripts/export_ue_rgb.py
+  scripts/inspect_ue_car_recording.py
+  scripts/score_ue_car_review.py
+  scripts/verify_car_selection_recording.py
   scripts/fusion_web_preview.py
   scripts/fusion_interactive_viewer.py
   scripts/validate_fusion_runtime.py
@@ -370,10 +400,22 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_smart_tracker_image_codec.py)
   catkin_add_nosetests(test/test_manual_box_tracker.py)
   catkin_add_nosetests(test/test_box_fusion.py)
+  catkin_add_nosetests(test/test_takeover_safety.py)
+  catkin_add_nosetests(test/test_lost_detector_dispatch.py)
+  catkin_add_nosetests(test/test_publication_lifecycle.py)
+  catkin_add_nosetests(test/test_reselection_refresh.py)
   catkin_add_nosetests(test/test_loss_journal.py)
   catkin_add_nosetests(test/test_fusion_metrics.py)
   catkin_add_nosetests(test/test_async_pipeline.py)
   catkin_add_nosetests(test/test_camera_motion.py)
+  catkin_add_nosetests(test/test_camera_calibration.py)
+  catkin_add_nosetests(test/test_ue_virtual_zoom.py)
+  catkin_add_nosetests(test/test_target_geometry.py)
+  catkin_add_nosetests(test/test_selected_flow.py)
+  catkin_add_nosetests(test/test_static_small_lock.py)
+  catkin_add_nosetests(test/test_civil_target_entry.py)
+  catkin_add_nosetests(test/test_benchmark_motion.py)
+  catkin_add_nosetests(test/test_rgb_recording.py)
   catkin_add_nosetests(test/test_capture_clock.py)
   catkin_add_nosetests(test/test_interactive_view.py)
   catkin_add_nosetests(test/test_fusion_web_preview.py)
@@ -382,6 +424,8 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_dfine_postprocess.py)
   catkin_add_nosetests(test/test_dfine_deployment.py)
   catkin_add_nosetests(test/test_ue_capture_install.py)
+  catkin_add_nosetests(test/test_ue_virtual_gimbal.py)
+  catkin_add_nosetests(test/test_ue_stream_protocol.py)
   catkin_add_nosetests(test/test_temporal_detection_evidence.py)
   catkin_add_nosetests(test/test_roi_background_verifier.py)
   catkin_add_nosetests(test/test_shared_detector_outputs.py)

@@ -1,0 +1,16 @@
+{
+  "home_yaw_deg": 45.0,
+  "home_pitch_deg": -46.302127914466766,
+  "yaw_limits_deg": [
+    -160.0,
+    160.0
+  ],
+  "pitch_limits_deg": [
+    -89.0,
+    45.0
+  ],
+  "max_rate_deg_s": 30.0,
+  "max_accel_deg_s2": 90.0,
+  "command_delay_sec": 0.08,
+  "measurement_timeout_sec": 0.5
+}

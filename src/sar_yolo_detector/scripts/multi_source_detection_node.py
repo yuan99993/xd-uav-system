@@ -222,7 +222,7 @@ class MultiSourceDetectionNode:
         self._maximum_batch_size = max(1, min(8, int(rospy.get_param(
             "~maximum_batch_size", 2))))
         self._maximum_age_sec = max(0.0, float(rospy.get_param(
-            "~maximum_capture_age_sec", 0.5)))
+            "~maximum_capture_age_sec", 0.75)))
         self._require_stamp = bool(rospy.get_param("~require_capture_timestamp", True))
         self._reject_out_of_order = bool(rospy.get_param("~reject_out_of_order", True))
         self._pause_without_subscribers = bool(rospy.get_param(

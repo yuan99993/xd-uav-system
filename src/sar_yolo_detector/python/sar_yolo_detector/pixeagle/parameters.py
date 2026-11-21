@@ -11,6 +11,13 @@ class Parameters:
 
     SmartTracker: Dict[str, Any] = {}
 
+    @staticmethod
+    def for_lock_policy(config: Dict[str, Any], class_agnostic: bool) -> Dict[str, Any]:
+        result=deepcopy(config)
+        # None means all model outputs. [] means no outputs in both adapters.
+        if class_agnostic:result['SMART_TRACKER_ALLOWED_CLASS_IDS']=None
+        return result
+
     @classmethod
     def configure_smart_tracker(cls, config: Dict[str, Any]) -> None:
         if not isinstance(config, dict):

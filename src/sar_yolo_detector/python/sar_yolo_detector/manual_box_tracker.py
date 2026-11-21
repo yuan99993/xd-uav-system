@@ -8,7 +8,10 @@ validation, and the learned colour model.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+import json
+import hashlib
+from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -26,6 +29,7 @@ class ManualTrackResult:
     reason: str
     tracker_name: str
     consecutive_failures: int
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
 def _nested(config: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -33,8 +37,27 @@ def _nested(config: Dict[str, Any], key: str) -> Dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _create_opencv_tracker(name: str):
+def _create_opencv_tracker(name: str, feature_config=None):
     requested = str(name or "auto").strip().lower()
+    if requested in ('nano','nanotrack'):
+        config=dict(feature_config or {})
+        package=Path(__file__).resolve().parents[2]
+        if not (package/'package.xml').is_file():
+            import rospkg
+            package=Path(rospkg.RosPack().get_path('sar_yolo_detector'))
+        model=Path(config.get('nano_model_directory',str(package/'models/nanotrack_v2')))
+        if not model.is_absolute():model=package/model
+        manifest=json.loads((model/'manifest.json').read_text())
+        for filename,digest in manifest['files'].items():
+            if hashlib.sha256((model/filename).read_bytes()).hexdigest()!=digest:
+                raise ValueError('NanoTrack model integrity check failed: '+filename)
+        if not hasattr(cv2,'TrackerNano_create'):raise ValueError('OpenCV TrackerNano is unavailable')
+        params=cv2.TrackerNano_Params()
+        params.backbone=str(model/'nanotrack_backbone_sim.onnx')
+        params.neckhead=str(model/'nanotrack_head_sim.onnx')
+        params.backend=cv2.dnn.DNN_BACKEND_OPENCV
+        params.target=cv2.dnn.DNN_TARGET_CPU
+        return cv2.TrackerNano_create(params),'nano'
     namespaces = (cv2, getattr(cv2, "legacy", None))
 
     def factory(algorithm: str):
@@ -88,10 +111,16 @@ class ManualBoxTracker:
         colour = _nested(self.config, "color_tracker")
         safety = _nested(feature, "tracker_safety")
 
+        self.minimum_motion_warp_px=float(feature.get("minimum_motion_warp_px",0.))
+        if not math.isfinite(self.minimum_motion_warp_px) or not 0<=self.minimum_motion_warp_px<=2.:raise ValueError("Invalid minimum motion warp")
+        self.motion_local_warp=bool(feature.get("motion_local_warp",False))
+        self.colour_local_processing=bool(colour.get("local_processing",False))
+        self.feature_config=feature
+        self.feature_minimum_score=float(feature.get('minimum_tracking_score',.35))
         self.algorithm = str(feature.get("tracker_algorithm", "auto"))
-        self.require_opencv_tracker = bool(feature.get("require_opencv_tracker", False))
+        self.require_opencv_tracker = bool(feature.get("require_opencv_tracker", False)) or self.algorithm.lower() in ("nano","nanotrack")
         if self.tracker_type == 'feature_tracker' and self.require_opencv_tracker:
-            probe, actual = _create_opencv_tracker(self.algorithm)
+            probe, actual = _create_opencv_tracker(self.algorithm,self.feature_config)
             if probe is None or actual == 'template':
                 raise ValueError('Configured OpenCV tracker is unavailable: '+self.algorithm)
         self.template_threshold = float(
@@ -156,6 +185,8 @@ class ManualBoxTracker:
         self.max_fail_frames = max(1, int(safety.get("max_fail_frames", 3)))
 
         self._opencv_tracker = None
+        self._pixel_fraction=(0.,0.,0.,0.)
+        self._support_corners=None
         self._tracker_name = self.tracker_type
         self._template = None
         self._colour_histogram = None
@@ -166,6 +197,7 @@ class ManualBoxTracker:
         self._last_bbox: Optional[PixelBox] = None
         self._active = False
         self._failures = 0
+        self.last_quality = {}
 
     @property
     def active(self) -> bool:
@@ -188,6 +220,8 @@ class ManualBoxTracker:
 
     def reset(self) -> None:
         self._opencv_tracker = None
+        self._pixel_fraction = (0.,0.,0.,0.)
+        self._support_corners = None
         self._template = None
         self._colour_histogram = None
         self._colour_channel = 0
@@ -197,32 +231,61 @@ class ManualBoxTracker:
         self._last_bbox = None
         self._active = False
         self._failures = 0
+        self.last_quality = {}
 
-    def compensate_motion(self, previous_frame, matrix):
+    def compensate_motion(self, previous_frame, matrix, force_scale=False):
         """Move the previous template into the current camera plane, not onto
         the current target. The subsequent update remains an independent test.
         """
         if not self.active or self._last_bbox is None:
             return False
-        from .camera_motion import CameraMotion, transform_box
+        from .camera_motion import CameraMotion, transform_window
         if not CameraMotion.validate(matrix, previous_frame.shape):
             return False
-        box = transform_box(self._last_bbox, matrix)
+        box,projected = transform_window(self._last_bbox,matrix,self._support_corners)
         if box is None:
             return False
         x, y, width, height = box
         if x < 0 or y < 0 or x+width > previous_frame.shape[1] or y+height > previous_frame.shape[0]:
             return False
-        if np.max(np.abs(np.asarray(box)-self._last_bbox)) < 3.:
+        if not force_scale and np.max(np.abs(np.asarray(box)-self._last_bbox)) < 1e-4:
+            self._support_corners=projected
             return True
+        if not force_scale and self.tracker_type=='feature_tracker' and self.minimum_motion_warp_px>0:
+            old=np.asarray(self._last_bbox)
+            if np.max(np.abs(np.asarray(box)-old))<self.minimum_motion_warp_px:
+                # KCF still measures the CURRENT image. Tiny image displacement
+                # fits its normal search window; avoid retraining on old pixels.
+                self.last_motion_resample='subpixel_search'
+                return True
+        self.last_motion_resample='resampled'
         if self.tracker_type == "color_tracker":
             if self._colour_reference_area is not None:
                 self._colour_reference_area *= box[2]*box[3]/max(1.,self._last_bbox[2]*self._last_bbox[3])
-            self._last_bbox = box
+            self._last_bbox = box;self._support_corners=projected
             return True
-        warped = cv2.warpPerspective(previous_frame, matrix,
-            (previous_frame.shape[1], previous_frame.shape[0]))
-        return self.initialize(warped, box).valid
+        if self.motion_local_warp and self._tracker_name in ("kcf","csrt","nano"):
+            # KCF/CSRT/Nano use a bounded context around the target. Keep their
+            # original global coordinates and every required context pixel,
+            # without resampling the unrelated full sensor image.
+            pad=max(64,int(math.ceil(4*max(width,height))))
+            left,top=max(0,int(math.floor(x))-pad),max(0,int(math.floor(y))-pad)
+            right=min(previous_frame.shape[1],int(math.ceil(x+width))+pad)
+            bottom=min(previous_frame.shape[0],int(math.ceil(y+height))+pad)
+            destination=np.array([[1.,0.,-left],[0.,1.,-top],[0.,0.,1.]])
+            patch=cv2.warpPerspective(previous_frame,destination@matrix,(right-left,bottom-top))
+            warped=np.zeros_like(previous_frame);warped[top:bottom,left:right]=patch
+        else:
+            warped = cv2.warpPerspective(previous_frame, matrix,
+                (previous_frame.shape[1], previous_frame.shape[0]))
+        valid=self.initialize(warped,box).valid
+        if valid:self._support_corners=projected
+        return valid
+
+    def _commit_geometry(self,bbox):
+        from .camera_motion import correct_window_support
+        self._support_corners=correct_window_support(self._support_corners,self._last_bbox or bbox,bbox)
+        self._last_bbox=tuple(bbox)
 
     def configure_colour(self, colour_name: str = "") -> None:
         """Select global contrast/color tracking or ROI-learned tracking.
@@ -299,7 +362,7 @@ class ManualBoxTracker:
             return self._result(bbox, 0.0, False, "initial_roi_too_small")
 
         self.reset()
-        self._last_bbox = bbox
+        self._commit_geometry(bbox)
         if self.tracker_type == "color_tracker":
             if self.colour_source in ("configured", "auto"):
                 # Global color modes do not use this supplied box; the normal
@@ -316,17 +379,30 @@ class ManualBoxTracker:
             self._tracker_name = "color_roi_camshift"
             self._colour_reference_area = bbox[2]*bbox[3]
         else:
-            tracker, name = _create_opencv_tracker(self.algorithm)
+            tracker, name = _create_opencv_tracker(self.algorithm,self.feature_config)
             self._tracker_name = name
             if tracker is not None:
                 try:
                     tracker_bbox = tuple(int(round(value)) for value in bbox)
                     initialized = tracker.init(frame, tracker_bbox)
+                    self._pixel_fraction=tuple(value-pixel for value,pixel in zip(bbox,tracker_bbox))
                     # OpenCV 4 Python bindings return either True or None on success.
                     if initialized is False:
                         tracker = None
+                    elif name == "kcf":
+                        # Complete KCF's first model update on its initialization
+                        # image. Repeated camera/lens reseeding otherwise makes
+                        # every real frame its training-only first update and
+                        # never measures the target's independent displacement.
+                        # This is initialization, never a new capture/observation.
+                        primed, _ = tracker.update(frame)
+                        if not primed:
+                            tracker = None
                 except Exception:
                     tracker = None
+            if tracker is None and self.require_opencv_tracker:
+                self.reset()
+                return self._result(bbox,0.,False,'opencv_tracker_initialization_failed')
             if tracker is None:
                 self._tracker_name = "template"
                 self._template = self._extract_gray(frame, bbox)
@@ -353,7 +429,7 @@ class ManualBoxTracker:
                     bbox = _clamp_box(bbox, width, height)
                     valid, reason = self._validate_bbox(bbox, self._last_bbox, width, height)
                     if valid:
-                        self._last_bbox = bbox
+                        self._commit_geometry(bbox)
                         self._failures = 0
                         return self._result(bbox, confidence, True, reason)
                 # CamShift can drift or lose a patch. Re-run the scene-contrast
@@ -378,8 +454,11 @@ class ManualBoxTracker:
                 ok, candidate = self._opencv_tracker.update(frame)
             except Exception:
                 ok, candidate = False, self._last_bbox
-            bbox = tuple(float(value) for value in candidate) if candidate is not None else None
-            confidence = 1.0 if ok else 0.0
+            bbox = tuple(float(value)+fraction for value,fraction in zip(candidate,self._pixel_fraction)) if candidate is not None else None
+            score=getattr(self._opencv_tracker,'getTrackingScore',None)
+            confidence = float(score()) if ok and callable(score) else 1.0 if ok else 0.0
+            if not math.isfinite(confidence) or confidence < self.feature_minimum_score:
+                return self._record_failure(bbox,'feature_response_too_low')
             valid = bool(ok and bbox is not None)
             reason = "ok" if valid else "opencv_tracker_update_failed"
 
@@ -390,13 +469,15 @@ class ManualBoxTracker:
         if not valid or bbox is None:
             return self._record_failure(bbox or self._last_bbox, reason)
 
-        self._last_bbox = bbox
+        self._commit_geometry(bbox)
         self._failures = 0
         return self._result(bbox, confidence, True, reason)
 
     def _result(
         self, bbox: Optional[PixelBox], confidence: float, valid: bool, reason: str
     ) -> ManualTrackResult:
+        metrics=dict(self.last_quality)
+        metrics.update(accepted=bool(valid),reason=str(reason),score=max(0.,min(1.,float(confidence))) if valid else 0.)
         return ManualTrackResult(
             bbox=bbox,
             confidence=max(0.0, min(1.0, float(confidence))),
@@ -404,6 +485,7 @@ class ManualBoxTracker:
             reason=str(reason),
             tracker_name=self._tracker_name,
             consecutive_failures=self._failures,
+            diagnostics=metrics,
         )
 
     def _record_failure(self, bbox: Optional[PixelBox], reason: str) -> ManualTrackResult:
@@ -501,9 +583,19 @@ class ManualBoxTracker:
         return True
 
     def _update_colour(self, frame: np.ndarray):
+        self.last_quality = dict(accepted=False,reason='no_contrasting_component',score=0.)
         if self._last_bbox is None:
             return self._last_bbox, 0.0, False, "colour_model_unavailable"
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        x,y,width,height=self._last_bbox
+        search_width,search_height=width*self.colour_search_expansion,height*self.colour_search_expansion
+        left=max(0,int(x+width/2.-search_width/2.));top=max(0,int(y+height/2.-search_height/2.))
+        right=min(frame.shape[1],int(x+width/2.+search_width/2.));bottom=min(frame.shape[0],int(y+height/2.+search_height/2.))
+        halo=4*(self.morph_kernel//2) if self.morph_kernel>1 else 0
+        region_left,region_top=max(0,left-halo),max(0,top-halo)
+        region_right,region_bottom=min(frame.shape[1],right+halo),min(frame.shape[0],bottom+halo)
+        region=frame[region_top:region_bottom,region_left:region_right] if self.colour_local_processing else frame
+        if region.size==0:return self._last_bbox,0.,False,'invalid_colour_search_window'
+        hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
         if self._colour_histogram is None:
             return self._last_bbox, 0.0, False, "colour_model_unavailable"
         backprojection = cv2.calcBackProject(
@@ -532,14 +624,12 @@ class ManualBoxTracker:
                 backprojection, cv2.MORPH_CLOSE, kernel
             )
 
-        x,y,width,height=self._last_bbox
-        search_width,search_height=width*self.colour_search_expansion,height*self.colour_search_expansion
-        left=max(0,int(x+width/2.-search_width/2.))
-        top=max(0,int(y+height/2.-search_height/2.))
-        right=min(frame.shape[1],int(x+width/2.+search_width/2.))
-        bottom=min(frame.shape[0],int(y+height/2.+search_height/2.))
-        bounded=np.zeros_like(backprojection)
-        bounded[top:bottom,left:right]=backprojection[top:bottom,left:right]
+        if self.colour_local_processing:
+            bounded=np.zeros(frame.shape[:2],np.uint8)
+            bounded[top:bottom,left:right]=backprojection[top-region_top:bottom-region_top,left-region_left:right-region_left]
+        else:
+            bounded=np.zeros_like(backprojection)
+            bounded[top:bottom,left:right]=backprojection[top:bottom,left:right]
         backprojection=bounded
         if cv2.countNonZero(backprojection)<4:
             return self._last_bbox,0.,False,'colour_target_not_found'
@@ -577,7 +667,7 @@ class ManualBoxTracker:
             if not valid or (self._colour_reference_area is not None and
                     width*height > self._colour_reference_area*self.colour_max_reference_area_ratio):
                 continue
-            _,contrast = self._local_color_contrast(binary,(x,y,width,height))
+            purity,contrast = self._local_color_contrast(binary,(x,y,width,height))
             if contrast < self.minimum_local_colour_contrast:
                 continue
             center = (x+width/2.,y+height/2.)
@@ -586,10 +676,16 @@ class ManualBoxTracker:
             continuity = math.exp(-distance-abs(math.log(max(.01,area_ratio))))
             quality = float(np.mean(backprojection[y:y+height,x:x+width])/255.)
             camshift_distance = math.hypot(center[0]-rotated[0][0],center[1]-rotated[0][1])/diagonal
-            candidates.append((.55*continuity+.30*quality+.15*math.exp(-camshift_distance),bbox,quality))
+            # A similar-colour background must lower trust even when CamShift
+            # still returns a plausible box. Scores are evidence, not calibrated probabilities.
+            reliability = quality*purity*min(1.,contrast/.5)
+            metrics = dict(score=reliability,histogram_response=quality,foreground_purity=purity,
+                           local_contrast=contrast,background_fraction=max(0.,purity-contrast),
+                           continuity=continuity,accepted=True,reason='contrasting_roi_component')
+            candidates.append((.55*continuity+.30*reliability+.15*math.exp(-camshift_distance),bbox,reliability,metrics))
         if not candidates:
             return self._last_bbox,0.,False,'no_continuous_roi_colour_component'
-        _,bbox,confidence = max(candidates,key=lambda item:item[0])
+        _,bbox,confidence,self.last_quality = max(candidates,key=lambda item:item[0])
         return bbox,confidence,True,'ok'
 
     def _color_mask(self, hsv: np.ndarray, colour_name: str) -> np.ndarray:
@@ -735,7 +831,7 @@ class ManualBoxTracker:
             score, area, bbox, detected_colour = max(continuous, key=lambda item: (item[0], item[1]))
         else:
             score, area, bbox, detected_colour = max(all_candidates, key=lambda item: (item[0], item[1]))
-        self._last_bbox = bbox
+        self._commit_geometry(bbox)
         self._active = True
         self._colour_acquired = True
         self._failures = 0

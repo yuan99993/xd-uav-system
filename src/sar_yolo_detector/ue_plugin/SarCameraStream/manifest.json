@@ -1,0 +1,8 @@
+{
+  "engine": "UE5.5.4",
+  "build_id": "37670630",
+  "files": {
+    "Binaries/Win64/UnrealEditor-SarCameraStream.dll": "9ecc9fe9d140853ab4a68f05041ede06312c9ddf667f0f5e3f6b6e71347f7b26",
+    "Binaries/Win64/UnrealEditor.modules": "4abb6daea58b0ce5260c5135ee4b60d0fc80b10de21ab0375d099b0c08155f61"
+  }
+}
