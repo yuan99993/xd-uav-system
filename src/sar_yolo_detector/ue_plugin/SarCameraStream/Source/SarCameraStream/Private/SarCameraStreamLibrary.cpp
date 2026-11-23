@@ -40,6 +40,7 @@ struct Context: TSharedFromThis<Context,ESPMode::ThreadSafe> {
  TMap<FString,FString> Commands,Controls;TSharedPtr<Packet,ESPMode::ThreadSafe> Latest;int64 Highest=-1;
  TUniquePtr<SocketWorker> TX,RX;FRunnableThread* TXThread=nullptr;FRunnableThread* RXThread=nullptr;
  TArray<TStrongObjectPtr<UTextureRenderTarget2D>> Targets;std::atomic<int> Encoding{0};
+ std::atomic<int64> LastImageSendMicros{0},LastImagePayloadBytes{0};
  TArray<TSharedPtr<Slot,ESPMode::ThreadSafe>> Slots;IImageWrapperModule* Images=nullptr;
  std::atomic<int64> Captured{0},Busy{0},Copied{0},Sent{0},Dropped{0},Errors{0},RejectedControl{0};
  bool Start(const FString& T,int32 P){
@@ -95,8 +96,11 @@ struct Context: TSharedFromThis<Context,ESPMode::ThreadSafe> {
    for(int32 I=0;I<Status.Num()+(Frame.IsValid()?1:0);I++){
     if(!Connected||Halt)break;
     const bool Image=I==Status.Num();auto O=Parse(Image?Frame->Meta:Status[I]);if(!O.IsValid())continue;O->SetNumberField(TEXT("ue_send_wall"),Wall());
+    if(Image){O->SetNumberField(TEXT("previous_frame_send_ms"),double(LastImageSendMicros.exchange(0))/1000.);O->SetNumberField(TEXT("previous_frame_payload_bytes"),double(LastImagePayloadBytes.exchange(0)));O->SetNumberField(TEXT("sender_frame_drop_count"),double(Dropped.load()));}
     FTCHARToUTF8 Text(*Json(O));TArray<uint8> Header;Header.Append(reinterpret_cast<const uint8*>("SRF1"),4);U32(Header,Text.Length());U32(Header,Image?Frame->Bytes.Num():0);Header.Append(reinterpret_cast<const uint8*>(Text.Get()),Text.Length());
-    if(!Write(S,Header.GetData(),Header.Num())||(Image&&!Write(S,Frame->Bytes.GetData(),Frame->Bytes.Num()))){Errors++;Connected=false;S->Close();break;}if(Image)Sent++;
+    const double ImageSendStarted=Image?FPlatformTime::Seconds():0.;
+    if(!Write(S,Header.GetData(),Header.Num())||(Image&&!Write(S,Frame->Bytes.GetData(),Frame->Bytes.Num()))){Errors++;Connected=false;S->Close();break;}
+    if(Image){LastImageSendMicros=int64((FPlatformTime::Seconds()-ImageSendStarted)*1000000.);LastImagePayloadBytes=Frame->Bytes.Num();Sent++;}
    }
    // Auto-reset event wakes on new metadata or a completed image, outside SendLock.
   }}

@@ -18,7 +18,7 @@ from urllib.error import HTTPError
 import numpy as np
 import rospy
 import rospkg
-from std_msgs.msg import String
+from std_msgs.msg import String,Header
 from sar_yolo_detector.msg import SmartTrackerState
 sys.path.insert(0,str(Path(rospkg.RosPack().get_path('sar_yolo_detector'))/'tools/ue'))
 from gimbal_selection import current_visual_measurement
@@ -96,12 +96,33 @@ def main():
             if capture_stamp>=settled_after and frame.get('flight',{}).get('stage')=='inspect_01':break
             time.sleep(.1)
         else:raise RuntimeError('No post-settle camera capture at the inspection hover')
+    # Require ten distinct fresh captures before recorder/selection handshake.
+    stable_stamps=[]
+    barrier_deadline=time.monotonic()+30.
+    while time.monotonic()<barrier_deadline:
+        frame=request();h=frame.get('capture_header',{}).get('stamp',{})
+        stamp=h.get('secs',0)+h.get('nsecs',0)/1e9
+        age=time.time()-stamp
+        if frame.get('ready') and 0<=age<.25:
+            if not stable_stamps or stamp>stable_stamps[-1]:stable_stamps.append(stamp)
+            if len(stable_stamps)>=10:break
+        else:stable_stamps=[]
+        time.sleep(.025)
+    else:raise RuntimeError('Camera freshness barrier: ten consecutive captures not available')
+    (a.output/'camera_barrier.json').write_text(json.dumps(dict(captures=stable_stamps,maximum_age_sec=.25)))
     recorded_after=0
+    recorded_captures=set()
+    def capture_written(message):
+        recorded_captures.add(message.stamp.to_nsec())
+        if len(recorded_captures)>512:recorded_captures.remove(min(recorded_captures))
     if a.record_ready:
         deadline=time.monotonic()+60
         while time.monotonic()<deadline:
             if a.record_ready.is_file():
-                recorded_after=json.loads(a.record_ready.read_text())['after_capture_nsec']/1e9
+                record_ready=json.loads(a.record_ready.read_text())
+                recorded_after=record_ready['after_capture_nsec']/1e9
+                if record_ready.get('ack_topic'):
+                    subs.append(rospy.Subscriber(record_ready['ack_topic'],Header,capture_written,queue_size=128))
                 break
             time.sleep(.1)
         else:raise RuntimeError('Preselection recorder did not become ready')
@@ -112,6 +133,8 @@ def main():
         stamp=h.get('secs',0)+h.get('nsecs',0)/1e9
         if stamp<=recorded_after:
             time.sleep(.1);continue
+        if a.record_ready and record_ready.get('ack_topic') and h.get('secs',0)*1000000000+h.get('nsecs',0) not in recorded_captures:
+            time.sleep(.025);continue
         try:rows=truth(tail=True)
         except (OSError,ValueError):time.sleep(.2);continue
         entry=min(rows,key=lambda v:abs(v['capture_wall_start']-offset-stamp))
@@ -148,7 +171,7 @@ def main():
         static=sorted(recent.values(),key=lambda v:v['stamp'])
         ratio=sum(v['current'] for v in static)/max(1,len(static))
         if (len(static)>=3 and ratio>=.9 and all(v['current'] for v in static[-3:])
-                and started-static[-1]['stamp']<=.5):
+                and started-static[-1]['stamp']<.25):
             # The evaluator alone uses the projection log. A stable but
             # misplaced box must not qualify the benchmark to start.
             try:

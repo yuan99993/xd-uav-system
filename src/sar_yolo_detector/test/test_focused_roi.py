@@ -36,3 +36,12 @@ class FocusedROITest(unittest.TestCase):
     def test_invalid_box_rejected(self):
         with self.assertRaises(ValueError):
             crop_focused_roi(np.zeros((100, 100, 3), np.uint8), (0, 0, float('nan'), 20))
+
+    def test_reflected_crop_retains_original_coordinate_offset(self):
+        image = np.arange(100*200*3, dtype=np.uint8).reshape(100,200,3)
+        crop, offset = crop_focused_roi(image, (0,0,20,20), min_crop_size=80,
+                                         reflect_padding=True)
+        self.assertEqual(crop.shape, (80,80,3))
+        self.assertEqual(offset, (-30,-30))
+        np.testing.assert_array_equal(crop[30:80,30:80], image[:50,:50])
+        np.testing.assert_array_equal(crop[29,30],image[1,0])

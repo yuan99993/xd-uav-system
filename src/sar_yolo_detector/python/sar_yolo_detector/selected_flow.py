@@ -28,7 +28,7 @@ def foreground_support(image, box, return_model=False):
     return (mask,distinctive) if return_model else mask
 
 
-def selected_flow(previous, current, box, local_crop=False, foreground_only=False, initial_transform=None):
+def selected_flow(previous, current, box, local_crop=False, foreground_only=False, initial_transform=None, window_size=None, pyramid_levels=None):
     """Return a current-pixel box only after bounded forward/backward LK + RANSAC.
 
     This is an independent witness to a local tracker, never a detector or a
@@ -59,7 +59,11 @@ def selected_flow(previous, current, box, local_crop=False, foreground_only=Fals
         if np.count_nonzero(mask)<6:return None,dict(valid=False,reason='insufficient_foreground_support')
     points=cv2.goodFeaturesToTrack(before,48,.02,3,mask=mask,blockSize=3)
     if points is None or len(points)<6:return None,dict(valid=False,reason='insufficient_target_texture')
-    options=dict(winSize=(9,9) if foreground_only else (15,15),maxLevel=1 if foreground_only else 3,
+    window=(9 if foreground_only else 15) if window_size is None else window_size
+    levels=(1 if foreground_only else 3) if pyramid_levels is None else pyramid_levels
+    if type(window) is not int or window<5 or window>31 or window%2!=1 or type(levels) is not int or not 0<=levels<=4:
+        raise ValueError('Invalid selected-flow window/pyramid bounds')
+    options=dict(winSize=(window,window),maxLevel=levels,
         criteria=(cv2.TERM_CRITERIA_EPS|cv2.TERM_CRITERIA_COUNT,20,.01))
     initial=None
     if initial_transform is not None:

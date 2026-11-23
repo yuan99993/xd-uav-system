@@ -39,6 +39,15 @@ def _nested(config: Dict[str, Any], key: str) -> Dict[str, Any]:
 
 def _create_opencv_tracker(name: str, feature_config=None):
     requested = str(name or "auto").strip().lower()
+    if requested == 'nano_trt':
+        from .nano_tensorrt import NanoTensorRT
+        config=dict(feature_config or {})
+        return NanoTensorRT(config['nano_engine_directory'],
+            config['nano_engine_manifest_sha256'],
+            config.get('minimum_tracking_score',.35),config.get('nano_minimum_apce',1.8),
+            config.get('nano_minimum_psr',2.2),config.get('nano_minimum_flow_ratio',.35),
+            config.get('nano_occlusion_guard_enabled',False),
+            config.get('nano_recovery_apce',2.5),config.get('nano_recovery_psr',2.8)), 'nano_trt'
     if requested in ('nano','nanotrack'):
         config=dict(feature_config or {})
         package=Path(__file__).resolve().parents[2]
@@ -114,11 +123,12 @@ class ManualBoxTracker:
         self.minimum_motion_warp_px=float(feature.get("minimum_motion_warp_px",0.))
         if not math.isfinite(self.minimum_motion_warp_px) or not 0<=self.minimum_motion_warp_px<=2.:raise ValueError("Invalid minimum motion warp")
         self.motion_local_warp=bool(feature.get("motion_local_warp",False))
+        self.nano_pose_search_only=bool(feature.get("nano_pose_search_only",False))
         self.colour_local_processing=bool(colour.get("local_processing",False))
         self.feature_config=feature
         self.feature_minimum_score=float(feature.get('minimum_tracking_score',.35))
         self.algorithm = str(feature.get("tracker_algorithm", "auto"))
-        self.require_opencv_tracker = bool(feature.get("require_opencv_tracker", False)) or self.algorithm.lower() in ("nano","nanotrack")
+        self.require_opencv_tracker = bool(feature.get("require_opencv_tracker", False)) or self.algorithm.lower() in ("nano","nanotrack","nano_trt")
         if self.tracker_type == 'feature_tracker' and self.require_opencv_tracker:
             probe, actual = _create_opencv_tracker(self.algorithm,self.feature_config)
             if probe is None or actual == 'template':
@@ -259,12 +269,21 @@ class ManualBoxTracker:
                 self.last_motion_resample='subpixel_search'
                 return True
         self.last_motion_resample='resampled'
+        if not force_scale and self.nano_pose_search_only and self._tracker_name=='nano_trt':
+            # Transport search geometry only; current-image inference still
+            # measures the target. Keep the original Siamese template intact.
+            if not self._opencv_tracker.reposition_search(box,matrix):
+                return False
+            self._last_bbox=box;self._support_corners=projected
+            self._pixel_fraction=(0.,0.,0.,0.)
+            self.last_motion_resample='nano_search_only'
+            return True
         if self.tracker_type == "color_tracker":
             if self._colour_reference_area is not None:
                 self._colour_reference_area *= box[2]*box[3]/max(1.,self._last_bbox[2]*self._last_bbox[3])
             self._last_bbox = box;self._support_corners=projected
             return True
-        if self.motion_local_warp and self._tracker_name in ("kcf","csrt","nano"):
+        if self.motion_local_warp and self._tracker_name in ("kcf","csrt","nano","nano_trt"):
             # KCF/CSRT/Nano use a bounded context around the target. Keep their
             # original global coordinates and every required context pixel,
             # without resampling the unrelated full sensor image.
@@ -460,7 +479,7 @@ class ManualBoxTracker:
             if not math.isfinite(confidence) or confidence < self.feature_minimum_score:
                 return self._record_failure(bbox,'feature_response_too_low')
             valid = bool(ok and bbox is not None)
-            reason = "ok" if valid else "opencv_tracker_update_failed"
+            reason = "ok" if valid else getattr(self._opencv_tracker,"last_failure_reason","opencv_tracker_update_failed")
 
         if valid and bbox is not None:
             height, width = frame.shape[:2]

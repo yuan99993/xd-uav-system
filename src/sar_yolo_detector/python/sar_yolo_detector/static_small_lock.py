@@ -10,6 +10,17 @@ import cv2
 import numpy as np
 
 
+def _sliding_windows(array,shape):
+    native=getattr(np.lib.stride_tricks,'sliding_window_view',None)
+    if native is not None:return native(array,shape)
+    array=np.asarray(array);shape=tuple(int(v) for v in shape)
+    if len(shape)!=array.ndim or any(v<=0 or v>n for v,n in zip(shape,array.shape)):
+        raise ValueError('Invalid sliding window dimensions')
+    output=tuple(n-v+1 for n,v in zip(array.shape,shape))+shape
+    return np.lib.stride_tricks.as_strided(array,shape=output,
+        strides=array.strides+array.strides,writeable=False)
+
+
 class StaticSmallLock:
     def __init__(self, config=None):
         self.config=dict(config or {});self.enabled=bool(self.config.get('enabled',False))
@@ -23,7 +34,7 @@ class StaticSmallLock:
 
     def costs(self,search,anchor,weights,backgrounds=None,reference_background=0.):
         if not self.config.get('sparse_foreground_costs',False):
-            windows=np.lib.stride_tricks.sliding_window_view(search,anchor.shape)
+            windows=_sliding_windows(search,anchor.shape)
             difference=windows.astype(np.float32)-anchor
             if backgrounds is not None:difference-=backgrounds[:,:,None,None]-reference_background
             return (np.abs(difference)*weights).sum(axis=(-1,-2))/weights.sum()
@@ -190,13 +201,13 @@ class StaticSmallLock:
         # Foreground matching, not background NCC. The selection is immutable;
         # bootstrap can only remove inconsistent foreground pixels, never learn
         # background pixels or renew a vanished identity.
-        windows=np.lib.stride_tricks.sliding_window_view(search,anchor.shape)
+        windows=_sliding_windows(search,anchor.shape)
         backgrounds=None
         if self.config.get('contrast_normalized_search',False):
             outer=self.patch(gray,(x,y,aw,ah),radius+4)
             if outer is None:self.armed=False;return None,dict(status,reason='outside_image')
             context_shape=(anchor.shape[0]+8,anchor.shape[1]+8)
-            contexts=np.lib.stride_tricks.sliding_window_view(outer,context_shape)
+            contexts=_sliding_windows(outer,context_shape)
             ring_mask=np.ones(context_shape,bool);ring_mask[4:-4,4:-4]=False
             backgrounds=np.median(contexts[:,:,ring_mask],axis=-1).astype(np.float32)
         costs=self.costs(search,anchor,weights,backgrounds,reference_background)

@@ -4,8 +4,10 @@ Local tracker success is not a probability. Appearance and motion validate it.
 Only compatible observations are blended; prediction is never an observation.
 """
 from dataclasses import dataclass, replace
-from collections import Counter
+from functools import wraps
+from collections import Counter, deque
 import time
+import base64
 import math
 from typing import Optional, Tuple
 
@@ -14,6 +16,8 @@ import numpy as np
 
 from .manual_box_tracker import ManualBoxTracker
 from .selected_flow import selected_flow
+from .focused_roi import reid_motion_corridor
+from .reid_confirmation import ReIDConfirmation
 from .static_small_lock import StaticSmallLock
 from .camera_motion import CameraMotion, transform_window, correct_window_support
 
@@ -29,6 +33,22 @@ class Candidate:
     camera_projected: bool = False
     selected_public_id: int = -1
     capture_box: Optional[Tuple[float, float, float, float]] = None
+    motion_aligned: bool = False
+    association_uncertainty_px: float = 0.
+
+
+def align_delayed_candidate(candidate, stamp, velocity, maximum_age=.08, stable_motion=False, gain=1.):
+    """Keep original pixels; annotate bounded delay uncertainty for association.
+
+    No IMU-free hard translation is performed, even when motion is stable.
+    Existing LK-aligned measurements are not expanded a second time.
+    """
+    measured=candidate.detector_stamp
+    if measured is None or candidate.motion_aligned or not stable_motion:return candidate
+    age=stamp-measured;speed=np.asarray(velocity,dtype=float)
+    if not (math.isfinite(age) and 0<age<=maximum_age and speed.shape==(2,)
+            and np.isfinite(speed).all() and math.isfinite(gain) and gain>=0):return candidate
+    return replace(candidate,association_uncertainty_px=float(gain*np.linalg.norm(speed)*age))
 
 
 @dataclass(frozen=True)
@@ -101,7 +121,23 @@ def valid_box(box, shape):
     return w >= 4 and h >= 4 and x >= 0 and y >= 0 and x + w <= shape[1] + .01 and y + h <= shape[0] + .01
 
 
-def appearance(frame, box):
+
+def clip_visible_box(box, shape, minimum_fraction=.15):
+    values=np.asarray(box,dtype=float)
+    if values.shape!=(4,) or not np.isfinite(values).all() or min(values[2:])<=0:
+        return None
+    x,y,width,height=values
+    left,top=max(0.,x),max(0.,y)
+    right,bottom=min(float(shape[1]),x+width),min(float(shape[0]),y+height)
+    visible_width,visible_height=right-left,bottom-top
+    if min(visible_width,visible_height)<1:
+        return None
+    if visible_width*visible_height/(width*height)<minimum_fraction:
+        return None
+    return left,top,visible_width,visible_height
+
+
+def appearance(frame, box, structural=False):
     if not valid_box(box, frame.shape):
         return None, 0.
     x, y, w, h = box
@@ -111,6 +147,13 @@ def appearance(frame, box):
     # Featureless background cannot maintain an identity or update its anchor.
     quality = min(1., float(gray.std()) / 18.) * min(1., min(w, h) / 24.)
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    if structural:
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        magnitude = np.hypot(gx, gy)
+        texture = max(min(1., float(gray.std())/18.),
+                      min(1., float(magnitude.mean())/80.))
+        quality = texture * (.5 + .5*min(1., min(w,h)/24.))
     # Learn the subject against its surrounding background, rather than
     # assuming the centre or all chromatic pixels belong to the vehicle.
     # This keeps a partially off-centre black car from learning green grass.
@@ -149,9 +192,30 @@ def appearance(frame, box):
     brightness=.6*padded[1:-1]+.2*padded[:-2]+.2*padded[2:]
     hist=hist.ravel()/max(1e-9,np.linalg.norm(hist))
     brightness=brightness/max(1e-9,np.linalg.norm(brightness))
+    if structural:
+        # Keep the feature dimension stable for the existing identity contract.
+        chroma = min(1., float(np.median(hsv[:,:,1]))/40.)
+        if chroma<1.:
+            orientation = ((np.arctan2(gy,gx) % np.pi) * (8./np.pi)).astype(int) % 8
+            yy,xx = np.indices(gray.shape)
+            bins = ((yy//12)*4 + xx//12)*8 + orientation
+            gradient = np.bincount(bins.ravel(),weights=magnitude.ravel(),minlength=128)
+            gradient /= max(1e-9,np.linalg.norm(gradient))
+            hist = chroma*hist + (1.-chroma)*gradient
+        hist /= max(1e-9,np.linalg.norm(hist))
     feature=np.r_[.75*hist,math.sqrt(1-.75**2)*brightness]
     return feature/max(1e-9,np.linalg.norm(feature)),quality
 
+
+
+def _frame_appearance_cache(method):
+    @wraps(method)
+    def call(self,*args,**kwargs):
+        if not self.config.get('appearance_cache_enabled',False):return method(self,*args,**kwargs)
+        self._appearance_cache={}
+        try:return method(self,*args,**kwargs)
+        finally:self._appearance_cache=None
+    return call
 
 
 class BoxFusion:
@@ -159,6 +223,7 @@ class BoxFusion:
         self.config = dict(config or {})
         self.visual_hold = self._positive("visual_hold_sec", 1.5)
         self.predict_hold = self._positive("prediction_hold_sec", .35)
+        self.reid_max_age = self._positive("occluded_reid_max_age_sec", 5.)
         self.reacquire_hold = self._positive("reacquire_hold_sec", 8.)
         self.identity_ttl = self._positive("identity_memory_ttl_sec", 60.)
         if self.identity_ttl <= self.reacquire_hold or self.identity_ttl > 300.:
@@ -181,6 +246,7 @@ class BoxFusion:
         self.detector_authority = self._unit("detector_authority_confidence", .85)
         self.min_detector_conf = self._unit("minimum_detector_confidence", .50)
         self.maintenance_min_iou = self._unit("maintenance_min_iou", .35)
+        self.latency_maintenance_min_iou=self._unit("latency_maintenance_min_iou",.20)
         self.min_maintenance_conf = self._unit("minimum_maintenance_confidence", .10)
         self.local_refresh_sec = self._positive("local_template_refresh_sec", .75)
         if self.min_maintenance_conf > self.min_detector_conf:
@@ -197,6 +263,20 @@ class BoxFusion:
         # This instance has no stationary-world or ground-plane constraint.
         self.moving_pixel_lock=StaticSmallLock(self.config.get('moving_small_pixel_witness',{}))
         self.reset()
+
+    def _appearance(self, frame, box):
+        cache=getattr(self,'_appearance_cache',None)
+        key=(id(frame),tuple(box)) if cache is not None and box is not None else None
+        if key is not None and key in cache:
+            feature,quality=cache[key]
+            self.diagnostics['appearance_cache_hits']=self.diagnostics.get('appearance_cache_hits',0)+1
+            return (feature.copy() if feature is not None else None),quality
+        appearance_started=time.perf_counter()
+        feature,quality=appearance(frame, box, structural=bool(self.config.get('structural_appearance_enabled',False)))
+        self.diagnostics['appearance_ms']=self.diagnostics.get('appearance_ms',0.)+(time.perf_counter()-appearance_started)*1000.
+        self.diagnostics['appearance_calls']=self.diagnostics.get('appearance_calls',0)+1
+        if key is not None and len(cache)<128:cache[key]=(feature.copy() if feature is not None else None,quality)
+        return feature,quality
 
     def _positive(self, key, default):
         value = float(self.config.get(key, default))
@@ -224,6 +304,13 @@ class BoxFusion:
         self._visual_reference=None
         self.anchor_area = None
         self.velocity = np.zeros(2)
+        self._occluded_coast = False
+        self._velocity_history = deque(maxlen=32)
+        self._clean_history=deque(maxlen=5)
+        self._initial_clean_snapshot=None
+        self._frozen_snapshot=None
+        self._frozen_thumbnail=None
+        self._reid_confirmation=ReIDConfirmation()
         self._detector_reference_box=None
         self._detector_reference_support=None
         self._detector_reference_stamp=0.
@@ -268,9 +355,11 @@ class BoxFusion:
         self.selection_stamp = float(stamp)
         self.shape = frame.shape[:2]
         self._previous_frame = frame
-        self.anchor, quality = appearance(frame, box)
+        self.anchor, quality = self._appearance(frame, box)
         self._visual_reference=self.anchor.copy()
         self.anchor_area = box[2] * box[3]
+        self._reid_aspect=box[2]/box[3]
+        self._cache_clean_snapshot(frame,box,stamp)
         self.tracker.initialize(frame, self.box)
         self.last_local_seed_stamp = stamp
         if candidate is None or candidate.class_id==2 or self.class_agnostic_lock:
@@ -317,15 +406,22 @@ class BoxFusion:
         return self.class_agnostic_lock or self.class_id < 0 or class_id == self.class_id or any(
             self.class_id in group and class_id in group for group in self.class_groups)
 
-    def _compatible(self, box, reference):
+    def _compatible(self, box, reference, uncertainty_px=0.):
+        if self.config.get('edge_aware_geometry',False):
+            box=clip_visible_box(box,self.shape)
+            reference=clip_visible_box(reference,self.shape)
+            if box is None or reference is None:
+                return False
         ratio = box[2] * box[3] / max(1., reference[2] * reference[3])
         distance = np.linalg.norm(center(box) - center(reference)) / max(8., math.hypot(reference[2], reference[3]))
-        return 1. / self.area_ratio <= ratio <= self.area_ratio and distance <= self.center_gate
+        return 1. / self.area_ratio <= ratio <= self.area_ratio and distance <= self.center_gate+max(0.,uncertainty_px)/max(8.,math.hypot(reference[2],reference[3]))
 
+    @_frame_appearance_cache
     def step(self, frame, stamp, detections, *, detector_updated=True, same_frame_correction=False,
              camera_transform=None, camera_motion_reliable=None, camera_calibration_changed=False,
              visual_observation=None, visual_quality=0., visual_scale_ratio=None,
-             color_observation=None, color_quality=0., static_reference=None):
+             color_observation=None, color_quality=0., static_reference=None,
+             visual_fast_lane=False):
         self.diagnostics = dict(detector_updated=bool(detector_updated), candidates=len(detections),
             rejected={}, local_tracker="not_run", camera_motion_available=False,
             branches={name:dict(accepted=False,score=0.,reason='not_run')
@@ -339,6 +435,20 @@ class BoxFusion:
             return FusionResult(None, self.public_id, self.class_id, 0., "lost", "non_increasing_capture", self.last_detection_stamp, self.local_id)
         if self.box is None:
             return self._result(None, "idle", "no_selection", 0.)
+        if (visual_fast_lane and not detector_updated
+                and not bool(self.config.get('detector_primary_processing',False))
+                and str(getattr(self.tracker,'algorithm','')).lower()=='nano_trt'):
+            return self._step_visual_fast(frame,stamp)
+        if self.config.get('latency_aware_association',False):
+            recent=[v for t,v in self._velocity_history if 0<=stamp-t<=.3]
+            variance=float(np.var(recent,axis=0).sum()) if len(recent)>=3 else float('inf')
+            stable=variance<=float(self.config.get('latency_velocity_variance_limit',400.))
+            detections=[align_delayed_candidate(c,stamp,self.velocity,stable_motion=stable,
+                gain=float(self.config.get('latency_uncertainty_gain',1.))) for c in detections]
+            self.diagnostics['delay_association']=dict(stable_motion=stable,
+                velocity_variance=variance if math.isfinite(variance) else None,
+                expanded_candidates=sum(c.association_uncertainty_px>0 for c in detections),maximum_age_sec=.08)
+
         dt = stamp - self.stamp
         if (not correction and self._detector_reference_box is not None
                 and CameraMotion.validate(camera_transform,frame.shape)):
@@ -357,7 +467,9 @@ class BoxFusion:
                     self._detector_anchor_box,self._detector_anchor_support=anchor_box,anchor_support
             if self._strong_pending_box is not None:
                 self._strong_pending_box=transform_window(self._strong_pending_box,camera_transform)[0]
-        if detector_updated and self.config.get('strong_takeover_safety_enabled', False):
+        reid_wait=bool(self.config.get('occluded_reid_enabled',False)
+            and self.predict_hold<stamp-self.last_observation_stamp<=self.reid_max_age)
+        if detector_updated and self.config.get('strong_takeover_safety_enabled', False) and not reid_wait:
             # Filter once for BOTH strong and ordinary association. A denied raw
             # selected proposal cannot re-enter below as an ordinary match.
             from .takeover_safety import rejection_reason
@@ -380,11 +492,27 @@ class BoxFusion:
                 if (candidate.selected_public_id == self.public_id
                         and math.isfinite(candidate.confidence)
                         and valid_box(candidate.box, frame.shape)):
+                    association_reference=safety_prediction
+                    if (self.config.get('latency_aware_association',False)
+                            and previous_result.observed and 0<=stamp-self.last_observation_stamp<=.08
+                            and self.diagnostics.get('delay_association',{}).get('stable_motion',False)
+                            and candidate.local_id==self.local_id and candidate.confidence>=.85
+                            and camera_motion_reliable and CameraMotion.validate(camera_transform,frame.shape)):
+                        current_reference=transform_window(self.box,camera_transform)[0]
+                        if current_reference is not None:
+                            predicted_reference=list(current_reference)
+                            predicted_reference[:2]=np.asarray(predicted_reference[:2])+self.velocity*(stamp-self.last_observation_stamp)
+                            if self._compatible(candidate.box,predicted_reference,candidate.association_uncertainty_px):
+                                feature,quality=self._appearance(frame,candidate.box)
+                                similarity=float(np.dot(feature,self.anchor)) if self.anchor is not None else 0.
+                                if quality>=self.quality_gate and similarity>=.85:
+                                    association_reference=tuple(predicted_reference)
+                                    self.diagnostics['recent_visual_association_reference']=True
                     reason = rejection_reason(candidate, strong_peers, stamp=stamp,
                         last_detection_stamp=self.last_detection_stamp or self.selection_stamp,
                         independent_history=self._detector_reference_box is not None,
                         reference=safety_reference, anchor_area=self._detector_anchor_area,
-                        predicted_reference=safety_prediction,
+                        predicted_reference=association_reference,
                         public_id=self.public_id, class_groups=self.class_groups)
                 if reason == 'transported_detection_not_current':
                     if correction and not self.result.observed:
@@ -402,7 +530,8 @@ class BoxFusion:
                     vetoes[reason] += 1
             self.diagnostics['strong_takeover_vetoes'] = dict(vetoes)
             detections = allowed
-        if detector_updated:
+        if detector_updated and not (self.config.get('occluded_reid_enabled',False)
+                and stamp-self.last_observation_stamp>self.predict_hold):
             takeover=self._strong_takeover(frame,stamp,detections,camera_transform)
             if takeover is not None:
                 self.stamp=stamp
@@ -428,7 +557,8 @@ class BoxFusion:
                 flow_seed[:2,2]+=self.velocity*dt
             flow_started=time.perf_counter()
             target_flow_box,target_flow=selected_flow(self._previous_frame,frame,self._visual_hypothesis_box if revalidate_visual else self.box,local_crop=bool(self.config.get("selected_flow_local_crop",self.small_lock.enabled)),
-                foreground_only=bool(self.config.get("selected_flow_foreground_only",False)),initial_transform=flow_seed)
+                foreground_only=bool(self.config.get("selected_flow_foreground_only",False)),initial_transform=flow_seed,
+                window_size=self.config.get('selected_flow_window_size'),pyramid_levels=self.config.get('selected_flow_pyramid_levels'))
             self.diagnostics["selected_lk_ms"]=(time.perf_counter()-flow_started)*1000.
         strong_target_flow=bool(target_flow.get("valid") and target_flow.get("points",0)>=6
             and target_flow.get("inlier_ratio",0.)>=.90 and target_flow.get("fb_error_median_px",float("inf"))<=.35)
@@ -470,6 +600,17 @@ class BoxFusion:
                 points = np.float32([center(self.box), center(self.box)+self.velocity*.01])
                 rotated = cv2.perspectiveTransform(points.reshape(-1, 1, 2), camera_transform).reshape(-1, 2)
                 self.velocity = (rotated[1]-rotated[0])/.01
+                def transport_velocity(value):
+                    pair=np.float32([center(self.box),center(self.box)+np.asarray(value)*.01])
+                    mapped=cv2.perspectiveTransform(pair.reshape(-1,1,2),camera_transform).reshape(-1,2)
+                    return (mapped[1]-mapped[0])/.01
+                self._velocity_history=deque(((t,transport_velocity(v)) for t,v in self._velocity_history),maxlen=32)
+                snapshots=list(self._clean_history)+[self._initial_clean_snapshot,self._frozen_snapshot]
+                transformed_snapshots=set()
+                for snapshot in snapshots:
+                    if snapshot is not None and id(snapshot) not in transformed_snapshots:
+                        snapshot['velocity']=transport_velocity(snapshot['velocity'])
+                        transformed_snapshots.add(id(snapshot))
                 old_area=max(1.,self.box[2]*self.box[3])
                 self.anchor_area*=transformed[2]*transformed[3]/old_area
                 self.box=transformed;self._camera_support=projected
@@ -503,12 +644,83 @@ class BoxFusion:
         # without limit. Camera displacement is handled separately above.
         predicted[:2] = np.asarray(predicted[:2]) + self.velocity * min(absence, self.motion_horizon)
         predicted = tuple(predicted)
+        if self.config.get('occluded_reid_enabled',False) and absence>self.predict_hold:
+            if not self._occluded_coast:self._freeze_occlusion(stamp)
+            self._occluded_coast=True
+            self._deferred_local_seed=None
+            self.tracker.reset()
+            self.diagnostics.update(occlusion_state='OCCLUDED_REID_WAIT',template_frozen=True)
+            if absence>self.reid_max_age:
+                return self._result(None,'lost','occluded_reid_expired',0.)
+            # A corridor is a search prior only. It is never a measurement.
+            corridor_center,radius=reid_motion_corridor(self.box,self.velocity,absence,frame.shape,
+                float(self.config.get('reid_corridor_noise',140.)))
+            self.diagnostics['reid_corridor']=dict(center=corridor_center.tolist(),radius=radius)
+            matches=[]
+            reid_rejected=Counter()
+            self.diagnostics['reid_rejected']=reid_rejected
+            reid_gate_started=time.perf_counter()
+            reid_appearance_ms=0.
+            detection_watermark=self.last_detection_stamp or self.selection_stamp
+            for candidate in detections if detector_updated else ():
+                measured=stamp if candidate.detector_stamp is None else candidate.detector_stamp
+                gate_reason=None
+                if not math.isfinite(measured) or not 0<=stamp-measured<=.25:
+                    gate_reason='stale_or_future_measurement'
+                elif measured<=detection_watermark:
+                    gate_reason='not_newer_than_detection_watermark'
+                elif not self._class_compatible(candidate.class_id):
+                    gate_reason='incompatible_class'
+                elif not math.isfinite(candidate.confidence) or candidate.confidence<self.min_detector_conf:
+                    gate_reason='below_detector_confidence'
+                elif not valid_box(candidate.box,frame.shape):
+                    gate_reason='invalid_candidate_geometry'
+                if gate_reason is not None:
+                    reid_rejected['fresh_class_score_bounds']+=1
+                    reid_rejected[gate_reason]+=1
+                    continue
+                aspect=candidate.box[2]/candidate.box[3]
+                original_aspect=self._reid_aspect
+                if abs(aspect/original_aspect-1)>=float(self.config.get('reid_aspect_tolerance',.45)):
+                    reid_rejected['aspect_ratio']+=1;continue
+                if np.linalg.norm(center(candidate.box)-corridor_center)>radius:
+                    reid_rejected['motion_corridor']+=1;continue
+                appearance_started=time.perf_counter()
+                feature,quality=self._appearance(frame,candidate.box)
+                reid_appearance_ms+=(time.perf_counter()-appearance_started)*1000.
+                similarity=float(np.dot(feature,self.anchor)) if self.anchor is not None else 0.
+                if quality>=self.quality_gate and similarity>float(self.config.get('reid_appearance_threshold',.55)):matches.append((similarity,candidate,measured))
+                else:reid_rejected['quality' if quality<self.quality_gate else 'appearance']+=1
+            self.diagnostics['reid_gate_timing']=dict(total_ms=(time.perf_counter()-reid_gate_started)*1000.,
+                appearance_ms=reid_appearance_ms,candidates=len(detections) if detector_updated else 0,
+                matched=len(matches),rejected=dict(reid_rejected))
+            matches.sort(key=lambda row:row[0],reverse=True)
+            # Similar vehicles require disambiguation, never first-box wins.
+            if matches and (len(matches)==1 or matches[0][0]-matches[1][0]>.05):
+                _,candidate,measured=matches[0]
+                family=next((i for i,g in enumerate(self.class_groups) if candidate.class_id in g),candidate.class_id)
+                identity=(candidate.local_id if candidate.local_id>=0 else None,family)
+                confirmed=self._reid_confirmation.update(candidate.box,measured,self.velocity,identity)
+                self.diagnostics['reid_confirmation']=self._reid_confirmation.reason
+                if not confirmed:return self._result(None,'lost','occluded_reid_confirming',0.)
+                self.local_id=candidate.local_id if candidate.local_id>=0 else self.local_id
+                self.last_detection_stamp=measured
+                self.last_detector_candidate=candidate
+                self.pending_count=0;self.pending_id=None;self._long_recovery=False
+                self.tracker.initialize(frame,candidate.box)
+                self.last_local_seed_stamp=stamp
+                self._previous_frame=frame
+                self.diagnostics.update(reid_woken=True,local_reinitialized=True)
+                return self._commit_observation(candidate.box,stamp,'yolo' if measured==stamp else 'visual',
+                    'occluded_reid_same_public_id',candidate.confidence,update_velocity=False)
+            if detector_updated:self._reid_confirmation.reset()
+            return self._result(None,'lost','occluded_reid_wait',0.)
         # No advancing a local tracker across a large dropped-frame interval.
         if dt > self.max_gap or self._long_recovery:
             self.tracker.reset()
             if dt > self.max_gap:
                 self.pending_count = 0
-        self.diagnostics['local_tracker_executed'] = not correction and not self._long_recovery
+        self.diagnostics['local_tracker_executed'] = not correction and not self._long_recovery and not (self.config.get('occlusion_freeze_enabled',False) and self._occluded_coast)
         local = None
         if self.diagnostics['local_tracker_executed']:
             local_started=time.perf_counter()
@@ -576,7 +788,7 @@ class BoxFusion:
         if correction:
             pass
         elif local is not None and local.valid and math.isfinite(local_score) and local_score >= self.quality_gate and valid_box(visual_box, frame.shape) and self._compatible(visual_box, predicted):
-            feature, visual_quality = appearance(frame, visual_box)
+            feature, visual_quality = self._appearance(frame, visual_box)
             similarity = float(np.dot(feature, self.anchor)) if self.anchor is not None else 0.
             feature_similarity = similarity
             joint_feature=feature
@@ -654,7 +866,7 @@ class BoxFusion:
                 and self._class_compatible(flow.class_id) and valid_box(flow.box, frame.shape)
                 and self._compatible(flow.box, predicted))
             if flow_valid:
-                feature, quality = appearance(frame, flow.box)
+                feature, quality = self._appearance(frame, flow.box)
                 similarity = float(np.dot(feature, self.anchor)) if self.anchor is not None else 0.
                 ratio = flow.box[2]*flow.box[3]/max(1., self.anchor_area)
                 # Rotation of a long vehicle enlarges the AABB without a real
@@ -692,7 +904,7 @@ class BoxFusion:
                 and math.isfinite(color_quality) and color_quality >= .05
                 and valid_box(color_box, frame.shape) and self._compatible(color_box, predicted))
             if color_valid:
-                feature, quality = appearance(frame, color_box)
+                feature, quality = self._appearance(frame, color_box)
                 similarity = float(np.dot(feature, self.anchor)) if self.anchor is not None else 0.
                 color_valid = quality >= self.quality_gate and similarity >= max(.55, self.appearance_gate - .10)
                 self.diagnostics['color_appearance'] = similarity
@@ -751,7 +963,7 @@ class BoxFusion:
                     and self.result.source not in ("lost", "ambiguous", "idle")
                     and self.pending_count == 0
                     and self._class_compatible(candidate.class_id)
-                    and iou(predicted, candidate.box) >= self.maintenance_min_iou
+                    and iou(predicted, candidate.box) >= (self.latency_maintenance_min_iou if candidate.association_uncertainty_px>0 else self.maintenance_min_iou)
                     and .60 <= candidate.box[2] * candidate.box[3] / max(1., predicted[2] * predicted[3]) <= 1.60):
                 rejected['weak_identity_evidence'] += 1
                 continue
@@ -775,7 +987,7 @@ class BoxFusion:
                         or iou(local_box,candidate.box)<.60 or iou(visual_box,candidate.box)<.60):
                     rejected['camera_projection_lacks_current_witness']+=1
                     continue
-            if not self._compatible(candidate.box, predicted):
+            if not self._compatible(candidate.box, predicted,candidate.association_uncertainty_px):
                 rejected['position_or_size'] += 1
                 detail=self.diagnostics.setdefault('rejected_geometry',[])
                 if len(detail)<4:
@@ -784,7 +996,7 @@ class BoxFusion:
                         distance_norm=float(np.linalg.norm(center(candidate.box)-center(predicted))/
                             max(8.,math.hypot(predicted[2],predicted[3])))))
                 continue
-            feature, quality = appearance(frame, candidate.box)
+            feature, quality = self._appearance(frame, candidate.box)
             sim = float(np.dot(feature, self.anchor)) if self.anchor is not None else 0.
             # Same BoT-SORT ID is supporting evidence, never a bypass of gates.
             quality_gate = max(self.quality_gate, self.long_quality_gate) if self._long_recovery else self.quality_gate
@@ -974,9 +1186,12 @@ class BoxFusion:
                     and match.detector_stamp is not None
                     and self.last_detection_stamp < match.detector_stamp <= stamp):
                 self.class_id = match.class_id
-            feature, quality = appearance(frame, match.box)
+            feature, quality = self._appearance(frame, match.box)
             measured = stamp if match.detector_stamp is None else match.detector_stamp
-            if quality >= .65 and match.confidence >= self.min_detector_conf and measured == stamp:
+            x,y,width,height=match.box
+            truncated=(x<=1 or y<=1 or x+width>=frame.shape[1]-1 or y+height>=frame.shape[0]-1)
+            update_anchor=not (self.config.get('edge_aware_geometry',False) and truncated)
+            if quality >= .65 and match.confidence >= self.min_detector_conf and measured == stamp and update_anchor:
                 self.anchor = .95 * self.anchor + .05 * feature
                 self.anchor /= max(1e-9, np.linalg.norm(self.anchor))
                 self.anchor_area = .95 * self.anchor_area + .05 * match.box[2] * match.box[3]
@@ -1030,8 +1245,24 @@ class BoxFusion:
                 min(.65, visual_quality, self.last_confidence))
         else:
             age = stamp - self.last_observation_stamp
-            if age <= self.predict_hold and valid_box(predicted, frame.shape):
-                return self._result(predicted, "prediction", "no_trusted_visual_observation", min(.25, self.last_confidence))
+            if self.config.get('occlusion_freeze_enabled',False):
+                if not self._occluded_coast:
+                    if self.config.get('occluded_reid_enabled',False):self._freeze_occlusion(stamp)
+                    recent = [velocity for measured,velocity in self._velocity_history
+                              if 0 <= self.last_observation_stamp-measured <= .3]
+                    if recent and not self.config.get('occluded_reid_enabled',False):
+                        self.velocity = np.mean(recent,axis=0)
+                    self.tracker.reset()
+                self._occluded_coast = True
+                self._deferred_local_seed = None
+                self.diagnostics['occlusion_state'] = 'OCCLUDED_COAST'
+                self.diagnostics['template_frozen'] = True
+            display_prediction=(clip_visible_box(predicted,frame.shape)
+                if self.config.get('edge_aware_geometry',False) else
+                predicted if valid_box(predicted,frame.shape) else None)
+            if age <= self.predict_hold and display_prediction is not None:
+                reason = "occluded_coast" if self._occluded_coast else "no_trusted_visual_observation"
+                return self._result(display_prediction, "prediction", reason, min(.25, self.last_confidence))
             return self._result(None, "lost", "identity_memory_waiting" if self._long_recovery else "no_trusted_visual_observation", 0.)
         if (self.config.get('adaptive_joint_appearance',False) and joint_confirmed
                 and not correction and joint_feature is not None):
@@ -1044,6 +1275,99 @@ class BoxFusion:
         return self._commit_observation(
             fused, stamp, source, "compatible_observations" if source == "fused" else source,
             confidence, update_velocity=not rebound)
+
+    def _step_visual_fast(self,frame,stamp):
+        """NanoTrack-only current-frame measurement path; detector owns identity."""
+        started=time.perf_counter()
+        previous_result=self.result
+        dt=stamp-self.stamp
+        diagnostics=dict(enabled=True,observation=False,local_tracker_ms=0.,
+            appearance_ms=0.,flow_ms=0.,colour_ms=0.,camera_motion_ms=0.)
+        self.diagnostics=dict(detector_updated=False,candidates=0,rejected={},
+            local_tracker='not_run',local_tracker_executed=False,
+            branches={name:dict(accepted=False,score=0.,reason='skipped_fast_lane')
+                for name in ('feature','flow','color','detector')},
+            visual_fast_lane=diagnostics,frame_gap_sec=max(0.,dt))
+        if not math.isfinite(stamp) or stamp<=self.stamp:
+            diagnostics['reason']='non_increasing_capture'
+            diagnostics['total_ms']=(time.perf_counter()-started)*1000.
+            return self._result(None,'lost','non_increasing_capture',0.)
+        if frame.shape[:2]!=self.shape:
+            self.tracker.reset()
+            self.stamp=stamp
+            diagnostics['reason']='image_dimensions_changed'
+            diagnostics['total_ms']=(time.perf_counter()-started)*1000.
+            return self._result(None,'lost','image_dimensions_changed',0.)
+
+        self.stamp=stamp
+        absence=max(0.,stamp-self.last_observation_stamp)
+        detector_age=max(0.,stamp-(self.last_detection_stamp or self.selection_stamp))
+        predicted=list(self.box)
+        predicted[:2]=np.asarray(predicted[:2])+self.velocity*min(absence,self.motion_horizon)
+        predicted=tuple(predicted)
+        local=None
+        if (not self._occluded_coast and dt<=self.max_gap and not self._long_recovery):
+            local_started=time.perf_counter()
+            local=self.tracker.update(frame)
+            diagnostics['local_tracker_ms']=(time.perf_counter()-local_started)*1000.
+            self.diagnostics['local_tracker_executed']=True
+        score=float(getattr(local,'confidence',0.)) if local is not None else 0.
+        box=getattr(local,'bbox',None) if local is not None else None
+        reason=str(getattr(local,'reason','frame_gap_reset' if dt>self.max_gap else 'local_tracker_unavailable'))
+        accepted=bool(local is not None and local.valid and math.isfinite(score)
+            and score>=self.quality_gate and valid_box(box,frame.shape)
+            and self._compatible(box,predicted) and detector_age<=self.visual_hold)
+        if local is not None and local.valid:
+            if not math.isfinite(score) or score<self.quality_gate:reason='tracker_score_below_quality_gate'
+            elif not valid_box(box,frame.shape):reason='tracker_box_invalid'
+            elif not self._compatible(box,predicted):reason='tracker_geometry_gate'
+            elif detector_age>self.visual_hold:reason='detector_evidence_expired'
+            else:reason='accepted_nano_measurement'
+        self.diagnostics['local_tracker']=reason
+        diagnostics.update(reason=reason,tracker_score=score if math.isfinite(score) else None,
+            detector_age_sec=detector_age,frame_dt_sec=dt,
+            gates=dict(quality_gate=float(self.quality_gate),
+                detector_visual_hold_sec=float(self.visual_hold),
+                maximum_local_gap_sec=float(self.max_gap),
+                area_ratio=float(self.area_ratio),center_gate=float(self.center_gate)))
+        self.diagnostics['branches']['feature']=dict(accepted=accepted,
+            score=max(0.,min(1.,score)) if math.isfinite(score) else 0.,reason=reason)
+
+        if accepted:
+            self._previous_frame=frame
+            confidence=min(.65,score,self.last_confidence if self.last_confidence>0 else score)
+            result=self._commit_observation(box,stamp,'visual','nano_visual_fast_lane',confidence,
+                cache_clean_snapshot=False)
+            self._cache_clean_snapshot(frame,self.box,stamp,appearance_feature=self.anchor,
+                create_thumbnail=False)
+            diagnostics['observation']=True
+            diagnostics['reason']='accepted_nano_measurement'
+            self.diagnostics['visual_fast_lane_observation']=True
+        else:
+            self._long_recovery=absence>self.reacquire_hold
+            if absence<=self.predict_hold:
+                display=(clip_visible_box(predicted,frame.shape) if self.config.get('edge_aware_geometry',False)
+                    else predicted if valid_box(predicted,frame.shape) else None)
+                result=self._result(display,'prediction','visual_fast_lane_'+reason,
+                    min(.25,self.last_confidence)) if display is not None else self._result(
+                        None,'lost','visual_fast_lane_'+reason,0.)
+            elif self.config.get('occluded_reid_enabled',False):
+                if not self._occluded_coast:
+                    self._freeze_occlusion(stamp)
+                    self._occluded_coast=True
+                    self.tracker.reset()
+                diagnostics['occlusion_state']='OCCLUDED_REID_WAIT'
+                diagnostics['template_frozen']=True
+                if absence>self.reid_max_age:
+                    result=self._result(None,'lost','occluded_reid_expired',0.)
+                else:
+                    result=self._result(None,'lost','occluded_reid_wait',0.)
+            else:
+                result=self._result(None,'lost','visual_fast_lane_'+reason,0.)
+        diagnostics['total_ms']=(time.perf_counter()-started)*1000.
+        self.diagnostics['visual_fast_lane']=diagnostics
+        self.diagnostics['visual_fast_lane_observation']=bool(diagnostics['observation'])
+        return result
 
     def _strong_takeover(self, frame, stamp, detections, camera_transform):
         if (not self.config.get('strong_detector_takeover_enabled', False)
@@ -1109,7 +1433,7 @@ class BoxFusion:
                 continue
             similarity=0.
             if elapsed>self.max_gap:
-                feature,_=appearance(frame,candidate.box)
+                feature,_=self._appearance(frame,candidate.box)
                 similarity=float(np.dot(feature,self.anchor)) if feature is not None and self.anchor is not None else 0.
             distance = np.linalg.norm(center(candidate.box)-center(predicted))/max(4.,innovation_gate)
             score = .6*iou(candidate.box,predicted)+.3*max(0.,1.-distance)+.1*candidate.confidence
@@ -1163,7 +1487,8 @@ class BoxFusion:
         saved_velocity=self._detector_velocity.copy()
         self._update_detector_reference(candidate.box,measured)
         current_box=list(candidate.box)
-        current_box[:2]=np.asarray(current_box[:2])+self._detector_velocity*min(stamp-measured,self.predict_hold)
+        if not self.config.get('latency_aware_association',False):
+            current_box[:2]=np.asarray(current_box[:2])+self._detector_velocity*min(stamp-measured,self.predict_hold)
         if not valid_box(current_box,frame.shape):
             self._detector_reference_box=saved_reference
             self._detector_reference_support=saved_support
@@ -1215,14 +1540,56 @@ class BoxFusion:
         self._detector_reference_support=None
         self._detector_reference_stamp=stamp
 
-    def _commit_observation(self, box, stamp, source, reason, confidence, update_velocity=True):
+    def _cache_clean_snapshot(self,frame,box,stamp,appearance_feature=None,create_thumbnail=True):
+        if not self.config.get('occluded_reid_enabled',False):return
+        feature=appearance_feature
+        if feature is None:
+            feature,_=self._appearance(frame,box)
+        thumbnail=None
+        if create_thumbnail:
+            x,y,w,h=map(int,box)
+            crop=frame[max(0,y):max(0,y)+max(1,h),max(0,x):max(0,x)+max(1,w)]
+            thumbnail=cv2.resize(crop,(80,60)) if crop.size else None
+        elif self._clean_history:
+            thumbnail=self._clean_history[-1].get('thumbnail')
+        elif self._initial_clean_snapshot is not None:
+            thumbnail=self._initial_clean_snapshot.get('thumbnail')
+        snapshot=dict(thumbnail=thumbnail,stamp=stamp,appearance=feature.copy(),velocity=self.velocity.copy(),box=tuple(box))
+        if self._clean_history and self._clean_history[-1]['stamp']==stamp:self._clean_history.pop()
+        self._clean_history.append(snapshot)
+        if self._initial_clean_snapshot is None:self._initial_clean_snapshot=snapshot
+
+    def _freeze_occlusion(self,stamp):
+        eligible=[s for s in self._clean_history if s['stamp']<=stamp-.15]
+        snapshot=eligible[-1] if eligible else self._initial_clean_snapshot
+        self._reid_confirmation.reset()
+        if snapshot is not None:
+            self._frozen_snapshot=snapshot
+            ok,encoded=cv2.imencode('.jpg',snapshot['thumbnail']) if 'thumbnail' in snapshot else (False,None)
+            self._frozen_thumbnail=base64.b64encode(encoded).decode('ascii') if ok else None
+            self.anchor=snapshot['appearance'].copy()
+            self._visual_reference=self.anchor.copy()
+            self.velocity=snapshot['velocity'].copy()
+            self._reid_aspect=snapshot['box'][2]/snapshot['box'][3]
+            self.diagnostics['lag_snapshot_stamp']=snapshot['stamp']
+            self.diagnostics['lag_snapshot_age_sec']=stamp-snapshot['stamp']
+
+    def _commit_observation(self, box, stamp, source, reason, confidence, update_velocity=True,
+                            cache_clean_snapshot=True):
+        self._occluded_coast = False
         observation_dt = stamp - self.last_observation_stamp
         if observation_dt > 0 and update_velocity:
             measured_velocity = (center(box) - center(self.box)) / observation_dt
             self.velocity = .6 * self.velocity + .4 * measured_velocity
+        if observation_dt > 0:
+            self._velocity_history.append((stamp,self.velocity.copy()))
+            while self._velocity_history and stamp-self._velocity_history[0][0] > .3:
+                self._velocity_history.popleft()
         reset_support=self.diagnostics.get('local_reinitialized') or self.diagnostics.get('identity_rebound')
         self._camera_support=correct_window_support(None if reset_support else self._camera_support,self.box,box)
         self.box = tuple(box)
         self.last_observation_stamp = stamp
         self.last_confidence = confidence
+        if cache_clean_snapshot and self._previous_frame is not None:
+            self._cache_clean_snapshot(self._previous_frame,self.box,stamp)
         return self._result(self.box, source, reason)

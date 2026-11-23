@@ -30,12 +30,15 @@ def main():
         for topic, msg, _ in bag.read_messages():
             if topic == manifest['source']['image_topic'] and msg.header.stamp.to_nsec() == selected_ns:
                 validate_frame(msg, infos[selected_ns], transforms[selected_ns], manifest['source'])
-                if msg.header.seq != header['seq']:
-                    raise ValueError('Selected image sequence differs')
+                # TCPROS rewrites top-level seq per publisher. Capture identity
+                # is the exact timestamp plus optical frame, not transport seq.
+                if msg.header.frame_id != header['frame_id']:
+                    raise ValueError('Selected image optical frame differs')
                 rgb = CvBridge().imgmsg_to_cv2(msg, 'bgr8')
                 if not cv2.imwrite(str(args.output/'selected_raw.png'), rgb):
                     raise OSError('Failed to export selected pixels')
                 found = dict(capture_nsec=selected_ns, seq=msg.header.seq,
+                             selection_transport_seq=header['seq'],
                              raw_sha256=hashlib.sha256(bytes(msg.data)).hexdigest(),
                              K=list(infos[selected_ns].K), width=msg.width, height=msg.height,
                              roi=selection['initial_box'])

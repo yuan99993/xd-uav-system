@@ -1,0 +1,85 @@
+<launch>
+  <arg name="platform_config" default="" />
+  <arg name="ue_project" />
+  <arg name="capture_fps" default="25" />
+  <arg name="fov_profile" default="fixed" />
+  <arg name="stream_quality" default="98" />
+  <arg name="jpeg_decode_device" default="cpu" />
+  <arg name="dfine_cuda_graph" default="true" />
+  <arg name="minimum_motion_warp_px" default="0" />
+  <arg name="feature_tracker_algorithm" default="kcf" />
+  <arg name="experimental_moving_pixel_witness" default="false" />
+  <arg name="experimental_foreground_flow" default="false" />
+  <arg name="experimental_motion_hint" default="false" />
+  <arg name="UAV_NAME" default="ue_test" />
+  <arg name="scene" default="$(find sar_yolo_detector)/config/ue/benchmark_cases/civil_car_fast.json" />
+  <arg name="gimbal_config" default="$(find sar_yolo_detector)/config/ue/benchmark_cases/civil_car_fast_gimbal.json" />
+  <arg name="pose_source" default="px4" />
+  <arg name="python_executable" default="" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
+  <arg name="model_sha256" default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
+  <arg name="model_version" default="dfine_s_v3_16e" />
+  <arg name="output" default="$(env HOME)/.ros/sar_ue/$(anon civil_targets)" />
+  <arg name="seconds" default="360" />
+  <arg name="image_width" default="640" />
+  <arg name="image_height" default="640" />
+  <include file="$(find sar_yolo_detector)/web/demo/demo_ue_dfine_v3_live.launch">
+    <arg name="platform_config" value="$(arg platform_config)" />
+    <arg name="ue_project" value="$(arg ue_project)" />
+    <arg name="capture_fps" value="$(arg capture_fps)" />
+    <arg name="fov_profile" value="$(arg fov_profile)" />
+    <arg name="feature_tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
+    <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
+    <arg name="scene" value="$(arg scene)" />
+    <arg name="gimbal_config" value="$(arg gimbal_config)" />
+    <arg name="pose_source" value="$(arg pose_source)" />
+    <arg name="python_executable" value="$(arg python_executable)" />
+    <arg name="model_path" value="$(arg model_path)" />
+    <arg name="model_sha256" value="$(arg model_sha256)" />
+    <arg name="model_version" value="$(arg model_version)" />
+    <arg name="output" value="$(arg output)" />
+    <arg name="seconds" value="$(arg seconds)" />
+    <arg name="image_width" value="$(arg image_width)" />
+    <arg name="image_height" value="$(arg image_height)" />
+    <arg name="ros_send_buffer_bytes" value="65536" />
+    <arg name="stream_quality" value="$(arg stream_quality)" />
+    <arg name="web_fps" value="20" />
+    <arg name="web_image_codec" value="jpeg" />
+    <arg name="web_image_transport" value="raw" />
+  </include>
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/input_image_transport" value="raw" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/class_agnostic_lock" value="false" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/control_maximum_capture_age_sec" value="0.75" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/publish_compressed_preview" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/Default_Tracker" value="fusion_tracker" />
+  <rosparam param="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/class_groups">[[0, 1], [2]]</rosparam>
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/selection_max_bytes" value="201326592" type="int" />
+  <rosparam param="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/civil_static_small_lock">{enabled: false}</rosparam>
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/ManualBoxTracker/class_id" value="-1" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/ManualBoxTracker/feature_tracker/motion_local_warp" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/selected_flow_local_crop" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/strict_manual_selection" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/replay_selection_history" value="true" />
+  <param name="/$(arg UAV_NAME)/fusion_web_preview/enable_benchmark_controls" value="true" />
+  <param name="/$(arg UAV_NAME)/fusion_web_preview/benchmark_topic" value="/$(arg UAV_NAME)/benchmark/command" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/joint_current_visual_witnesses" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/adaptive_joint_appearance" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/ManualBoxTracker/color_tracker/local_processing" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/compressed_preview_fps" value="10" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/moving_small_pixel_witness/multi_component_foreground" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/moving_small_pixel_witness/contrast_normalized_search" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/moving_small_pixel_witness/photometric_blur_sigma" value="0.7" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/moving_small_pixel_witness/sparse_foreground_costs" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/moving_small_pixel_witness/enabled" value="$(arg experimental_moving_pixel_witness)" type="bool" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/selected_flow_foreground_only" value="$(arg experimental_foreground_flow)" type="bool" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/target_motion_search_hint" value="$(arg experimental_motion_hint)" type="bool" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/async_decode" value="true" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/preview_send_buffer_bytes" value="65536" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/async_preview" value="true" />
+  <param name="/$(arg UAV_NAME)/fusion_web_preview/source_image_overlay" value="true" />
+  <param name="/$(arg UAV_NAME)/fusion_web_preview/image_topic" value="/$(arg UAV_NAME)/fixed_camera/image_raw" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/jpeg_decode_device" value="$(arg jpeg_decode_device)" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/SmartTracker/SMART_TRACKER_DFINE_CUDA_GRAPH" value="$(arg dfine_cuda_graph)" type="bool" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/ManualBoxTracker/feature_tracker/minimum_motion_warp_px" value="$(arg minimum_motion_warp_px)" type="double" />
+<param name="/$(arg UAV_NAME)/fusion_web_preview/initial_mode" value="fusion_tracker" />  <rosparam if="$(eval arg('platform_config') != '')" command="load" ns="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3" file="$(arg platform_config)" />
+</launch>

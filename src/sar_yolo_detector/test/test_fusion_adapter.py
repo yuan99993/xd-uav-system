@@ -762,6 +762,7 @@ class FusionAdapterTest(unittest.TestCase):
         node._maximum_image_bytes = 33554432
         node._flow = FlowDetections()
         node._camera_motion = CameraMotion()
+        node._calibration_cache = NODE.CalibrationCache()
         node._motion_header = node._motion_frame = node._camera_info = node._tf_buffer = None
         node._controller = NODE._SmartTrackerController()
         node._rejected_frames = node._processed_frames = 0

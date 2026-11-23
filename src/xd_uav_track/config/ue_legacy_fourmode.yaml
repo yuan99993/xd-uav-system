@@ -25,6 +25,7 @@ tracker:
     compatible_class_ids: [0, 1]
     duplicate_iou_threshold: 0.85
   lifecycle:
+    exit_edge_margin: 0.05
     confirmation_hits: 2
     reference_fps: 5.0
     occlusion_timeout_sec: 0.80

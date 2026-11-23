@@ -39,6 +39,9 @@ def main():
     parser.add_argument('--ostrack-source',type=Path)
     parser.add_argument('--ostrack-checkpoint',type=Path)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--nano-occlusion-guard',action='store_true')
+    parser.add_argument('--nano-engine-directory',type=Path)
+    parser.add_argument('--nano-engine-manifest-sha256',default='')
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
     if bool(args.ostrack_source)!=bool(args.ostrack_checkpoint):parser.error('Supply both OSTrack source and checkpoint')
     cv2.setNumThreads(1)
@@ -54,25 +57,35 @@ def main():
         for frame,_,_ in frames:video.write(frame)
         video.release()
         (args.output/(scenario+'_truth.json')).write_text(json.dumps([dict(box=b,visible=v) for _,b,v in frames]))
-        algorithms=('kcf','csrt','nano','ostrack') if args.ostrack_source else ('kcf','csrt','nano')
+        algorithms=['kcf','csrt','nano']
+        if args.ostrack_source:
+            algorithms.append('ostrack')
+        if args.nano_engine_directory:
+            algorithms.append('nano_trt')
         for algorithm in algorithms:
             if algorithm=='ostrack':
                 from sar_yolo_detector.ostrack_candidate import OSTrackCandidate
                 tracker=OSTrackCandidate(args.ostrack_source,args.ostrack_checkpoint)
             else:
-                tracker=ManualBoxTracker(dict(feature_tracker=dict(tracker_algorithm=algorithm,require_opencv_tracker=True)))
+                tracker=ManualBoxTracker(dict(feature_tracker=dict(tracker_algorithm=algorithm,require_opencv_tracker=True,
+                    nano_occlusion_guard_enabled=args.nano_occlusion_guard,
+                    nano_engine_directory=str(args.nano_engine_directory),
+                    nano_engine_manifest_sha256=args.nano_engine_manifest_sha256)))
             tracker.initialize(frames[0][0],frames[0][1])
-            timings=[];overlaps=[];false_visible=0;valid=0
+            timings=[];overlaps=[];false_visible=0;valid=0;response_rows=[]
             for frame,truth,visible in frames[1:]:
                 started=time.perf_counter();result=tracker.update(frame);timings.append((time.perf_counter()-started)*1000)
+                if algorithm=='nano_trt':
+                    response_rows.append(dict(index=len(response_rows)+1,visible=visible,valid=result.valid,**getattr(tracker._opencv_tracker,'response_diagnostics',{})))
                 if visible:
                     overlaps.append(iou(result.bbox,truth) if result.valid else 0.)
                     valid+=int(result.valid)
                 else:false_visible+=int(result.valid)
+            if response_rows:(args.output/(scenario+'_nano_responses.json')).write_text(json.dumps(response_rows,indent=2))
             rows[algorithm]=dict(p50_ms=float(np.percentile(timings,50)),p95_ms=float(np.percentile(timings,95)),
                 mean_iou=float(np.mean(overlaps)),success_iou50=float(np.mean(np.array(overlaps)>=.5)),
                 valid_visible_frames=valid,visible_frames=len(overlaps),false_valid_occluded_frames=false_visible,
-                active_algorithm=tracker.tracker_name,device='cuda' if algorithm=='ostrack' else 'cpu')
+                active_algorithm=tracker.tracker_name,device='cuda' if algorithm in ('ostrack','nano_trt') else 'cpu')
             report['results'][scenario]=rows
             (args.output/'comparison.json').write_text(json.dumps(report,indent=2)+'\n')
         report['results'][scenario]=rows

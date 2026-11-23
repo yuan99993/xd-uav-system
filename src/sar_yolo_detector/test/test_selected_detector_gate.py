@@ -10,6 +10,19 @@ from sar_yolo_detector.pixeagle.detection_adapter import NormalizedDetection
 
 
 class SelectedDetectorGateTest(unittest.TestCase):
+    def test_selected_scan_keeps_three_local_jobs_then_scans_full_frame(self):
+        self.node._tracking_mode='fusion_tracker'
+        self.frame=np.zeros((600,800,3),np.uint8)
+        self.selection=(7,(300,250,30,30),0,((0,1),(2,)),np.ones(1),.7,.35,7)
+        sizes=[]
+        target=self.detection(box=(300,250,330,280))
+        for _ in range(4):
+            self.infer([target])
+            self.node._roi_misses=0
+            sizes.append(self.backend.detect.call_args.args[0].shape[:2])
+        self.assertEqual(sizes,[(256,256)]*3+[(600,800)])
+        self.assertEqual(self.node._epoch,0)
+
     def test_motion_snapshot_recentres_and_expands_search_without_changing_identity(self):
         self.node._tracking_mode='fusion_tracker'
         self.frame=np.zeros((600,800,3),np.uint8)

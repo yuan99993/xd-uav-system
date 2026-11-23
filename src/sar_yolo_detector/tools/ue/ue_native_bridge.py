@@ -5,6 +5,7 @@ No AirSim/UnrealCV binary is required. The editor renders either a kinematic mis
 In PX4 mode, a separate Gazebo/PX4 process computes the flight dynamics.
 """
 import argparse
+import os
 import json
 import math
 from pathlib import Path
@@ -51,6 +52,10 @@ def main():
     p.add_argument('--stream-connection',choices=['auto','direct','windows-relay'],default='auto')
     p.add_argument('--stream-host',default='')
     p.add_argument('--stream-codec',choices=['bgr8','bgra8','jpeg'],default='bgra8')
+    p.add_argument('--process-nice',type=int,choices=range(-10,11),default=0)
+    p.add_argument('--editor-poll-fps',type=int,choices=(60,90,120,240),default=60)
+    p.add_argument('--shared-images',action='store_true',help='Four-slot shared memory images for the detector')
+    p.add_argument('--record-images',action='store_true',help='Dedicated bounded recording image channel; benchmark only')
     p.add_argument('--ros-send-buffer-bytes',type=int,default=0,help='Opt-in TCPROS per-peer send buffer bound; 0 preserves OS default')
     p.add_argument('--stream-quality',type=int,default=90,help='Native source JPEG quality (1..100), independent of web preview')
     p.add_argument('--allow-fov-control',action='store_true',help='Opt in to bounded ROS camera/fov_target_deg commands')
@@ -91,6 +96,10 @@ def main():
     if a.transport=='tcp' and a.camera=='both':p.error('Native stream currently requires one explicit camera')
     if a.virtual_gimbal and (not a.ros or a.camera=='both'):
         p.error('Virtual gimbal requires --ros and one camera')
+    if a.process_nice:
+        os.setpriority(os.PRIO_PROCESS,0,a.process_nice)
+    a.effective_nice=os.getpriority(os.PRIO_PROCESS,0)
+    print('Bridge scheduling: requested_nice=%d effective_nice=%d' % (a.process_nice,a.effective_nice),flush=True)
     gimbal_config=json.loads(a.gimbal_config.read_text()) if a.gimbal_config else {}
     if a.out.exists():p.error("Use a new recording directory")
     if a.seconds<=0 or a.fps<=0:p.error("seconds/fps must be positive")
@@ -117,7 +126,7 @@ def main():
     mission=Mission(spec['mission']) if 'mission' in spec else None
     all_cameras=[("down",-70.,"fixed_camera"),("front",-10.,"gimbal_camera")]
     cameras=[camera for camera in all_cameras if a.camera=='both' or camera[0]==a.camera]
-    pubs={};camera_tf=None;mission_pub=None
+    pubs={};record_pubs={};shared_pubs={};camera_tf=None;mission_pub=None
     if a.ros:
         import rospy
         from sensor_msgs.msg import Image,CameraInfo
@@ -131,7 +140,12 @@ def main():
         camera_tf=tf2_ros.TransformBroadcaster()
         for name,pitch,topic in cameras:
             pubs[name]=(rospy.Publisher(f'/{a.namespace}/{topic}/image_raw',Image,queue_size=1),
-                        rospy.Publisher(f'/{a.namespace}/{topic}/camera_info',CameraInfo,queue_size=1))
+                        rospy.Publisher(f'/{a.namespace}/{topic}/camera_info',CameraInfo,queue_size=64,tcp_nodelay=True))
+            # Advertise the optional topic up front; pixel writes remain gated
+            # by the runtime command acknowledged by the bridge.
+            shared_pubs[name]=rospy.Publisher(f'/{a.namespace}/{topic}/image_raw/shm',String,queue_size=1,tcp_nodelay=True)
+            if a.record_images:
+                record_pubs[name]=rospy.Publisher(f'/{a.namespace}/{topic}/image_record',Image,queue_size=64,tcp_nodelay=True)
     feedback=None
     if a.pose_source=='px4':
         from xd_uav_track.px4_pose import PoseFeedback
@@ -145,7 +159,7 @@ def main():
                 time.sleep(.1)
     if a.transport=='tcp':
         from ue_stream_client import run_stream
-        return run_stream(a,spec,mission,feedback,pubs,camera_tf,mission_pub,gimbal_config,ready)
+        return run_stream(a,spec,mission,feedback,pubs,camera_tf,mission_pub,gimbal_config,ready,record_pubs,shared_pubs)
     session=uuid.uuid4().hex;a.out.mkdir(parents=True)
     sightline=SelectionSightline(gimbal_config.get('measurement_timeout_sec',1.2))
     gimbal_sequence=[0]

@@ -23,6 +23,15 @@ def validate_source(source):
     return source
 
 
+def recording_source(source):
+    """Preserve live provenance while indexing the dedicated recording channel."""
+    validate_source(source)
+    topic=source.get('record_image_topic')
+    if not isinstance(topic,str) or not topic.startswith('/') or topic==source['image_topic']:
+        raise ValueError('Dedicated recording image channel is unavailable')
+    return dict(source,live_image_topic=source['image_topic'],image_topic=topic)
+
+
 def manifest_path(bag):return Path(str(bag)+'.manifest.json')
 
 

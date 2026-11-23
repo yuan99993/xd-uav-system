@@ -63,22 +63,40 @@ class DetectorSchedule:
         self.generation = None
         self.last_stamp = None
         self.submitted = self.deferred = 0
+        self.interval_frames=1
+        self.input_frames=0
+        self.last_submitted_frame=0
+
+    def configure_interval(self, frames):
+        frames=int(frames)
+        if frames not in (4,8,12):raise ValueError('Full-frame detector interval must be 4/8/12')
+        self.interval_frames=frames
+        self.last_submitted_frame=0
+
 
     def submit(self, mode, stamp, epoch):
+        self.input_frames+=1
         generation = (mode,epoch)
         if self.generation != generation or (self.last_stamp is not None and stamp < self.last_stamp):
             self.last_stamp = None
             self.generation = generation
+            self.last_submitted_frame=self.input_frames-self.interval_frames
+        if mode in ('smart_tracker','fusion_tracker') and self.input_frames-self.last_submitted_frame < self.interval_frames:
+            self.deferred += 1
+            return False
         if mode == 'fusion_tracker' and self.last_stamp is not None and stamp-self.last_stamp < self.period-1e-6:
             self.deferred += 1
             return False
         self.last_stamp = stamp
+        if mode in ('smart_tracker','fusion_tracker'):self.last_submitted_frame=self.input_frames
         self.submitted += 1
         return True
 
     def diagnostics(self):
         return dict(fusion_max_fps=1./self.period if self.period else 0.,
-                    submitted=self.submitted,deferred=self.deferred)
+                    submitted=self.submitted,deferred=self.deferred,
+                    interval_frames=self.interval_frames,input_frames=self.input_frames,
+                    last_submitted_frame=self.last_submitted_frame)
 
 
 @dataclass(frozen=True)
@@ -90,6 +108,7 @@ class InferencePacket:
     processing_ms: float
     error: str = ""
     selected_public_id: int = -1
+    timing: object = None
 
 
 class FlowDetections:

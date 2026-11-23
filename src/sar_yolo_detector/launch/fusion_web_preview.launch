@@ -7,11 +7,13 @@
   <arg name="bind_address" default="127.0.0.1" />
   <arg name="port" default="8787" />
   <arg name="class_names" default="car,ar-car,tank,m142" />
+  <arg name="image_topic" default="/$(arg UAV_NAME)/fixed_camera/image_raw" />
   <group ns="$(arg UAV_NAME)">
     <node pkg="sar_yolo_detector" type="fusion_web_preview.py" name="fusion_web_preview" output="screen">
       <param name="bind_address" value="$(arg bind_address)" />
       <param name="port" value="$(arg port)" />
-      <param name="image_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/annotated" />
+      <param name="image_topic" value="$(arg image_topic)" />
+      <param name="source_image_overlay" value="true" />
       <param name="state_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/state" />
       <param name="mission_topic" value="/$(arg UAV_NAME)/mission_status" />
       <param name="targets_topic" value="/$(arg UAV_NAME)/sar_yolo_detector/$(arg instance_name)/tracked_detections" />

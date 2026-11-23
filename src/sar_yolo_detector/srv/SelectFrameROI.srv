@@ -1,0 +1,8 @@
+# Bind an initial ROI to one exact capture in every tracking mode.
+std_msgs/Header header
+sensor_msgs/RegionOfInterest roi
+bool clear_selection
+---
+bool success
+string message
+int64 selected_target_id

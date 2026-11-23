@@ -13,7 +13,7 @@ from pathlib import Path
 import threading
 import time
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import urlparse,parse_qs
 
 import numpy as np
 import cv2
@@ -29,9 +29,11 @@ from sar_yolo_detector.msg import SmartTrackerState, TrackedDetection2DArray
 from sar_yolo_detector.srv import (SelectFusionROI, SelectFusionROIRequest,
     SelectSmartTrack, SelectSmartTrackRequest, SwitchTrackingMode,
     SwitchTrackingModeRequest)
+from sar_yolo_detector.web_console import WebConsoleMixin
+from sar_yolo_detector.live_tuning import class_family
 
 
-class Preview:
+class Preview(WebConsoleMixin):
     def __init__(self):
         self.image_codec=str(rospy.get_param('~image_codec','png')).lower()
         if self.image_codec not in ('png','jpeg'):raise ValueError('image_codec must be png or jpeg')
@@ -63,7 +65,17 @@ class Preview:
         self.benchmark=(rospy.Publisher(rospy.get_param('~benchmark_topic','benchmark/command'),String,queue_size=1)
             if rospy.get_param('~enable_benchmark_controls',False) else None)
         self.manual_roi = rospy.Publisher(rospy.get_param('~manual_roi_topic'), RegionOfInterest, queue_size=1)
-        self.roi = rospy.ServiceProxy(rospy.get_param('~select_roi_service'), SelectFusionROI)
+        roi_service=rospy.resolve_name(str(rospy.get_param('~select_roi_service')))
+        tracker_namespace=roi_service.rsplit('/',1)[0]
+        deadline=float(rospy.get_param(tracker_namespace+'/control_maximum_capture_age_sec',.5))
+        if not math.isfinite(deadline):
+            raise ValueError('Invalid tracker control capture deadline')
+        self.control_max_age_ms=(deadline if deadline>0 else .5)*1000.
+        self.roi = rospy.ServiceProxy(roi_service, SelectFusionROI)
+        self.frame_roi = rospy.ServiceProxy(rospy.resolve_name(tracker_namespace+'/select_frame_roi'),
+            __import__('sar_yolo_detector.srv',fromlist=['SelectFrameROI']).SelectFrameROI)
+        self._tracker_namespace=tracker_namespace
+        self._namespace=rospy.get_namespace().rstrip('/')
         self.manual_select = rospy.ServiceProxy(rospy.get_param('~select_manual_roi_service'), SelectFusionROI)
         self.select = rospy.ServiceProxy(rospy.get_param('~select_service'), SelectSmartTrack)
         self.switch = rospy.ServiceProxy(rospy.get_param('~mode_service'), SwitchTrackingMode)
@@ -78,6 +90,7 @@ class Preview:
         classification_topic=rospy.get_param('~classification_topic','')
         if classification_topic:
             self.subscribers.append(rospy.Subscriber(classification_topic,String,self.classification_evidence,queue_size=1))
+        self._console_init()
         fps=max(1.,min(30.,float(rospy.get_param('~fps',5.))))
         self.poll_interval_ms=int(round(1000./fps))
         self.timer = rospy.Timer(rospy.Duration(1./fps),self.encode)
@@ -95,13 +108,18 @@ class Preview:
                 stamp=dict(secs=h.stamp.secs, nsecs=h.stamp.nsecs)),
             overlay_capture_stamp=dict(secs=h.stamp.secs, nsecs=h.stamp.nsecs),
             mode=mode, selected_class_id=int(message.selected_class_id), selected_class_name=str(message.selected_class_name), selected_id=message.selected_track_id if message.has_selection else -1,
+            selected_class_family=class_family(message.selected_class_name),
             source=message.association_method or 'none', reason=message.freshness_reason or '',
             selected_box=[box.center.x, box.center.y, box.size_x, box.size_y]
+                if message.has_selection and message.geometry_type == 'aabb' else None,
+            selected_box_xywh=[box.center.x-box.size_x/2.,box.center.y-box.size_y/2.,box.size_x,box.size_y]
                 if message.has_selection and message.geometry_type == 'aabb' else None,
             confidence=float(message.confidence), backend=message.backend, device=message.device,
             measurement_current=bool(message.measurement_current),
             tracking_active=bool(message.tracking_active),
             control_target_valid=bool(message.control_measurement_ready),
+            prediction_only=bool(message.prediction_only),tentative=bool(message.tentative),
+            data_is_stale=bool(message.data_is_stale),frames_since_detection=int(message.frames_since_detection),
             model_path=message.model_path, processing_ms=float(message.frame_processing_ms),
             inference_ms=float(message.inference_ms),
             pipeline_epoch=epoch, capture_segment=epoch)
@@ -162,6 +180,7 @@ class Preview:
         output=[]
         for original in objects:
             row=dict(original)
+            row['family']=class_family(row.get('name',''))
             item=evidence.get(row['id'])
             if item is not None:
                 raw=int(item['raw_class_id'])
@@ -255,9 +274,13 @@ class Preview:
                     selected_id=evidence.get('selected_id', -1), selected_class_id=evidence.get('selected_class_id', -1), selected_class_name=evidence.get('selected_class_name', 'unknown'), source=evidence.get('source'),
                     reason=evidence.get('reason'), mode=evidence.get('mode'),
                     selected_box=evidence.get('selected_box'),
+                    selected_box_xywh=evidence.get('selected_box_xywh'),
                     measurement_current=evidence.get('measurement_current', False),
                     tracking_active=evidence.get('tracking_active', False),
                     control_target_valid=evidence.get('control_target_valid', False),
+                    prediction_only=evidence.get('prediction_only',False),tentative=evidence.get('tentative',False),
+                    data_is_stale=evidence.get('data_is_stale',False),frames_since_detection=evidence.get('frames_since_detection',0),
+                    selected_class_family=evidence.get('selected_class_family',''),
                     confidence=evidence.get('confidence', 0.), backend=evidence.get('backend'),
                     device=evidence.get('device'), processing_ms=evidence.get('processing_ms', 0.),
                     inference_ms=evidence.get('inference_ms', 0.),
@@ -311,7 +334,7 @@ class Preview:
         output['benchmark_controls']=getattr(self,'benchmark',None) is not None
         output['poll_interval_ms']=getattr(self,'poll_interval_ms',200)
         output['age_ms'] = max(0., (rospy.Time.now().to_sec()-output['stamp'])*1000.)
-        output['control_max_age_ms']=500.
+        output['control_max_age_ms']=getattr(self,'control_max_age_ms',500.)
         output['video_stale'] = (time.monotonic()-output.pop('received_wall') > 2.
                                  or output['age_ms'] > self.max_age*1000.)
         # A once-current state does not remain a current control observation
@@ -346,6 +369,8 @@ class Preview:
                 with self.lock:
                     self.active_mode = result.active_mode
                     self.mode_epoch += 1
+                if hasattr(self,'_console_lock'):
+                    with self._console_lock:self._console_leases.clear()
                 return 200, dict(success=True, active_mode=result.active_mode, message=result.message,
                     waiting_for_initial_roi=result.waiting_for_initial_roi)
             with self.lock:
@@ -362,11 +387,14 @@ class Preview:
                     selected_id=getattr(result, 'selected_target_id', -1), message=result.message)
             request = SelectFusionROIRequest(clear_selection=False)
             if action != 'clear':
-                with self.lock:
-                    original = self.history.get(str(body.get('frame_token')))
+                token=str(body.get('frame_token'))
+                original=self._console_pinned_original(token,body.get('lease_id'))
+                if original is None:
+                    with self.lock:original=self.history.get(token)
                 if original is None:
                     raise ValueError('Displayed frame is no longer cached; refresh and retry')
                 h, width, height = original
+                self._console_validate_selection(body,token,h)
                 request.header.seq = h['seq']
                 request.header.frame_id = h['frame_id']
                 request.header.stamp = rospy.Time(h['stamp']['secs'], h['stamp']['nsecs'])
@@ -419,21 +447,19 @@ class Preview:
                 w, h = values[2:]
                 if w < 4 or h < 4 or x+w > width or y+h > height:
                     raise ValueError('ROI must be inside the image and at least 4x4 pixels')
-                if mode in ('feature_tracker', 'color_tracker'):
-                    request.roi = RegionOfInterest(x_offset=int(x), y_offset=int(y),
-                        width=int(w), height=int(h), do_rectify=False)
-                    self.manual_select.wait_for_service(timeout=2.)
-                    result = self.manual_select(request)
-                    return (200 if result.success else 409), dict(success=result.success,
-                        selected_id=result.selected_target_id, message=result.message)
-                if mode == 'smart_tracker':
-                    request = SelectSmartTrackRequest(use_normalized_roi=True,
-                        normalized_roi=[x/width, y/height, w/width, h/height])
-                    self.select.wait_for_service(timeout=2.)
-                    result = self.select(request)
-                    return (200 if result.success else 409), dict(success=result.success,
-                        selected_id=result.selected_target_id, message=result.message)
                 request.roi.x_offset, request.roi.y_offset = int(x), int(y)
+                if hasattr(self,'frame_roi'):
+                    from sar_yolo_detector.srv import SelectFrameROIRequest
+                    exact=SelectFrameROIRequest(header=request.header,roi=request.roi,clear_selection=False)
+                    self.frame_roi.wait_for_service(timeout=2.);result=self.frame_roi(exact)
+                    return (200 if result.success else 409),dict(success=result.success,selected_id=result.selected_target_id,message=result.message)
+                if mode in ('feature_tracker', 'color_tracker'):
+                    self.manual_select.wait_for_service(timeout=2.);result=self.manual_select(request)
+                    return (200 if result.success else 409),dict(success=result.success,selected_id=result.selected_target_id,message=result.message)
+                if mode == 'smart_tracker':
+                    request = SelectSmartTrackRequest(use_normalized_roi=True,normalized_roi=[x/width,y/height,w/width,h/height])
+                    self.select.wait_for_service(timeout=2.);result=self.select(request)
+                    return (200 if result.success else 409),dict(success=result.success,selected_id=result.selected_target_id,message=result.message)
                 request.roi.width, request.roi.height = int(w), int(h)
             self.roi.wait_for_service(timeout=2.)
             result = self.roi(request)
@@ -493,11 +519,12 @@ def main():
                 pass
 
         def do_GET(self):
-            if self.path == '/':
+            parsed=urlparse(self.path);path=parsed.path
+            if path == '/':
                 self.reply(200, html, 'text/html; charset=utf-8')
-            elif self.path == '/api/frame':
+            elif path == '/api/frame':
                 self.reply(200, preview.snapshot())
-            elif self.path == '/api/image':
+            elif path == '/api/image':
                 packet=preview.snapshot(include_image=False,binary=True)
                 data=packet.pop('_image_bytes',None)
                 if data is None:
@@ -514,8 +541,11 @@ def main():
                 self.end_headers()
                 try:self.wfile.write(data)
                 except (BrokenPipeError,ConnectionResetError):pass
-            elif self.path == '/api/telemetry':
+            elif path == '/api/telemetry':
                 self.reply(200, preview.snapshot(include_image=False))
+            elif path == '/api/console':
+                query=parse_qs(parsed.query);token=query.get('frame_token',[''])[0];lease=query.get('lease_id',[''])[0]
+                self.reply(200,preview.console_snapshot(token or None,lease or None))
             else:
                 self.reply(404, dict(message='Not found'))
 
@@ -524,7 +554,8 @@ def main():
                 origin = self.headers.get('Origin')
                 if origin and urlparse(origin).netloc != self.headers.get('Host'):
                     raise ValueError('Cross-origin command rejected')
-                if self.path != '/api/command' or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                path=urlparse(self.path).path
+                if path not in ('/api/command','/api/console/command') or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
                     raise ValueError('JSON command required')
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= 16384:
@@ -532,7 +563,8 @@ def main():
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError('JSON object required')
-                status, result = preview.command(body)
+                status, result = (preview.console_command(body) if path=='/api/console/command'
+                                  else preview.command(body))
                 self.reply(status, result)
             except (ValueError, TypeError) as exc:
                 self.reply(400, dict(success=False, message=str(exc)))

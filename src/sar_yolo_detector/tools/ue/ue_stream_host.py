@@ -75,12 +75,35 @@ class StreamHost:
                     self.console('r.OneFrameThreadLag 0')
                     # GPU readback readiness is polled on editor ticks. Keep
                     # that poll faster than the independently limited camera.
-                    self.console('t.MaxFPS 60')
+                    poll_fps=int(message.get('editor_poll_fps',60))
+                    if poll_fps not in (60,90,120,240):raise ValueError('Invalid editor polling rate')
+                    self.console('t.MaxFPS %d' % poll_fps)
                     self.console('r.MotionBlurQuality 0')
                     self.console('r.DepthOfFieldQuality 0')
                     self.console('r.AntiAliasingMethod 1')
                     self.api.send_metadata(json.dumps(dict(kind='configured',session=message['session'],fps=fps)))
-                elif kind=='pose':self.pose=message['pose']
+                elif kind=='pose':
+                    self.pose=message['pose']
+                    request=message.get('runtime_request')
+                    if request is not None:
+                        request_id=str(request.get('request_id',''))
+                        try:
+                            if self.config is None or message.get('session')!=self.config.get('session'):
+                                raise ValueError('Capture session is not active')
+                            fps=request.get('editor_poll_fps')
+                            if type(fps) is not int or fps not in (60,120,240):
+                                raise ValueError('editor_poll_fps must be 60/120/240')
+                            self.console('t.MaxFPS %d' % fps)
+                            actual=float(unreal.SystemLibrary.get_console_variable_float_value('t.MaxFPS'))
+                            if not abs(actual-fps)<.5:raise ValueError('Unreal did not apply the requested editor FPS cap')
+                            self.state['capture_editor_poll_fps']=int(round(actual))
+                            applied=dict(kind='runtime_applied',session=message['session'],request_id=request_id,
+                                editor_poll_fps=int(round(actual)),success=True,message='Unreal editor FPS cap applied and read back')
+                        except Exception as error:
+                            applied=dict(kind='runtime_applied',session=message.get('session',''),request_id=request_id,
+                                success=False,message=str(error))
+                        if self.api is not None and self.api.is_connected():
+                            self.api.send_metadata(json.dumps(applied,allow_nan=False))
                 elif kind=='gimbal':self.state['network_gimbal_command']=message
                 elif kind=='stop':self.stop()
             except Exception as error:

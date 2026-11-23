@@ -175,10 +175,18 @@ def tick_impl(delta):
             write("response.json",{"id":request['id'],"session":session,"ok":True,"reload":True})
             state.update(cameras={},targets={},initial={},camera=None,target=None,pending=None)
             import runpy,sys
+            sys.modules.pop('ue_stream_host',None)
             sys.modules.pop('ue_truth_native',None)
             sys.modules.pop('ue_benchmark_truth',None)
             sys.modules.pop('benchmark_visibility',None)
             runpy.run_path(str(Path(__file__)));return
+        if request.get('op')=='create_visual_variant':
+            if game_world is not None or state.get('stream_active'):raise RuntimeError('Stop capture/Play before creating visual variant')
+            import ue_visual_variant,importlib
+            importlib.reload(ue_visual_variant)
+            result=ue_visual_variant.create_visual_variant()
+            state.update(cameras={},targets={},initial={})
+            write('response.json',dict(id=request['id'],session=session,ok=True,visual_variant=result));return
         if request.get('op')=='augment_benchmark':
             if game_world is not None or state.get('stream_active'):raise RuntimeError('Stop capture/Play before extending benchmark map')
             import runpy

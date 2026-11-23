@@ -1,6 +1,7 @@
 """Validated image-plane camera compensation, never a 3-D translation claim."""
 from collections import deque
 import math
+import threading
 
 import cv2
 import numpy as np
@@ -61,6 +62,53 @@ def rotation_homography(intrinsics, previous_rotation, current_rotation, current
     return result/result[2, 2]
 
 
+class AngularRateHistory:
+    """Timestamped camera-optical IMU rates in radians per second."""
+    def __init__(self, maximum_gap=.05):
+        self.maximum_gap = float(maximum_gap)
+        if not math.isfinite(self.maximum_gap) or self.maximum_gap <= 0:
+            raise ValueError("Invalid angular-rate sample gap")
+        self.samples = deque(maxlen=512)
+        self.lock = threading.Lock()
+
+    def add(self, stamp, rate, frame_id):
+        rate = np.asarray(rate, dtype=float)
+        if rate.shape != (3,) or not np.isfinite(rate).all() or not math.isfinite(stamp) or stamp <= 0 or not frame_id:
+            return False
+        with self.lock:
+            if self.samples and stamp <= self.samples[-1][0]:
+                return False
+            self.samples.append((stamp, rate.copy(), frame_id))
+        return True
+
+    def homography(self, earlier, later, intrinsics, frame_id):
+        if not 0 < later-earlier <= .25:
+            return None
+        with self.lock:
+            samples = list(self.samples)
+        before = [item for item in samples if item[0] <= earlier]
+        if not before:
+            return None
+        current = before[-1]
+        if earlier-current[0] > self.maximum_gap:
+            return None
+        rotation = np.eye(3)
+        cursor = earlier
+        for following in [item for item in samples if earlier < item[0] < later] + [(later, None, frame_id)]:
+            end = following[0]
+            if current[2] != frame_id or end-current[0] > self.maximum_gap:
+                return None
+            # Positive camera rotation transports stationary rays by R^-1.
+            delta, _ = cv2.Rodrigues(-current[1] * (end-cursor))
+            rotation = delta @ rotation
+            cursor, current = end, following
+        k = np.asarray(intrinsics, dtype=float).reshape(3,3)
+        if not np.isfinite(k).all() or k[0,0] <= 0 or k[1,1] <= 0 or abs(np.linalg.det(k)) < 1e-9:
+            return None
+        matrix = k @ rotation @ np.linalg.inv(k)
+        return matrix / matrix[2,2]
+
+
 class CameraMotion:
     def __init__(self, config=None):
         config = dict(config or {})
@@ -68,6 +116,12 @@ class CameraMotion:
         self.max_gap = float(config.get("max_gap_sec", .75))
         self.max_features = int(config.get("max_features", 160))
         self.minimum_inliers = int(config.get("minimum_inliers", 12))
+        self.processing_width=int(config.get('processing_width',320))
+        self.lk_window_size=int(config.get('lk_window_size',21))
+        self.lk_pyramid_levels=int(config.get('lk_pyramid_levels',3))
+        if (not 80<=self.processing_width<=640 or not 5<=self.lk_window_size<=31
+                or self.lk_window_size%2!=1 or not 0<=self.lk_pyramid_levels<=4):
+            raise ValueError('Invalid camera-motion processing bounds')
         if not math.isfinite(self.max_gap) or self.max_gap <= 0 or not 16 <= self.max_features <= 512:
             raise ValueError("Invalid camera motion bounds")
         if not 6 <= self.minimum_inliers <= self.max_features:
@@ -99,7 +153,7 @@ class CameraMotion:
         area = abs(cv2.contourArea(projected[:4].astype(np.float32))) / max(1., width*height)
         return .65 <= area <= 1.5
 
-    def update(self, frame, stamp, excluded_boxes=(), pose_rotation=None, estimate=True, calibration_changed=False, pure_rotation=False, estimate_background=True):
+    def update(self, frame, stamp, excluded_boxes=(), pose_rotation=None, estimate=True, calibration_changed=False, pure_rotation=False, estimate_background=True, rate_rotation=None):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         matrix, self.source, self.inlier_ratio = None, "unavailable", 0.
         previous, previous_stamp = self.gray, self.stamp
@@ -117,6 +171,8 @@ class CameraMotion:
                 self.source = "pose_seeded_background" if pose is not None else "background"
             elif pose is not None:
                 matrix, self.source = pose, "pose_rotation_only"
+            if matrix is None and self.validate(rate_rotation, gray.shape):
+                matrix, self.source = rate_rotation, "optical_imu_rate"
             self.calibration_changed=bool(calibration_changed and matrix is not None)
             self.history.append((previous_stamp, stamp, matrix))
             self.calibration_history.append((previous_stamp,stamp,self.calibration_changed))
@@ -129,7 +185,7 @@ class CameraMotion:
     def _background(self, previous, current, boxes, pose):
         # Background GMC does not need full sensor resolution. Keep the target
         # images untouched; conjugate the estimated transform back to pixels.
-        scale = min(1., 320./previous.shape[1])
+        scale = min(1., self.processing_width/previous.shape[1])
         if scale == 1.:
             return self._background_scaled(previous, current, boxes, pose)
         size = (round(previous.shape[1]*scale), round(previous.shape[0]*scale))
@@ -159,12 +215,12 @@ class CameraMotion:
         try:
             initial = cv2.perspectiveTransform(points, pose) if pose is not None else None
             moved, ok, _ = cv2.calcOpticalFlowPyrLK(previous, current, points, initial,
-                winSize=(21, 21), maxLevel=3,
+                winSize=(self.lk_window_size, self.lk_window_size), maxLevel=self.lk_pyramid_levels,
                 flags=cv2.OPTFLOW_USE_INITIAL_FLOW if initial is not None else 0)
             if moved is None:
                 return None
             back, reverse, _ = cv2.calcOpticalFlowPyrLK(current, previous, moved, None,
-                winSize=(21, 21), maxLevel=3)
+                winSize=(self.lk_window_size, self.lk_window_size), maxLevel=self.lk_pyramid_levels)
             if back is None:
                 return None
             good = (ok.ravel() > 0) & (reverse.ravel() > 0)

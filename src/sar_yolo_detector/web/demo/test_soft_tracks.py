@@ -82,7 +82,7 @@ class SoftDisplayTests(unittest.TestCase):
   self.assertEqual(clip([10,-4,12,14],(100,100,3)),[10.,0.,12.,10.])
   self.assertEqual(clip([92,20,12,12],(100,100,3)),[92.,20.,8.,12.])
   self.assertIsNone(clip([-20,10,14,12],(100,100,3)))
-  self.assertIsNone(clip([94,20,16,12],(100,100,3)))
+  self.assertEqual(clip([94,20,16,12],(100,100,3)),[94.,20.,6.,12.])
 
  def test_prediction_is_brief_and_does_not_create_control_identity(self):
   layer=SoftTrackLayer(['car']);initial=layer.step(self.image,1.,0,self.rows)
@@ -94,9 +94,9 @@ class SoftDisplayTests(unittest.TestCase):
  def test_edge_center_controls_removal_and_partial_box_can_remain(self):
   clip=SoftTrackLayer.clip
   self.assertEqual(clip([-6,10,16,12],(100,100,3)),[0.,10.,10.,12.])
-  self.assertIsNone(clip([-9,10,16,12],(100,100,3)))
+  self.assertEqual(clip([-9,10,16,12],(100,100,3)),[0.,10.,7.,12.])
   self.assertEqual(clip([92,10,12,12],(100,100,3)),[92.,10.,8.,12.])
-  self.assertIsNone(clip([94,10,12,12],(100,100,3)))
+  self.assertEqual(clip([94,10,12,12],(100,100,3)),[94.,10.,6.,12.])
  def test_limit_bounds_active_tracks(self):
   layer=SoftTrackLayer(['car']);layer.max_tracks=1
   rng=np.random.RandomState(2);image=rng.randint(0,256,(100,100,3),dtype=np.uint8)
@@ -117,7 +117,9 @@ class SoftDisplayTests(unittest.TestCase):
   self.assertEqual([row['id'] for row in visible],[other['id']])
   self.assertEqual(visible[0]['last_perception_stamp'],1.)
   layer.step(image,1.25,0,[])
-  self.assertEqual(layer.step(image,1.36,0,[]),[])
+  self.assertEqual(len(layer.step(image,1.36,0,[])),2)
+  for i in range(5): result=layer.step(image,1.56+i*.2,0,[])
+  self.assertEqual(result,[])
 
  def test_invalid_rebuild_keeps_existing_track_until_normal_timeout(self):
   layer=SoftTrackLayer(['car']);gray=cv2.cvtColor(self.image,cv2.COLOR_BGR2GRAY)
@@ -145,5 +147,63 @@ class SoftDisplayTests(unittest.TestCase):
   result=layer.step(image,1.05,0,[],[first,late])
   self.assertEqual(len(result),2)
   self.assertEqual(calls,[(150.,30.,30.,30.)])
+
+
+ def test_low_score_updates_existing_but_does_not_birth_interior(self):
+  layer=SoftTrackLayer(['car'])
+  low=[dict(box=[80,60,70,60],class_id=0,confidence=.2)]
+  self.assertEqual(layer.step(self.image,1.,0,low),[])
+  first=layer.step(self.image,1.05,0,self.rows)
+  second=layer.step(self.image,1.10,0,low)
+  self.assertEqual(second[0]['id'],first[0]['id'])
+  self.assertEqual(second[0]['last_perception_stamp'],1.10)
+ def test_visible_area_threshold(self):
+  self.assertIsNone(SoftTrackLayer.clip([-99,10,100,20],(100,100,3)))
+  self.assertEqual(SoftTrackLayer.clip([-80,10,100,20],(100,100,3)),[0.,10.,20.,20.])
+
+
+ def test_low_score_edge_birth_requires_two_consistent_displacements(self):
+  image=np.random.RandomState(65).randint(0,256,(200,320,3),dtype=np.uint8)
+  layer=SoftTrackLayer(['car'])
+  def row(x):
+   return [dict(box=[x,60,20,20],class_id=0,confidence=.2)]
+  self.assertEqual(layer.step(image,1.,0,row(10)),[])
+  self.assertEqual(layer.step(image,1.1,0,row(14)),[])
+  result=layer.step(image,1.2,0,row(18))
+  self.assertEqual(len(result),1)
+  self.assertEqual(result[0]['last_perception_stamp'],1.2)
+
+ def test_low_score_edge_birth_rejects_direction_reversal(self):
+  image=np.random.RandomState(66).randint(0,256,(200,320,3),dtype=np.uint8)
+  layer=SoftTrackLayer(['car'])
+  for stamp,x in [(1.,10),(1.1,14),(1.2,10)]:
+   result=layer.step(image,stamp,0,[dict(box=[x,60,20,20],class_id=0,confidence=.2)])
+  self.assertEqual(result,[])
+
+ def test_visible_fraction_needs_three_outward_updates_to_exit(self):
+  image=np.random.RandomState(67).randint(0,256,(100,320,3),dtype=np.uint8)
+  layer=SoftTrackLayer(['car'])
+  layer.step(image,1.,0,[dict(box=[-80,40,100,20],class_id=0,confidence=.9)])
+  self.assertEqual(len(layer.tracks),1)
+  def translated(gray,frame):
+   for track in layer.tracks.values():
+    box,quad=layer.project_geometry(track,np.float32([[1,0,-6],[0,1,0]]),gray.shape)
+    track.update(box=box,quad=quad)
+  layer.propagate=translated
+  first=layer.step(image,1.05,0,[])
+  second=layer.step(image,1.10,0,[])
+  third=layer.step(image,1.15,0,[])
+  self.assertEqual(first[0]['box'][2],14.)
+  self.assertEqual(second[0]['box'][2],8.)
+  self.assertEqual(third,[])
+
+
+class VehicleSuperclassTest(unittest.TestCase):
+    def test_vehicle_labels_match_without_merging_drone(self):
+        layer=SoftTrackLayer(['car','tank','drone','truck','bus'])
+        self.assertTrue(layer.same_class(0,1))
+        self.assertTrue(layer.same_class(3,4))
+        self.assertFalse(layer.same_class(0,2))
+        self.assertFalse(layer.same_class(0,99))
 
 if __name__=='__main__':unittest.main()

@@ -1,0 +1,15 @@
+# EO/IR stage-one candidate. Load after the base D-FINE profiles.
+input_image_transport: raw
+input_image_queue_size: 1
+maximum_capture_age_sec: 0.25
+control_maximum_capture_age_sec: 0.25
+FusionTracker:
+  full_frame_interval: 4
+  roi_crop_scale: 3.5
+  roi_min_crop_size: 320
+  roi_reflect_padding: true
+  async_max_result_age_sec: 0.25
+  occlusion_freeze_enabled: true
+  prediction_hold_sec: 1.20
+  structural_appearance_enabled: true
+  edge_aware_geometry: true

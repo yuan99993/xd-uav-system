@@ -116,6 +116,16 @@ class WebCommandTest(unittest.TestCase):
         self.assertFalse(value['control_target_valid'])
         self.assertEqual(value['control_max_age_ms'],500.)
 
+    def test_platform_capture_deadline_is_applied_to_displayed_lock(self):
+        import time
+        self.preview.control_max_age_ms=250.
+        self.preview.current=dict(stamp=rospy.Time.now().to_sec()-.3,
+            received_wall=time.monotonic(),control_target_valid=True)
+        value=self.preview.snapshot()
+        self.assertFalse(value['video_stale'])
+        self.assertFalse(value['control_target_valid'])
+        self.assertEqual(value['control_max_age_ms'],250.)
+
     def test_raw_and_stable_class_join_only_the_same_capture(self):
         from std_msgs.msg import String
         self.preview.labels=['car','tank','drone']

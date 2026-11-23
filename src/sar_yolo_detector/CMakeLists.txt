@@ -98,7 +98,9 @@ add_service_files(
   SubmitTaskAssignment.srv
   SwitchSmartTrackerModel.srv
   SwitchTrackingMode.srv
+  ConfigureTracker.srv
   SelectFusionROI.srv
+  SelectFrameROI.srv
   ListDetectorModels.srv
 )
 

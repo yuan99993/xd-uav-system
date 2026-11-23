@@ -417,6 +417,23 @@ class BoxFusionTest(unittest.TestCase):
         self.candidate = Candidate((60, 60, 40, 40), 2, .90, 5)
         self.fusion.initialize(self.frame, self.candidate.box, 10., 900000001, self.candidate)
 
+    def test_occlusion_freezes_tracker_until_fresh_detector_recovery(self):
+        self.fusion.config['occlusion_freeze_enabled'] = True
+        self.fusion.predict_hold = 1.2
+        self.local.valid = False
+        first = self.fusion.step(self.frame, 10.1, [])
+        self.assertEqual(first.source, 'prediction')
+        self.assertEqual(first.reason, 'occluded_coast')
+        updates = self.local.updates
+        anchor = self.fusion.anchor.copy()
+        later = self.fusion.step(self.frame, 10.5, [])
+        self.assertEqual(later.source, 'prediction')
+        self.assertFalse(later.observed)
+        self.assertEqual(self.local.updates, updates)
+        np.testing.assert_array_equal(self.fusion.anchor, anchor)
+        expired = self.fusion.step(self.frame, 11.3, [])
+        self.assertEqual(expired.source, 'lost')
+
     def test_agreement_returns_one_fused_box(self):
         result = self.fusion.step(self.frame, 10.1, [self.candidate])
         self.assertEqual(result.source, "fused")

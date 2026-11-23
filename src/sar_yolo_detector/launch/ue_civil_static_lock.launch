@@ -1,5 +1,10 @@
 <launch>
+  <arg name="bridge_nice" default="0" />
+  <arg name="editor_poll_fps" default="60" />
+  <arg name="shared_images" default="false" />
+  <arg name="record_images" default="false" />
   <arg name="ue_project" />
+  <arg name="stream_codec" default="jpeg" />
   <arg name="stream_quality" default="98" />
   <arg name="feature_tracker_algorithm" default="kcf" />
   <arg name="UAV_NAME" default="ue_test" />
@@ -12,6 +17,10 @@
   <arg name="image_width" default="1920" />
   <arg name="image_height" default="1080" />
   <include file="$(find sar_yolo_detector)/launch/ue_dfine_v3_live.launch">
+    <arg name="bridge_nice" value="$(arg bridge_nice)" />
+    <arg name="editor_poll_fps" value="$(arg editor_poll_fps)" />
+    <arg name="shared_images" value="$(arg shared_images)" />
+    <arg name="record_images" value="$(arg record_images)" />
     <arg name="ue_project" value="$(arg ue_project)" />
     <arg name="feature_tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
@@ -23,6 +32,7 @@
     <arg name="seconds" value="$(arg seconds)" />
     <arg name="image_width" value="$(arg image_width)" />
     <arg name="image_height" value="$(arg image_height)" />
+    <arg name="stream_codec" value="$(arg stream_codec)" />
     <arg name="stream_quality" value="$(arg stream_quality)" />
     <arg name="web_image_codec" value="jpeg" />
     <arg name="web_image_transport" value="compressed" />

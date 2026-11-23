@@ -21,13 +21,23 @@ parser.add_argument('--project',type=Path,required=True)
 parser.add_argument('--output',type=Path,required=True)
 parser.add_argument('--python-executable',required=True,help='Model environment Python with D-FINE and OpenCV contrib')
 parser.add_argument('--no-record',action='store_true',help='Isolate live visual lock without raw ROS bag I/O; states/traces/frames remain recorded')
-parser.add_argument('--stream-quality',type=int,choices=range(1,101),metavar='1..100')
+parser.add_argument('--image-width',type=int)
+parser.add_argument('--image-height',type=int)
+parser.add_argument('--platform-config',type=Path)
+parser.add_argument('--model-manifest',type=Path)
+parser.add_argument('--visual-manifest',type=Path)
+parser.add_argument('--shared-memory',action='store_true')
+parser.add_argument('--bridge-nice',type=int,choices=range(-10,11),default=0)
+parser.add_argument('--editor-poll-fps',type=int,choices=(60,90,120,240),default=60)
+parser.add_argument('--stream-codec',choices=('jpeg','bgr8','bgra8'),default='jpeg',
+ help='Wire format for the native UE stream; JPEG reduces cross-system payload bytes')
+parser.add_argument('--stream-quality',type=int,choices=range(1,101),default=98,metavar='1..100')
 parser.add_argument('--fov-profile',type=Path)
 parser.add_argument('--require-stage-pass',action='store_true')
 parser.add_argument('--seconds',type=float,default=20)
 parser.add_argument('--jpeg-decode-device',choices=['cpu','cuda'])
 parser.add_argument('--minimum-motion-warp-px',type=float)
-parser.add_argument('--feature-tracker-algorithm',choices=['kcf','csrt','nano'])
+parser.add_argument('--feature-tracker-algorithm',choices=['kcf','csrt','nano','nano_trt'])
 parser.add_argument('--moving-pixel-witness',action='store_true',help='Compare strict same-frame pixel verification in the moving-target profile')
 parser.add_argument('--roi-padding',type=int,choices=range(9),default=0)
 parser.add_argument('--pose-source',choices=['kinematic','px4'],default='kinematic')
@@ -54,6 +64,21 @@ if len(set(profiles))!=len(profiles):parser.error('Duplicate cases are not allow
 if any(out.iterdir()):parser.error('--output must be a new or empty directory')
 # Match the source wrapper's approved contrib overlay, while keeping ROS bag
 # processes on their own system-Python ABI.
+# A new editor can display its window before Python capture startup completes.
+editor_deadline=time.monotonic()+240.
+while time.monotonic()<editor_deadline:
+ try:
+  editor_ready=json.loads((args.project/'Saved/AirGroundExchange/ready.json').read_text())
+  if 0<=time.time()-float(editor_ready['heartbeat'])<3.:break
+ except (OSError,ValueError,KeyError):pass
+ time.sleep(.25)
+else:raise RuntimeError('UE capture server heartbeat did not become fresh before launch')
+visual_manifest=None
+if args.visual_manifest:
+ visual_manifest=json.loads(args.visual_manifest.read_text())
+ expected=visual_manifest['visual_variant']['level']
+ if not editor_ready.get('world','').startswith(expected+'.'):
+  raise RuntimeError('UE world differs from the requested visual variant')
 preflight_env=dict(os.environ)
 workspace=package.parent.parent
 contrib=workspace/'.venv-fusion/lib/python3.10/site-packages'
@@ -72,7 +97,11 @@ def source_snapshot():
   if binary.is_file():files.add(binary)
  return {os.path.relpath(p,package):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(files)}
 frozen_sources=source_snapshot()
-(out/'suite_manifest.json').write_text(json.dumps(dict(pose_source=args.pose_source,cases=profiles,source_sha256=frozen_sources,requested_feature_tracker_algorithm=args.feature_tracker_algorithm,
+(out/'suite_manifest.json').write_text(json.dumps(dict(pose_source=args.pose_source,cases=profiles,requested_editor_poll_fps=args.editor_poll_fps,requested_bridge_nice=args.bridge_nice,requested_shared_memory=args.shared_memory,ue_editor_world=editor_ready.get('world'),
+ visual_manifest=visual_manifest,visual_manifest_sha256=hashlib.sha256(args.visual_manifest.read_bytes()).hexdigest() if args.visual_manifest else None,source_sha256=frozen_sources,requested_feature_tracker_algorithm=args.feature_tracker_algorithm,
+ requested_platform_config=str(args.platform_config.resolve()) if args.platform_config else None,
+ requested_platform_sha256=hashlib.sha256(args.platform_config.read_bytes()).hexdigest() if args.platform_config else None,
+ requested_model_manifest=str(args.model_manifest.resolve()) if args.model_manifest else None,
  requested_fov_profile=json.loads(args.fov_profile.read_text()) if args.fov_profile else None,requested_stream_quality=args.stream_quality,requested_moving_pixel_witness=args.moving_pixel_witness,requested_jpeg_decode_device=args.jpeg_decode_device,requested_minimum_motion_warp_px=args.minimum_motion_warp_px,
  ros_network={k:v for k,v in local_ros_environment(dict(os.environ,ROS_MASTER_URI=args.master_uri)).items() if k in ('ROS_MASTER_URI','ROS_IP','ROS_HOSTNAME','SAR_LOCAL_WEB_HOST')},
  evaluation='given initial ROI, evaluation-only projected world AABB and centre ray',
@@ -95,10 +124,15 @@ for name in profiles:
  env['no_proxy']=env['NO_PROXY']
  env['PYTHONPATH']=os.pathsep.join(p for p in env.get('PYTHONPATH','').split(os.pathsep) if '/python3.10/site-packages' not in p)
  with (out/(name+'_live.log')).open('w') as live_log,(out/(name+'_eval.log')).open('w') as eval_log:
-  launch=subprocess.Popen(['roslaunch','sar_yolo_detector',args.launch_file,'ue_project:='+project,
-   'pose_source:='+args.pose_source,'scene:='+str(package/'config/ue/benchmark_cases'/(name+'.json')),
-   'gimbal_config:='+str(package/'config/ue/benchmark_cases'/(name+'_gimbal.json')),'seconds:=360',
-   'output:='+str(capture),'python_executable:='+args.python_executable]+(['fov_profile:='+str(args.fov_profile.resolve())] if args.fov_profile else [])+(['stream_quality:='+str(args.stream_quality)] if args.stream_quality is not None else [])+(['experimental_moving_pixel_witness:=true'] if args.moving_pixel_witness else [])+([] if args.jpeg_decode_device is None else ['jpeg_decode_device:='+args.jpeg_decode_device])+([] if args.minimum_motion_warp_px is None else ['minimum_motion_warp_px:='+str(args.minimum_motion_warp_px)])+([] if args.feature_tracker_algorithm is None else ['feature_tracker_algorithm:='+args.feature_tracker_algorithm]),stdout=live_log,stderr=subprocess.STDOUT,env=env,start_new_session=True)
+  launch=subprocess.Popen(['roslaunch',str(package/'launch'/args.launch_file),'ue_project:='+project,
+   'pose_source:='+args.pose_source,'bridge_nice:='+str(args.bridge_nice),'editor_poll_fps:='+str(args.editor_poll_fps),'record_images:='+('false' if args.no_record else 'true'),'shared_images:='+('true' if args.shared_memory else 'false'),'scene:='+str(package/'config/ue/benchmark_cases'/(name+'.json')),
+   'gimbal_config:='+str(package/'config/ue/benchmark_cases'/(name+'_gimbal.json')),
+   'stream_codec:='+args.stream_codec,'stream_quality:='+str(args.stream_quality),'seconds:=360',
+   'output:='+str(capture),'python_executable:='+args.python_executable]+
+   (['platform_config:='+str(args.platform_config.resolve())] if args.platform_config else [])+
+   (['image_width:='+str(args.image_width)] if args.image_width else [])+
+   (['image_height:='+str(args.image_height)] if args.image_height else [])+
+   (['model_path:='+str(args.model_manifest.resolve()),'model_sha256:='+hashlib.sha256(args.model_manifest.read_bytes()).hexdigest()] if args.model_manifest else [])+(['fov_profile:='+str(args.fov_profile.resolve())] if args.fov_profile else [])+(['experimental_moving_pixel_witness:=true'] if args.moving_pixel_witness else [])+([] if args.jpeg_decode_device is None else ['jpeg_decode_device:='+args.jpeg_decode_device])+([] if args.minimum_motion_warp_px is None else ['minimum_motion_warp_px:='+str(args.minimum_motion_warp_px)])+([] if args.feature_tracker_algorithm is None else ['feature_tracker_algorithm:='+args.feature_tracker_algorithm]),stdout=live_log,stderr=subprocess.STDOUT,env=env,start_new_session=True)
   evaluate=subprocess.Popen(['/usr/bin/python3',str(Path(__file__).resolve().with_name('verify_ue_stress_case.py')),'--project',project,
    '--capture',str(capture),'--output',str(evaluation),'--seconds',str(args.seconds),'--roi-padding',str(args.roi_padding)]+([] if args.no_record else ['--record-ready',str(out/(name+'_record_ready.json'))])+(['--web-url','http://'+env['SAR_LOCAL_WEB_HOST']+':8787'] if env.get('SAR_LOCAL_WEB_HOST') else []),stdout=eval_log,stderr=subprocess.STDOUT,env=env,start_new_session=True)
   recorder=None;record_log=None;deadline=time.monotonic()+max(320,args.seconds+270)
@@ -107,13 +141,13 @@ for name in profiles:
     if launch.poll() is not None:
      stop_owned(evaluate);break
     flight_file=out/(name+'_live_px4')/'status.json'
-    recording_window_ready=(capture/'run.json').exists()
+    recording_window_ready=(evaluation/'camera_barrier.json').exists()
     if args.pose_source=='px4':
-     try:recording_window_ready=json.loads(flight_file.read_text()).get('stage')=='inspect_01'
+     try:recording_window_ready=recording_window_ready and json.loads(flight_file.read_text()).get('stage')=='inspect_01'
      except (OSError,ValueError):recording_window_ready=False
     if not args.no_record and recorder is None and recording_window_ready:
      record_log=(out/(name+'_record.log')).open('w')
-     recorder=subprocess.Popen(['/usr/bin/python3',str(Path(__file__).resolve().with_name('record_ue_rgb.py')),'--seconds',str(args.seconds+240),'--ready-file',str(out/(name+'_record_ready.json')),
+     recorder=subprocess.Popen(['/usr/bin/python3',str(Path(__file__).resolve().with_name('record_ue_rgb.py')),'--capture-ack','--seconds',str(args.seconds+240),'--ready-file',str(out/(name+'_record_ready.json')),
        '--output',str(out/(name+'.bag'))],stdout=record_log,stderr=subprocess.STDOUT,env=env,start_new_session=True)
     if time.monotonic()>deadline:stop_owned(evaluate);raise RuntimeError('Evaluation timeout '+name)
     time.sleep(.2)
@@ -123,7 +157,7 @@ for name in profiles:
     except subprocess.TimeoutExpired:stop_owned(recorder,15)
    result=json.loads((evaluation/'result.json').read_text()) if (evaluation/'result.json').exists() else dict(case_id=name,executed=False,reason='Evaluation process exited '+str(evaluate.returncode))
    result['record_exit_code']=None if recorder is None else recorder.returncode
-   if recorder is not None and name.startswith('civil_car_crossing_'):
+   if recorder is not None:
     record_text=(out/(name+'_record.log')).read_text()
     result['record_buffer_overflow']='Dropping oldest queued message' in record_text
     validation=subprocess.run(['/usr/bin/python3',str(Path(__file__).resolve().with_name('verify_car_selection_recording.py')),

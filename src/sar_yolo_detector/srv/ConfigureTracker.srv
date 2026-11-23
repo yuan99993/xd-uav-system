@@ -1,0 +1,6 @@
+# Validated, atomic runtime options. Empty object reads effective configuration.
+string config_json
+---
+bool success
+string message
+string applied_json
