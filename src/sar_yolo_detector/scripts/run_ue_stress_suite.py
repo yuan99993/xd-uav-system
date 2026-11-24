@@ -24,6 +24,8 @@ parser.add_argument('--no-record',action='store_true',help='Isolate live visual 
 parser.add_argument('--image-width',type=int)
 parser.add_argument('--image-height',type=int)
 parser.add_argument('--platform-config',type=Path)
+parser.add_argument('--track-config',type=Path,
+ help='Optional xd_uav_track config override, used to isolate the detector/tracker test policy')
 parser.add_argument('--model-manifest',type=Path)
 parser.add_argument('--visual-manifest',type=Path)
 parser.add_argument('--shared-memory',action='store_true')
@@ -101,6 +103,8 @@ frozen_sources=source_snapshot()
  visual_manifest=visual_manifest,visual_manifest_sha256=hashlib.sha256(args.visual_manifest.read_bytes()).hexdigest() if args.visual_manifest else None,source_sha256=frozen_sources,requested_feature_tracker_algorithm=args.feature_tracker_algorithm,
  requested_platform_config=str(args.platform_config.resolve()) if args.platform_config else None,
  requested_platform_sha256=hashlib.sha256(args.platform_config.read_bytes()).hexdigest() if args.platform_config else None,
+ requested_track_config=str(args.track_config.resolve()) if args.track_config else None,
+ requested_track_sha256=hashlib.sha256(args.track_config.read_bytes()).hexdigest() if args.track_config else None,
  requested_model_manifest=str(args.model_manifest.resolve()) if args.model_manifest else None,
  requested_fov_profile=json.loads(args.fov_profile.read_text()) if args.fov_profile else None,requested_stream_quality=args.stream_quality,requested_moving_pixel_witness=args.moving_pixel_witness,requested_jpeg_decode_device=args.jpeg_decode_device,requested_minimum_motion_warp_px=args.minimum_motion_warp_px,
  ros_network={k:v for k,v in local_ros_environment(dict(os.environ,ROS_MASTER_URI=args.master_uri)).items() if k in ('ROS_MASTER_URI','ROS_IP','ROS_HOSTNAME','SAR_LOCAL_WEB_HOST')},
@@ -130,6 +134,7 @@ for name in profiles:
    'stream_codec:='+args.stream_codec,'stream_quality:='+str(args.stream_quality),'seconds:=360',
    'output:='+str(capture),'python_executable:='+args.python_executable]+
    (['platform_config:='+str(args.platform_config.resolve())] if args.platform_config else [])+
+   (['track_config:='+str(args.track_config.resolve())] if args.track_config else [])+
    (['image_width:='+str(args.image_width)] if args.image_width else [])+
    (['image_height:='+str(args.image_height)] if args.image_height else [])+
    (['model_path:='+str(args.model_manifest.resolve()),'model_sha256:='+hashlib.sha256(args.model_manifest.read_bytes()).hexdigest()] if args.model_manifest else [])+(['fov_profile:='+str(args.fov_profile.resolve())] if args.fov_profile else [])+(['experimental_moving_pixel_witness:=true'] if args.moving_pixel_witness else [])+([] if args.jpeg_decode_device is None else ['jpeg_decode_device:='+args.jpeg_decode_device])+([] if args.minimum_motion_warp_px is None else ['minimum_motion_warp_px:='+str(args.minimum_motion_warp_px)])+([] if args.feature_tracker_algorithm is None else ['feature_tracker_algorithm:='+args.feature_tracker_algorithm]),stdout=live_log,stderr=subprocess.STDOUT,env=env,start_new_session=True)

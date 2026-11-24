@@ -10,6 +10,8 @@
   <arg name="input_image_topic" default="camera/image_raw" />
   <arg name="camera_info_topic" default="" />
   <arg name="camera_motion_fixed_frame" default="world" />
+  <arg name="camera_optical_imu_topic" default="" />
+  <arg name="camera_optical_imu_enabled" default="false" />
   <arg name="tracked_detections_topic" default="sar_yolo_detector/smart/tracked_detections" />
   <arg name="fusion_detections_topic" default="$(arg tracked_detections_topic)/fusion" />
   <arg name="fusion_observations_topic" default="$(arg tracked_detections_topic)/observations" />
@@ -17,12 +19,12 @@
   <arg name="annotated_image_topic" default="sar_yolo_detector/smart/annotated" />
   <arg name="selected_detections_topic" default="sar_yolo_detector/smart/selected_tracked_detections" />
   <arg name="select_pixel_topic" default="sar_yolo_detector/smart/select_pixel" />
-  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
-  <arg name="model_sha256" default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_ue_head11_roi/manifest.json" />
+  <arg name="model_sha256" default="f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8" />
   <arg name="use_gpu" default="true" />
   <arg name="fallback_to_cpu" default="true" />
   <arg name="publish_annotated_image" default="true" />
-  <arg name="maximum_capture_age_sec" default="0.5" />
+  <arg name="maximum_capture_age_sec" default="0.25" />
   <!-- Leave empty to auto-discover .venv-sar-gpu in this catkin workspace. -->
   <arg name="python_executable" default="" />
   <arg name="mission_id" default="mission_unset" />
@@ -46,6 +48,8 @@
     <param name="input_image_topic" value="$(arg input_image_topic)" />
     <param name="camera_info_topic" value="$(arg camera_info_topic)" />
     <param name="camera_motion_fixed_frame" value="$(arg camera_motion_fixed_frame)" />
+    <param name="camera_optical_imu_topic" value="$(arg camera_optical_imu_topic)" />
+    <param name="camera_optical_imu_enabled" value="$(arg camera_optical_imu_enabled)" />
     <param name="tracked_detections_topic" value="$(arg tracked_detections_topic)" />
     <param name="fusion_detections_topic" value="$(arg fusion_detections_topic)" />
     <param name="fusion_observations_topic" value="$(arg fusion_observations_topic)" />

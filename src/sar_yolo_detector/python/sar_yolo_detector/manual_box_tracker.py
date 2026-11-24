@@ -42,12 +42,16 @@ def _create_opencv_tracker(name: str, feature_config=None):
     if requested == 'nano_trt':
         from .nano_tensorrt import NanoTensorRT
         config=dict(feature_config or {})
-        return NanoTensorRT(config['nano_engine_directory'],
+        engine_directory=Path(config['nano_engine_directory']).expanduser()
+        if not engine_directory.is_absolute():
+            engine_directory=Path(__file__).resolve().parents[2]/engine_directory
+        return NanoTensorRT(str(engine_directory),
             config['nano_engine_manifest_sha256'],
             config.get('minimum_tracking_score',.35),config.get('nano_minimum_apce',1.8),
             config.get('nano_minimum_psr',2.2),config.get('nano_minimum_flow_ratio',.35),
             config.get('nano_occlusion_guard_enabled',False),
-            config.get('nano_recovery_apce',2.5),config.get('nano_recovery_psr',2.8)), 'nano_trt'
+            config.get('nano_recovery_apce',2.5),config.get('nano_recovery_psr',2.8),
+            config.get('nano_scale_ema_alpha',.25)), 'nano_trt'
     if requested in ('nano','nanotrack'):
         config=dict(feature_config or {})
         package=Path(__file__).resolve().parents[2]
@@ -192,6 +196,13 @@ class ManualBoxTracker:
             self.min_area_ratio, float(safety.get("max_area_ratio", 4.0))
         )
         self.edge_margin_px = max(0.0, float(safety.get("edge_margin_px", 0.0)))
+        self.edge_buffer_fraction = max(0., min(.25, float(safety.get("edge_buffer_fraction", .08))))
+        self.edge_min_area_ratio = max(0., min(self.min_area_ratio,
+            float(safety.get("edge_min_area_ratio", 1. / 6.))))
+        self.edge_max_area_ratio = max(self.max_area_ratio,
+            float(safety.get("edge_max_area_ratio", 6.)))
+        self.edge_center_jump_multiplier = max(1., float(
+            safety.get("edge_center_jump_multiplier", 1.5)))
         self.max_fail_frames = max(1, int(safety.get("max_fail_frames", 3)))
 
         self._opencv_tracker = None
@@ -434,7 +445,7 @@ class ManualBoxTracker:
         self._active = True
         return self._result(bbox, 1.0, True, "initialized")
 
-    def update(self, frame: np.ndarray) -> ManualTrackResult:
+    def update(self, frame: np.ndarray, motion_hint=None, camera_motion_matrix=None) -> ManualTrackResult:
         if (
             self.tracker_type == "color_tracker"
             and self.colour_source in ("configured", "auto")
@@ -470,7 +481,20 @@ class ManualBoxTracker:
             bbox, confidence, valid, reason = self._update_template(frame)
         else:
             try:
-                ok, candidate = self._opencv_tracker.update(frame)
+                if (self._tracker_name=='nano_trt' and camera_motion_matrix is not None
+                        and self._last_bbox is not None):
+                    from .camera_motion import CameraMotion,transform_window
+                    if CameraMotion.validate(camera_motion_matrix,frame.shape):
+                        transported,support=transform_window(self._last_bbox,camera_motion_matrix,
+                            self._support_corners)
+                        if transported is not None:
+                            self._last_bbox=transported
+                            self._support_corners=support
+                if self._tracker_name=='nano_trt' and motion_hint is not None:
+                    ok, candidate = self._opencv_tracker.update(frame,motion_hint=motion_hint,
+                        camera_motion_matrix=camera_motion_matrix)
+                else:
+                    ok, candidate = self._opencv_tracker.update(frame)
             except Exception:
                 ok, candidate = False, self._last_bbox
             bbox = tuple(float(value)+fraction for value,fraction in zip(candidate,self._pixel_fraction)) if candidate is not None else None
@@ -892,19 +916,21 @@ class ManualBoxTracker:
         previous_x, previous_y, previous_width, previous_height = previous
         if width < 2.0 or height < 2.0:
             return False, "bbox_too_small"
-        margin = self.edge_margin_px
-        if margin > 0.0 and (
-            x <= margin
-            or y <= margin
-            or x + width >= image_width - margin
-            or y + height >= image_height - margin
-        ):
-            return False, "bbox_too_close_to_image_edge"
+        margin_x = max(self.edge_margin_px, image_width * self.edge_buffer_fraction)
+        margin_y = max(self.edge_margin_px, image_height * self.edge_buffer_fraction)
+        edge = (x <= margin_x or y <= margin_y or
+                x + width >= image_width - margin_x or
+                y + height >= image_height - margin_y or
+                previous_x <= margin_x or previous_y <= margin_y or
+                previous_x + previous_width >= image_width - margin_x or
+                previous_y + previous_height >= image_height - margin_y)
         previous_area = max(1.0, previous_width * previous_height)
         area_ratio = width * height / previous_area
-        if area_ratio < self.min_area_ratio:
+        minimum_ratio = self.edge_min_area_ratio if edge else self.min_area_ratio
+        maximum_ratio = self.edge_max_area_ratio if edge else self.max_area_ratio
+        if area_ratio < minimum_ratio:
             return False, "bbox_area_too_small"
-        if area_ratio > self.max_area_ratio:
+        if area_ratio > maximum_ratio:
             return False, "bbox_area_too_large"
         center_x = x + width * 0.5
         center_y = y + height * 0.5
@@ -912,6 +938,7 @@ class ManualBoxTracker:
         previous_center_y = previous_y + previous_height * 0.5
         delta_x = (center_x - previous_center_x) / max(1.0, float(image_width))
         delta_y = (center_y - previous_center_y) / max(1.0, float(image_height))
-        if (delta_x * delta_x + delta_y * delta_y) ** 0.5 > self.max_center_jump_norm:
+        center_limit = self.max_center_jump_norm * (self.edge_center_jump_multiplier if edge else 1.)
+        if (delta_x * delta_x + delta_y * delta_y) ** 0.5 > center_limit:
             return False, "bbox_center_jump_too_large"
         return True, "ok"

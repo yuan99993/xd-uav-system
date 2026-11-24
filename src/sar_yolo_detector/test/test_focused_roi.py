@@ -25,23 +25,28 @@ class FocusedROITest(unittest.TestCase):
     def test_edges_keep_square_window(self):
         image = np.zeros((600, 800, 3), np.uint8)
         crop, offset = crop_focused_roi(image, (770, 570, 30, 30))
-        self.assertEqual((544, 344), offset)
+        self.assertEqual((657, 457), offset)
         self.assertEqual((256, 256, 3), crop.shape)
 
     def test_short_image_bounds_crop(self):
-        crop, offset = crop_focused_roi(np.zeros((100, 200, 3), np.uint8), (0, 0, 20, 20))
-        self.assertEqual((100, 100, 3), crop.shape)
-        self.assertEqual((0, 0), offset)
+        crop, offset, mask = crop_focused_roi(np.zeros((100, 200, 3), np.uint8),
+            (0, 0, 20, 20), return_mask=True)
+        self.assertEqual((256, 256, 3), crop.shape)
+        self.assertEqual((-118, -118), offset)
+        self.assertEqual(255, int(mask[118, 118]))
+        self.assertEqual(0, int(mask[0, 0]))
 
     def test_invalid_box_rejected(self):
         with self.assertRaises(ValueError):
             crop_focused_roi(np.zeros((100, 100, 3), np.uint8), (0, 0, float('nan'), 20))
 
-    def test_reflected_crop_retains_original_coordinate_offset(self):
+    def test_edge_crop_uses_gray_padding_and_validity_mask(self):
         image = np.arange(100*200*3, dtype=np.uint8).reshape(100,200,3)
-        crop, offset = crop_focused_roi(image, (0,0,20,20), min_crop_size=80,
-                                         reflect_padding=True)
+        crop, offset, mask = crop_focused_roi(image, (0,0,20,20), min_crop_size=80,
+                                               reflect_padding=True, return_mask=True)
         self.assertEqual(crop.shape, (80,80,3))
         self.assertEqual(offset, (-30,-30))
         np.testing.assert_array_equal(crop[30:80,30:80], image[:50,:50])
-        np.testing.assert_array_equal(crop[29,30],image[1,0])
+        np.testing.assert_array_equal(crop[29,30],np.array([114,114,114],np.uint8))
+        self.assertEqual(0, int(mask[29,30]))
+        self.assertEqual(255, int(mask[30,30]))

@@ -394,6 +394,7 @@ class Preview(WebConsoleMixin):
                 if w < 4 or h < 4 or x+w > width or y+h > height:
                     raise ValueError('ROI must be inside the image and at least 4x4 pixels')
                 request.roi.x_offset, request.roi.y_offset = int(x), int(y)
+                request.roi.width, request.roi.height = int(w), int(h)
                 if hasattr(self,'frame_roi'):
                     from sar_yolo_detector.srv import SelectFrameROIRequest
                     exact=SelectFrameROIRequest(header=request.header,roi=request.roi,clear_selection=False)
@@ -412,7 +413,6 @@ class Preview(WebConsoleMixin):
                     result = self.select(request)
                     return (200 if result.success else 409), dict(success=result.success,
                         selected_id=result.selected_target_id, message=result.message)
-                request.roi.width, request.roi.height = int(w), int(h)
             self.roi.wait_for_service(timeout=2.)
             result = self.roi(request)
             return (200 if result.success else 409), dict(success=result.success,

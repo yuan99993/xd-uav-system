@@ -284,14 +284,15 @@ class WebCommandTest(unittest.TestCase):
 
     def test_page_defaults_to_native_size_and_keeps_coordinate_mapping(self):
         html = (Path(__file__).resolve().parents[1]/'web/dist/index.html').read_text()
-        self.assertIn('fit.checked=false;', html)
+        fit_control = html.split('id="fit"', 1)[1].split('>', 1)[0]
+        self.assertNotIn('checked', fit_control)
         self.assertIn('width:var(--native-width,640px)', html)
-        self.assertIn('.video-viewport.fit canvas{width:100%}', html)
-        self.assertIn('ctx.drawImage(bitmap,0,0)', html)
-        self.assertIn('canvas.width/r.width', html)
-        self.assertIn('canvas.height/r.height', html)
+        self.assertIn('.viewport.fit canvas{width:100%}', html)
+        self.assertIn('ctx.drawImage(bitmap,0,0,video.width,video.height)', html)
+        self.assertIn('video.width/r.width', html)
+        self.assertIn('video.height/r.height', html)
         self.assertIn("fetch('/api/image'",html)
-        self.assertIn("URL.createObjectURL(blob)",html)
+        self.assertIn("createImageBitmap(blob)",html)
 
 
 if __name__ == '__main__':

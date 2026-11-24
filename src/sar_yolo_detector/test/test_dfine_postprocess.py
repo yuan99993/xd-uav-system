@@ -22,6 +22,17 @@ class DFinePostprocessTest(unittest.TestCase):
         self.assertEqual([0,2],[row[0] for row in rows])
         self.assertEqual([(10,10,30,30)]*2,[row[2] for row in rows])
 
+    def test_trt_focal_prefilter_thresholds_before_box_decode_and_limits_candidates(self):
+        from sar_yolo_detector.pixeagle.backends.dfine_tensorrt import DFineTensorRT
+        logits=torch.tensor([[[5.,4.],[0.,-2.],[-1.,3.]]])
+        boxes=torch.tensor([[[.5,.5,.2,.4],[.25,.5,.1,.2],[.75,.5,.2,.2]]])
+        result=DFineTensorRT._focal_candidates(dict(pred_logits=logits,pred_boxes=boxes),
+            200,100,.7,1)[0]
+        valid=torch.isfinite(result['scores']) & (result['scores']>=.7)
+        self.assertEqual(3,int(valid.sum()))
+        self.assertEqual([0,1,1],result['labels'][valid].tolist())
+        torch.testing.assert_close(result['boxes'][valid][0],torch.tensor([80.,30.,120.,70.]))
+
     def backend(self):
         from sar_yolo_detector.pixeagle.backends.dfine_backend import DFineBackend
         backend = DFineBackend.__new__(DFineBackend)

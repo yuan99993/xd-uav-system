@@ -9,7 +9,14 @@ import numpy as np
 from sar_yolo_detector.manual_box_tracker import ManualBoxTracker
 
 
+def _opencv_tracker_available(name):
+    attribute='Tracker%s_create'%name.upper()
+    return any(callable(getattr(namespace,attribute,None)) for namespace in
+        (cv2,getattr(cv2,'legacy',None)) if namespace is not None)
+
+
 class ManualBoxTrackerTest(unittest.TestCase):
+    @unittest.skipUnless(_opencv_tracker_available('kcf'),'OpenCV contrib KCF is unavailable')
     def test_subpixel_camera_motion_keeps_real_current_kcf_measurements(self):
         old_threads=cv2.getNumThreads();cv2.setNumThreads(1)
         try:
@@ -68,6 +75,7 @@ class ManualBoxTrackerTest(unittest.TestCase):
             self.assertAlmostEqual(a.confidence,b.confidence,places=7)
         self.assertFalse(full.update(image(present=False)).valid)
         self.assertFalse(local.update(image(present=False)).valid)
+    @unittest.skipUnless(_opencv_tracker_available('kcf'),'OpenCV contrib KCF is unavailable')
     def test_local_motion_warp_keeps_global_coordinates_and_identical_tracker_context(self):
         frame=np.random.RandomState(29).randint(0,255,(480,640,3)).astype(np.uint8)
         tracker=ManualBoxTracker({'feature_tracker':{'tracker_algorithm':'kcf','motion_local_warp':True}})

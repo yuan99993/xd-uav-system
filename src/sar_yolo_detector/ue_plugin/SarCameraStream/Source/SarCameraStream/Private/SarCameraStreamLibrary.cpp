@@ -96,7 +96,7 @@ struct Context: TSharedFromThis<Context,ESPMode::ThreadSafe> {
    for(int32 I=0;I<Status.Num()+(Frame.IsValid()?1:0);I++){
     if(!Connected||Halt)break;
     const bool Image=I==Status.Num();auto O=Parse(Image?Frame->Meta:Status[I]);if(!O.IsValid())continue;O->SetNumberField(TEXT("ue_send_wall"),Wall());
-    if(Image){O->SetNumberField(TEXT("previous_frame_send_ms"),double(LastImageSendMicros.exchange(0))/1000.);O->SetNumberField(TEXT("previous_frame_payload_bytes"),double(LastImagePayloadBytes.exchange(0)));O->SetNumberField(TEXT("sender_frame_drop_count"),double(Dropped.load()));}
+    if(Image){O->SetNumberField(TEXT("previous_frame_send_ms"),double(LastImageSendMicros.load())/1000.);O->SetNumberField(TEXT("previous_frame_payload_bytes"),double(LastImagePayloadBytes.load()));O->SetNumberField(TEXT("sender_frame_drop_count"),double(Dropped.load()));}
     FTCHARToUTF8 Text(*Json(O));TArray<uint8> Header;Header.Append(reinterpret_cast<const uint8*>("SRF1"),4);U32(Header,Text.Length());U32(Header,Image?Frame->Bytes.Num():0);Header.Append(reinterpret_cast<const uint8*>(Text.Get()),Text.Length());
     const double ImageSendStarted=Image?FPlatformTime::Seconds():0.;
     if(!Write(S,Header.GetData(),Header.Num())||(Image&&!Write(S,Frame->Bytes.GetData(),Frame->Bytes.Num()))){Errors++;Connected=false;S->Close();break;}
@@ -157,6 +157,6 @@ void USarCameraStreamLibrary::PollFrames(){
   });
  }
 }
-FString USarCameraStreamLibrary::GetStats(){auto O=MakeShared<FJsonObject>();if(Current.IsValid()){auto P=Current;O->SetNumberField(TEXT("captured"),double(P->Captured.load()));O->SetNumberField(TEXT("readback_complete"),double(P->Copied.load()));O->SetNumberField(TEXT("sent"),double(P->Sent.load()));O->SetNumberField(TEXT("dropped_latest"),double(P->Dropped.load()));O->SetNumberField(TEXT("readback_busy"),double(P->Busy.load()));O->SetNumberField(TEXT("errors"),double(P->Errors.load()));O->SetNumberField(TEXT("readbacks_inflight"),P->Slots.Num());O->SetNumberField(TEXT("stale_control_rejected"),double(P->RejectedControl.load()));}return Json(O);}
+FString USarCameraStreamLibrary::GetStats(){auto O=MakeShared<FJsonObject>();if(Current.IsValid()){auto P=Current;O->SetNumberField(TEXT("captured"),double(P->Captured.load()));O->SetNumberField(TEXT("readback_complete"),double(P->Copied.load()));O->SetNumberField(TEXT("sent"),double(P->Sent.load()));O->SetNumberField(TEXT("dropped_latest"),double(P->Dropped.load()));O->SetNumberField(TEXT("readback_busy"),double(P->Busy.load()));O->SetNumberField(TEXT("errors"),double(P->Errors.load()));O->SetNumberField(TEXT("readbacks_inflight"),P->Slots.Num());O->SetNumberField(TEXT("stale_control_rejected"),double(P->RejectedControl.load()));O->SetNumberField(TEXT("previous_frame_send_ms"),double(P->LastImageSendMicros.load())/1000.);O->SetNumberField(TEXT("previous_frame_payload_bytes"),double(P->LastImagePayloadBytes.load()));O->SetNumberField(TEXT("sender_frame_drop_count"),double(P->Dropped.load()));}return Json(O);}
 class FSarCameraStreamModule:public IModuleInterface{void ShutdownModule()override{USarCameraStreamLibrary::StopServer();}};
 IMPLEMENT_MODULE(FSarCameraStreamModule,SarCameraStream)

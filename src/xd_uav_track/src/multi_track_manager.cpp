@@ -264,6 +264,14 @@ class BoxKalmanFilter {
     return 0;
   }
 
+  bool movingOutward(const int edge) const {
+    if (edge == 1) return state_(4) < 0.0;
+    if (edge == 2) return state_(4) > 0.0;
+    if (edge == 3) return state_(5) < 0.0;
+    if (edge == 4) return state_(5) > 0.0;
+    return false;
+  }
+
   std::array<float, 2> velocity(const int width, const int height) const {
     return {static_cast<float>(state_(4) * width),
             static_cast<float>(state_(5) * height)};
@@ -322,6 +330,16 @@ bool sameClassFamily(const int first, const int second,
   const int first_family = family(names[first]);
   const int second_family = family(names[second]);
   return first_family >= 0 ? first_family == second_family : names[first] == names[second];
+}
+
+bool compatibleIdentityFamily(const int first, const int second,
+                              const std::vector<std::string>& names,
+                              const std::vector<int>& legacy_family,
+                              const bool class_agnostic,
+                              const bool strict_family_isolation) {
+  if (strict_family_isolation)
+    return sameClassFamily(first, second, names, legacy_family);
+  return compatibleClass(first, second, legacy_family, class_agnostic);
 }
 
 bool sameReacquisitionCandidate(const NormalizedBox& previous_box,
@@ -388,6 +406,9 @@ struct MultiTrackManager::Impl {
         config.removal_timeout_sec > 0.0;
     config.confirmation_hits = std::max(1, config.confirmation_hits);
     config.duplicate_iou_threshold = clampValue(config.duplicate_iou_threshold, 0.5, 1.0);
+    config.track_duplicate_iou_threshold = clampValue(config.track_duplicate_iou_threshold, 0.70, 1.0);
+    config.track_duplicate_center_distance = clampValue(config.track_duplicate_center_distance, 0.0, 1.0);
+    config.track_duplicate_appearance_cosine = clampValue(config.track_duplicate_appearance_cosine, -1.0, 1.0);
     config.occlusion_frames = std::max(0, config.occlusion_frames);
     config.removal_frames = std::max(config.occlusion_frames + 1,
                                      config.removal_frames);
@@ -411,6 +432,7 @@ struct MultiTrackManager::Impl {
     config.maximum_size_change_ratio = std::max(
         1.0, config.maximum_size_change_ratio);
     config.exit_edge_margin = clampValue(config.exit_edge_margin, 0.0, 0.45);
+    config.edge_exit_release_sec = clampValue(config.edge_exit_release_sec, 0.05, 2.0);
     config.search_expansion_rate_per_sec = std::max(
         0.0, config.search_expansion_rate_per_sec);
     config.search_expansion_cap = std::max(1.0, config.search_expansion_cap);
@@ -475,6 +497,62 @@ struct MultiTrackManager::Impl {
       return frame_dt;
     }
     return clampValue((stamp - track.last_stamp).toSec(), 1e-3, 5.0);
+  }
+
+  std::set<int> suppressTrackDuplicates(
+      const std::vector<std::string>& class_names) {
+    std::set<int> suppressed;
+    for (auto left = tracks.begin(); left != tracks.end(); ++left) {
+      if (suppressed.count(left->first)) continue;
+      auto right = left;
+      ++right;
+      for (; right != tracks.end(); ++right) {
+        if (suppressed.count(right->first)) continue;
+        const auto& a = left->second;
+        const auto& b = right->second;
+        if (!compatibleIdentityFamily(a.class_id, b.class_id, class_names,
+                config.compatible_class_ids, config.class_agnostic_association,
+                config.strict_class_family_isolation)) continue;
+        const NormalizedBox box_a = a.filter.box();
+        const NormalizedBox box_b = b.filter.box();
+        const double overlap = intersectionOverUnion(box_a, box_b);
+        if (overlap < config.track_duplicate_iou_threshold ||
+            normalizedCenterDistance(box_a, box_b) > config.track_duplicate_center_distance)
+          continue;
+        const bool same_detector_id = a.detector_id_stable && b.detector_id_stable &&
+            a.detector_track_id >= 0 && a.detector_track_id == b.detector_track_id;
+        const bool same_appearance = cosineSimilarity(a.appearance, b.appearance) >=
+            config.track_duplicate_appearance_cosine;
+        const bool stale_edge_pair =
+            (a.exit_edge != 0 && !a.detected && b.detected) ||
+            (b.exit_edge != 0 && !b.detected && a.detected);
+        const bool stale_duplicate = (!a.detected || !b.detected) &&
+            (stale_edge_pair || a.missing_seconds >= config.occlusion_timeout_sec ||
+             b.missing_seconds >= config.occlusion_timeout_sec);
+        const bool nearly_identical_current = a.detected && b.detected &&
+            overlap >= std::min(0.999, config.track_duplicate_iou_threshold + 0.06) &&
+            std::abs(a.confidence - b.confidence) >= 0.20;
+        if (!(same_detector_id || same_appearance || stale_duplicate || nearly_identical_current))
+          continue;
+
+        int loser = -1;
+        if (a.exit_edge != 0 && !a.detected && b.detected) loser = left->first;
+        else if (b.exit_edge != 0 && !b.detected && a.detected) loser = right->first;
+        else if (a.detected != b.detected) loser = a.detected ? right->first : left->first;
+        else if (left->first == selected_track_id) loser = right->first;
+        else if (right->first == selected_track_id) loser = left->first;
+        else if (a.confidence != b.confidence) loser = a.confidence > b.confidence ? right->first : left->first;
+        else loser = a.hits >= b.hits ? right->first : left->first;
+        suppressed.insert(loser);
+      }
+    }
+    for (const int track_id : suppressed) {
+      if (selected_track_id == track_id) selected_track_id = -1;
+      tracks.erase(track_id);
+      ++stats.removed_tracks;
+      ++stats.suppressed_duplicate_tracks;
+    }
+    return suppressed;
   }
 
   MultiTrackConfig config;
@@ -565,8 +643,10 @@ ManagedDetectionFrame MultiTrackManager::update(
     const bool duplicate = item.message.measurement_source != "visual_tracker" &&
         std::any_of(unique.begin(), unique.end(), [&](const PreparedDetection& other) {
           return other.message.measurement_source != "visual_tracker" &&
-              compatibleClass(item.message.class_id, other.message.class_id,
-                              impl_->config.compatible_class_ids, impl_->config.class_agnostic_association) &&
+              compatibleIdentityFamily(item.message.class_id, other.message.class_id,
+                  detections.class_names, impl_->config.compatible_class_ids,
+                  impl_->config.class_agnostic_association,
+                  impl_->config.strict_class_family_isolation) &&
               intersectionOverUnion(item.box, other.box) > impl_->config.duplicate_iou_threshold;
         });
     if (duplicate) {
@@ -591,11 +671,14 @@ ManagedDetectionFrame MultiTrackManager::update(
     track.association = "predicted";
     const int predicted_exit_edge = track.filter.outsideEdge();
     if (predicted_exit_edge != 0) track.exit_edge = predicted_exit_edge;
+    const bool departed_through_edge = predicted_exit_edge != 0 &&
+        track.missing_seconds >= impl_->config.edge_exit_release_sec &&
+        track.filter.movingOutward(predicted_exit_edge);
     const bool expired = impl_->time_based_lifecycle
         ? track.missing_seconds > impl_->config.removal_timeout_sec
         : track.missing > static_cast<std::uint32_t>(
               impl_->config.removal_frames);
-    if (expired) {
+    if (expired || departed_through_edge) {
       if (impl_->selected_track_id == iterator->first)
         impl_->selected_track_id = -1;
       iterator = impl_->tracks.erase(iterator);
@@ -1043,6 +1126,15 @@ ManagedDetectionFrame MultiTrackManager::update(
     const auto track = impl_->tracks.find(track_id);
     if (track != impl_->tracks.end() && !track->second.detected)
       track->second.association = "ambiguous";
+  }
+  const std::set<int> duplicate_track_ids =
+      impl_->suppressTrackDuplicates(detections.class_names);
+  if (!duplicate_track_ids.empty()) {
+    auto& candidates = output.candidates.candidates;
+    candidates.erase(std::remove_if(candidates.begin(), candidates.end(),
+        [&](const xd_uav_track::DetectionCandidate& candidate) {
+          return duplicate_track_ids.count(candidate.track_id) != 0;
+        }), candidates.end());
   }
   for (auto& entry : impl_->tracks) {
     auto& track = entry.second;

@@ -44,6 +44,10 @@ ManualBoxTracker:
       max_center_jump_norm: 0.35
       min_area_ratio: 0.25
       max_area_ratio: 4.0
+      edge_buffer_fraction: 0.08
+      edge_min_area_ratio: 0.1667
+      edge_max_area_ratio: 4.0
+      edge_center_jump_multiplier: 1.5
       # Zero permits a valid target to leave/enter at an image edge. Increase
       # this only when edge boxes are known to be false tracks.
       edge_margin_px: 0.0

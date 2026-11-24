@@ -18,7 +18,7 @@
     <arg name="scene" value="$(arg scene)"/>
     <arg name="gimbal_config" value="$(arg gimbal_config)"/>
     <arg name="model_path" value="$(find sar_yolo_detector)/models/dfine_s_v3_ue_head11_roi/manifest.json"/>
-    <arg name="model_sha256" value="12c57947540ab280ac7da123012fc63233ffa79ad2d9663acd9a9181d696eaa3"/>
+    <arg name="model_sha256" value="f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8"/>
     <arg name="model_version" value="dfine_s_v3_ue_head11_roi"/>
   </include>
 </launch>

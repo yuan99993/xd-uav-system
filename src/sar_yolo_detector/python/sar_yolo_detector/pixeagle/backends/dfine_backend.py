@@ -3,6 +3,8 @@ import importlib.util
 import math
 import threading
 import time
+from pathlib import Path
+from contextlib import nullcontext
 from collections import Counter
 from types import SimpleNamespace
 import numpy as np
@@ -18,6 +20,8 @@ class DFineBackend(RTDetrBackend):
         self._external_tracker=None
         self._external_tracker_type=None
         self._external_tracker_shape=None
+        self._inference_stream=None
+        self._inference_stream_device=None
         self._stage_lock=threading.Lock()
         self._stage_counts=Counter()
         self._stage_last={}
@@ -56,12 +60,28 @@ class DFineBackend(RTDetrBackend):
         from .dfine_runtime import load_bundle
         provenance=self._verify_file(path)
         model,post,manifest=load_bundle(path,target_device)
+        declared_mode=manifest.get('preprocess_mode','stretch')
+        resize_mode=str(self._config.get('SMART_TRACKER_DFINE_RESIZE_MODE',declared_mode)).strip().lower()
+        if resize_mode not in ('stretch','letterbox'):
+            raise ValueError('SMART_TRACKER_DFINE_RESIZE_MODE must be stretch or letterbox')
+        if resize_mode!=declared_mode and not bool(self._config.get(
+                'SMART_TRACKER_DFINE_ALLOW_PREPROCESS_OVERRIDE',False)):
+            raise ValueError('D-FINE resize mode differs from its model manifest; retrain/export with the selected preprocessing mode')
         native_deploy=bool(self._config.get('SMART_TRACKER_DFINE_NATIVE_DEPLOY', True))
         if native_deploy:
             # Official inference conversion: fuse reparameterizable branches
             # and discard unused decoder heads; checkpoint/precision unchanged.
             model.deploy()
-        engine_path = self._config.get('SMART_TRACKER_DFINE_TENSORRT_ENGINE', '')
+        package_root_value=str(self._config.get('SMART_TRACKER_MODELS_ROOT','')).strip()
+        package_root=Path(package_root_value).expanduser() if package_root_value else None
+        def resolve_engine_path(value):
+            value=str(value or '').strip()
+            if not value:return ''
+            engine=Path(value).expanduser()
+            if not engine.is_absolute() and package_root is not None:
+                engine=package_root/engine
+            return str(engine.resolve())
+        engine_path = resolve_engine_path(self._config.get('SMART_TRACKER_DFINE_TENSORRT_ENGINE', ''))
         model.use_cuda_graph=bool(self._config.get('SMART_TRACKER_DFINE_CUDA_GRAPH',False)) and not engine_path
         if model.use_cuda_graph and str(target_device).startswith('cuda'):
             # Capture the graph and finish CUDA lazy initialization before
@@ -70,10 +90,10 @@ class DFineBackend(RTDetrBackend):
             size=self._resolve_image_size(None)
             warm_frame=np.zeros((size,size,3),dtype=np.uint8)
             warm_output=infer(model,post,warm_frame,size,target_device)
-            normalized_rows(warm_output,size,size,.04,50)
+            normalized_rows(warm_output,size,size,.04,20)
             for roi_size in (256,384,512):
                 warm_output=infer(model,post,np.zeros((roi_size,roi_size,3),dtype=np.uint8),size,target_device)
-                normalized_rows(warm_output,roi_size,roi_size,.04,50)
+                normalized_rows(warm_output,roi_size,roi_size,.04,20)
         trt_engine = None
         roi_engine = None
         if engine_path:
@@ -83,14 +103,17 @@ class DFineBackend(RTDetrBackend):
                 raise ValueError('TensorRT engine was exported from a different model manifest')
             trt_engine = DFineTensorRT(engine_path,
                 self._config.get('SMART_TRACKER_DFINE_TENSORRT_SHA256',''),target_device,
-                fused_preprocess=bool(self._config.get('SMART_TRACKER_DFINE_FUSED_PREPROCESS',False)))
-            roi_path = self._config.get('SMART_TRACKER_DFINE_TENSORRT_ROI_ENGINE','')
+                fused_preprocess=bool(self._config.get('SMART_TRACKER_DFINE_FUSED_PREPROCESS',False)),
+                resize_mode=resize_mode)
+            roi_path = resolve_engine_path(self._config.get('SMART_TRACKER_DFINE_TENSORRT_ROI_ENGINE',''))
             if roi_path:
                 roi_engine = DFineTensorRT(roi_path,
                     self._config.get('SMART_TRACKER_DFINE_TENSORRT_ROI_SHA256',''),target_device,
-                    fused_preprocess=bool(self._config.get('SMART_TRACKER_DFINE_FUSED_PREPROCESS',False)))
+                    fused_preprocess=bool(self._config.get('SMART_TRACKER_DFINE_FUSED_PREPROCESS',False)),
+                    resize_mode=resize_mode)
         candidate=SimpleNamespace(trt_engine=trt_engine,trt_roi_engine=roi_engine,model=model,post=post,device=target_device,task='detect',
             names=dict(enumerate(manifest['class_names'])),variant=manifest['variant'],
+            resize_mode=resize_mode,
             native_deploy=native_deploy,
             encoder_eval_spatial_size=model.encoder.eval_spatial_size,
             decoder_eval_spatial_size=model.decoder.eval_spatial_size)
@@ -99,6 +122,7 @@ class DFineBackend(RTDetrBackend):
     def load_model(self,*args,**kwargs):
         UltralyticsBackend.load_model(self,*args,**kwargs)
         self._runtime_info.update(backend=self._model.variant+'_'+self._runtime_info['effective_device'],model_format='safetensors_manifest')
+        self._runtime_info['resize_mode']=self._model.resize_mode
         self._runtime_info['native_deploy']=self._model.native_deploy
         self._runtime_info['tensorrt_active']=getattr(self._model,'trt_engine',None) is not None
         if self._runtime_info['tensorrt_active']:
@@ -127,6 +151,21 @@ class DFineBackend(RTDetrBackend):
 
     def detect(self,frame,conf=.3,iou=.3,max_det=20,image_size=None):
         if self._model is None:raise RuntimeError('D-FINE model not loaded')
+        runtime=self._model
+        context=nullcontext()
+        if str(runtime.device).startswith('cuda'):
+            import torch
+            device=str(torch.device(runtime.device))
+            if self._inference_stream is None or self._inference_stream_device!=device:
+                self._inference_stream=torch.cuda.Stream(device=runtime.device)
+                self._inference_stream.wait_stream(torch.cuda.current_stream(runtime.device))
+                self._inference_stream_device=device
+            context=torch.cuda.stream(self._inference_stream)
+        with context:
+            return self._detect_on_current_stream(frame,conf,iou,max_det,image_size)
+
+    def _detect_on_current_stream(self,frame,conf=.3,iou=.3,max_det=20,image_size=None):
+        if self._model is None:raise RuntimeError('D-FINE model not loaded')
         if frame.ndim!=3 or frame.shape[2]!=3 or frame.dtype!=np.uint8:raise ValueError('Expected uint8 BGR image')
         from .dfine_runtime import infer,normalized_rows
         h,w=frame.shape[:2];runtime=self._model
@@ -140,10 +179,14 @@ class DFineBackend(RTDetrBackend):
         measured=time.perf_counter()
         engine = getattr(runtime,'trt_engine',None)
         roi_engine = getattr(runtime,'trt_roi_engine',None)
+        # Older CPU-only fixtures construct a minimal runtime object without
+        # the preprocessing manifest field. Keep those on the historical
+        # stretch path; production runtimes always carry their declared mode.
+        resize_mode=getattr(runtime,'resize_mode','stretch')
         if roi_engine is not None and image_size is not None and size <= max(roi_engine.shape[2:]):
             engine = roi_engine
-        result = (engine.infer(frame,runtime.post) if engine is not None else
-                  infer(runtime.model,runtime.post,frame,size,runtime.device))
+        result = (engine.infer(frame,runtime.post,resize_mode,conf,max_det) if engine is not None else
+                  infer(runtime.model,runtime.post,frame,size,runtime.device,resize_mode))
         inference_queued=time.perf_counter()
         self._record_stage('dfine_infer', image_width=w, image_height=h, image_size=size,
             network_input_shape=list(engine.shape) if engine is not None else [1,3,size,size])
@@ -163,6 +206,12 @@ class DFineBackend(RTDetrBackend):
         transferred=time.perf_counter()
         kept=records
         self.last_timings=dict(infer_host_ms=(inference_queued-measured)*1000.,transfer_decode_ms=(transferred-inference_queued)*1000.,nms_ms=(time.perf_counter()-transferred)*1000.)
+        if engine is not None:
+            self.last_timings.update(getattr(engine,'last_stage_timings',{}))
+            postprocess_diagnostics=dict(getattr(engine,'last_postprocess_diagnostics',{}))
+            if postprocess_diagnostics:
+                self.last_timings['postprocess_diagnostics']=postprocess_diagnostics
+                self.last_timings['prefilter_topk']=postprocess_diagnostics.get('prefilter_topk')
         self.last_timings.update(getattr(runtime.model,'runtime_host_timings',{}))
         self._record_stage('configured_nms', input_queries=len(result['scores']), output_boxes=len(kept),
             class_agnostic=bool(self._agnostic_nms), iou_threshold=float(iou))

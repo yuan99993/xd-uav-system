@@ -1,0 +1,9 @@
+{
+  "architecture": "NanoTrack v2 TensorRT",
+  "files": {
+    "template.engine": "569be733c700fb9df5fc4cc5cfe419bd30b3b87c3b0ed42ffc275f95ebbd392d",
+    "search.engine": "951cc16dc6b1f7b47e09bcac98c87319fc4c1fa16bd073d9ea941de2f07894f5",
+    "head.engine": "be3f57bc0fb541befebdf8d7b5e663bed781d5337bfaaf23ce7a475a9e864683"
+  },
+  "source_manifest_sha256": "75c7f2852156c6e8062622390dddb230d67ab263cfc209faa4335fb0f749a6b6"
+}

@@ -138,6 +138,23 @@ class CameraMotion:
         self.calibration_changed = False
         self.background_valid=False
 
+    def advance_imu(self,stamp,rate_rotation,shape):
+        """Advance the capture chain using gyro-only motion, without image work."""
+        previous_stamp=self.stamp
+        matrix=rate_rotation if self.enabled and self.validate(rate_rotation,shape) else None
+        self.gray=None
+        self.calibration_changed=False
+        self.background_valid=False
+        self.inlier_ratio=1. if matrix is not None else 0.
+        self.source='optical_imu_rate' if matrix is not None else 'unavailable'
+        if previous_stamp>0 and 0<stamp-previous_stamp<=self.max_gap:
+            self.history.append((previous_stamp,stamp,matrix))
+            self.calibration_history.append((previous_stamp,stamp,False))
+        else:
+            self.history.clear();self.calibration_history.clear()
+        self.stamp=float(stamp)
+        return matrix
+
     @staticmethod
     def validate(matrix, shape):
         if matrix is None or np.shape(matrix) != (3, 3) or not np.isfinite(matrix).all():

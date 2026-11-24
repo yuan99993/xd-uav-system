@@ -1,12 +1,15 @@
 <launch>
   <arg name="bridge_nice" default="0" />
-  <arg name="editor_poll_fps" default="60" />
-  <arg name="shared_images" default="false" />
+  <arg name="editor_poll_fps" default="240" />
+  <arg name="shared_images" default="true" />
   <arg name="shared_image_flags" value="$(eval '--shared-images' if arg('shared_images') else '')" />
   <arg name="record_images" default="false" />
   <arg name="record_image_flags" value="$(eval '--record-images' if arg('record_images') else '')" />
   <arg name="platform_config" default="" />
+  <arg name="track_config" default="$(find xd_uav_track)/config/track.yaml" />
   <arg name="feature_tracker_algorithm" default="" />
+  <arg name="camera_optical_imu_topic" default="" />
+  <arg name="camera_optical_imu_enabled" default="false" />
   <arg name="ue_project" />
   <arg name="UAV_NAME" default="ue_test" />
   <arg name="scene" default="$(find sar_yolo_detector)/config/ue/airground_scene.json" />
@@ -14,7 +17,7 @@
   <arg name="pose_source" default="px4" />
   <arg name="start_px4" default="$(eval arg('pose_source') == 'px4')" />
   <arg name="start_mission" default="$(arg start_px4)" />
-  <arg name="px4_autopilot_dir" default="$(optenv PX4_AUTOPILOT_DIR)" />
+  <arg name="px4_autopilot_dir" default="$(optenv PX4_AUTOPILOT_DIR /opt/PX4-Autopilot)" />
   <arg name="mavros_namespace" default="/uav1" />
   <arg name="seconds" default="600" />
   <arg name="virtual_gimbal" default="true" />
@@ -24,21 +27,21 @@
   <arg name="fov_flags" default="$(eval '--allow-fov-control' if arg('allow_fov_control') else '')" />
   <arg name="fov_profile" default="fixed" />
   <arg name="transport" default="tcp" />
-  <arg name="stream_codec" default="bgr8" />
-  <arg name="ros_send_buffer_bytes" default="0" />
-  <arg name="stream_quality" default="90" />
+  <arg name="stream_codec" default="jpeg" />
+  <arg name="ros_send_buffer_bytes" default="65536" />
+  <arg name="stream_quality" default="98" />
   <arg name="stream_connection" default="auto" />
-  <arg name="capture_fps" default="30" />
+  <arg name="capture_fps" default="25" />
   <arg name="image_width" default="640" />
-  <arg name="image_height" default="640" />
+  <arg name="image_height" default="384" />
   <arg name="web_image_transport" default="raw" />
   <arg name="web_image_codec" default="png" />
   <arg name="web_fps" default="5" />
   <arg name="web_port" default="8787" />
   <arg name="python_executable" default="" />
-  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
-  <arg name="model_sha256" default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
-  <arg name="model_version" default="dfine_s_v3_16e" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_ue_head11_roi/manifest.json" />
+  <arg name="model_sha256" default="f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8" />
+  <arg name="model_version" default="dfine_s_v3_ue_head11_roi" />
   <!-- The owned SITL instance uses /uav1. External PX4 may be selected with start_px4:=false. -->
   <include if="$(arg start_px4)" file="$(find xd_uav_track)/launch/px4_ue_sitl.launch">
     <arg name="px4_autopilot_dir" value="$(arg px4_autopilot_dir)" />
@@ -47,7 +50,10 @@
         output="screen" args="--scene '$(arg scene)' --namespace $(arg mavros_namespace) --status-namespace $(arg UAV_NAME) --out '$(arg output)_px4' --perception-ready-topic /$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/pipeline_trace" />
   <include file="$(find sar_yolo_detector)/launch/ue_dfine_v3_legacy_four_modes.launch">
     <arg name="platform_config" value="$(arg platform_config)" />
+    <arg name="track_config" value="$(arg track_config)" />
     <arg name="feature_tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
+    <arg name="camera_optical_imu_topic" value="$(arg camera_optical_imu_topic)" />
+    <arg name="camera_optical_imu_enabled" value="$(arg camera_optical_imu_enabled)" />
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="image_width" value="$(arg image_width)" />
     <arg name="image_height" value="$(arg image_height)" />

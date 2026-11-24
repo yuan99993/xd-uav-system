@@ -1,0 +1,46 @@
+__include__: [
+  "../../third_party/D-FINE/configs/dfine/dfine_hgnetv2_s_coco.yml",
+]
+
+# Start from the current D-FINE-S v3 bundle, train ten epochs at 512 with the
+# same LetterboxResize transform used by the optional runtime preprocessing.
+output_dir: /data/dfine_edge/run_s_10e
+epochs: 10
+num_classes: 3
+remap_mscoco_category: false
+DFINETransformer:
+  eval_spatial_size: [512, 512]
+
+train_dataloader:
+  total_batch_size: 2
+  num_workers: 4
+  dataset:
+    img_folder: /data/dfine_edge/dataset/train/images
+    ann_file: /data/dfine_edge/dataset/train/instances.json
+    transforms:
+      policy:
+        name: default
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomHorizontalFlip}
+        - {type: LetterboxResize, size: [512, 512], fill: 114}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: true}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: true}
+  collate_fn:
+    base_size: 512
+    base_size_repeat: null
+    stop_epoch: 10
+
+val_dataloader:
+  total_batch_size: 2
+  num_workers: 2
+  dataset:
+    img_folder: /data/dfine_edge/dataset/val/images
+    ann_file: /data/dfine_edge/dataset/val/instances.json
+    transforms:
+      policy:
+        name: default
+      ops:
+        - {type: LetterboxResize, size: [512, 512], fill: 114}
+        - {type: ConvertPILImage, dtype: 'float32', scale: true}

@@ -19,6 +19,7 @@
 #include <nav_msgs/Odometry.h>
 #include <ros/callback_queue.h>
 #include <ros/ros.h>
+#include <sensor_msgs/Image.h>
 #include <boost/bind.hpp>
 #include <std_msgs/String.h>
 #include <std_srvs/SetBool.h>
@@ -598,6 +599,15 @@ class XdUavTrackNode {
                          multi_config.compatible_class_ids);
     private_nh_.param("tracker/association/duplicate_iou_threshold",
                       multi_config.duplicate_iou_threshold, multi_config.duplicate_iou_threshold);
+    private_nh_.param("tracker/association/track_duplicate_iou_threshold",
+                      multi_config.track_duplicate_iou_threshold,
+                      multi_config.track_duplicate_iou_threshold);
+    private_nh_.param("tracker/association/track_duplicate_center_distance",
+                      multi_config.track_duplicate_center_distance,
+                      multi_config.track_duplicate_center_distance);
+    private_nh_.param("tracker/association/track_duplicate_appearance_cosine",
+                      multi_config.track_duplicate_appearance_cosine,
+                      multi_config.track_duplicate_appearance_cosine);
     tracklet_stitch_config_.compatible_class_ids =
         multi_config.compatible_class_ids;
     private_nh_.param("tracker/selection/auto_select", auto_select_track_, true);
@@ -616,6 +626,21 @@ class XdUavTrackNode {
     }
     private_nh_.param("tracker/image_source",
                       accepted_image_source_, std::string());
+    prediction_image_source_ = accepted_image_source_;
+    private_nh_.param("tracker/prediction_publish/image_source",
+                      prediction_image_source_, prediction_image_source_);
+    private_nh_.param("tracker/prediction_publish/max_age_sec",
+                      prediction_publish_max_age_sec_, 0.80);
+    private_nh_.param("tracker/prediction_publish/frame_rate_hz",
+                      prediction_publish_frame_rate_hz_, 25.0);
+    private_nh_.param("tracker/prediction_publish/image_queue_size",
+                      prediction_image_queue_size_, 2);
+    if (!std::isfinite(prediction_publish_max_age_sec_) ||
+        prediction_publish_max_age_sec_ <= 0.0 ||
+        !std::isfinite(prediction_publish_frame_rate_hz_) ||
+        prediction_publish_frame_rate_hz_ <= 0.0 ||
+        prediction_image_queue_size_ < 1 || prediction_image_queue_size_ > 100)
+      throw std::invalid_argument("invalid image-cadence prediction settings");
     private_nh_.getParam("tracker/sources/allowed", allowed_image_sources_);
     private_nh_.param("tracker/sources/maximum_count", maximum_sources_, 8);
     private_nh_.param("tracker/sources/idle_ttl_sec", source_idle_ttl_sec_, 30.0);
@@ -810,6 +835,9 @@ class XdUavTrackNode {
     private_nh_.param("tracker/lifecycle/exit_edge_margin",
                       multi_config.exit_edge_margin,
                       multi_config.exit_edge_margin);
+    private_nh_.param("tracker/lifecycle/edge_exit_release_sec",
+                      multi_config.edge_exit_release_sec,
+                      multi_config.edge_exit_release_sec);
     private_nh_.param("tracker/limits/maximum_tracks",
                       multi_config.maximum_tracks, multi_config.maximum_tracks);
     private_nh_.param("tracker/limits/maximum_embedding_dimension",
@@ -935,6 +963,9 @@ class XdUavTrackNode {
     std::string reference_topic{"control/reference/setpoint"};
     private_nh_.param("interfaces/input/detections", detections_topic,
                       detections_topic);
+    std::string image_frames_topic;
+    private_nh_.param("interfaces/input/image_frames", image_frames_topic,
+                      image_frames_topic);
     private_nh_.param("interfaces/output/tracks", tracks_topic, tracks_topic);
     private_nh_.param("interfaces/output/tracks_by_source", tracks_by_source_topic,
                       tracks_by_source_topic);
@@ -964,6 +995,18 @@ class XdUavTrackNode {
             boost::bind(&XdUavTrackNode::detectionsCallback, this, _1),
             ros::VoidConstPtr(), &perception_queue_);
     detections_subscriber_ = nh_.subscribe(detections_options);
+    if (!image_frames_topic.empty()) {
+      ros::SubscribeOptions image_options =
+          ros::SubscribeOptions::create<sensor_msgs::Image>(
+              image_frames_topic, static_cast<std::uint32_t>(prediction_image_queue_size_),
+              boost::bind(&XdUavTrackNode::imageFrameCallback, this, _1),
+              ros::VoidConstPtr(), &perception_queue_);
+      image_options.transport_hints = ros::TransportHints().tcpNoDelay();
+      image_frames_subscriber_ = nh_.subscribe(image_options);
+      ROS_INFO("[xd_uav_track] image-cadence prediction enabled on %s for source %s (max age %.2fs)",
+               image_frames_topic.c_str(), prediction_image_source_.c_str(),
+               prediction_publish_max_age_sec_);
+    }
     ros::SubscribeOptions state_options =
         ros::SubscribeOptions::create<nav_msgs::Odometry>(
             state_topic, 1,
@@ -2412,6 +2455,73 @@ class XdUavTrackNode {
     }
   }
 
+  // Publish a read-only constant-velocity extrapolation on each source image
+  // tick.  The manager is deliberately not advanced here: only detector
+  // frames update identity, freshness, or lifecycle evidence.
+  void imageFrameCallback(const sensor_msgs::Image::ConstPtr& image) {
+    if (!image || image->header.stamp.isZero() || image->width == 0 ||
+        image->height == 0) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string source = prediction_image_source_.empty()
+        ? (image->header.frame_id.empty() ? std::string("default")
+                                          : image->header.frame_id)
+        : prediction_image_source_;
+    const auto latest = latest_tracks_by_source_.find(source);
+    if (latest == latest_tracks_by_source_.end()) return;
+    const auto& measured = latest->second;
+    if (measured.header.stamp.isZero() ||
+        image->header.stamp <= measured.header.stamp) return;
+    const double dt = (image->header.stamp - measured.header.stamp).toSec();
+    if (!std::isfinite(dt) || dt <= 0.0 ||
+        dt > prediction_publish_max_age_sec_) return;
+
+    xd_uav_track::TrackStateArray prediction = measured;
+    prediction.header = image->header;
+    prediction.image_source = source;
+    prediction.tracks.erase(
+        std::remove_if(prediction.tracks.begin(), prediction.tracks.end(),
+            [&](xd_uav_track::TrackState& track) {
+              if ((track.lifecycle_state != "confirmed" &&
+                   track.lifecycle_state != "occluded") ||
+                  track.bbox[2] <= track.bbox[0] ||
+                  track.bbox[3] <= track.bbox[1]) return true;
+              const double vx = track.image_velocity[0];
+              const double vy = track.image_velocity[1];
+              if (!std::isfinite(vx) || !std::isfinite(vy)) return true;
+              const double center_x =
+                  0.5 * (track.bbox[0] + track.bbox[2]) + vx * dt;
+              const double center_y =
+                  0.5 * (track.bbox[1] + track.bbox[3]) + vy * dt;
+              const double box_width = track.bbox[2] - track.bbox[0];
+              const double box_height = track.bbox[3] - track.bbox[1];
+              track.bbox = {
+                  std::max(0, static_cast<int>(std::floor(center_x - box_width * 0.5))),
+                  std::max(0, static_cast<int>(std::floor(center_y - box_height * 0.5))),
+                  std::min(static_cast<int>(image->width),
+                           static_cast<int>(std::ceil(center_x + box_width * 0.5))),
+                  std::min(static_cast<int>(image->height),
+                           static_cast<int>(std::ceil(center_y + box_height * 0.5)))};
+              if (track.bbox[2] <= track.bbox[0] ||
+                  track.bbox[3] <= track.bbox[1]) return true;
+              track.normalized_bbox = {
+                  0.5F * (track.bbox[0] + track.bbox[2]) / image->width,
+                  0.5F * (track.bbox[1] + track.bbox[3]) / image->height,
+                  static_cast<float>(track.bbox[2] - track.bbox[0]) / image->width,
+                  static_cast<float>(track.bbox[3] - track.bbox[1]) / image->height};
+              const auto elapsed_frames = static_cast<std::uint32_t>(
+                  std::max(1.0, std::round(dt * prediction_publish_frame_rate_hz_)));
+              track.age_frames += elapsed_frames;
+              track.frames_since_detection += elapsed_frames;
+              track.detected = false;
+              track.predicted = true;
+              track.control_measurement_ready = false;
+              track.measurement_source = "prediction";
+              track.association_method = "predicted";
+              return false;
+            }), prediction.tracks.end());
+    tracks_by_source_publisher_.publish(prediction);
+  }
+
   void stateCallback(const nav_msgs::Odometry::ConstPtr& message) {
     if (message->header.frame_id.empty()) return;
     double roll = 0.0;
@@ -3090,6 +3200,7 @@ class XdUavTrackNode {
   ros::NodeHandle nh_;
   ros::NodeHandle private_nh_;
   ros::Subscriber detections_subscriber_;
+  ros::Subscriber image_frames_subscriber_;
   ros::Subscriber state_subscriber_;
   ros::Subscriber gimbal_state_subscriber_;
   ros::Subscriber gimbal_status_subscriber_;
@@ -3150,6 +3261,10 @@ class XdUavTrackNode {
   std::vector<std::string> allowed_image_sources_;
   int maximum_sources_{8};
   double source_idle_ttl_sec_{30.0};
+  std::string prediction_image_source_;
+  double prediction_publish_max_age_sec_{0.80};
+  double prediction_publish_frame_rate_hz_{25.0};
+  int prediction_image_queue_size_{2};
   ros::WallTime last_storage_prune_;
   bool tracker_active_{false};
   bool have_state_{false};

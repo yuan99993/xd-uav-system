@@ -156,7 +156,7 @@ def run_stream(a,spec,mission,feedback,pubs,camera_tf,mission_pub,gimbal_config,
     publication_gate=PublicationGate()
     session_rejections=deque(maxlen=64)
     lifecycle_events=[];error_events=[]
-    received=[0];wrong_session=[0];feedback_count=[0];last_arrival=[time.monotonic()]
+    received=[0];reader_stale=[0];wrong_session=[0];feedback_count=[0];last_arrival=[time.monotonic()]
     last_received=[None];sender_send_times=deque(maxlen=20000)
     lens_override=[None];lens_counts=dict(accepted=0,rejected=0)
     control_sequence=[0];control_lock=threading.RLock();control_samples=deque(maxlen=20000)
@@ -199,6 +199,12 @@ def run_stream(a,spec,mission,feedback,pubs,camera_tf,mission_pub,gimbal_config,
                     value=dict(meta);value['ue_capture_wall_start']=float(meta['capture_wall_start'])
                     value['capture_wall_start']=float(meta['capture_wall_start'])-offset
                     value['arrival_wall']=arrival
+                    # Keep draining framed TCP packets, but never enqueue an
+                    # already-expired capture for decoding or ROS publication.
+                    capture_age=arrival-value['capture_wall_start']
+                    if capture_age>a.max_delivery_age:
+                        reader_stale[0]+=1
+                        continue
                     slot.put(int(meta['frame_seq']),(value,data))
                 elif kind=='gimbal':
                     value=dict(meta);value['ue_wall_stamp']=value['wall_stamp'];value['wall_stamp']-=offset
@@ -493,7 +499,8 @@ def run_stream(a,spec,mission,feedback,pubs,camera_tf,mission_pub,gimbal_config,
                 fov_max_deg=max((v['fov'] for v in records),default=None),
                 ros_enabled=bool(a.ros),received_frames=received[0],delivered_frames=published,published_frames=published if a.ros else 0,
                 effective_fps=(len(frame_times)-1)/(frame_times[-1]-frame_times[0]) if len(frame_times)>1 else 0.,
-                dropped_latest=slot.replaced,dropped_out_of_order=slot.out_of_order,dropped_stale=stale,
+                dropped_latest=slot.replaced,dropped_out_of_order=slot.out_of_order,
+                dropped_stale=stale+reader_stale[0],dropped_stale_reader=reader_stale[0],
                 wrong_session=wrong_session[0],session_rejections=list(session_rejections),lifecycle_events=lifecycle_events,error_events=error_events,feedback_messages=feedback_count[0],errors=error,
                 decoded_frames=decoded_frames,jpeg_passthrough_frames=passthrough_frames,maximum_raw_subscribers=maximum_raw_subscribers,
                 ros_send_buffer_bytes=getattr(a,"ros_send_buffer_bytes",0),

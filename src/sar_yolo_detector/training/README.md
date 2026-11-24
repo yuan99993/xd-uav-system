@@ -80,6 +80,85 @@ records every file's SHA-256; startup rejects a digest mismatch.
 label, skipped, malformed, and invalid-box counts. Do not train if the report
 has unexpected zero class counts.
 
+## 6. D-FINE edge-truncation fine-tuning and Letterbox engines
+
+`prepare_dfine_edge_dataset.py` builds a map-disjoint COCO dataset for the
+car/tank/drone D-FINE class contract. It requires at least 300 distinct
+edge-positive images and 300 edge boxes across at least two maps, keeps one
+whole map out for validation, samples ordinary positive baseline frames at a
+3:1 edge-to-baseline image ratio, and keeps explicitly audited negatives at
+20% of the resulting sample count. The 8% edge band is configurable. Empty
+COCO annotation lists are not assumed to be negatives: mark an image record
+`verified_negative: true` only after reviewing it.
+
+Each `--map-id` is a separate scene/map. Repeat `--map-id`, `--images` and
+`--annotations` in matching order. The map used by `--validation-map` must
+contain labeled edge targets and must not also appear as a training source.
+Before running, copy/review the annotations and add `verified_negative: true`
+to confirmed empty frames:
+
+```bash
+python3 src/sar_yolo_detector/training/prepare_dfine_edge_dataset.py \
+  --map-id map_a --images /data/map_a/images --annotations /data/map_a/instances.json \
+  --map-id map_b --images /data/map_b/images --annotations /data/map_b/instances.json \
+  --map-id map_c --images /data/map_c/images --annotations /data/map_c/instances.json \
+  --validation-map map_c --output /data/dfine_edge/dataset
+```
+
+The training profile under `training/dfine/` uses a D-FINE `LetterboxResize`
+transform with gray 114 fill at 512×512, and runs the upstream trainer without
+modifying vendored D-FINE source. Convert the existing integrity-checked model
+bundle to the upstream tuning-checkpoint format, then fine-tune for ten epochs:
+
+```bash
+python3 src/sar_yolo_detector/training/dfine/bundle_to_checkpoint.py \
+  --manifest src/sar_yolo_detector/models/dfine_s_v3_16e/manifest.json \
+  --output /data/dfine_edge/dfine_v3_start.pth
+# Set the dataset and output paths in training/dfine/edge_letterbox_s_10e.yml.
+python3 src/sar_yolo_detector/training/dfine/run_letterbox_training.py -- \
+  --config src/sar_yolo_detector/training/dfine/edge_letterbox_s_10e.yml \
+  --tuning /data/dfine_edge/dfine_v3_start.pth --use-amp --seed 7 \
+  --device cuda:0 --output-dir /data/dfine_edge/run_s_10e
+```
+
+Package the selected training checkpoint into a new versioned model directory;
+do not replace the current bundle before validation. The manifest records the
+preprocessing policy, and runtime refuses a Letterbox/stretch mismatch unless
+the experimental override is explicitly enabled.
+
+```bash
+python3 src/sar_yolo_detector/training/dfine/package_checkpoint.py \
+  --config src/sar_yolo_detector/training/dfine/edge_letterbox_s_10e.yml \
+  --checkpoint /data/dfine_edge/run_s_10e/best.pth \
+  --destination src/sar_yolo_detector/models/dfine_s_v3_edge_letterbox_10e \
+  --preprocess-mode letterbox
+python3 src/sar_yolo_detector/training/dfine/export_raw_onnx.py \
+  --manifest src/sar_yolo_detector/models/dfine_s_v3_edge_letterbox_10e/manifest.json \
+  --size 512 --output /data/dfine_edge/dfine_edge_512.onnx
+python3 src/sar_yolo_detector/training/dfine/export_raw_onnx.py \
+  --manifest src/sar_yolo_detector/models/dfine_s_v3_edge_letterbox_10e/manifest.json \
+  --size 320 --output /data/dfine_edge/dfine_edge_320.onnx
+trtexec --onnx=/data/dfine_edge/dfine_edge_512.onnx \
+  --saveEngine=/data/dfine_edge/dfine_edge_512.engine \
+  --shapes=images:1x3x512x512 --fp16
+trtexec --onnx=/data/dfine_edge/dfine_edge_320.onnx \
+  --saveEngine=/data/dfine_edge/dfine_edge_320.engine \
+  --shapes=images:1x3x320x320 --fp16
+```
+
+The engine adapter requires bindings `images`, `logits` and `boxes`; keep these
+names when exporting. Set the new model-manifest SHA, engine SHA values,
+`SMART_TRACKER_DFINE_RESIZE_MODE: letterbox`, and engine paths together in a
+separate deployment profile. Acceptance needs held-out edge recall, false
+positive rate on the audited negatives, detector latency, and border-exit / ID
+switch metrics before promotion.
+
+The current workspace has the existing D-FINE safetensors model and ROS bag
+reports, but no labeled multi-map COCO edge dataset or verified-negative
+manifest. Therefore sample collection, ten-epoch fine-tuning, and 512/320
+TensorRT engine generation remain unperformed; the scripts above prepare that
+workflow and do not claim a retrained model or measured gain.
+
 Use a CUDA/TensorRT-enabled virtual environment created on the training host.
 A 4 GB GPU should start with
 `--batch 1 --imgsz 640`; use short smoke runs before increasing epochs or

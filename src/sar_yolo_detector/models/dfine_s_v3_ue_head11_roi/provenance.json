@@ -14,5 +14,6 @@
   "production_validated": false,
   "online_tracking_acceptance": false,
   "source_manifest_sha256": "fa70362869550d6cdf3812ce60bcc91be2fd4af5b5589c940c258cec6b03866e",
-  "packaged_manifest_sha256": "12c57947540ab280ac7da123012fc63233ffa79ad2d9663acd9a9181d696eaa3"
+  "packaged_manifest_sha256": "f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8",
+  "preprocess_mode": "stretch"
 }

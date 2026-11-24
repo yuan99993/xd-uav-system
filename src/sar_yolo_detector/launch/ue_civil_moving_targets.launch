@@ -1,9 +1,10 @@
 <launch>
   <arg name="bridge_nice" default="0" />
-  <arg name="editor_poll_fps" default="60" />
-  <arg name="shared_images" default="false" />
+  <arg name="editor_poll_fps" default="240" />
+  <arg name="shared_images" default="true" />
   <arg name="record_images" default="false" />
   <arg name="platform_config" default="" />
+  <arg name="track_config" default="$(find xd_uav_track)/config/track.yaml" />
   <arg name="ue_project" />
   <arg name="capture_fps" default="25" />
   <arg name="fov_profile" default="fixed" />
@@ -12,7 +13,9 @@
   <arg name="jpeg_decode_device" default="cpu" />
   <arg name="dfine_cuda_graph" default="true" />
   <arg name="minimum_motion_warp_px" default="0" />
-  <arg name="feature_tracker_algorithm" default="kcf" />
+  <arg name="feature_tracker_algorithm" default="" />
+  <arg name="camera_optical_imu_topic" default="" />
+  <arg name="camera_optical_imu_enabled" default="false" />
   <arg name="experimental_moving_pixel_witness" default="false" />
   <arg name="experimental_foreground_flow" default="false" />
   <arg name="experimental_motion_hint" default="false" />
@@ -21,13 +24,13 @@
   <arg name="gimbal_config" default="$(find sar_yolo_detector)/config/ue/benchmark_cases/civil_car_fast_gimbal.json" />
   <arg name="pose_source" default="px4" />
   <arg name="python_executable" default="" />
-  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
-  <arg name="model_sha256" default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
-  <arg name="model_version" default="dfine_s_v3_16e" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_ue_head11_roi/manifest.json" />
+  <arg name="model_sha256" default="f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8" />
+  <arg name="model_version" default="dfine_s_v3_ue_head11_roi" />
   <arg name="output" default="$(env HOME)/.ros/sar_ue/$(anon civil_targets)" />
   <arg name="seconds" default="360" />
   <arg name="image_width" default="640" />
-  <arg name="image_height" default="640" />
+  <arg name="image_height" default="384" />
   <include file="$(find sar_yolo_detector)/launch/ue_dfine_v3_live.launch">
     <arg name="bridge_nice" value="$(arg bridge_nice)" />
     <arg name="editor_poll_fps" value="$(arg editor_poll_fps)" />
@@ -37,7 +40,10 @@
     <arg name="capture_fps" value="$(arg capture_fps)" />
     <arg name="fov_profile" value="$(arg fov_profile)" />
     <arg name="platform_config" value="$(arg platform_config)" />
+    <arg name="track_config" value="$(arg track_config)" />
     <arg name="feature_tracker_algorithm" value="$(arg feature_tracker_algorithm)" />
+    <arg name="camera_optical_imu_topic" value="$(arg camera_optical_imu_topic)" />
+    <arg name="camera_optical_imu_enabled" value="$(arg camera_optical_imu_enabled)" />
     <arg name="UAV_NAME" value="$(arg UAV_NAME)" />
     <arg name="scene" value="$(arg scene)" />
     <arg name="gimbal_config" value="$(arg gimbal_config)" />
@@ -57,9 +63,9 @@
     <arg name="web_image_codec" value="jpeg" />
     <arg name="web_image_transport" value="raw" />
   </include>
-  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/input_image_transport" value="raw" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/input_image_transport" value="shared_memory" />
   <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/class_agnostic_lock" value="false" />
-  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/control_maximum_capture_age_sec" value="0.75" />
+  <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/control_maximum_capture_age_sec" value="0.25" />
   <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/publish_compressed_preview" value="true" />
   <param name="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/Default_Tracker" value="fusion_tracker" />
   <rosparam param="/$(arg UAV_NAME)/sar_yolo_smart_tracker_dfine_v3/FusionTracker/class_groups">[[0, 1], [2]]</rosparam>

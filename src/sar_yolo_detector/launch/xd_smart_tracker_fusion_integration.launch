@@ -16,14 +16,16 @@
   <arg name="vehicle_config"
        default="" />
   <arg name="model_path"
-       default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
+       default="$(find sar_yolo_detector)/models/dfine_s_v3_ue_head11_roi/manifest.json" />
   <arg name="model_sha256"
-       default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
+       default="f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8" />
   <arg name="python_executable" default="" />
   <arg name="use_gpu" default="true" />
   <arg name="input_image_topic" default="down_camera/image_raw" />
   <arg name="camera_info_topic" default="down_camera/camera_info" />
   <arg name="camera_motion_fixed_frame" default="world" />
+  <arg name="camera_optical_imu_topic" default="" />
+  <arg name="camera_optical_imu_enabled" default="false" />
   <arg name="image_width" default="1280" />
   <arg name="image_height" default="720" />
   <arg name="tracked_detections_topic"
@@ -40,11 +42,11 @@
   <arg name="output_detections_topic"
        default="detect/input/detections_2d" />
   <arg name="publish_annotated_image" default="true" />
-  <arg name="maximum_capture_age_sec" default="0.5" />
+  <arg name="maximum_capture_age_sec" default="0.25" />
   <arg name="image_source" default="fixed_rgb" />
   <arg name="sensor_id" default="fixed_camera" />
   <arg name="profile" default="dfine_s_v3_car_tank_drone" />
-  <arg name="model_version" default="dfine_s_v3_16e" />
+  <arg name="model_version" default="dfine_s_v3_ue_head11_roi" />
 
   <group ns="$(arg UAV_NAME)">
     <include file="$(find sar_yolo_detector)/launch/smart_tracker_fusion.launch">
@@ -58,6 +60,8 @@
       <arg name="input_image_topic" value="$(arg input_image_topic)" />
       <arg name="camera_info_topic" value="$(arg camera_info_topic)" />
       <arg name="camera_motion_fixed_frame" value="$(arg camera_motion_fixed_frame)" />
+      <arg name="camera_optical_imu_topic" value="$(arg camera_optical_imu_topic)" />
+      <arg name="camera_optical_imu_enabled" value="$(arg camera_optical_imu_enabled)" />
       <arg name="tracked_detections_topic"
            value="$(arg tracked_detections_topic)" />
       <arg name="fusion_detections_topic" value="$(arg fusion_detections_topic)" />

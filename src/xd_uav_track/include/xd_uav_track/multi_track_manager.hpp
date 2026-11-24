@@ -26,6 +26,7 @@ struct MultiTrackConfig {
   std::string reacquisition_mode{"balanced"};
   double maximum_size_change_ratio{2.5};
   double exit_edge_margin{0.15};
+  double edge_exit_release_sec{0.35};
   double search_expansion_rate_per_sec{6.0};
   double search_expansion_cap{2.0};
   double lenient_iou_scale{0.4};
@@ -37,6 +38,9 @@ struct MultiTrackConfig {
   double minimum_update_confidence{0.05};
   double association_iou_threshold{0.20};
   double duplicate_iou_threshold{0.85};
+  double track_duplicate_iou_threshold{0.92};
+  double track_duplicate_center_distance{0.12};
+  double track_duplicate_appearance_cosine{0.90};
   double association_center_distance{1.50};
   double association_ambiguity_margin{0.08};
   // Only enable for a source whose body-relative metric origin is stationary
@@ -71,6 +75,7 @@ struct MultiTrackStatistics {
   std::uint64_t rejected_detections{0};
   std::uint64_t created_tracks{0};
   std::uint64_t removed_tracks{0};
+  std::uint64_t suppressed_duplicate_tracks{0};
   std::size_t active_tracks{0};
 };
 

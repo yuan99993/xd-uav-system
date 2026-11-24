@@ -1,5 +1,11 @@
 # D-FINE class contract: car=0, tank=1, drone=2.
+input_image_transport: shared_memory
+input_image_queue_size: 1
+maximum_capture_age_sec: 0.25
+control_maximum_capture_age_sec: 0.25
+camera_optical_imu_enabled: false
 FusionTracker:
+  roi_inference_size: 320
   healthy_evidence_max_fps: 5.0
   defer_strong_local_seed: true
   roi_motion_margin_sec: 0.15
@@ -9,9 +15,11 @@ FusionTracker:
   fast_reacquire_max_gap_sec: 1.25
   strong_detector_takeover_enabled: true
   strong_takeover_safety_enabled: true
-  detector_primary_processing: true
+  detector_primary_processing: false
+  full_frame_interval: 8
   visual_fallback_gap_sec: 0.25
   selected_proposal_nms_iou: 0.95
+  selected_detector_max_candidates: 20
   class_agnostic_lock: false
   continuous_selected_flow: true
   selected_flow_local_crop: true
@@ -35,17 +43,36 @@ FusionTracker:
   detector_weight: 0.7
   detector_authority_confidence: 0.85
   minimum_detector_confidence: 0.45
+  async_calibration_min_confidence: 0.45
+  reid_min_detector_confidence: 0.45
   minimum_maintenance_confidence: 0.04
   maintenance_min_iou: 0.35
-  roi_crop_scale: 3.0
-  roi_min_crop_size: 256
+  latency_aware_association: true
+  latency_velocity_variance_limit: 400.0
+  latency_uncertainty_gain: 1.0
+  latency_maintenance_min_iou: 0.20
+  occluded_reid_enabled: true
+  occluded_reid_max_age_sec: 5.0
+  reid_aspect_tolerance: 0.45
+  reid_appearance_threshold: 0.55
+  reid_corridor_noise: 140.0
+  roi_crop_scale: 3.5
+  roi_min_crop_size: 320
+  roi_reflect_padding: false
+  roi_pad_value: 114
+  nano_velocity_feedforward_enabled: true
+  edge_aware_geometry: false
+  edge_buffer_fraction: 0.0
+  edge_max_area_ratio: 2.5
+  edge_center_gate_multiplier: 1.0
+  edge_min_visible_fraction: 0.15
   roi_miss_limit: 3
   local_template_refresh_sec: 0.75
   class_groups: [[0, 1], [2]]
   selection_max_age_sec: 0.75
   selection_max_frames: 32
   selection_max_bytes: 50331648
-  async_max_result_age_sec: 0.75
+  async_max_result_age_sec: 0.25
   camera_motion:
     enabled: true
     max_gap_sec: 0.75

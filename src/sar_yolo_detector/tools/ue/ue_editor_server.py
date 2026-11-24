@@ -142,8 +142,13 @@ def tick_impl(delta):
         stream.just_stopped=False
     update_gimbal(now)
     if now-state["heartbeat"]>=1:
+        native_stats={}
+        if stream.api is not None:
+            try:native_stats=json.loads(stream.api.get_stats())
+            except Exception as error:native_stats={"stats_error":type(error).__name__}
         write("ready.json",{"pid":os.getpid(),"heartbeat":now,"engine":unreal.SystemLibrary.get_engine_version(),
               "transport":"scene_capture_render_target_png","stream":stream.info(),"project_dir":unreal.Paths.project_dir(),
+              "native_stream_stats":native_stats,
               "world":world_key,"play_mode":game_world is not None,"tick_delta_sec":delta})
         state["heartbeat"]=now
     pending=state["pending"]
@@ -215,6 +220,22 @@ def tick_impl(delta):
         if request.get('op')=='stop_play':
             unreal.EditorLevelLibrary.editor_end_play()
             write('response.json',{'id':request['id'],'session':session,'ok':True,'stop_play_requested':True});return
+        if request.get('op')=='load_benchmark_level':
+            if game_world is not None or state.get('stream_active'):
+                raise RuntimeError('Stop Play and capture before switching benchmark levels')
+            level=str(request.get('level',''))
+            allowed_levels={
+                '/Game/AirGround/Benchmarks/AirGroundStressV1',
+                '/Game/AirGround/Benchmarks/EOIRPlainGrassBrightCars_20261123',
+            }
+            if level not in allowed_levels:
+                raise ValueError('Benchmark level is not in the local allowlist')
+            if not unreal.EditorLevelLibrary.load_level(level):
+                raise RuntimeError('Unreal could not load benchmark level '+level)
+            state.update(cameras={},targets={},initial={},camera=None,target=None,pending=None)
+            state.pop('world_key',None)
+            write('response.json',{'id':request['id'],'session':session,'ok':True,'loaded_level':level})
+            return
         if request.get("op")=="reset":
             for actor,transform in state["initial"].values():actor.set_actor_transform(transform,False,False)
             write("response.json",{"session":session,"id":request["id"],"ok":True,"reset":True});return

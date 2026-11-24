@@ -5,7 +5,8 @@ import numpy as np
 
 
 def crop_focused_roi(image, pred_box_xywh, scale_factor=3., min_crop_size=256,
-                     motion_margin_px=0., size_bins=(), reflect_padding=False):
+                     motion_margin_px=0., size_bins=(), reflect_padding=False,
+                     return_mask=False, pad_value=114):
     x, y, width, height = pred_box_xywh
     if not np.isfinite((x, y, width, height, scale_factor)).all() or min(width, height) <= 0:
         raise ValueError("Focused ROI requires a finite positive box")
@@ -17,22 +18,30 @@ def crop_focused_roi(image, pred_box_xywh, scale_factor=3., min_crop_size=256,
     side=max(min_crop_size,math.ceil(max(width,height)*scale_factor+2*motion_margin_px))
     if size_bins:
         side=next((value for value in sorted(size_bins) if value>=side),max(side,image_width))
-    if reflect_padding:
-        left = round(x + width / 2 - side / 2)
-        top = round(y + height / 2 - side / 2)
-        right, bottom = left + side, top + side
-        if right <= 0 or bottom <= 0 or left >= image_width or top >= image_height:
-            raise ValueError("Focused ROI does not intersect the image")
-        crop = image[max(0, top):min(image_height, bottom),
-                     max(0, left):min(image_width, right)]
-        crop = cv2.copyMakeBorder(crop, max(0, -top), max(0, bottom-image_height),
-                                 max(0, -left), max(0, right-image_width),
-                                 cv2.BORDER_REFLECT_101)
+    # Keep the crop centered on the selected target at the image boundary.
+    # The legacy reflect_padding flag is accepted for old callers, but never
+    # mirrors scene pixels: padding is a neutral 114 gray and is marked invalid.
+    left = round(x + width / 2 - side / 2)
+    top = round(y + height / 2 - side / 2)
+    right, bottom = left + side, top + side
+    if right <= 0 or bottom <= 0 or left >= image_width or top >= image_height:
+        raise ValueError("Focused ROI does not intersect the image")
+    if left >= 0 and top >= 0 and right <= image_width and bottom <= image_height:
+        crop = image[top:bottom, left:right]
+        if return_mask:
+            return crop, (left, top), np.full((side, side), 255, dtype=np.uint8)
         return crop, (left, top)
-    side=min(side,image_width,image_height)
-    left = max(0, min(round(x + width / 2 - side / 2), image_width - side))
-    top = max(0, min(round(y + height / 2 - side / 2), image_height - side))
-    return image[top:top + side, left:left + side], (left, top)
+    src_left, src_top = max(0, left), max(0, top)
+    src_right, src_bottom = min(image_width, right), min(image_height, bottom)
+    crop = np.full((side, side) + image.shape[2:], pad_value, dtype=image.dtype)
+    mask = np.zeros((side, side), dtype=np.uint8)
+    dst_left, dst_top = src_left - left, src_top - top
+    dst_right, dst_bottom = dst_left + src_right - src_left, dst_top + src_bottom - src_top
+    crop[dst_top:dst_bottom, dst_left:dst_right] = image[src_top:src_bottom, src_left:src_right]
+    mask[dst_top:dst_bottom, dst_left:dst_right] = 255
+    if return_mask:
+        return crop, (left, top), mask
+    return crop, (left, top)
 
 
 def reid_motion_corridor(box, velocity, age, shape, acceleration_stddev=140.):

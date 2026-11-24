@@ -7,6 +7,11 @@ SmartTracker:
   SMART_TRACKER_MODEL_MAX_BYTES: 536870912
   SMART_TRACKER_INFERENCE_IMAGE_SIZE: 640
   SMART_TRACKER_DFINE_NATIVE_DEPLOY: true
+  # The deployed v3 weights were trained with square Resize/stretch. New
+  # edge-truncated retrains may set both this value and their bundle manifest
+  # to letterbox after validating the matching training transform.
+  SMART_TRACKER_DFINE_RESIZE_MODE: stretch
+  SMART_TRACKER_DFINE_FUSED_PREPROCESS: true
   SMART_TRACKER_CLASS_CONSENSUS_ENABLED: true
   SMART_TRACKER_ALLOWED_CLASS_IDS:
   - 0
@@ -25,9 +30,14 @@ SmartTracker:
   - - 2
   TRACKER_TYPE: botsort
   SMART_TRACKER_TRACKER_CONFIG_PATH: config/vehicle_botsort.yaml
-  SMART_TRACKER_GPU_MODEL_PATH: models/dfine_s_v3_16e/manifest.json
-  SMART_TRACKER_CPU_MODEL_PATH: models/dfine_s_v3_16e/manifest.json
-  SMART_TRACKER_MODEL_SHA256: a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae
+  SMART_TRACKER_GPU_MODEL_PATH: models/dfine_s_v3_ue_head11_roi/manifest.json
+  SMART_TRACKER_CPU_MODEL_PATH: models/dfine_s_v3_ue_head11_roi/manifest.json
+  SMART_TRACKER_MODEL_SHA256: f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8
+  SMART_TRACKER_DFINE_TENSORRT_ENGINE: models/dfine_s_v3_ue_head11_roi/tensorrt/dfine_512_mixed.engine
+  SMART_TRACKER_DFINE_TENSORRT_SHA256: 45b7ea191ce7f46ea8c1bf665d7de1a8ca677a3d04fe6f21b34a5ddff5568d96
+  SMART_TRACKER_DFINE_TENSORRT_ROI_ENGINE: models/dfine_s_v3_ue_head11_roi/tensorrt/dfine_320_mixed.engine
+  SMART_TRACKER_DFINE_TENSORRT_ROI_SHA256: 2aaa8f032b35d6823d1880e00f075643b34e58003658846f15c3d69930964686
+  SMART_TRACKER_DFINE_TENSORRT_MANIFEST_SHA256: f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8
 ManualBoxTracker:
   enabled: true
   require_stamped_roi: true
@@ -36,7 +46,16 @@ ManualBoxTracker:
   track_id: 900000000
   minimum_confidence: 0.0
   feature_tracker:
-    tracker_algorithm: kcf
+    tracker_algorithm: nano_trt
+    nano_engine_directory: models/nanotrack_v2/tensorrt
+    nano_engine_manifest_sha256: 6e375ad09ed5a8bbc4e46b48d7c4ebcd06fa70d58d02460e3213ad28717a8490
+    nano_occlusion_guard_enabled: true
+    nano_minimum_apce: 1.8
+    nano_minimum_psr: 2.2
+    nano_recovery_apce: 2.5
+    nano_recovery_psr: 2.8
+    nano_scale_ema_alpha: 0.25
+    nano_velocity_feedforward_enabled: true
     require_opencv_tracker: true
     template_match_threshold: 0.45
     template_search_expansion: 2.5
@@ -46,6 +65,10 @@ ManualBoxTracker:
       min_area_ratio: 0.25
       max_area_ratio: 4.0
       edge_margin_px: 0.0
+      edge_buffer_fraction: 0.08
+      edge_min_area_ratio: 0.1667
+      edge_max_area_ratio: 4.0
+      edge_center_jump_multiplier: 1.5
       max_fail_frames: 3
   color_tracker:
     color: ''
@@ -73,8 +96,9 @@ ManualBoxTracker:
     term_iterations: 10
     term_epsilon: 1.0
 profile: dfine_s_v3_legacy_fourmode
-model_version: dfine_s_v3_16e
-Default_Tracker: SmartTracker
+model_version: dfine_s_v3_ue_head11_roi
+Default_Tracker: fusion_tracker
+camera_optical_imu_enabled: false
 
 # Detection cadence is independent of the per-capture local tracking worker.
 AsyncPipeline:

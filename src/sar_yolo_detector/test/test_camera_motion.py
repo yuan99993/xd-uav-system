@@ -8,6 +8,17 @@ from sar_yolo_detector.async_pipeline import FlowDetections
 
 
 class CameraMotionTest(unittest.TestCase):
+    def test_gyro_only_advance_builds_capture_transform_without_image_processing(self):
+        motion=CameraMotion()
+        shape=(240,320,3)
+        first=np.array([[1.,0.,0.],[0.,1.,0.],[0.,0.,1.]])
+        second=np.array([[1.,0.,3.],[0.,1.,-2.],[0.,0.,1.]])
+        np.testing.assert_allclose(motion.advance_imu(10.,first,shape),first)
+        np.testing.assert_allclose(motion.advance_imu(10.04,second,shape),second)
+        np.testing.assert_allclose(motion.between(10.,10.04),second)
+        self.assertIsNone(motion.gray)
+        self.assertEqual(motion.source,'optical_imu_rate')
+
     def test_strong_detection_can_skip_background_only_with_exact_pure_rotation(self):
         from unittest.mock import Mock
         frame=self.scene();motion=CameraMotion()

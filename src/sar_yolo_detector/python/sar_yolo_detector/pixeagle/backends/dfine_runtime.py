@@ -67,34 +67,61 @@ def config(variant,path=None,repository=None):
     return cfg
 
 
-def _gpu_rgb_image(pixels,size,height,width):
+def _letterbox_geometry(height,width,out_height,out_width):
+    scale=min(out_width/float(width),out_height/float(height))
+    content_width=max(1,min(out_width,int(math.floor(width*scale+.5))))
+    content_height=max(1,min(out_height,int(math.floor(height*scale+.5))))
+    return content_height,content_width,(out_width-content_width)//2,(out_height-content_height)//2
+
+
+def _gpu_rgb_image(pixels,size,height,width,resize_mode='stretch',output_width=None):
+    out_height,out_width=int(size),int(output_width if output_width is not None else size)
     pixels=pixels.permute(2,0,1).flip(0).unsqueeze(0).to(torch.float32)
-    if (height,width)!=(size,size):
-        pixels=torch.nn.functional.interpolate(pixels,size=(size,size),mode='bilinear',
+    if resize_mode=='letterbox':
+        content_height,content_width,pad_x,pad_y=_letterbox_geometry(height,width,out_height,out_width)
+        resized=torch.nn.functional.interpolate(pixels,size=(content_height,content_width),mode='bilinear',
+            align_corners=False,antialias=True).round_().div_(255.)
+        canvas=torch.full((1,3,out_height,out_width),114./255.,dtype=resized.dtype,device=resized.device)
+        canvas[:,:,pad_y:pad_y+content_height,pad_x:pad_x+content_width]=resized
+        return canvas.contiguous()
+    if resize_mode!='stretch':raise ValueError('resize_mode must be stretch or letterbox')
+    if (height,width)!=(out_height,out_width):
+        pixels=torch.nn.functional.interpolate(pixels,size=(out_height,out_width),mode='bilinear',
             align_corners=False,antialias=True).round_()
     return pixels.div_(255.).contiguous()
 
 
-def preprocess(frame,size,device):
+def preprocess(frame,size,device,resize_mode='stretch'):
+    if resize_mode not in ('stretch','letterbox'):raise ValueError('resize_mode must be stretch or letterbox')
+    out_height,out_width=(tuple(map(int,size)) if isinstance(size,(tuple,list)) else (int(size),int(size)))
     if str(device).startswith('cuda'):
         pixels=torch.from_numpy(np.require(frame,requirements=['C','W'])).to(device)
-        return _gpu_rgb_image(pixels,size,*frame.shape[:2])
-    if frame.shape[:2] == (size, size):
+        return _gpu_rgb_image(pixels,out_height,*frame.shape[:2],resize_mode=resize_mode,output_width=out_width)
+    if resize_mode=='letterbox':
+        height,width=frame.shape[:2]
+        content_height,content_width,pad_x,pad_y=_letterbox_geometry(height,width,out_height,out_width)
+        rgb=Image.fromarray(np.ascontiguousarray(frame[:,:,::-1])).resize(
+            (content_width,content_height),Image.Resampling.BILINEAR)
+        canvas=Image.new('RGB',(out_width,out_height),(114,114,114))
+        canvas.paste(rgb,(pad_x,pad_y))
+        array=np.asarray(canvas,dtype=np.float32)/255.
+        return torch.from_numpy(np.ascontiguousarray(array.transpose(2,0,1))).unsqueeze(0).to(device)
+    if frame.shape[:2] == (out_height, out_width):
         pixels = torch.from_numpy(np.require(frame, requirements=['C', 'W'])).to(device)
         return pixels.permute(2, 0, 1).flip(0).unsqueeze(0).to(torch.float32).div_(255.).contiguous()
-    rgb=Image.fromarray(np.ascontiguousarray(frame[:,:,::-1])).resize((size,size),Image.Resampling.BILINEAR)
+    rgb=Image.fromarray(np.ascontiguousarray(frame[:,:,::-1])).resize((out_width,out_height),Image.Resampling.BILINEAR)
     array=np.asarray(rgb,dtype=np.float32)/255.
     return torch.from_numpy(np.ascontiguousarray(array.transpose(2,0,1))).unsqueeze(0).to(device)
 
 
-def graph_preprocess(model,frame,size,device):
+def graph_preprocess(model,frame,size,device,resize_mode='stretch'):
     # Only the two common fixed shapes are cached. Arbitrary ROI shapes keep
     # the ordinary path instead of capturing a new graph during live tracking.
     height,width=frame.shape[:2]
     if (not getattr(model,'use_cuda_graph',False) or not str(device).startswith('cuda')
             or (height,width) not in ((256,256),(384,384),(512,512),(size,size))):
-        return preprocess(frame,size,device)
-    key=(height,width,size,str(device))
+        return preprocess(frame,size,device,resize_mode)
+    key=(height,width,size,str(device),resize_mode)
     cache=getattr(model,'_sar_preprocess_graphs',None)
     if cache is None:
         cache={};model._sar_preprocess_graphs=cache
@@ -104,11 +131,11 @@ def graph_preprocess(model,frame,size,device):
         warm_stream=torch.cuda.Stream(device=device)
         warm_stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(warm_stream):
-            for _ in range(3):_gpu_rgb_image(pixels,size,height,width)
+            for _ in range(3):_gpu_rgb_image(pixels,size,height,width,resize_mode)
         torch.cuda.current_stream(device).wait_stream(warm_stream)
         graph=torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            image=_gpu_rgb_image(pixels,size,height,width)
+            image=_gpu_rgb_image(pixels,size,height,width,resize_mode)
         cache[key]=(staging,pixels,graph,image,torch.cuda.Event())
     staging,pixels,graph,image,transferred=cache[key]
     # The host must not overwrite pinned memory while an earlier H2D copy
@@ -162,8 +189,19 @@ def graph_forward(model,image):
     return cached[3]
 
 
-def infer(model,post,frame,size,device):
+def _restore_letterbox_result(result,width,height,out_height,out_width):
+    content_height,content_width,pad_x,pad_y=_letterbox_geometry(height,width,out_height,out_width)
+    boxes=result['boxes'].clone()
+    boxes[:,0::2]=(boxes[:,0::2]-pad_x)*(width/float(content_width))
+    boxes[:,1::2]=(boxes[:,1::2]-pad_y)*(height/float(content_height))
+    boxes[:,0::2].clamp_(0,width);boxes[:,1::2].clamp_(0,height)
+    restored=dict(result);restored['boxes']=boxes
+    return restored
+
+
+def infer(model,post,frame,size,device,resize_mode='stretch'):
     h,w=frame.shape[:2]
+    if resize_mode not in ('stretch','letterbox'):raise ValueError('resize_mode must be stretch or letterbox')
     with torch.inference_mode():
         start=time.perf_counter()
         target_key = (w, h, str(device))
@@ -171,11 +209,15 @@ def infer(model,post,frame,size,device):
         if cached_sizes is None or cached_sizes[0] != target_key:
             cached_sizes = (target_key, torch.tensor([[w, h]], device=device))
             model._sar_target_sizes = cached_sizes
-        image=graph_preprocess(model,frame,size,device)
+        image=graph_preprocess(model,frame,size,device,resize_mode)
         prepared=time.perf_counter()
         output=graph_forward(model,image)
         forwarded=time.perf_counter()
-        result=graph_postprocess(model,post,output,cached_sizes[1],w,h)
+        target_sizes=(torch.tensor([[size,size]],device=device) if resize_mode=='letterbox'
+            else cached_sizes[1])
+        result=graph_postprocess(model,post,output,target_sizes,size if resize_mode=='letterbox' else w,
+            size if resize_mode=='letterbox' else h)
+        if resize_mode=='letterbox':result=_restore_letterbox_result(result,w,h,size,size)
         model.runtime_host_timings=dict(preprocess_ms=(prepared-start)*1000.,forward_enqueue_ms=(forwarded-prepared)*1000.,post_enqueue_ms=(time.perf_counter()-forwarded)*1000.)
     return result
 
@@ -252,7 +294,8 @@ def normalized_rows(result,width,height,threshold,max_det,allowed_class_ids=None
     return sorted(records,key=lambda v:-v[1])[:max_det]
 
 
-def export_bundle(model,cfg,variant,destination,names):
+def export_bundle(model,cfg,variant,destination,names,preprocess_mode='stretch'):
+    if preprocess_mode not in ('stretch','letterbox'):raise ValueError('preprocess_mode must be stretch or letterbox')
     from safetensors.torch import save_file
     destination=Path(destination);destination.mkdir(parents=True,exist_ok=True)
     save_file({k:v.detach().cpu().contiguous().clone() for k,v in model.state_dict().items()},str(destination/'model.safetensors'))
@@ -262,6 +305,9 @@ def export_bundle(model,cfg,variant,destination,names):
     repo=WORKSPACE/'third_party'/REPOS[variant]
     sources={str(p.relative_to(repo)):digest(p) for p in sorted(repo.rglob('*.py')) if '.git' not in p.parts}
     manifest={'architecture':'dfine','variant':variant,'class_names':names,
+        'preprocess_mode':preprocess_mode,
+        'input_preprocessing':dict(mode=preprocess_mode,channel_order='BGR_to_RGB',
+            normalization='uint8_to_float32_div_255',letterbox_fill=114 if preprocess_mode=='letterbox' else None),
         'files':{name:digest(destination/name) for name in ('model.safetensors','config.json')},
         'source_repository':{'root':str(repo),'commit':subprocess.check_output(['git','-c','safe.directory='+str(repo),'-C',str(repo),'rev-parse','HEAD'],text=True).strip(),'files':sources}}
     (destination/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
@@ -273,6 +319,7 @@ def load_bundle(path,device):
     path=Path(path);manifest=json.loads(path.read_text())
     if manifest.get('class_names')!=['car','tank','drone']:raise ValueError('Unsupported D-FINE class contract')
     if manifest.get('architecture')!='dfine' or manifest.get('variant') not in REPOS:raise ValueError('Invalid D-FINE manifest')
+    if manifest.get('preprocess_mode','stretch') not in ('stretch','letterbox'):raise ValueError('Unsupported D-FINE preprocessing mode')
     if set(manifest.get('files',{}))!={'config.json','model.safetensors'}:raise ValueError('Incomplete tensor bundle')
     for name,expected in manifest['files'].items():
         p=path.parent/name

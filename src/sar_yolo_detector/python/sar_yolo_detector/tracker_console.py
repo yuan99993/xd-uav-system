@@ -15,7 +15,7 @@ class TrackerConsoleMixin:
         fusion=self._fusion
         feature=getattr(fusion.tracker,'feature_config',{}) or {}
         config=fusion.config
-        return dict(full_frame_interval=int(config.get('full_frame_interval',4)),
+        return dict(full_frame_interval=int(config.get('full_frame_interval',8)),
             appearance_cache_enabled=bool(config.get('appearance_cache_enabled',False)),
             latency_aware_association=bool(config.get('latency_aware_association',False)),
             latency_uncertainty_gain=float(config.get('latency_uncertainty_gain',1.)),

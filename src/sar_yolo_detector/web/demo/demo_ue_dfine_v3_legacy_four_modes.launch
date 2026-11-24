@@ -9,9 +9,9 @@
   <arg name="web_port" default="8787" />
   <arg name="enable_xd_tracking" default="true" />
   <arg name="class_consensus_enabled" default="true" />
-  <arg name="model_version" default="dfine_s_v3_16e" />
-  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_16e/manifest.json" />
-  <arg name="model_sha256" default="a73446381ac6f6f106e1a1b476302fa9e809b3de9146aa832275fb8663c9cdae" />
+  <arg name="model_version" default="dfine_s_v3_ue_head11_roi" />
+  <arg name="model_path" default="$(find sar_yolo_detector)/models/dfine_s_v3_ue_head11_roi/manifest.json" />
+  <arg name="model_sha256" default="f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8" />
   <arg name="python_executable" default="" />
 
   <arg name="input_image_topic" default="/$(arg UAV_NAME)/fixed_camera/image_raw" />

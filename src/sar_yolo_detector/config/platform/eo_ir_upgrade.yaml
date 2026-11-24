@@ -1,15 +1,56 @@
 # EO/IR stage-one candidate. Load after the base D-FINE profiles.
-input_image_transport: raw
+input_image_transport: shared_memory
 input_image_queue_size: 1
 maximum_capture_age_sec: 0.25
 control_maximum_capture_age_sec: 0.25
 FusionTracker:
-  full_frame_interval: 4
+  full_frame_interval: 8
   roi_crop_scale: 3.5
   roi_min_crop_size: 320
-  roi_reflect_padding: true
+  # Kept false for legacy profiles; focused_roi now pads any edge overflow with
+  # gray 114 and returns a valid-pixel mask. Reflection is never used.
+  roi_reflect_padding: false
+  roi_pad_value: 114
   async_max_result_age_sec: 0.25
+  detector_primary_processing: false
+  minimum_detector_confidence: 0.45
+  async_calibration_min_confidence: 0.45
+  reid_min_detector_confidence: 0.45
+  latency_aware_association: true
+  latency_velocity_variance_limit: 400.0
+  latency_uncertainty_gain: 1.0
+  latency_maintenance_min_iou: 0.20
+  occluded_reid_enabled: true
+  occluded_reid_max_age_sec: 5.0
+  reid_aspect_tolerance: 0.45
+  reid_appearance_threshold: 0.55
+  reid_corridor_noise: 140.0
+  nano_velocity_feedforward_enabled: true
+  roi_inference_size: 320
   occlusion_freeze_enabled: true
   prediction_hold_sec: 1.20
   structural_appearance_enabled: true
-  edge_aware_geometry: true
+  edge_aware_geometry: false
+  edge_buffer_fraction: 0.0
+  edge_max_area_ratio: 2.5
+  edge_center_gate_multiplier: 1.0
+SmartTracker:
+  SMART_TRACKER_DFINE_FUSED_PREPROCESS: true
+  SMART_TRACKER_DFINE_TENSORRT_ENGINE: models/dfine_s_v3_ue_head11_roi/tensorrt/dfine_512_mixed.engine
+  SMART_TRACKER_DFINE_TENSORRT_SHA256: 45b7ea191ce7f46ea8c1bf665d7de1a8ca677a3d04fe6f21b34a5ddff5568d96
+  SMART_TRACKER_DFINE_TENSORRT_ROI_ENGINE: models/dfine_s_v3_ue_head11_roi/tensorrt/dfine_320_mixed.engine
+  SMART_TRACKER_DFINE_TENSORRT_ROI_SHA256: 2aaa8f032b35d6823d1880e00f075643b34e58003658846f15c3d69930964686
+  SMART_TRACKER_DFINE_TENSORRT_MANIFEST_SHA256: f288b8d9c2385b6f75926651ab8d85dce1b0393f434ba87b830556f81d10fbe8
+  SMART_TRACKER_DFINE_FUSED_PREPROCESS: true
+ManualBoxTracker:
+  feature_tracker:
+    tracker_algorithm: nano_trt
+    nano_engine_directory: models/nanotrack_v2/tensorrt
+    nano_engine_manifest_sha256: 6e375ad09ed5a8bbc4e46b48d7c4ebcd06fa70d58d02460e3213ad28717a8490
+    nano_occlusion_guard_enabled: true
+    nano_scale_ema_alpha: 0.25
+    nano_velocity_feedforward_enabled: true
+    nano_minimum_apce: 1.8
+    nano_minimum_psr: 2.2
+    nano_recovery_apce: 2.5
+    nano_recovery_psr: 2.8

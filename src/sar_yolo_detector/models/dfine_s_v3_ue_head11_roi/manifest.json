@@ -104,5 +104,12 @@
       "tools/visualization/fiftyone_vis.py": "9525093942b0edba9368bfc1bb6dfe00fca4791f86599f627249661fa2582346",
       "train.py": "4b1b13f64bba72669437f31016d37c44f415f0206affee8e910120a0c52cacb2"
     }
+  },
+  "preprocess_mode": "stretch",
+  "input_preprocessing": {
+    "mode": "stretch",
+    "channel_order": "BGR_to_RGB",
+    "normalization": "uint8_to_float32_div_255",
+    "letterbox_fill": null
   }
 }

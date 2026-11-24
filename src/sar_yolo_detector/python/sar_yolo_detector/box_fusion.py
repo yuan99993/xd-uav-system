@@ -35,6 +35,9 @@ class Candidate:
     capture_box: Optional[Tuple[float, float, float, float]] = None
     motion_aligned: bool = False
     association_uncertainty_px: float = 0.
+    visible_fraction: float = 1.
+    edge_truncated: bool = False
+    unclipped_box: Optional[Tuple[float, float, float, float]] = None
 
 
 def align_delayed_candidate(candidate, stamp, velocity, maximum_age=.08, stable_motion=False, gain=1.):
@@ -237,6 +240,10 @@ class BoxFusion:
         self.motion_horizon = self._positive("reacquire_motion_horizon_sec", 2.)
         self.max_gap = self._positive("max_frame_gap_sec", .75)
         self.area_ratio = self._positive("max_area_ratio", 2.5)
+        self.edge_buffer_fraction = self._unit("edge_buffer_fraction", .08)
+        self.edge_max_area_ratio = max(self.area_ratio, self._positive("edge_max_area_ratio", 6.))
+        self.edge_center_gate_multiplier = max(1., self._positive("edge_center_gate_multiplier", 1.5))
+        self.edge_min_visible_fraction = self._unit("edge_min_visible_fraction", .15)
         self.center_gate = self._positive("center_gate_sizes", 1.4)
         self.appearance_gate = self._unit("appearance_gate", .70)
         self.quality_gate = self._unit("quality_gate", .35)
@@ -244,7 +251,11 @@ class BoxFusion:
         self.confirmations = max(2, int(self.config.get("reacquire_confirm_frames", 3)))
         self.detector_weight = self._unit("detector_weight", .70)
         self.detector_authority = self._unit("detector_authority_confidence", .85)
-        self.min_detector_conf = self._unit("minimum_detector_confidence", .50)
+        self.min_detector_conf = self._unit("minimum_detector_confidence", .45)
+        self.async_calibration_min_conf = self._unit(
+            "async_calibration_min_confidence", self.min_detector_conf)
+        self.reid_min_detector_conf = self._unit(
+            "reid_min_detector_confidence", self.min_detector_conf)
         self.maintenance_min_iou = self._unit("maintenance_min_iou", .35)
         self.latency_maintenance_min_iou=self._unit("latency_maintenance_min_iou",.20)
         self.min_maintenance_conf = self._unit("minimum_maintenance_confidence", .10)
@@ -406,7 +417,25 @@ class BoxFusion:
         return self.class_agnostic_lock or self.class_id < 0 or class_id == self.class_id or any(
             self.class_id in group and class_id in group for group in self.class_groups)
 
-    def _compatible(self, box, reference, uncertainty_px=0.):
+    def _near_image_edge(self, box, fraction=None):
+        if box is None or self.shape is None:
+            return False
+        fraction = self.edge_buffer_fraction if fraction is None else max(0., float(fraction))
+        height, width = self.shape
+        x, y, box_width, box_height = box
+        margin_x, margin_y = width * fraction, height * fraction
+        return (x <= margin_x or y <= margin_y or
+                width - (x + box_width) <= margin_x or
+                height - (y + box_height) <= margin_y)
+
+    def _edge_scale_ratio(self, *boxes, visible_fraction=1., edge_truncated=False):
+        at_edge = bool(edge_truncated or visible_fraction < .999 or
+                       any(self._near_image_edge(box) for box in boxes if box is not None))
+        return self.edge_max_area_ratio if at_edge else self.area_ratio
+
+    def _compatible(self, box, reference, uncertainty_px=0., visible_fraction=1., edge_truncated=False):
+        if edge_truncated and visible_fraction < self.edge_min_visible_fraction:
+            return False
         if self.config.get('edge_aware_geometry',False):
             box=clip_visible_box(box,self.shape)
             reference=clip_visible_box(reference,self.shape)
@@ -414,7 +443,11 @@ class BoxFusion:
                 return False
         ratio = box[2] * box[3] / max(1., reference[2] * reference[3])
         distance = np.linalg.norm(center(box) - center(reference)) / max(8., math.hypot(reference[2], reference[3]))
-        return 1. / self.area_ratio <= ratio <= self.area_ratio and distance <= self.center_gate+max(0.,uncertainty_px)/max(8.,math.hypot(reference[2],reference[3]))
+        limit = self._edge_scale_ratio(box, reference, visible_fraction=visible_fraction,
+                                       edge_truncated=edge_truncated)
+        center_limit = self.center_gate * (self.edge_center_gate_multiplier
+            if self._near_image_edge(box) or self._near_image_edge(reference) or edge_truncated else 1.)
+        return 1. / limit <= ratio <= limit and distance <= center_limit+max(0.,uncertainty_px)/max(8.,math.hypot(reference[2],reference[3]))
 
     @_frame_appearance_cache
     def step(self, frame, stamp, detections, *, detector_updated=True, same_frame_correction=False,
@@ -438,7 +471,7 @@ class BoxFusion:
         if (visual_fast_lane and not detector_updated
                 and not bool(self.config.get('detector_primary_processing',False))
                 and str(getattr(self.tracker,'algorithm','')).lower()=='nano_trt'):
-            return self._step_visual_fast(frame,stamp)
+            return self._step_visual_fast(frame,stamp,camera_transform)
         if self.config.get('latency_aware_association',False):
             recent=[v for t,v in self._velocity_history if 0<=stamp-t<=.3]
             variance=float(np.var(recent,axis=0).sum()) if len(recent)>=3 else float('inf')
@@ -502,7 +535,8 @@ class BoxFusion:
                         if current_reference is not None:
                             predicted_reference=list(current_reference)
                             predicted_reference[:2]=np.asarray(predicted_reference[:2])+self.velocity*(stamp-self.last_observation_stamp)
-                            if self._compatible(candidate.box,predicted_reference,candidate.association_uncertainty_px):
+                            if self._compatible(candidate.box,predicted_reference,candidate.association_uncertainty_px,
+                                    candidate.visible_fraction,candidate.edge_truncated):
                                 feature,quality=self._appearance(frame,candidate.box)
                                 similarity=float(np.dot(feature,self.anchor)) if self.anchor is not None else 0.
                                 if quality>=self.quality_gate and similarity>=.85:
@@ -671,7 +705,7 @@ class BoxFusion:
                     gate_reason='not_newer_than_detection_watermark'
                 elif not self._class_compatible(candidate.class_id):
                     gate_reason='incompatible_class'
-                elif not math.isfinite(candidate.confidence) or candidate.confidence<self.min_detector_conf:
+                elif not math.isfinite(candidate.confidence) or candidate.confidence<self.reid_min_detector_conf:
                     gate_reason='below_detector_confidence'
                 elif not valid_box(candidate.box,frame.shape):
                     gate_reason='invalid_candidate_geometry'
@@ -800,7 +834,8 @@ class BoxFusion:
             joint_quality=bool(self.config.get("joint_current_visual_witnesses",False) and strong_target_flow
                 and joint_appearance_ok and local_score>=.75 and target_flow_box is not None
                 and iou(visual_box,target_flow_box)>=.60 and self._compatible(visual_box,target_flow_box))
-            if similarity < self.appearance_gate or (visual_quality < self.quality_gate and not joint_quality) or not 1. / self.area_ratio <= anchor_ratio <= self.area_ratio:
+            scale_limit = self._edge_scale_ratio(visual_box, self.box)
+            if similarity < self.appearance_gate or (visual_quality < self.quality_gate and not joint_quality) or not 1. / scale_limit <= anchor_ratio <= scale_limit:
                 visual_box = None
                 self.diagnostics['local_tracker'] = ("appearance_rejected" if similarity < self.appearance_gate else
                     "quality_rejected" if visual_quality < self.quality_gate else "scale_rejected")
@@ -874,8 +909,9 @@ class BoxFusion:
                 # area ratio; never relax the same per-frame position gate.
                 if visual_scale_ratio is not None:
                     ratio = visual_scale_ratio if math.isfinite(visual_scale_ratio) else float('inf')
+                flow_scale_limit = self._edge_scale_ratio(flow.box, self.box)
                 flow_valid = (quality >= self.quality_gate and similarity >= self.appearance_gate
-                    and 1./self.area_ratio <= ratio <= self.area_ratio)
+                    and 1. / flow_scale_limit <= ratio <= flow_scale_limit)
                 if flow_valid:
                     if visual_box is not None and iou(visual_box, flow.box) < .15:
                         visual_box = None
@@ -987,12 +1023,16 @@ class BoxFusion:
                         or iou(local_box,candidate.box)<.60 or iou(visual_box,candidate.box)<.60):
                     rejected['camera_projection_lacks_current_witness']+=1
                     continue
-            if not self._compatible(candidate.box, predicted,candidate.association_uncertainty_px):
+            if not self._compatible(candidate.box, predicted,candidate.association_uncertainty_px,
+                                    candidate.visible_fraction,candidate.edge_truncated):
                 rejected['position_or_size'] += 1
                 detail=self.diagnostics.setdefault('rejected_geometry',[])
                 if len(detail)<4:
                     detail.append(dict(box=list(candidate.box),reference=list(predicted),
                         area_ratio=float(candidate.box[2]*candidate.box[3]/max(1.,predicted[2]*predicted[3])),
+                        visible_fraction=float(candidate.visible_fraction),
+                        edge_truncated=bool(candidate.edge_truncated),
+                        unclipped_box=list(candidate.unclipped_box) if candidate.unclipped_box is not None else None,
                         distance_norm=float(np.linalg.norm(center(candidate.box)-center(predicted))/
                             max(8.,math.hypot(predicted[2],predicted[3])))))
                 continue
@@ -1276,7 +1316,7 @@ class BoxFusion:
             fused, stamp, source, "compatible_observations" if source == "fused" else source,
             confidence, update_velocity=not rebound)
 
-    def _step_visual_fast(self,frame,stamp):
+    def _step_visual_fast(self,frame,stamp,camera_motion_matrix=None):
         """NanoTrack-only current-frame measurement path; detector owns identity."""
         started=time.perf_counter()
         previous_result=self.result
@@ -1299,6 +1339,31 @@ class BoxFusion:
             diagnostics['total_ms']=(time.perf_counter()-started)*1000.
             return self._result(None,'lost','image_dimensions_changed',0.)
 
+        if CameraMotion.validate(camera_motion_matrix,frame.shape):
+            previous_box=tuple(self.box)
+            transported,support=transform_window(previous_box,camera_motion_matrix,self._camera_support)
+            if transported is not None:
+                points=np.float32([center(previous_box),
+                    center(previous_box)+self.velocity*.01]).reshape(-1,1,2)
+                mapped=cv2.perspectiveTransform(points,camera_motion_matrix).reshape(-1,2)
+                def transport_velocity(value):
+                    pair=np.float32([center(previous_box),center(previous_box)+np.asarray(value)*.01])
+                    result=cv2.perspectiveTransform(pair.reshape(-1,1,2),camera_motion_matrix).reshape(-1,2)
+                    return (result[1]-result[0])/.01
+                old_area=max(1.,previous_box[2]*previous_box[3])
+                if self.anchor_area is not None:
+                    self.anchor_area*=transported[2]*transported[3]/old_area
+                self.box=transported
+                self._camera_support=support
+                self.velocity=(mapped[1]-mapped[0])/.01
+                self._velocity_history=deque(((t,transport_velocity(v))
+                    for t,v in self._velocity_history),maxlen=32)
+                self._clean_history=deque((dict(item,velocity=transport_velocity(item['velocity']))
+                    for item in self._clean_history),maxlen=5)
+                self.diagnostics['fast_lane_camera_motion_compensated']=True
+            else:
+                self.diagnostics['fast_lane_camera_motion_compensated']=False
+
         self.stamp=stamp
         absence=max(0.,stamp-self.last_observation_stamp)
         detector_age=max(0.,stamp-(self.last_detection_stamp or self.selection_stamp))
@@ -1308,9 +1373,18 @@ class BoxFusion:
         local=None
         if (not self._occluded_coast and dt<=self.max_gap and not self._long_recovery):
             local_started=time.perf_counter()
-            local=self.tracker.update(frame)
+            if getattr(self.tracker,'tracker_name','')=='nano_trt':
+                motion_hint=(self.velocity.copy(),dt) if self.config.get(
+                    'nano_velocity_feedforward_enabled',True) else None
+                local=self.tracker.update(frame,motion_hint=motion_hint,
+                    camera_motion_matrix=camera_motion_matrix)
+            else:
+                local=self.tracker.update(frame)
             diagnostics['local_tracker_ms']=(time.perf_counter()-local_started)*1000.
             self.diagnostics['local_tracker_executed']=True
+            nano=getattr(self.tracker,'_opencv_tracker',None)
+            nano_timing=getattr(nano,'response_diagnostics',None)
+            if isinstance(nano_timing,dict):diagnostics['nano_response']=dict(nano_timing)
         score=float(getattr(local,'confidence',0.)) if local is not None else 0.
         box=getattr(local,'bbox',None) if local is not None else None
         reason=str(getattr(local,'reason','frame_gap_reset' if dt>self.max_gap else 'local_tracker_unavailable'))
