@@ -19,9 +19,16 @@
 #include <nav_msgs/Odometry.h>
 #include <ros/callback_queue.h>
 #include <ros/ros.h>
+#include <ros/serialization.h>
+#include <tf2/LinearMath/Transform.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 #include <boost/bind.hpp>
 #include <std_msgs/String.h>
+#include <std_msgs/Header.h>
 #include <std_srvs/SetBool.h>
+#include <topic_tools/shape_shifter.h>
 #include <xd_uav_track/DetectionArray.h>
 #include <xd_uav_track/FollowerCommand.h>
 #include <xd_uav_track/GimbalStatus.h>
@@ -289,11 +296,119 @@ void loadTargetGuidance(const ros::NodeHandle& nh,
   }
 }
 
+std::string namespaceLeaf(const std::string& name_space) {
+  const std::size_t first = name_space.find_last_not_of('/');
+  if (first == std::string::npos) return std::string();
+  const std::size_t slash = name_space.find_last_of('/', first);
+  return name_space.substr(slash == std::string::npos ? 0 : slash + 1,
+                           first - (slash == std::string::npos ? 0 : slash + 1) + 1);
+}
+
+std::string canonicalFrame(const std::string& frame) {
+  return !frame.empty() && frame.front() == '/' ? frame.substr(1) : frame;
+}
+
+struct FormationSnapshot {
+  std::string team_id;
+  std::string common_frame;
+  std::vector<std::vector<std::string>> groups;
+};
+
+bool readStringVector(ros::serialization::IStream& stream,
+                      std::vector<std::string>* values) {
+  if (values == nullptr) return false;
+  std::uint32_t count = 0;
+  stream.next(count);
+  if (count > 4096U) return false;
+  values->clear();
+  values->reserve(count);
+  for (std::uint32_t i = 0; i < count; ++i) {
+    std::string value;
+    stream.next(value);
+    values->push_back(std::move(value));
+  }
+  return true;
+}
+
+bool parseFormationSnapshot(const topic_tools::ShapeShifter& message,
+                            FormationSnapshot* snapshot) {
+  if (snapshot == nullptr || message.size() == 0) return false;
+  std::vector<std::uint8_t> bytes(message.size());
+  ros::serialization::OStream output(bytes.data(),
+      static_cast<std::uint32_t>(bytes.size()));
+  message.write(output);
+  ros::serialization::IStream stream(bytes.data(),
+      static_cast<std::uint32_t>(bytes.size()));
+  try {
+    std_msgs::Header header;
+    std::string mode;
+    std::uint8_t running = 0;
+    std::string leader_name;
+    std::string shape;
+    std::uint32_t waypoints_count = 0;
+    std::uint8_t loop_path = 0;
+    double spacing = 0.0;
+    double group_spacing = 0.0;
+    std::uint32_t configured_group_size = 0;
+    std::vector<std::string> members;
+    std::uint32_t group_count = 0;
+    std::uint32_t detached_group_count = 0;
+    std::uint32_t groups_count = 0;
+    stream.next(header);
+    stream.next(snapshot->team_id);
+    stream.next(mode);
+    stream.next(running);
+    stream.next(snapshot->common_frame);
+    stream.next(leader_name);
+    stream.next(shape);
+    stream.next(waypoints_count);
+    if (waypoints_count > 100000U) return false;
+    for (std::uint32_t i = 0; i < waypoints_count; ++i) {
+      geometry_msgs::Point point;
+      stream.next(point);
+    }
+    stream.next(loop_path);
+    stream.next(spacing);
+    stream.next(group_spacing);
+    stream.next(configured_group_size);
+    if (!readStringVector(stream, &members)) return false;
+    stream.next(group_count);
+    stream.next(detached_group_count);
+    stream.next(groups_count);
+    if (groups_count > 4096U) return false;
+    snapshot->groups.clear();
+    snapshot->groups.reserve(groups_count);
+    for (std::uint32_t i = 0; i < groups_count; ++i) {
+      std::string id;
+      std::vector<std::string> uavs;
+      std::uint32_t nominal_size = 0;
+      std::uint8_t detached = 0;
+      std::uint8_t anchor_external_control = 0;
+      std::string anchor;
+      stream.next(id);
+      if (!readStringVector(stream, &uavs)) return false;
+      stream.next(nominal_size);
+      stream.next(detached);
+      stream.next(anchor_external_control);
+      stream.next(anchor);
+      snapshot->groups.push_back(std::move(uavs));
+    }
+    std::uint64_t selection_revision = 0;
+    std::uint64_t group_revision = 0;
+    stream.next(selection_revision);
+    stream.next(group_revision);
+    return !snapshot->team_id.empty();
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
 }  // namespace
 
 class XdUavTrackNode {
  public:
   XdUavTrackNode() : private_nh_("~") {
+    tf_listener_.reset(new tf2_ros::TransformListener(tf_buffer_));
     xd_uav_track::TrackControllerConfig config;
     private_nh_.param("tracker/input_timeout_sec", config.input_timeout_sec,
                       config.input_timeout_sec);
@@ -582,21 +697,9 @@ class XdUavTrackNode {
         config.gmfw_metric_loss_coast_enabled,
         config.gmfw_metric_loss_coast_enabled);
     private_nh_.param(
-        "follower/gmfw_velocity_vector/aligned_loss_coast/metric_max_age_sec",
-        config.gmfw_metric_loss_max_age_sec,
-        config.gmfw_metric_loss_max_age_sec);
-    private_nh_.param(
-        "follower/gmfw_velocity_vector/aligned_loss_coast/metric_max_position_sigma_m",
-        config.gmfw_metric_loss_max_position_sigma_m,
-        config.gmfw_metric_loss_max_position_sigma_m);
-    private_nh_.param(
         "follower/gmfw_velocity_vector/aligned_loss_coast/max_descent_rate_mps",
         config.gmfw_loss_max_descent_rate_mps,
         config.gmfw_loss_max_descent_rate_mps);
-    private_nh_.param(
-        "follower/gmfw_velocity_vector/aligned_loss_coast/terminal_approach_enter_distance_m",
-        config.gmfw_terminal_approach_enter_distance_m,
-        config.gmfw_terminal_approach_enter_distance_m);
     private_nh_.param(
         "follower/gmfw_velocity_vector/aligned_loss_coast/terminal_ground_z_m",
         config.gmfw_terminal_ground_z_m,
@@ -995,6 +1098,19 @@ class XdUavTrackNode {
     }
     private_nh_.param("tracker/enabled_at_startup", tracker_active_, false);
     private_nh_.param("runtime/perception_only", perception_only_, false);
+    private_nh_.param("formation/team_state_topic", team_state_topic_,
+                      std::string("/formation/team/state"));
+    private_nh_.param("formation/direct_control_target_topic",
+                      team_target_topic_override_, std::string());
+    private_nh_.param("formation/direct_control_enabled",
+                      team_direct_control_enabled_, true);
+    private_nh_.param("formation/direct_control_publish_rate_hz",
+                      team_target_publish_rate_hz_, 5.0);
+    private_nh_.param("formation/uav_name", own_uav_name_,
+                      namespaceLeaf(ros::this_node::getNamespace()));
+    team_target_publish_period_sec_ = 1.0 /
+        std::max(0.2, team_target_publish_rate_hz_);
+    team_target_session_ = ros::WallTime::now().toNSec();
     if (perception_only_) {
       // A startup-only boundary, not a dynamically writable flight enable.
       // Conflicting YAML and legacy start commands cannot bypass it.
@@ -1105,6 +1221,15 @@ class XdUavTrackNode {
       gimbal_metric_target_subscriber_ =
           nh_.subscribe(gimbal_metric_target_options);
     }
+    if (!perception_only_ && team_direct_control_enabled_ &&
+        !team_state_topic_.empty()) {
+      ros::SubscribeOptions formation_state_options =
+          ros::SubscribeOptions::create<topic_tools::ShapeShifter>(
+              team_state_topic_, 1,
+              boost::bind(&XdUavTrackNode::formationStateCallback, this, _1),
+              ros::VoidConstPtr(), &control_queue_);
+      formation_state_subscriber_ = nh_.subscribe(formation_state_options);
+    }
     if (!perception_only_) {
       body_velocity_publisher_ = nh_.advertise<geometry_msgs::TwistStamped>(
           body_velocity_topic, 10);
@@ -1163,6 +1288,11 @@ class XdUavTrackNode {
              lateral_guidance_name_.c_str(),
              publish_control_reference_ ? "enabled" : "disabled",
              tracker_active_ ? "active" : "waiting for StartTracker");
+    if (!own_uav_name_.empty()) {
+      ROS_INFO("[xd_uav_track] formation handoff: uav=%s state_topic=%s enabled=%s",
+               own_uav_name_.c_str(), team_state_topic_.c_str(),
+               team_direct_control_enabled_ ? "true" : "false");
+    }
   }
 
  private:
@@ -2194,8 +2324,10 @@ class XdUavTrackNode {
       tracker->reset();
       clearSourceGlobalIds(source);
       locked_global_id_ = -1;
+      clearLatestGmfwMetricInputLocked();
       controller_->reset();
       metric_identity_valid_ = false;
+      resetTeamTargetSessionLocked();
     } else if (message->command == "start_track" && !perception_only_) {
       tracker_active_ = true;
     } else if (message->command == "stop_track") {
@@ -2556,6 +2688,273 @@ class XdUavTrackNode {
     }
   }
 
+  bool transformPointToFrame(const std::array<double, 3>& input,
+                             const std::string& input_frame,
+                             const std::string& output_frame,
+                             const ros::Time& stamp,
+                             std::array<double, 3>* output) {
+    if (output == nullptr) return false;
+    if (input_frame.empty() || output_frame.empty()) return false;
+    if (canonicalFrame(input_frame) == canonicalFrame(output_frame)) {
+      *output = input;
+      return true;
+    }
+    try {
+      const auto stamped_transform = tf_buffer_.lookupTransform(
+          canonicalFrame(output_frame), canonicalFrame(input_frame), stamp,
+          ros::Duration(0.0));
+      tf2::Transform transform;
+      tf2::fromMsg(stamped_transform.transform, transform);
+      const tf2::Vector3 point(input[0], input[1], input[2]);
+      const tf2::Vector3 transformed = transform * point;
+      (*output) = {{transformed.x(), transformed.y(), transformed.z()}};
+      return std::all_of(output->begin(), output->end(),
+                         [](double value) { return std::isfinite(value); });
+    } catch (const tf2::TransformException& error) {
+      ROS_WARN_THROTTLE(2.0,
+                        "[xd_uav_track] cannot transform metric point %s -> %s: %s",
+                        input_frame.c_str(), output_frame.c_str(),
+                        error.what());
+      return false;
+    }
+  }
+
+  bool sameFormationGroup(const std::string& first,
+                          const std::string& second) const {
+    if (!have_formation_state_ || first.empty() || second.empty()) return false;
+    for (const auto& group : formation_state_.groups) {
+      const bool has_first = std::find(group.begin(), group.end(), first) !=
+          group.end();
+      const bool has_second = std::find(group.begin(), group.end(), second) !=
+          group.end();
+      if (has_first && has_second) return true;
+    }
+    return false;
+  }
+
+  bool parseTeamTargetSource(const std::string& source,
+                             std::string* source_uav,
+                             std::string* session) const {
+    static const std::string prefix = "gmfw_team_direct_control:";
+    if (source_uav == nullptr || session == nullptr ||
+        source.compare(0, prefix.size(), prefix) != 0) return false;
+    const std::string identity = source.substr(prefix.size());
+    const std::size_t separator = identity.find(':');
+    if (separator == std::string::npos || separator == 0 ||
+        separator + 1 >= identity.size()) return false;
+    *source_uav = identity.substr(0, separator);
+    *session = identity.substr(separator + 1);
+    return true;
+  }
+
+  void ensureTeamTargetTopicLocked(const std::string& team_id) {
+    if (!team_direct_control_enabled_ || team_id.empty()) return;
+    const std::string requested_topic = team_target_topic_override_.empty()
+        ? "/formation/" + team_id + "/gmfw_direct_control_target"
+        : team_target_topic_override_;
+    const std::string resolved_topic = nh_.resolveName(requested_topic);
+    if (resolved_topic == team_target_topic_) return;
+    team_target_subscriber_.shutdown();
+    team_target_publisher_.shutdown();
+    team_target_topic_ = resolved_topic;
+    team_target_publisher_ = nh_.advertise<xd_uav_track::MetricTarget>(
+        team_target_topic_, 1, true);
+    ros::SubscribeOptions target_options =
+        ros::SubscribeOptions::create<xd_uav_track::MetricTarget>(
+            team_target_topic_, 1,
+            boost::bind(&XdUavTrackNode::teamTargetCallback, this, _1),
+            ros::VoidConstPtr(), &control_queue_);
+    team_target_subscriber_ = nh_.subscribe(target_options);
+    ROS_INFO("[xd_uav_track] team target handoff topic: %s",
+             team_target_topic_.c_str());
+  }
+
+  void formationStateCallback(
+      const topic_tools::ShapeShifter::ConstPtr& message) {
+    if (message == nullptr) return;
+    FormationSnapshot snapshot;
+    if (!parseFormationSnapshot(*message, &snapshot)) {
+      ROS_WARN_THROTTLE(2.0,
+                        "[xd_uav_track] cannot parse formation state message");
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    formation_state_ = std::move(snapshot);
+    have_formation_state_ = true;
+    ensureTeamTargetTopicLocked(formation_state_.team_id);
+    if (current_gmfw_target_valid_) {
+      maybePublishTeamTargetLocked(current_gmfw_target_id_);
+    }
+    processLatestTeamTargetLocked();
+  }
+
+  void teamTargetCallback(
+      const xd_uav_track::MetricTarget::ConstPtr& message) {
+    if (message == nullptr) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_team_target_ = *message;
+    have_latest_team_target_ = true;
+    processLatestTeamTargetLocked();
+  }
+
+  void processLatestTeamTargetLocked() {
+    if (!team_direct_control_enabled_ || perception_only_ ||
+        !have_latest_team_target_ || !have_formation_state_ ||
+        !latest_team_target_.valid) return;
+    std::string source_uav;
+    std::string session;
+    if (!parseTeamTargetSource(latest_team_target_.source,
+                               &source_uav, &session) ||
+        source_uav == own_uav_name_ ||
+        !sameFormationGroup(source_uav, own_uav_name_)) return;
+    if (state_frame_.empty()) return;
+
+    const auto& point = latest_team_target_.pose.pose.position;
+    std::array<double, 3> input_position{{point.x, point.y, point.z}};
+    std::array<double, 3> local_position{{0.0, 0.0, 0.0}};
+    if (!transformPointToFrame(input_position,
+                               latest_team_target_.header.frame_id,
+                               state_frame_, latest_team_target_.header.stamp,
+                               &local_position)) return;
+    if (!std::all_of(local_position.begin(), local_position.end(),
+                     [](double value) { return std::isfinite(value); })) return;
+
+    double sigma = 0.0;
+    const double covariance_max = std::max({
+        static_cast<double>(latest_team_target_.pose.covariance[0]),
+        static_cast<double>(latest_team_target_.pose.covariance[7]),
+        static_cast<double>(latest_team_target_.pose.covariance[14]), 0.0});
+    if (std::isfinite(covariance_max) && covariance_max > 0.0) {
+      sigma = std::sqrt(covariance_max);
+    }
+    const std::string session_key = source_uav + ":" + session;
+    const bool new_session = !team_direct_control_active_ ||
+        active_team_target_session_ != session_key ||
+        controller_->profile() !=
+            xd_uav_track::FollowerProfile::kDirectControl;
+    if (new_session) {
+      controller_->reset();
+      controller_->setProfile(xd_uav_track::FollowerProfile::kDirectControl);
+      requested_profile_ = xd_uav_track::FollowerProfile::kDirectControl;
+      tracker_active_ = true;
+      metric_identity_valid_ = false;
+      blend_active_ = false;
+      last_profile_change_ = ros::WallTime::now();
+    }
+
+    const double receive_time = ros::WallTime::now().toSec();
+    std::string reason;
+    if (!controller_->updateMetricWorldTarget(
+            latest_team_target_.target_id, receive_time, receive_time,
+            local_position, false, {{0.0, 0.0, 0.0}}, sigma,
+            "gmfw_team_direct_control", &reason)) {
+      ROS_WARN_THROTTLE(2.0,
+                        "[xd_uav_track] team direct_control target rejected: %s",
+                        reason.c_str());
+      return;
+    }
+    team_direct_control_active_ = true;
+    active_team_target_session_ = session_key;
+    if (new_session) {
+      ROS_INFO("[xd_uav_track] direct_control handoff from %s in formation group; "
+               "target id=%d xyz=(%.1f, %.1f, %.1f) frame=%s",
+               source_uav.c_str(), latest_team_target_.target_id,
+               local_position[0], local_position[1], local_position[2],
+               state_frame_.c_str());
+    }
+  }
+
+  void resetTeamTargetSessionLocked() {
+    ++team_target_session_;
+    current_gmfw_target_valid_ = false;
+    current_gmfw_target_id_ = -1;
+    have_team_target_to_publish_ = false;
+    team_target_to_publish_ = xd_uav_track::MetricTarget();
+    if (team_target_publisher_) {
+      team_target_to_publish_.header.stamp = ros::Time::now();
+      team_target_to_publish_.header.frame_id = have_formation_state_
+          ? formation_state_.common_frame : state_frame_;
+      team_target_to_publish_.target_id = -1;
+      team_target_to_publish_.valid = false;
+      team_target_to_publish_.source = "gmfw_team_direct_control:" +
+          own_uav_name_ + ":" + std::to_string(team_target_session_);
+      team_target_publisher_.publish(team_target_to_publish_);
+    }
+  }
+
+  void clearLatestGmfwMetricInputLocked() {
+    latest_gimbal_metric_target_valid_ = false;
+    latest_gimbal_metric_target_id_ = -1;
+    latest_gimbal_metric_target_world_ = {{0.0, 0.0, 0.0}};
+    latest_gimbal_metric_target_sigma_m_ = 0.0;
+    latest_gimbal_metric_target_frame_.clear();
+  }
+
+  bool ownFormationGroupHasPeers() const {
+    if (!have_formation_state_ || own_uav_name_.empty()) return false;
+    for (const auto& group : formation_state_.groups) {
+      const bool owns_group = std::find(group.begin(), group.end(),
+                                        own_uav_name_) != group.end();
+      if (owns_group && group.size() > 1) return true;
+    }
+    return false;
+  }
+
+  void maybePublishTeamTargetLocked(const int target_id) {
+    if (!team_direct_control_enabled_ || !current_gmfw_target_valid_ ||
+        !tracker_active_ ||
+        controller_->profile() !=
+            xd_uav_track::FollowerProfile::kGimbalFixedWingVelocityVector ||
+        !ownFormationGroupHasPeers() || team_target_topic_.empty() ||
+        formation_state_.common_frame.empty() || state_frame_.empty()) return;
+
+    std::array<double, 3> local_target{{0.0, 0.0, 0.0}};
+    double sigma = 0.0;
+    if (!controller_->gmfwLossTargetWorld(&local_target, &sigma)) return;
+    std::array<double, 3> common_target{{0.0, 0.0, 0.0}};
+    if (!transformPointToFrame(local_target, state_frame_,
+                               formation_state_.common_frame,
+                               ros::Time::now(), &common_target)) return;
+
+    xd_uav_track::MetricTarget team_target;
+    team_target.header.stamp = ros::Time::now();
+    team_target.header.frame_id = formation_state_.common_frame;
+    team_target.target_id = target_id;
+    team_target.valid = true;
+    team_target.pose.pose.position.x = common_target[0];
+    team_target.pose.pose.position.y = common_target[1];
+    team_target.pose.pose.position.z = common_target[2];
+    team_target.pose.pose.orientation.w = 1.0;
+    const double variance = std::isfinite(sigma) && sigma > 0.0
+        ? sigma * sigma : 0.0;
+    team_target.pose.covariance[0] = variance;
+    team_target.pose.covariance[7] = variance;
+    team_target.pose.covariance[14] = variance;
+    team_target.source = "gmfw_team_direct_control:" + own_uav_name_ + ":" +
+        std::to_string(team_target_session_);
+    team_target_to_publish_ = team_target;
+    have_team_target_to_publish_ = true;
+    team_target_last_publish_wall_ = ros::WallTime::now();
+    team_target_publisher_.publish(team_target_to_publish_);
+    ROS_INFO_THROTTLE(2.0,
+                      "[xd_uav_track] team target sent: id=%d xyz=(%.1f, %.1f, %.1f) "
+                      "frame=%s groups=%zu",
+                      target_id, common_target[0], common_target[1],
+                      common_target[2], formation_state_.common_frame.c_str(),
+                      formation_state_.groups.size());
+  }
+
+  void publishTeamTargetIfDueLocked(const ros::WallTime& wall_now,
+                                    const ros::Time& stamp) {
+    if (!have_team_target_to_publish_ || !team_target_publisher_) return;
+    if (!team_target_last_publish_wall_.isZero() &&
+        (wall_now - team_target_last_publish_wall_).toSec() <
+            team_target_publish_period_sec_) return;
+    team_target_to_publish_.header.stamp = stamp;
+    team_target_publisher_.publish(team_target_to_publish_);
+    team_target_last_publish_wall_ = wall_now;
+  }
+
   void stateCallback(const nav_msgs::Odometry::ConstPtr& message) {
     if (message->header.frame_id.empty()) return;
     double roll = 0.0;
@@ -2589,43 +2988,48 @@ class XdUavTrackNode {
     state.pose_valid = true;
     state.valid = true;
     controller_->setVehicleState(state);
+    processLatestTeamTargetLocked();
   }
 
   void metricTargetCallback(
       const xd_uav_track::MetricTarget::ConstPtr& message) {
     if (message == nullptr) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto canonical_frame = [](const std::string& frame) {
-      return frame.empty() ? frame
-                           : (frame.front() == '/' ? frame.substr(1) : frame);
-    };
-    if (!message->header.frame_id.empty() && !state_frame_.empty() &&
-        canonical_frame(message->header.frame_id) !=
-            canonical_frame(state_frame_)) {
-      ROS_WARN_THROTTLE(2.0,
-                        "[xd_uav_track] metric target frame '%s' does not "
-                        "match odometry frame '%s'; target rejected",
-                        message->header.frame_id.c_str(), state_frame_.c_str());
+    const std::string metric_source = message->source.empty()
+        ? std::string("metric_target") : message->source;
+    const bool gimbal_metric_source =
+        metric_source.find("gimbal") != std::string::npos ||
+        metric_source.find("target_geolocation") != std::string::npos;
+    if (!message->valid) {
+      if (gimbal_metric_source) clearLatestGmfwMetricInputLocked();
       return;
     }
     const auto finite = [](double value) { return std::isfinite(value); };
     const auto& p = message->pose.pose.position;
     const auto& v = message->velocity.twist.linear;
-    std::array<double, 3> world_position{{p.x, p.y, p.z}};
+    const std::array<double, 3> input_position{{p.x, p.y, p.z}};
+    std::array<double, 3> world_position = input_position;
+    const bool needs_transform = !message->header.frame_id.empty() &&
+        !state_frame_.empty() &&
+        canonicalFrame(message->header.frame_id) != canonicalFrame(state_frame_);
+    if (needs_transform && !transformPointToFrame(
+            input_position, message->header.frame_id, state_frame_,
+            message->header.stamp, &world_position)) {
+      return;
+    }
     std::array<double, 3> world_velocity{{v.x, v.y, v.z}};
     if (!std::all_of(world_position.begin(), world_position.end(), finite)) {
       ROS_WARN_THROTTLE(2.0,
                         "[xd_uav_track] metric target position is non-finite");
       return;
     }
-    const bool velocity_valid = message->has_velocity &&
+    const bool velocity_valid = !needs_transform && message->has_velocity &&
         std::all_of(world_velocity.begin(), world_velocity.end(), finite);
-    if (message->has_velocity && !velocity_valid) {
+    if (message->has_velocity && !needs_transform && !velocity_valid) {
       ROS_WARN_THROTTLE(2.0,
                         "[xd_uav_track] metric target velocity is non-finite");
       return;
     }
-    if (!message->valid) return;
     const double receive_time = ros::WallTime::now().toSec();
     const double observation_time = message->header.stamp.isZero()
         ? receive_time : message->header.stamp.toSec();
@@ -2642,23 +3046,39 @@ class XdUavTrackNode {
         2.0,
         "[xd_uav_track] 3D target point present: id=%d xyz=(%.1f, %.1f, %.1f) "
         "frame=%s sigma=%.1fm; %s",
-        static_cast<int>(message->target_id), p.x, p.y, p.z,
-        message->header.frame_id.c_str(), sigma,
+        static_cast<int>(message->target_id), world_position[0],
+        world_position[1], world_position[2],
+        state_frame_.empty() ? message->header.frame_id.c_str()
+                             : state_frame_.c_str(), sigma,
         guidance_ready
             ? "tracker acquired; point can guide the aircraft"
             : (tracker_active_
                    ? "waiting for the first selected visual frame; not guiding yet"
                    : "tracker stopped; point is not guiding the aircraft"));
     std::string reason;
-    if (!controller_->updateMetricWorldTarget(
+    const bool accepted = controller_->updateMetricWorldTarget(
             message->target_id, receive_time, observation_time, world_position,
             velocity_valid, world_velocity, sigma,
             message->source.empty() ? std::string("metric_target")
                                      : message->source,
-            &reason)) {
+            &reason);
+    if (!accepted) {
       ROS_WARN_THROTTLE(2.0,
                         "[xd_uav_track] metric world target rejected: %s",
                         reason.c_str());
+    } else {
+      if (gimbal_metric_source && !state_frame_.empty()) {
+        latest_gimbal_metric_target_world_ = world_position;
+        latest_gimbal_metric_target_id_ = message->target_id;
+        latest_gimbal_metric_target_sigma_m_ = sigma;
+        latest_gimbal_metric_target_frame_ = state_frame_;
+        latest_gimbal_metric_target_valid_ = true;
+      }
+    }
+    if (accepted && controller_->lastMetricWorldTargetAccepted()) {
+      current_gmfw_target_valid_ = true;
+      current_gmfw_target_id_ = message->target_id;
+      maybePublishTeamTargetLocked(message->target_id);
     }
   }
 
@@ -2790,23 +3210,66 @@ class XdUavTrackNode {
       return true;
     }
     const bool changed = tracker_active_ != request.start;
-    if (changed) {
+    bool snapshot_target_locked = false;
+    if (request.start) {
+      const bool snapshot_target_available =
+          latest_gimbal_metric_target_valid_ &&
+          controller_->profile() ==
+              xd_uav_track::FollowerProfile::kGimbalFixedWingVelocityVector;
+      const auto snapshot_target = latest_gimbal_metric_target_world_;
+      const int snapshot_target_id = latest_gimbal_metric_target_id_;
+      const double snapshot_target_sigma =
+          latest_gimbal_metric_target_sigma_m_;
+      const std::string snapshot_target_frame =
+          latest_gimbal_metric_target_frame_;
+      // Treat every start request as a new tracking session, even if the
+      // tracker is already active. The latest valid pre-start geolocation is
+      // captured below so this session cannot be moved by later coordinates.
       tracker_active_ = request.start;
       locked_global_id_ = -1;
-      // Never reuse a box, filter state or PID integral from before a start or
-      // stop transition. A continuous detector supplies a fresh box next.
+      controller_->reset();
+      metric_identity_valid_ = false;
+      resetTeamTargetSessionLocked();
+      if (snapshot_target_available && !state_frame_.empty()) {
+        std::array<double, 3> local_target = snapshot_target;
+        if (canonicalFrame(snapshot_target_frame) !=
+            canonicalFrame(state_frame_)) {
+          snapshot_target_locked = transformPointToFrame(
+              snapshot_target, snapshot_target_frame, state_frame_,
+              ros::Time::now(), &local_target);
+        } else {
+          snapshot_target_locked = true;
+        }
+        if (snapshot_target_locked) {
+          snapshot_target_locked = controller_->lockGmfwMetricTargetWorld(
+              snapshot_target_id, local_target, snapshot_target_sigma);
+        }
+      }
+      if (snapshot_target_locked) {
+        current_gmfw_target_valid_ = true;
+        current_gmfw_target_id_ = snapshot_target_id;
+        maybePublishTeamTargetLocked(snapshot_target_id);
+      }
+    } else if (changed) {
+      tracker_active_ = false;
+      locked_global_id_ = -1;
+      // Never reuse a box, filter state or PID integral from before a stop.
       controller_->reset();
       metric_identity_valid_ = false;
     }
 
     response.success = true;
     response.active = tracker_active_;
-    if (changed) {
-      response.message = tracker_active_ ? "tracker started"
-                                         : "tracker stopped";
+    if (request.start) {
+      response.message = snapshot_target_locked
+          ? (changed ? "tracker started; locked the current target position"
+                     : "tracker restarted; relocked the current target position")
+          : (changed ? "tracker started; waiting for a valid target position"
+                     : "tracker restarted; waiting for a valid target position");
+    } else if (changed) {
+      response.message = "tracker stopped";
     } else {
-      response.message = tracker_active_ ? "tracker already active"
-                                         : "tracker already stopped";
+      response.message = "tracker already stopped";
     }
     ROS_INFO("[xd_uav_track] %s", response.message.c_str());
     return true;
@@ -2914,8 +3377,10 @@ class XdUavTrackNode {
     active_source_ = source;
     latest_tracks_ = source_tracks;
     tracker_active_ = request.start_tracking;
+    clearLatestGmfwMetricInputLocked();
     controller_->reset();
     metric_identity_valid_ = false;
+    resetTeamTargetSessionLocked();
     response.success = true;
     response.message = tracker_active_ ? "track selected and tracking started"
                                        : "track selected; tracker remains stopped";
@@ -2964,8 +3429,10 @@ class XdUavTrackNode {
       }
       tracks_by_source_publisher_.publish(entry.second);
     }
+    clearLatestGmfwMetricInputLocked();
     controller_->reset();
     metric_identity_valid_ = false;
+    resetTeamTargetSessionLocked();
     response.success = true;
     response.message = "global multi-target search enabled; no target is selected for flight follow";
     response.selected_target_id = -1;
@@ -3052,6 +3519,7 @@ class XdUavTrackNode {
     const ros::WallTime wall_now = ros::WallTime::now();
     const ros::Time stamp = ros::Time::now();
     pruneSources(wall_now);
+    publishTeamTargetIfDueLocked(wall_now, stamp);
     if (perception_only_) {
       xd_uav_track::TrackStatus status;
       status.header.stamp = stamp;
@@ -3264,6 +3732,8 @@ class XdUavTrackNode {
   ros::Subscriber gimbal_status_subscriber_;
   ros::Subscriber metric_target_subscriber_;
   ros::Subscriber gimbal_metric_target_subscriber_;
+  ros::Subscriber formation_state_subscriber_;
+  ros::Subscriber team_target_subscriber_;
   ros::CallbackQueue perception_queue_;
   ros::CallbackQueue control_queue_;
   std::unique_ptr<ros::AsyncSpinner> perception_spinner_;
@@ -3279,6 +3749,7 @@ class XdUavTrackNode {
   ros::Publisher observations_publisher_;
   ros::Publisher target_mode_publisher_;
   ros::Publisher visual_tracks_publisher_;
+  ros::Publisher team_target_publisher_;
   ros::ServiceServer visual_identity_service_;
   std::map<int, VisualIdentity> visual_identities_;
   std::map<std::string, std::deque<xd_uav_track::TrackStateArray>> identity_detection_history_;
@@ -3288,6 +3759,8 @@ class XdUavTrackNode {
   ros::ServiceServer set_target_mode_service_;
   ros::ServiceServer emergency_stop_service_;
   ros::Timer timer_;
+  tf2_ros::Buffer tf_buffer_;
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::unique_ptr<xd_uav_track::TrackController> controller_;
   xd_uav_track::MultiTrackConfig multi_config_;
   std::map<std::string, std::unique_ptr<xd_uav_track::MultiTrackManager>>
@@ -3351,6 +3824,30 @@ class XdUavTrackNode {
   xd_uav_track::TrackVelocity last_command_;
   xd_uav_track::TrackVelocity blend_source_;
   xd_uav_track::TrackStateArray latest_tracks_;
+  FormationSnapshot formation_state_;
+  xd_uav_track::MetricTarget latest_team_target_;
+  xd_uav_track::MetricTarget team_target_to_publish_;
+  bool have_formation_state_{false};
+  bool have_latest_team_target_{false};
+  bool have_team_target_to_publish_{false};
+  bool team_direct_control_active_{false};
+  bool current_gmfw_target_valid_{false};
+  int current_gmfw_target_id_{-1};
+  bool latest_gimbal_metric_target_valid_{false};
+  int latest_gimbal_metric_target_id_{-1};
+  std::array<double, 3> latest_gimbal_metric_target_world_{{0.0, 0.0, 0.0}};
+  double latest_gimbal_metric_target_sigma_m_{0.0};
+  std::string latest_gimbal_metric_target_frame_;
+  std::string active_team_target_session_;
+  std::string team_state_topic_{"/formation/team/state"};
+  std::string team_target_topic_override_;
+  std::string team_target_topic_;
+  std::string own_uav_name_;
+  std::uint64_t team_target_session_{0};
+  bool team_direct_control_enabled_{true};
+  double team_target_publish_rate_hz_{5.0};
+  double team_target_publish_period_sec_{0.2};
+  ros::WallTime team_target_last_publish_wall_;
   std::string state_frame_;
   std::string body_frame_{"base_link"};
   std::string lateral_guidance_name_{"coordinated_turn"};

@@ -15,16 +15,16 @@ FusionTracker:
   # Zero keeps the single selected identity/template until explicit reselection.
   # A lost target publishes no stale box; matching continues in the background.
   identity_memory_ttl_sec: 0.0
-  long_reacquire_appearance_gate: 0.85
-  long_reacquire_quality_gate: 0.65
+  long_reacquire_appearance_gate: 0.76
+  long_reacquire_quality_gate: 0.50
   long_reacquire_minimum_score: 0.65
   long_reacquire_require_camera_motion: true
   reacquire_motion_horizon_sec: 2.0
   max_frame_gap_sec: 0.75
-  max_area_ratio: 2.5
-  center_gate_sizes: 1.4
-  appearance_gate: 0.70
-  quality_gate: 0.35
+  max_area_ratio: 3.0
+  center_gate_sizes: 1.6
+  appearance_gate: 0.62
+  quality_gate: 0.30
   ambiguity_margin: 0.12
   reacquire_confirm_frames: 3
   detector_weight: 0.70
@@ -34,15 +34,15 @@ FusionTracker:
   detector_authority_confidence: 0.85
   minimum_detector_confidence: 0.50
   minimum_maintenance_confidence: 0.10
-  # Refresh the local visual reference from accepted current YOLO observations.
-  local_template_refresh_sec: 0.75
-  # Each YOLO target keeps a grayscale template matched in a local ROI per frame.
-  # Accepted detector boxes refresh templates slowly.
-  template_match_threshold: 0.52
-  long_template_match_threshold: 0.72
+  # Minimum interval between template refreshes from visual or overlapping YOLO boxes.
+  local_template_refresh_sec: 0.40
+  # The selected template is matched every frame, with periodic scale search.
+  # Visual matches adapt it slowly; an overlapping YOLO box can refresh its appearance and size.
+  template_match_threshold: 0.48
+  long_template_match_threshold: 0.64
   template_update_confidence: 0.70
-  # Run at most one multi-scale template correction per target every 0.5 sec.
-  template_search_period_sec: 0.5
+  # Search a wider scale range every 0.2 sec for the selected target.
+  template_search_period_sec: 0.2
   class_groups: [[0, 1, 2, 3]]
   selection_max_age_sec: 10.0
   selection_max_frames: 24

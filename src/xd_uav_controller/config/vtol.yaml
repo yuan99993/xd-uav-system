@@ -20,6 +20,11 @@ fixedwing:
     completion_altitude_tolerance: 5.0
     reacquisition_distance: 50.0
 
+  point_following:
+    # VTOL处于固定翼后端时，锁存单点到达该范围后转入相切等待盘旋。
+    completion_radius: 20.0
+    completion_altitude_tolerance: 5.0
+
   # 输入适配层：仅在流式VXY没有AXY/yaw_rate时估计course-rate。
   # 完整P/V/A参考不会使用这组差分参数。
   reference_adapter:
@@ -50,10 +55,10 @@ fixedwing:
   vertical_control:
     altitude_time_constant: 3.5
     # 高度P环输出爬升率修正；积分项用于消除持续高度偏差，输出单位m/s。
-    altitude_integral_gain: 0.05
+    altitude_integral_gain: 0.03
     altitude_integral_climb_rate_limit: 1.0
     # 爬升率闭环直接修正俯仰角，单位rad/(m/s)；测量先低通滤波。
-    climb_rate_pitch_gain: 0.06
+    climb_rate_pitch_gain: 0.03
     climb_rate_filter_time_constant: 0.50
     # AZ转换为俯仰角速度前馈。
     vertical_acceleration_pitch_rate_gain: 1.0
@@ -93,7 +98,7 @@ fixedwing:
     # Dubins radius (the previous 0.95 rad produced the measured inner loops).
     maximum_roll: 0.6
     maximum_pitch: 0.45
-    maximum_climb_rate: 14.0
+    maximum_climb_rate: 8.0
     maximum_body_rate: [1.5, 2.0, 2.0]
 
   modes:

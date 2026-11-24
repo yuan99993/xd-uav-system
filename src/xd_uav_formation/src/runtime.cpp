@@ -640,9 +640,21 @@ void Follower::externalReference(
   }
   if (caller == ros::this_node::getName()) return;
   std::lock_guard<std::mutex> lock(mutex_);
-  last_external_reference_ = ros::Time::now();
-  if (enabled_) beginDropout("external_setpoint_from:" + caller);
-  (void)message;
+  const ros::Time received = ros::Time::now();
+  last_external_reference_ = received;
+  if (enabled_) {
+    beginDropout("external_setpoint_from:" + caller,
+                 controlPointFromReference(*message, received));
+  } else if (config_.mode == "consensus" && shared_) {
+    const auto group = formationGroupFor(member_);
+    if (group && group->detached && group->anchor == member_ &&
+        group->anchor_external_control) {
+      // Keep the group's point current for the entire external setpoint
+      // stream, even after the anchor's formation follower has dropped out.
+      shared_->detachFormationGroup(member_,
+          controlPointFromReference(*message, received));
+    }
+  }
 }
 
 void Follower::externalPath(const nav_msgs::Path::ConstPtr&) {
@@ -698,7 +710,69 @@ void Follower::markPeerDropped(const std::string& member,
   }
 }
 
-void Follower::beginDropout(const std::string& reason) {
+std::optional<FormationControlPoint> Follower::controlPointFromReference(
+    const mavros_msgs::PositionTarget& message,
+    const ros::Time& received) const {
+  if (config_.mode != "consensus") return std::nullopt;
+  const std::uint16_t ignored_position =
+      mavros_msgs::PositionTarget::IGNORE_PX |
+      mavros_msgs::PositionTarget::IGNORE_PY |
+      mavros_msgs::PositionTarget::IGNORE_PZ;
+  if ((message.type_mask & ignored_position) != 0 ||
+      !std::isfinite(message.position.x) ||
+      !std::isfinite(message.position.y) ||
+      !std::isfinite(message.position.z)) {
+    return std::nullopt;
+  }
+
+  geometry_msgs::PoseStamped pose;
+  pose.header = message.header;
+  if (pose.header.frame_id.empty()) {
+    if (!own_state_ || own_state_->header.frame_id.empty()) return std::nullopt;
+    pose.header.frame_id = own_state_->header.frame_id;
+  }
+  pose.header.frame_id = cleanFrame(pose.header.frame_id);
+  if (pose.header.stamp.isZero()) pose.header.stamp = received;
+  pose.pose.position = message.position;
+  const bool heading_valid =
+      (message.type_mask & mavros_msgs::PositionTarget::IGNORE_YAW) == 0 &&
+      std::isfinite(message.yaw);
+  if (heading_valid) {
+    tf2::Quaternion orientation;
+    orientation.setRPY(0.0, 0.0, message.yaw);
+    pose.pose.orientation = tf2::toMsg(orientation);
+  } else {
+    pose.pose.orientation.w = 1.0;
+  }
+
+  try {
+    if (pose.header.frame_id != config_.common_frame) {
+      if (!tf_buffer_) return std::nullopt;
+      pose = tf_buffer_->transform(pose, config_.common_frame,
+          ros::Duration(config_.tf_lookup_timeout));
+    }
+    FormationControlPoint point;
+    point.position = pointVec(pose.pose.position);
+    point.heading_valid = heading_valid;
+    if (heading_valid) point.heading = yaw(pose);
+    point.stamp = received;
+    return point;
+  } catch (const tf2::TransformException& error) {
+    ROS_WARN_THROTTLE(2.0,
+        "[xd_uav_formation] cannot transform external control point to %s: %s",
+        config_.common_frame.c_str(), error.what());
+    return std::nullopt;
+  } catch (const std::exception& error) {
+    ROS_WARN_THROTTLE(2.0,
+        "[xd_uav_formation] cannot use external control point: %s",
+        error.what());
+    return std::nullopt;
+  }
+}
+
+void Follower::beginDropout(
+    const std::string& reason,
+    const std::optional<FormationControlPoint>& control_point) {
   const bool was_enabled = enabled_;
   const bool external_control =
       reason.rfind("external_setpoint", 0) == 0 ||
@@ -706,7 +780,7 @@ void Follower::beginDropout(const std::string& reason) {
       reason == "follower_flight_action" ||
       reason.rfind("preempt:", 0) == 0 || reason.rfind("task_goal:", 0) == 0;
   if (config_.mode == "consensus" && external_control && shared_) {
-    if (shared_->detachFormationGroup(member_)) {
+    if (shared_->detachFormationGroup(member_, control_point)) {
       ROS_WARN("[xd_uav_formation] detaching group containing %s; member becomes its external-control anchor",
                member_.c_str());
     }
@@ -2503,7 +2577,7 @@ mavros_msgs::PositionTarget Follower::detachedGroupTarget(
     const FormationGroup& group) {
   if (group.anchor.empty())
     throw std::invalid_argument("detached_group_anchor_unavailable");
-  if (group.anchor == member_) {
+  if (group.anchor == member_ && !group.control_point) {
     const auto own_common = stateInCommonFrame(own, now);
     const auto route = pathReferenceState(std::get<0>(own_common),
         formation_selection_.waypoints, config_.cruise_speed,
@@ -2534,6 +2608,29 @@ mavros_msgs::PositionTarget Follower::detachedGroupTarget(
   Vec3 relative_offset{};
   for (int axis = 0; axis < 3; ++axis)
     relative_offset[axis] = slots[own_index][axis] - slots[anchor_index][axis];
+  // Detached group members keep the shared control point's altitude. The
+  // formation shape only separates them horizontally around the anchor.
+  relative_offset[2] = 0.0;
+
+  if (group.control_point) {
+    const auto anchor_common = stateInCommonFrame(anchor_state->second, now);
+    const Vec3 anchor_velocity = vectorVec(std::get<1>(anchor_common));
+    const double anchor_speed = std::hypot(anchor_velocity[0], anchor_velocity[1]);
+    const bool fixedwing = own.vehicle_type ==
+        xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
+    const double anchor_heading = fixedwing && anchor_speed >=
+            config_.fixedwing_min_groundspeed_for_course
+        ? std::atan2(anchor_velocity[1], anchor_velocity[0])
+        : yaw(std::get<2>(anchor_common));
+    const double heading = group.control_point->heading_valid
+        ? group.control_point->heading : anchor_heading;
+    const auto slot = slotTarget(group.control_point->position, heading,
+        relative_offset, config_.yaw_offset);
+    // Publish the same commanded altitude to every member; only X/Y vary by
+    // slot. This lets the subgroup descend with the external control point.
+    return positionTarget({slot[0], slot[1], group.control_point->position[2]},
+        slot[3], now, std::nullopt, config_.common_frame, own);
+  }
 
   geometry_msgs::PoseStamped pose;
   geometry_msgs::Vector3Stamped leader_velocity, leader_acceleration;
@@ -2571,7 +2668,7 @@ mavros_msgs::PositionTarget Follower::detachedGroupTarget(
   reference_velocity = pidCatchupVelocity(reference_velocity,
       {slot[0], slot[1], slot[2]}, own_position, now, own);
   reference_velocity = smoothCourseVelocity(reference_velocity, now, own);
-  return positionTarget({slot[0], slot[1], slot[2]}, slot[3], now,
+  return positionTarget({slot[0], slot[1], position[2]}, slot[3], now,
                         reference_velocity, "", own);
 }
 
@@ -2738,6 +2835,8 @@ FormationRuntime::FormationRuntime(ros::NodeHandle nh, Config config,
       shared_(std::make_shared<SharedData>()), tf_buffer_(std::move(tf_buffer)),
       external_telemetry_(external_telemetry) {
   config_.common_frame = cleanFrame(config_.common_frame);
+  formation_state_pub_ = nh_.advertise<FormationState>(
+      "/formation/" + config_.team_id + "/state", 1, true);
   auto geometry = std::make_shared<FormationGeometry>();
   if (config_.mode == "consensus") {
     if (config_.members.size() < 2 || config_.common_frame.empty())
@@ -2870,6 +2969,9 @@ FormationRuntime::FormationRuntime(ros::NodeHandle nh, Config config,
     shutdown();
     throw;
   }
+  publishFormationState();
+  formation_state_timer_ = nh_.createWallTimer(
+      ros::WallDuration(0.5), &FormationRuntime::formationStateTimer, this);
   ROS_INFO("[xd_uav_formation] shared %s C++ runtime ready for %zu member(s)",
            config_.mode.c_str(), followers_.size());
 }
@@ -2945,6 +3047,74 @@ void FormationRuntime::leaderPreemptCallback(const std_msgs::String::ConstPtr& m
   for (auto& follower : followers_) follower->leaderPreemptInput(*message);
 }
 
+void FormationRuntime::formationStateTimer(const ros::WallTimerEvent&) {
+  publishFormationState();
+}
+
+void FormationRuntime::publishFormationState() {
+  if (!formation_state_pub_) return;
+
+  FormationSelection selection;
+  FormationGroupPlan group_plan;
+  {
+    std::lock_guard<std::mutex> lock(shared_->mutex);
+    selection = shared_->formation_selection;
+    group_plan = shared_->formation_groups;
+  }
+
+  FormationState message;
+  message.header.stamp = ros::Time::now();
+  message.header.frame_id = config_.common_frame;
+  message.team_id = config_.team_id;
+  message.mode = config_.mode;
+  message.running = running_.load();
+  message.common_frame = config_.common_frame;
+  message.leader_name = config_.mode == "leader_follow"
+      ? config_.leader_name : std::string();
+  message.shape = config_.mode == "consensus"
+      ? selection.shape : config_.shape;
+  message.loop_path = config_.mode == "consensus"
+      ? selection.loop_path : config_.loop_path;
+  message.spacing = config_.spacing;
+  message.group_spacing = config_.group_spacing;
+  message.configured_group_size = config_.mode == "consensus"
+      ? static_cast<std::uint32_t>(std::max(0, group_plan.group_size)) : 0;
+  message.members = config_.members;
+  message.selection_revision = selection.revision;
+  message.group_revision = group_plan.revision;
+  message.waypoints.reserve(selection.waypoints.size());
+  for (const auto& waypoint : selection.waypoints) {
+    geometry_msgs::Point point;
+    point.x = waypoint[0];
+    point.y = waypoint[1];
+    point.z = waypoint[2];
+    message.waypoints.push_back(point);
+  }
+  message.groups.reserve(group_plan.groups.size());
+  for (const auto& source : group_plan.groups) {
+    FormationGroupInfo output;
+    output.id = source.id;
+    output.uavs = source.members;
+    output.nominal_size = static_cast<std::uint32_t>(source.nominal_size);
+    output.detached = source.detached;
+    output.anchor_external_control = source.anchor_external_control;
+    output.anchor = source.anchor;
+    output.has_control_point = source.control_point.has_value();
+    if (source.control_point) {
+      output.control_point.x = source.control_point->position[0];
+      output.control_point.y = source.control_point->position[1];
+      output.control_point.z = source.control_point->position[2];
+      output.control_heading = source.control_point->heading;
+      output.control_heading_valid = source.control_point->heading_valid;
+      output.control_point_stamp = source.control_point->stamp;
+    }
+    if (source.detached) ++message.detached_group_count;
+    message.groups.push_back(std::move(output));
+  }
+  message.group_count = static_cast<std::uint32_t>(message.groups.size());
+  formation_state_pub_.publish(message);
+}
+
 bool FormationRuntime::setMembers(bool enabled, std::string& message) {
   std::vector<Follower*> completed;
   for (auto& follower : followers_) {
@@ -2956,7 +3126,9 @@ bool FormationRuntime::setMembers(bool enabled, std::string& message) {
           std::string ignored;
           (*it)->setEnabled(false, ignored);
         }
+        running_.store(false);
         if (config_.mode == "consensus") clearAcquisitionPlan();
+        publishFormationState();
         return false;
       }
     } else completed.push_back(follower.get());
@@ -2967,6 +3139,8 @@ bool FormationRuntime::setMembers(bool enabled, std::string& message) {
     shared_->updateFormationGroupPlan(
         makeGroupPlan(config_.members, groups.group_size));
   }
+  running_.store(enabled);
+  publishFormationState();
   message = enabled ? "team started" : "team stopped";
   return true;
 }
@@ -3010,6 +3184,7 @@ bool FormationRuntime::updateFormationSelection(
         config_.cruise_speed, config_.lookahead, selection.loop_path);
     shared_->updateFormationSelection(std::move(selection));
     clearAcquisitionPlan();
+    publishFormationState();
     message = "shape and route selection updated";
     return true;
   } catch (const std::exception& error) {
@@ -3083,6 +3258,7 @@ bool FormationRuntime::updateGroupSize(int group_size, std::string& message) {
     }
     config_.group_size = group_size;
     clearAcquisitionPlan();
+    publishFormationState();
     message = "group size updated; active groups are reacquiring their slots";
     return true;
   } catch (const std::exception& error) {

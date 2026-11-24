@@ -3,6 +3,7 @@
 #include <xd_uav_formation/core.hpp>
 #include <xd_uav_controller/ControlState.h>
 #include <xd_uav_formation/FormationControl.h>
+#include <xd_uav_formation/FormationState.h>
 #include <xd_uav_task_execute/ExecuteTaskActionGoal.h>
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -19,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -140,6 +142,13 @@ struct FormationSelection {
   std::uint64_t revision{0};
 };
 
+struct FormationControlPoint {
+  Vec3 position{0.0, 0.0, 0.0};
+  double heading{0.0};
+  bool heading_valid{false};
+  ros::Time stamp;
+};
+
 struct FormationGroup {
   std::string id;
   std::vector<std::string> members;
@@ -148,6 +157,7 @@ struct FormationGroup {
   bool detached{false};
   bool anchor_external_control{false};
   std::string anchor;
+  std::optional<FormationControlPoint> control_point;
 };
 
 struct FormationGroupPlan {
@@ -190,17 +200,20 @@ struct SharedData : SharedSnapshot {
     markChanged();
   }
 
-  bool detachFormationGroup(const std::string& member) {
+  bool detachFormationGroup(
+      const std::string& member,
+      const std::optional<FormationControlPoint>& control_point = std::nullopt) {
     std::lock_guard<std::mutex> lock(mutex);
     for (auto& group : formation_groups.groups) {
       if (std::find(group.members.begin(), group.members.end(), member) ==
           group.members.end()) continue;
-      if (group.detached && group.anchor == member &&
-          group.anchor_external_control) return true;
+      const bool topology_changed = !group.detached || group.anchor != member ||
+          !group.anchor_external_control;
       group.detached = true;
       group.anchor_external_control = true;
       group.anchor = member;
-      ++formation_groups.revision;
+      group.control_point = control_point;
+      if (topology_changed) ++formation_groups.revision;
       markChanged();
       return true;
     }
@@ -231,6 +244,7 @@ struct SharedData : SharedSnapshot {
       group.detached = false;
       group.anchor_external_control = false;
       group.anchor.clear();
+      group.control_point.reset();
     }
     if (changed) {
       ++formation_groups.revision;
@@ -358,7 +372,12 @@ class Follower {
   void taskGoal(const xd_uav_task_execute::ExecuteTaskActionGoal::ConstPtr& message);
   void publishStatus();
   void markPeerDropped(const std::string& member, const std::string& reason);
-  void beginDropout(const std::string& reason);
+  void beginDropout(
+      const std::string& reason,
+      const std::optional<FormationControlPoint>& control_point = std::nullopt);
+  std::optional<FormationControlPoint> controlPointFromReference(
+      const mavros_msgs::PositionTarget& message,
+      const ros::Time& received) const;
   void stop(const std::string& reason, bool hold, bool broadcast = true);
   void publishHold();
   void publishCenter(const ros::Time& now, const StateSnapshot& snapshot);
@@ -572,6 +591,8 @@ class FormationRuntime {
   void leaderTaskCallback(
       const xd_uav_task_execute::ExecuteTaskActionGoal::ConstPtr& message);
   void leaderPreemptCallback(const std_msgs::String::ConstPtr& message);
+  void publishFormationState();
+  void formationStateTimer(const ros::WallTimerEvent& event);
 
   ros::NodeHandle nh_;
   Config config_;
@@ -579,9 +600,12 @@ class FormationRuntime {
   std::shared_ptr<const FormationGeometry> geometry_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   bool external_telemetry_{false};
+  std::atomic<bool> running_{false};
   std::vector<std::unique_ptr<Follower>> followers_;
   std::map<std::string, Follower*> follower_by_name_;
   std::vector<ros::Subscriber> subscribers_;
+  ros::Publisher formation_state_pub_;
+  ros::WallTimer formation_state_timer_;
 };
 
 }  // namespace xd_uav_formation

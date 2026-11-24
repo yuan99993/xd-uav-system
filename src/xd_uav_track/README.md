@@ -32,6 +32,19 @@ Tracker 默认停止控制输出。确认检测器、里程计、控制器和目
 rosservice call /uav1/track/start_tracker "start: true"
 ```
 
+Every call with `start: true` starts a fresh control session, including when
+tracking is already active. It clears the previous world-coordinate target and
+filter history, then initializes from the currently selected target data.
+After a repeated start, expect a brief reacquisition before guidance resumes.
+
+## `gmfw_velocity_vector` 丢框和编队目标
+
+有目标框时，主机继续使用图像误差和云台角度控制。调用 `start_tracker` 时，节点取当时最新的有效 GPS 世界坐标点并锁定到本次会话结束；后续视觉和定位更新不会移动这个坐标。GPS 备用航向和爬升/下降指令会同时预计算；丢框后沿锁定点飞，不切换 profile，也不因暂时没有图像而释放固定翼控制参考。重新调用启动会按当时最新坐标重新锁点，重新选框也会清除旧点。
+
+`follower/gmfw_velocity_vector/aligned_loss_coast/terminal_ground_z_m` 现在表示目标点 Z 轴方向的偏移量。设为 `-5.0` 时，测得目标点 `(100, -100, 30)` 会按 `(100, -100, 25)` 控制，包括图像丢失后的主机和同组飞机。
+
+节点从 `/formation/team/state` 读取 `FormationState.groups[].uavs`，只向当前同组飞机广播已锁定的目标。广播话题默认是 `/formation/<team_id>/gmfw_direct_control_target`；同组的 `xd_uav_track` 节点收到后会自动以 `direct_control` 模式跟随该世界坐标点。坐标在自身里程计系和编队 `common_frame` 不同时通过 TF 转换。可用 `formation/direct_control_enabled` 关闭，或用 `formation/direct_control_target_topic` 覆盖广播话题。
+
 ## `direct_control` 点到点模式
 
 `direct_control` 使用共享世界坐标系中的 `MetricTarget`，不需要相机检测或本机 track ID。未进入到达半径时，按 `follower/target_guidance/direct_control/speed_mps` 以恒定三维速度朝目标飞行；进入 `arrival_radius_m` 配置的半径后切换到 XYZ 位置保持并报告 `arrived`。目标 Z 同样参与制导。

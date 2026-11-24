@@ -705,6 +705,12 @@ class ControllerNode {
           "fixedwing/path_following/completion_altitude_tolerance",
           fixedwing_path_completion_altitude_tolerance_, 5.0);
       private_nh_.param(
+          "fixedwing/point_following/completion_radius",
+          fixedwing_point_completion_radius_, 20.0);
+      private_nh_.param(
+          "fixedwing/point_following/completion_altitude_tolerance",
+          fixedwing_point_completion_altitude_tolerance_, 5.0);
+      private_nh_.param(
           "fixedwing/path_following/reacquisition_distance",
           fixedwing_path_reacquisition_distance_, 50.0);
       loadParameterWithLegacy(
@@ -1260,6 +1266,8 @@ class ControllerNode {
     if (load_fixedwing_ &&
         (fixedwing_path_curvature_distance_ <= 0.0 ||
          fixedwing_path_curvature_preview_time_ < 0.0 ||
+         fixedwing_point_completion_radius_ <= 0.0 ||
+         fixedwing_point_completion_altitude_tolerance_ < 0.0 ||
          fixedwing_guidance_lookahead_distance_ <= 0.0 ||
          fixedwing_minimum_lookahead_distance_ <= 0.0 ||
          fixedwing_maximum_lookahead_distance_ <
@@ -1293,6 +1301,9 @@ class ControllerNode {
          max_roll_ <= 0.0 || max_roll_ >= 0.5 * kPi ||
          !std::isfinite(fixedwing_path_curvature_distance_) ||
          !std::isfinite(fixedwing_path_curvature_preview_time_) ||
+         !std::isfinite(fixedwing_point_completion_radius_) ||
+         !std::isfinite(
+             fixedwing_point_completion_altitude_tolerance_) ||
          !std::isfinite(fixedwing_guidance_lookahead_distance_) ||
          !std::isfinite(fixedwing_minimum_lookahead_distance_) ||
          !std::isfinite(fixedwing_maximum_lookahead_distance_) ||
@@ -6009,9 +6020,39 @@ class ControllerNode {
             reference_source_,
             state_.header.frame_id, 0.0,
             &candidate, &transform_reason);
-    return useTransformedReference(
+    const bool accepted = useTransformedReference(
         transformed, candidate, transform_reason,
         now, reference, reason);
+    if (!accepted || !transformed ||
+        !isFixedwingBackendActive() ||
+        !point_reference_latched_ ||
+        (!candidate.use_position[0] &&
+         !candidate.use_position[1])) {
+      return accepted;
+    }
+
+    const double dx = candidate.use_position[0]
+                          ? candidate.position.x - state_.position_odom.x
+                          : 0.0;
+    const double dy = candidate.use_position[1]
+                          ? candidate.position.y - state_.position_odom.y
+                          : 0.0;
+    const double horizontal_error = std::hypot(dx, dy);
+    const bool altitude_reached =
+        !candidate.use_position[2] ||
+        std::abs(candidate.position.z - state_.position_odom.z) <=
+            fixedwing_point_completion_altitude_tolerance_;
+    if (horizontal_error <= fixedwing_point_completion_radius_ &&
+        altitude_reached) {
+      const double loiter_altitude =
+          candidate.use_position[2]
+              ? candidate.position.z
+              : state_.position_odom.z;
+      startFixedwingLoiter(
+          loiter_altitude, "到达固定翼单点目标");
+      *reference = makeFixedwingLoiterReference();
+    }
+    return true;
   }
 
   bool resolveTrajectoryReference(
@@ -6644,6 +6685,8 @@ class ControllerNode {
   double fixedwing_path_curvature_preview_time_{0.30};
   double fixedwing_path_completion_radius_{20.0};
   double fixedwing_path_completion_altitude_tolerance_{5.0};
+  double fixedwing_point_completion_radius_{20.0};
+  double fixedwing_point_completion_altitude_tolerance_{5.0};
   double fixedwing_path_reacquisition_distance_{50.0};
 
   double multirotor_takeoff_default_altitude_{2.0};

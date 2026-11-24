@@ -22,9 +22,10 @@ network:
   auth_token_env: XD_UAV_START_TOKEN
   require_auth: true
 
-# Track and H.264 sending are started only when this vehicle declares its
-# front_gimbal_camera sensor. The down camera is not sent back yet.
-required_vehicle_launches: []
+# Start tracking only on uav1, uav2, and uav3 to limit CPU usage.
+required_vehicle_launches:
+  track:
+    uav_indices: [1, 10, 11]
 
 # Formation and task allocation each run once per simulation session. Task
 # allocation uses the fixed config files declared in its shared launch below.
@@ -119,12 +120,12 @@ aircraft_types:
           - "UAV_NAME:={name}"
           - "controller_config:={controller_config}"
 
-# Optional per-aircraft launch definitions. Entries can be selected explicitly
-# in JSON launches or started automatically by sensor type below.
+# Per-aircraft launch definitions. Required launch selection is configured
+# above; other entries can be selected explicitly or started by sensor type.
 vehicle_launches:
   track:
-    sensor_required: true
-    sensor_types: [front_gimbal_camera]
+    expected_nodes:
+      - "/{name}/track"
     once_per_vehicle: true
     argv:
       - roslaunch
@@ -142,6 +143,19 @@ vehicle_launches:
     default_params:
       image_topic: "{video_topic}"
       port: "{video_port}"
+      group: "224.0.5.4"
+      local_ip: "192.168.2.102"
+
+  down_h264_sender:
+    sensor_required: true
+    sensor_types: [down_camera]
+    once_per_vehicle: true
+    argv:
+      - "{h264_sender_binary}"
+    parameter_prefix: "_"
+    default_params:
+      image_topic: "{down_video_topic}"
+      port: "{down_video_port}"
       group: "224.0.5.4"
       local_ip: "192.168.2.102"
 
@@ -250,20 +264,18 @@ vehicle_launches:
       - "det_sensor_id:={sensor_id}"
 
 # Existing front_gimbal_camera entries all refer to the one front camera on
-# the EO gimbal. Starting that sensor starts its three gimbal programs once.
-# Explicit entries in a vehicle's launches list override these defaults.
+# the EO gimbal. Track is already started for every aircraft above; the sensor
+# starts its camera and gimbal programs once. Explicit entries in a vehicle's
+# launches list override these sensor defaults.
 automatic_sensor_launches:
   front_gimbal_camera:
     - id: camera_stream_receiver
-    - id: track
     - id: h264_sender
     - id: gimbal_attitude_bridge
     - id: gimbal_control
     - id: target_geolocation
       params:
         detection_topic: "{automatic_detection_topic}"
-  down_camera:
-    - id: camera_stream_receiver
 
 shared_launches:
   world_tf:

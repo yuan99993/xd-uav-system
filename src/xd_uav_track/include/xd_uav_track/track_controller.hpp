@@ -151,14 +151,9 @@ struct TrackControllerConfig {
   // loss in the odometry world frame. The descent limit is a rate limit; it
   // does not impose an altitude hold above the target.
   bool gmfw_metric_loss_coast_enabled{true};
-  double gmfw_metric_loss_max_age_sec{1.0};
-  double gmfw_metric_loss_max_position_sigma_m{12.0};
   double gmfw_loss_max_descent_rate_mps{5.0};
-  // Lock the selected geolocated point into a terminal descent approach inside
-  // this horizontal distance. Zero disables the terminal phase.
-  double gmfw_terminal_approach_enter_distance_m{250.0};
-  // Desired ground plane in the odometry frame (ENU Z, meters). The metric
-  // target's altitude is deliberately not used as the terminal altitude.
+  // Offset added to the initialized metric target's world Z for image-loss
+  // guidance; e.g. -5 m guides to five metres below the measured point.
   double gmfw_terminal_ground_z_m{0.0};
 
   // Track-quality safety. Kalman covariance is expressed in normalized image
@@ -334,6 +329,12 @@ class TrackController {
   // anchor must use this flag rather than treating the image update itself as
   // proof that the world-frame observation was accepted.
   bool lastMetricMeasurementAccepted() const;
+  bool lastMetricWorldTargetAccepted() const;
+  bool gmfwLossTargetWorld(std::array<double, 3>* world_position,
+                           double* position_sigma_m) const;
+  bool lockGmfwMetricTargetWorld(
+      int target_id, const std::array<double, 3>& world_position,
+      double position_sigma_m);
   // True after the controller has accepted a selected visual measurement
   // since its last reset. Gimbal world points are held until this is true.
   bool everAcquired() const;
@@ -448,6 +449,7 @@ class TrackController {
   Pid fw_climb_rate_pid_;
   Pid gmfw_course_pid_;
   Pid gmfw_climb_rate_pid_;
+  Pid gmfw_metric_course_pid_;
 
   bool have_measurement_{false};
   bool ever_acquired_{false};
@@ -475,15 +477,17 @@ class TrackController {
   bool gmfw_metric_loss_anchor_valid_{false};
   bool gmfw_terminal_approach_active_{false};
   int gmfw_locked_visual_track_id_{-1};
+  double gmfw_last_confirmed_detection_time_{-1.0};
   std::array<double, 3> gmfw_metric_loss_target_world_{{0.0, 0.0, 0.0}};
   double gmfw_metric_loss_origin_x_{0.0};
   double gmfw_metric_loss_origin_y_{0.0};
   double gmfw_metric_loss_target_course_world_rad_{0.0};
   double gmfw_metric_loss_target_distance_m_{0.0};
+  // First accepted GMFW world point in the current tracking session. Its
+  // position and sigma are latched once and held until reset/reselection.
   bool gmfw_recent_metric_target_valid_{false};
   int gmfw_recent_metric_target_id_{-1};
   std::array<double, 3> gmfw_recent_metric_target_world_{{0.0, 0.0, 0.0}};
-  double gmfw_recent_metric_target_receive_time_{0.0};
   double gmfw_recent_metric_target_sigma_m_{0.0};
   double yaw_rate_limited_{0.0};
   double smoothed_yaw_{0.0};
@@ -497,6 +501,7 @@ class TrackController {
   // detections until the tracker is reset or the profile leaves metric mode.
   bool external_metric_target_active_{false};
   bool last_metric_measurement_accepted_{false};
+  bool last_metric_world_target_accepted_{false};
   double metric_state_time_{0.0};
   std::array<double, 3> last_metric_position_frd_{{0.0, 0.0, 0.0}};
   std::array<double, 3> last_metric_velocity_frd_{{0.0, 0.0, 0.0}};

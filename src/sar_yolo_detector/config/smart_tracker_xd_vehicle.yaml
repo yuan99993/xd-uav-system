@@ -32,9 +32,9 @@ PhaseOverlay:
   input_detections_topic: track/selected_detections
   status_topic: track/status
   gimbal_state_topic: track/gimbal_state
-  detection_timeout_sec: 0.5
-  status_timeout_sec: 0.5
-  gimbal_state_timeout_sec: 0.5
+  detection_timeout_sec: 10
+  status_timeout_sec: 10
+  gimbal_state_timeout_sec: 10
   attacking_min_tracking_duration_sec: 1.0
   attacking_error_threshold: 0.05
   attacking_error_exit_threshold: 0.40

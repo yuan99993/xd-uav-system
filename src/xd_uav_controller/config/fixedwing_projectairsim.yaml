@@ -14,6 +14,11 @@ fixedwing:
     completion_altitude_tolerance: 5.0
     reacquisition_distance: 50.0
 
+  point_following:
+    # 固定翼锁存单点到达该范围后转入当前位置的相切等待盘旋。
+    completion_radius: 20.0
+    completion_altitude_tolerance: 5.0
+
   # 输入适配层：仅在流式VXY没有AXY/yaw_rate时估计course-rate。
   # 完整P/V/A参考不会使用这组差分参数。
   reference_adapter:

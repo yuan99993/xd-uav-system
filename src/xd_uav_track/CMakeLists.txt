@@ -12,6 +12,10 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
   std_srvs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  topic_tools
 )
 find_package(Eigen3 REQUIRED)
 
@@ -76,6 +80,10 @@ catkin_package(
     sensor_msgs
     std_msgs
     std_srvs
+    tf2
+    tf2_ros
+    tf2_geometry_msgs
+    topic_tools
 )
 
 include_directories(

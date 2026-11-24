@@ -18,7 +18,7 @@ leader_follow:
     # uav9: [-400.0, -320.0, 0.0]
 
 consensus:
-  team_id: fixedwing_30_consensus
+  team_id: team
   common_frame: world
   # line：一字横队
   # column：纵队

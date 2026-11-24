@@ -31,7 +31,7 @@
   <!-- Drop frames that have already waited too long, keeping image updates fresh. -->
   <!-- Fusion propagates selected tracks between detector updates; cap YOLO
        requests to avoid running the shared inference path faster than needed. -->
-  <arg name="inference_max_fps" default="20.0" />
+  <arg name="inference_max_fps" default="40.0" />
   <arg name="annotated_max_fps" default="40.0" />
   <arg name="maximum_capture_age_sec" default="2.0" />
   <arg name="input_image_topic" default="down_camera/image_raw" />

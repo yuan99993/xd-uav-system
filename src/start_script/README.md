@@ -22,6 +22,7 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 示例里的 `/Sim/...` 相机和测距话题要按仿真实际发布的话题替换；管理器不会再假设所有仿真都使用同一组相机路径。
 
 - `shared_launches`：放仿真端选择的整支机队共用程序。`world_tf` 会依据当前 `vehicles` 名称和数量生成临时配置。编队管理器和任务分配器由 start 自动启动一次，不需要在 JSON 里重复列出。
+- `manager.yaml` 的 `required_vehicle_launches`：按 UAV 编号固定启动的程序；当前仅 `uav1`、`uav2`、`uav3` 自动启动 `xd_uav_track/track.launch`。
 - `vehicles[].sensors`：沿用仿真端现有的传感器类型并声明实际话题。`front_gimbal_camera` 会自动启动云台姿态桥接、云台控制和目标定位；它仍然是一条前视相机记录。
 - `vehicles[].launches`：选择该架飞机的识别和其他可选程序。启动项可以是字符串，也可以是带 `sensor` 和 `params` 的对象；前视相机对应的云台程序由 start 自动加入。
 
@@ -49,13 +50,19 @@ TCP 连接上每行发送一个 UTF-8 JSON 对象。开始时发送完整状态�
 
 ## 相机相关启动项与视频端口
 
-只有当飞机的 `sensors` 中声明 `front_gimbal_camera` 时，管理器才会自动启动 `xd_uav_track/track.launch` 和 C++ H.264 发送器 `src/bridge/bin/h264_nal_multicast_sender`。阶段文字由 SAR YOLO 节点画入识别标注图，下视相机目前只启动接收器，不会启动 H.264 回传。每架飞机的 track 和发送器各启动一份。发送器订阅 YOLO 最终图像话题 `/uavN/sar_yolo_detector/smart/annotated`；端口根据飞机编号自动分配：
+`uav1`、`uav2`、`uav3` 会由 `required_vehicle_launches` 启动 `xd_uav_track/track.launch`，其他飞机不启动 track。声明 `front_gimbal_camera` 时会启动前视 H.264 发送器和相机/云台相关程序；声明 `down_camera` 时会启动下视 H.264 发送器。前视发送器订阅 SAR YOLO 标注图，下视发送器订阅接收器发布的 `/uavN/down_camera/image_raw`。端口按飞机编号分别分配：
 
-| 飞机 | UDP 端口 | ROS 图像话题 |
+| 飞机 | 前视 UDP 端口 | 前视 ROS 图像话题 |
 | --- | ---: | --- |
-| `uav1` | `32797` | `/uav1/sar_yolo_detector/smart/annotated` |
-| `uav2` | `32798` | `/uav2/sar_yolo_detector/smart/annotated` |
-| `uavN` | `32796 + N` | `/uavN/sar_yolo_detector/smart/annotated` |
+| `uav1` | `33797` | `/uav1/sar_yolo_detector/smart/annotated` |
+| `uav2` | `33798` | `/uav2/sar_yolo_detector/smart/annotated` |
+| `uavN` | `33796 + N` | `/uavN/sar_yolo_detector/smart/annotated` |
+
+| 飞机 | 下视 UDP 端口 | 下视 ROS 图像话题 |
+| --- | ---: | --- |
+| `uav1` | `43797` | `/uav1/down_camera/image_raw` |
+| `uav2` | `43798` | `/uav2/down_camera/image_raw` |
+| `uavN` | `43796 + N` | `/uavN/down_camera/image_raw` |
 
 端口之外的组播地址和网卡 IP 目前沿用 `manager.yaml` 中发送器配置。车辆名使用 `uav1`、`uav2` 这样的格式，以便稳定计算端口。
 

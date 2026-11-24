@@ -13,8 +13,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 catkin_python_setup()
+add_message_files(FILES FormationGroupInfo.msg FormationState.msg)
 add_service_files(FILES FormationControl.srv)
-generate_messages()
+generate_messages(DEPENDENCIES geometry_msgs std_msgs)
 
 catkin_package(
   INCLUDE_DIRS include

@@ -31,6 +31,7 @@ import yaml
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _ARG_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_INT_GRACE_SEC = 15.0
 _TERM_GRACE_SEC = 2.0
 _KILL_GRACE_SEC = 1.0
 _ROS_CALL_TIMEOUT_SEC = 0.5
@@ -379,8 +380,24 @@ class ProcessManager:
                     return True
             return False
 
-        # Ask roslaunch and its nodes to shut down cleanly first. ROS nodes can
-        # have their own process groups, so signal each owned group explicitly.
+        # SIGINT is the normal ROS 1 shutdown signal. Give roscpp nodes time to
+        # unregister from the master before escalating to SIGTERM.
+        for pgid in group_members:
+            if group_is_owned_and_alive(pgid):
+                try:
+                    os.killpg(pgid, signal.SIGINT)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    self._log("permission denied interrupting process group {}".format(pgid))
+
+        deadline = time.monotonic() + _INT_GRACE_SEC
+        while time.monotonic() < deadline:
+            if not any(group_is_owned_and_alive(pgid) for pgid in group_members):
+                break
+            time.sleep(0.05)
+
+        # SIGTERM is a second-stage escalation for groups that ignored SIGINT.
         for pgid in group_members:
             if group_is_owned_and_alive(pgid):
                 try:
@@ -388,7 +405,7 @@ class ProcessManager:
                 except ProcessLookupError:
                     pass
                 except PermissionError:
-                    self._log("permission denied stopping process group {}".format(pgid))
+                    self._log("permission denied terminating process group {}".format(pgid))
 
         deadline = time.monotonic() + _TERM_GRACE_SEC
         while time.monotonic() < deadline:
@@ -396,7 +413,7 @@ class ProcessManager:
                 break
             time.sleep(0.05)
 
-        # Escalate only groups that survived the graceful shutdown window.
+        # Force-kill only groups that survived both graceful shutdown signals.
         for pgid in group_members:
             if group_is_owned_and_alive(pgid):
                 try:
@@ -516,6 +533,42 @@ class ProcessManager:
                 return spec
         return self.config.get("vehicle_launches", {}).get(launch_id)
 
+    def _configured_required_vehicle_launches(self):
+        configured = self.config.get("required_vehicle_launches", [])
+        if isinstance(configured, list):
+            if any(not isinstance(launch_id, str) for launch_id in configured):
+                raise ValueError("required_vehicle_launches must contain launch ids")
+            return configured
+        if not isinstance(configured, dict):
+            raise ValueError("required_vehicle_launches must be a list or mapping")
+        for launch_id, selector in configured.items():
+            if not isinstance(launch_id, str) or not _NAME_RE.fullmatch(launch_id):
+                raise ValueError("invalid required vehicle launch id: {}".format(launch_id))
+            if selector is None:
+                continue
+            if not isinstance(selector, dict):
+                raise ValueError(
+                    "required vehicle launch selector for {} must be a mapping".format(
+                        launch_id))
+            uav_indices = selector.get("uav_indices")
+            if (not isinstance(uav_indices, list) or not uav_indices or
+                    any(not isinstance(index, int) or isinstance(index, bool) or index < 1
+                        for index in uav_indices)):
+                raise ValueError(
+                    "required vehicle launch {} needs positive uav_indices".format(
+                        launch_id))
+        return list(configured)
+
+    def _required_vehicle_launches_for(self, vehicle):
+        configured = self.config.get("required_vehicle_launches", [])
+        if isinstance(configured, list):
+            return configured
+        result = []
+        for launch_id, selector in configured.items():
+            if selector is None or vehicle["uav_index"] in selector["uav_indices"]:
+                result.append(launch_id)
+        return result
+
     @staticmethod
     def _normalise_sensors(raw_sensors):
         if isinstance(raw_sensors, dict):
@@ -565,7 +618,7 @@ class ProcessManager:
         sensor_by_id = {sensor["id"]: sensor for sensor in sensors}
         result = []
         seen = set()
-        always_started = set(self.config.get("required_vehicle_launches", []))
+        always_started = set(self._configured_required_vehicle_launches())
         for item in raw_launches:
             if isinstance(item, str):
                 launch_id, sensor_id, params = item, None, {}
@@ -580,8 +633,8 @@ class ProcessManager:
                 raise ValueError("invalid launch id for {}: {}".format(
                     vehicle_name, launch_id))
             if launch_id in always_started:
-                raise ValueError("launch {} starts automatically for every aircraft; "
-                                 "remove it from {}.launches".format(
+                raise ValueError("launch {} is managed by manager.yaml; remove it from "
+                                 "{}.launches".format(
                                      launch_id, vehicle_name))
             spec = self._vehicle_launch_spec(vehicle_type, launch_id)
             if not isinstance(spec, dict):
@@ -707,10 +760,13 @@ class ProcessManager:
             uav_index = int(match.group(1))
             if uav_index in uav_indices:
                 raise ValueError("aircraft names map to duplicate video port {}".format(
-                    32796 + uav_index))
+                    33796 + uav_index))
             uav_indices.add(uav_index)
-            if 32796 + uav_index > 65535:
+            if 33796 + uav_index > 65535:
                 raise ValueError("video port for {} exceeds UDP port range".format(name))
+            if 43796 + uav_index > 65535:
+                raise ValueError("down-camera video port for {} exceeds UDP port range".format(
+                    name))
             drone = "Drone{}".format(match.group(1)) if match else name
             vehicle_sensors = self._normalise_sensors(item.get("sensors", []))
             for sensor in vehicle_sensors:
@@ -727,7 +783,8 @@ class ProcessManager:
                 "uav": name,
                 "drone": drone,
                 "uav_index": uav_index,
-                "video_port": 32796 + uav_index,
+                "video_port": 33796 + uav_index,
+                "down_video_port": 43796 + uav_index,
                 "type": type_name,
                 "params": params,
                 "sensors": vehicle_sensors,
@@ -822,6 +879,8 @@ class ProcessManager:
                 "type": vehicle["type"], "uav_index": vehicle["uav_index"],
                 "video_port": vehicle["video_port"],
                 "video_topic": "/{}/sar_yolo_detector/smart/annotated".format(vehicle["name"]),
+                "down_video_port": vehicle["down_video_port"],
+                "down_video_topic": "/{}/down_camera/image_raw".format(vehicle["name"]),
             })
             profile_files = profile.get("files", {})
             tf_path = profile_files.get("tf_config_by_type", {}).get(vehicle["type"])
@@ -902,7 +961,7 @@ class ProcessManager:
                         vehicle["name"], str(detection_topic).lstrip("/"))
                 sensor_contexts[sensor_id]["automatic_detection_topic"] = detection_topic
 
-            required_launches = self.config.get("required_vehicle_launches", [])
+            required_launches = self._required_vehicle_launches_for(vehicle)
             selections = [{"id": launch_id, "sensor": None, "params": {}}
                           for launch_id in required_launches]
             automatic_launches = []
