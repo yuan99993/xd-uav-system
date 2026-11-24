@@ -3,9 +3,11 @@
 #include <clocale>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -13,9 +15,11 @@
 #include <mavros_msgs/PositionTarget.h>
 #include <nav_msgs/Path.h>
 #include <ros/ros.h>
+#include <ros/message_event.h>
 #include <sensor_msgs/Range.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/String.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -211,6 +215,16 @@ class FiniteHorizonAxisMpc {
     q_ = q;
     terminal_q_ = terminal_q;
     r_ = std::max(1e-6, r);
+
+    // The Riccati recursion depends only on fixed parameters and on which
+    // state dimensions are controlled. Cache all four masks once at startup
+    // instead of repeating up to 40 matrix iterations on every control tick.
+    for (std::size_t mask = 0; mask < first_gains_.size(); ++mask) {
+      const std::array<bool, 2> controlled{{
+          (mask & 1U) != 0U, (mask & 2U) != 0U}};
+      const Eigen::RowVector2d gain = computeFirstGain(controlled);
+      first_gains_[mask] = {{gain[0], gain[1]}};
+    }
   }
 
   double acceleration(
@@ -218,11 +232,22 @@ class FiniteHorizonAxisMpc {
       const Eigen::Vector2d& reference,
       const std::array<bool, 2>& controlled,
       const double acceleration_feedforward) const {
+    const std::size_t mask =
+        (controlled[0] ? 1U : 0U) | (controlled[1] ? 2U : 0U);
+    const auto& first_gain = first_gains_[mask];
+    return -(first_gain[0] * (state[0] - reference[0]) +
+             first_gain[1] * (state[1] - reference[1])) +
+           acceleration_feedforward;
+  }
+
+ private:
+  Eigen::RowVector2d computeFirstGain(
+      const std::array<bool, 2>& controlled) const {
     Eigen::Matrix2d a;
     const double dt2 = dt_ * dt_;
     a << 1.0, dt_,
          0.0, 1.0;
-    Eigen::Vector2d b(0.5 * dt2, dt_);
+    const Eigen::Vector2d b(0.5 * dt2, dt_);
 
     Eigen::Matrix2d q = Eigen::Matrix2d::Zero();
     Eigen::Matrix2d p = Eigen::Matrix2d::Zero();
@@ -243,16 +268,15 @@ class FiniteHorizonAxisMpc {
         first_gain = gain;
       }
     }
-    return -first_gain.dot(state - reference) +
-           acceleration_feedforward;
+    return first_gain;
   }
 
- private:
   int horizon_{26};
   double dt_{0.01};
   double r_{20.0};
   std::array<double, 2> q_{{500.0, 100.0}};
   std::array<double, 2> terminal_q_{{1000.0, 300.0}};
+  std::array<std::array<double, 2>, 4> first_gains_{};
 };
 
 using ControllerResult = xd_uav_controller::BackendOutput;
@@ -270,6 +294,20 @@ struct FixedwingControlTarget {
   bool use_altitude_feedback{false};
   bool enable_course_integrator{false};
   bool enable_altitude_integrator{false};
+};
+
+struct FormationReferenceSource {
+  std::string node_name;
+  std::string publisher_name;
+  bool status_seen{false};
+  bool active{false};
+  bool blocked{false};
+  bool saw_inactive{false};
+};
+
+struct ReferencePublisherState {
+  ros::Time last_seen;
+  bool blocked{false};
 };
 
 }  // namespace
@@ -312,6 +350,14 @@ class ControllerNode {
     reference_position_target_publisher_ =
         nh_.advertise<mavros_msgs::PositionTarget>(
             "reference_position_target", 1, true);
+    formation_sources_[0].node_name = nh_.resolveName("formation_follower");
+    formation_sources_[1].node_name = nh_.resolveName("formation_consensus");
+    formation_follow_status_subscriber_ = nh_.subscribe(
+        "formation_follower/status", 20,
+        &ControllerNode::formationFollowStatusCallback, this);
+    formation_consensus_status_subscriber_ = nh_.subscribe(
+        "formation_consensus/status", 20,
+        &ControllerNode::formationConsensusStatusCallback, this);
     reference_trajectory_subscriber_ = nh_.subscribe(
         "reference_trajectory", 5,
         &ControllerNode::referenceTrajectoryCallback, this);
@@ -445,6 +491,9 @@ class ControllerNode {
     loadParameterWithLegacy(
         private_nh_, "reference_input/timeout", "reference_timeout",
         &reference_timeout_, 0.50);
+    private_nh_.param(
+        "reference_input/source_rearm_quiet_time",
+        reference_source_rearm_quiet_time_, 0.20);
     loadParameterWithLegacy(
         private_nh_, "reference_input/transform/timeout",
         "reference_frames/transform_timeout",
@@ -656,6 +705,12 @@ class ControllerNode {
           "fixedwing/path_following/completion_altitude_tolerance",
           fixedwing_path_completion_altitude_tolerance_, 5.0);
       private_nh_.param(
+          "fixedwing/point_following/completion_radius",
+          fixedwing_point_completion_radius_, 20.0);
+      private_nh_.param(
+          "fixedwing/point_following/completion_altitude_tolerance",
+          fixedwing_point_completion_altitude_tolerance_, 5.0);
+      private_nh_.param(
           "fixedwing/path_following/reacquisition_distance",
           fixedwing_path_reacquisition_distance_, 50.0);
       loadParameterWithLegacy(
@@ -681,6 +736,16 @@ class ControllerNode {
           "fixedwing/energy_control/airspeed_throttle_gain",
           "fixedwing/airspeed_throttle_gain",
           &airspeed_throttle_gain_, 0.08);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/energy_control/airspeed_integral_gain",
+          "fixedwing/airspeed_integral_gain",
+          &airspeed_integral_gain_, 0.02);
+      loadParameterWithLegacy(
+          private_nh_,
+          "fixedwing/energy_control/airspeed_integral_throttle_limit",
+          "fixedwing/airspeed_integral_throttle_limit",
+          &airspeed_integral_throttle_limit_, 0.25);
       loadParameterWithLegacy(
           private_nh_,
           "fixedwing/energy_control/climb_rate_throttle_gain",
@@ -839,9 +904,36 @@ class ControllerNode {
           "fixedwing/modes/loiter/max_course_correction",
           "fixedwing/loiter/max_course_correction",
           &fixedwing_loiter_max_course_correction_, 0.70);
+      private_nh_.param(
+          "fixedwing/modes/vtol_back_transition/maximum_roll",
+          vtol_back_transition_max_roll_, 0.25);
+      private_nh_.param(
+          "fixedwing/modes/vtol_back_transition/maximum_roll_rate",
+          vtol_back_transition_max_roll_rate_, 0.35);
+      private_nh_.param(
+          "fixedwing/modes/vtol_back_transition/maximum_pitch",
+          vtol_back_transition_max_pitch_, 0.25);
+      private_nh_.param(
+          "fixedwing/modes/vtol_back_transition/maximum_pitch_rate",
+          vtol_back_transition_max_pitch_rate_, 0.35);
       if (fixedwing_loiter_radius_ < 5.0) {
         throw std::runtime_error(
             "fixedwing/modes/loiter/radius必须不小于5米");
+      }
+      if (!std::isfinite(vtol_back_transition_max_roll_) ||
+          vtol_back_transition_max_roll_ <= 0.0 ||
+          vtol_back_transition_max_roll_ > max_roll_ ||
+          !std::isfinite(vtol_back_transition_max_roll_rate_) ||
+          vtol_back_transition_max_roll_rate_ <= 0.0 ||
+          vtol_back_transition_max_roll_rate_ > maximum_body_rate_[0] ||
+          !std::isfinite(vtol_back_transition_max_pitch_) ||
+          vtol_back_transition_max_pitch_ <= 0.0 ||
+          vtol_back_transition_max_pitch_ > max_pitch_ ||
+          !std::isfinite(vtol_back_transition_max_pitch_rate_) ||
+          vtol_back_transition_max_pitch_rate_ <= 0.0 ||
+          vtol_back_transition_max_pitch_rate_ > maximum_body_rate_[1]) {
+        throw std::runtime_error(
+            "VTOL回旋翼滚转/俯仰角及角速度限制必须为正且不超过固定翼上限");
       }
       if (fixedwing_guidance_lookahead_distance_ < 5.0) {
         throw std::runtime_error(
@@ -1052,6 +1144,8 @@ class ControllerNode {
         !std::isfinite(state_timeout_) || state_timeout_ <= 0.0 ||
         !std::isfinite(reference_timeout_) ||
         reference_timeout_ <= 0.0 ||
+        !std::isfinite(reference_source_rearm_quiet_time_) ||
+        reference_source_rearm_quiet_time_ < 0.0 ||
         !std::isfinite(reference_transform_timeout_) ||
         reference_transform_timeout_ < 0.0 ||
         !std::isfinite(maximum_transform_age_) ||
@@ -1172,6 +1266,8 @@ class ControllerNode {
     if (load_fixedwing_ &&
         (fixedwing_path_curvature_distance_ <= 0.0 ||
          fixedwing_path_curvature_preview_time_ < 0.0 ||
+         fixedwing_point_completion_radius_ <= 0.0 ||
+         fixedwing_point_completion_altitude_tolerance_ < 0.0 ||
          fixedwing_guidance_lookahead_distance_ <= 0.0 ||
          fixedwing_minimum_lookahead_distance_ <= 0.0 ||
          fixedwing_maximum_lookahead_distance_ <
@@ -1182,6 +1278,9 @@ class ControllerNode {
          fixedwing_minimum_course_rate_speed_ < 0.0 ||
          fixedwing_course_integral_gain_ < 0.0 ||
          fixedwing_course_integral_rate_limit_ < 0.0 ||
+         airspeed_integral_gain_ < 0.0 ||
+         airspeed_integral_throttle_limit_ < 0.0 ||
+         airspeed_integral_throttle_limit_ > 1.0 ||
          altitude_time_constant_ <= 0.0 ||
          altitude_integral_gain_ < 0.0 ||
          altitude_integral_climb_rate_limit_ < 0.0 ||
@@ -1202,6 +1301,9 @@ class ControllerNode {
          max_roll_ <= 0.0 || max_roll_ >= 0.5 * kPi ||
          !std::isfinite(fixedwing_path_curvature_distance_) ||
          !std::isfinite(fixedwing_path_curvature_preview_time_) ||
+         !std::isfinite(fixedwing_point_completion_radius_) ||
+         !std::isfinite(
+             fixedwing_point_completion_altitude_tolerance_) ||
          !std::isfinite(fixedwing_guidance_lookahead_distance_) ||
          !std::isfinite(fixedwing_minimum_lookahead_distance_) ||
          !std::isfinite(fixedwing_maximum_lookahead_distance_) ||
@@ -1212,6 +1314,8 @@ class ControllerNode {
          !std::isfinite(fixedwing_minimum_course_rate_speed_) ||
          !std::isfinite(fixedwing_course_integral_gain_) ||
          !std::isfinite(fixedwing_course_integral_rate_limit_) ||
+         !std::isfinite(airspeed_integral_gain_) ||
+         !std::isfinite(airspeed_integral_throttle_limit_) ||
          !std::isfinite(altitude_time_constant_) ||
          !std::isfinite(altitude_integral_gain_) ||
          !std::isfinite(altitude_integral_climb_rate_limit_) ||
@@ -1791,6 +1895,44 @@ class ControllerNode {
     state_ = *message;
     last_state_receive_ = ros::Time::now();
     have_state_ = true;
+    const auto flight_regime =
+        static_cast<xd_uav_controller::FlightRegime>(
+            state_.flight_regime);
+    const bool vtol_back_transition =
+        xd_uav_controller::isVtolAirframe(
+            static_cast<xd_uav_controller::AirframeType>(
+                state_.airframe_type)) &&
+        (flight_regime ==
+             xd_uav_controller::FlightRegime::kTransitionToHover ||
+         (state_.transition_pending &&
+          state_.requested_regime ==
+              xd_uav_controller::ControlState::REQUESTED_HOVER));
+    if (vtol_back_transition &&
+        !vtol_back_transition_hold_altitude_valid_ &&
+        std::isfinite(state_.position_odom.z)) {
+      vtol_back_transition_hold_altitude_ = state_.position_odom.z;
+      vtol_back_transition_hold_altitude_valid_ = true;
+      vtol_back_transition_heading_hold_active_ = true;
+      vtol_back_transition_initial_course_ = currentFixedwingCourse();
+      resetFixedwingControlState();
+      ROS_INFO(
+          "[xd_uav_controller] 回旋翼转换开始，沿当前航向直飞并保持高度 %.2f m；"
+          "滚转/俯仰限制 %.2f/%.2f rad，角速度限制 %.2f/%.2f rad/s",
+          vtol_back_transition_hold_altitude_,
+          vtol_back_transition_max_roll_,
+          vtol_back_transition_max_pitch_,
+          vtol_back_transition_max_roll_rate_,
+          vtol_back_transition_max_pitch_rate_);
+    } else if (!state_.transition_pending &&
+               (flight_regime ==
+                    xd_uav_controller::FlightRegime::kHover ||
+                flight_regime ==
+                    xd_uav_controller::FlightRegime::kForwardFlight ||
+                flight_regime ==
+                    xd_uav_controller::FlightRegime::kTransitionToForward)) {
+      vtol_back_transition_hold_altitude_valid_ = false;
+      vtol_back_transition_heading_hold_active_ = false;
+    }
     const xd_uav_controller::BackendId selected_backend =
         activeBackend();
     if (selected_backend != xd_uav_controller::BackendId::kNone &&
@@ -1981,6 +2123,7 @@ class ControllerNode {
           "外部控制参考已暂停", true);
     }
 
+    relinquishExternalReferenceSources();
     external_control_paused_ = true;
     have_reference_ = false;
     have_reference_error_ = false;
@@ -2037,6 +2180,7 @@ class ControllerNode {
 
   void resetFixedwingControlState() {
     fixedwing_altitude_integral_climb_rate_ = 0.0;
+    fixedwing_airspeed_integral_throttle_ = 0.0;
     filtered_climb_rate_ = 0.0;
     filtered_climb_rate_initialized_ = false;
     fixedwing_course_integral_rate_ = 0.0;
@@ -2170,8 +2314,158 @@ class ControllerNode {
         reason.c_str());
   }
 
+  int formationSourceIndex(const std::string& publisher) const {
+    for (std::size_t index = 0; index < formation_sources_.size(); ++index) {
+      if (formation_sources_[index].node_name == publisher ||
+          (!formation_sources_[index].publisher_name.empty() &&
+           formation_sources_[index].publisher_name == publisher)) {
+        return static_cast<int>(index);
+      }
+    }
+    return -1;
+  }
+
+  bool formationReferenceBlocked(const std::string& publisher) const {
+    bool matched_source = false;
+    for (const auto& source : formation_sources_) {
+      if (source.node_name != publisher &&
+          (source.publisher_name.empty() ||
+           source.publisher_name != publisher)) {
+        continue;
+      }
+      matched_source = true;
+      // The unified formation manager publishes every member's references
+      // under one ROS caller ID. Allow that shared publisher while at least
+      // one matching formation source is active and still owns this aircraft.
+      if (source.active && !source.blocked) {
+        return false;
+      }
+    }
+    return matched_source;
+  }
+
+  bool referencePublisherBlocked(const std::string& publisher) {
+    if (publisher.empty() || publisher == ros::this_node::getName()) {
+      return false;
+    }
+    const ros::Time now = ros::Time::now();
+    auto& state = reference_publishers_[publisher];
+    if (state.blocked) {
+      const double quiet_time = state.last_seen.isZero()
+                                    ? std::numeric_limits<double>::infinity()
+                                    : (now - state.last_seen).toSec();
+      if (quiet_time < reference_source_rearm_quiet_time_) {
+        state.last_seen = now;
+        return true;
+      }
+      state.last_seen = now;
+      return false;
+    }
+    state.last_seen = now;
+    return false;
+  }
+
+  void blockFormationReferences() {
+    for (auto& source : formation_sources_) {
+      source.blocked = true;
+      source.saw_inactive = source.status_seen && !source.active;
+    }
+  }
+
+  void claimExternalReference(const std::string& publisher) {
+    if (publisher.empty() || publisher == ros::this_node::getName()) {
+      return;
+    }
+    const ros::Time now = ros::Time::now();
+    if (!active_reference_publisher_.empty() &&
+        active_reference_publisher_ != publisher) {
+      auto& previous = reference_publishers_[active_reference_publisher_];
+      previous.blocked = true;
+      previous.last_seen = now;
+    }
+    active_reference_publisher_ = publisher;
+    auto& current = reference_publishers_[publisher];
+    current.blocked = false;
+    current.last_seen = now;
+    if (formationSourceIndex(publisher) < 0) {
+      // A valid external command owns this aircraft immediately. Formation
+      // messages already queued on another TCP connection must not replace it.
+      blockFormationReferences();
+    }
+  }
+
+  void relinquishExternalReferenceSources() {
+    const ros::Time now = ros::Time::now();
+    if (!active_reference_publisher_.empty()) {
+      auto& previous = reference_publishers_[active_reference_publisher_];
+      previous.blocked = true;
+      previous.last_seen = now;
+      active_reference_publisher_.clear();
+    }
+    blockFormationReferences();
+  }
+
+  void unblockReferencePublisher(const std::string& publisher) {
+    if (publisher.empty()) {
+      return;
+    }
+    const auto found = reference_publishers_.find(publisher);
+    if (found != reference_publishers_.end()) {
+      found->second.blocked = false;
+      found->second.last_seen = ros::Time::now();
+    }
+  }
+
+  void formationStatusCallback(
+      const ros::MessageEvent<std_msgs::String const>& event,
+      const std::size_t index) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    auto& source = formation_sources_[index];
+    if (!publisher.empty()) {
+      source.publisher_name = publisher;
+    }
+    const bool active = message->data.compare(0, 7, "active:") == 0;
+    const bool inactive = message->data.compare(0, 9, "inactive:") == 0;
+    if (!active && !inactive) {
+      return;
+    }
+    if (inactive) {
+      source.saw_inactive = true;
+    } else if (source.status_seen && !source.active && source.saw_inactive) {
+      // Only an explicit inactive -> active lifecycle transition rejoins the
+      // formation. Active heartbeats queued before dropout cannot reclaim it.
+      source.blocked = false;
+      source.saw_inactive = false;
+      unblockReferencePublisher(source.publisher_name);
+    }
+    source.status_seen = true;
+    source.active = active;
+  }
+
+  void formationFollowStatusCallback(
+      const ros::MessageEvent<std_msgs::String const>& event) {
+    formationStatusCallback(event, 0);
+  }
+
+  void formationConsensusStatusCallback(
+      const ros::MessageEvent<std_msgs::String const>& event) {
+    formationStatusCallback(event, 1);
+  }
+
   void referencePositionTargetCallback(
-      const mavros_msgs::PositionTarget::ConstPtr& message) {
+      const ros::MessageEvent<mavros_msgs::PositionTarget const>& event) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    if (publisher == ros::this_node::getName()) {
+      // simpleGoalCallback already applied this goal before publishing its
+      // canonical mirror. Replaying that mirror could overwrite a newer goal.
+      return;
+    }
+    if (formationReferenceBlocked(publisher) ||
+        referencePublisherBlocked(publisher)) {
+      return;
+    }
     if (!externalReferenceAllowed()) {
       return;
     }
@@ -2187,12 +2481,6 @@ class ControllerNode {
             *message, &source, &reason)) {
       rejectExternalReference(reason);
       return;
-    }
-    if (pending_simple_goal_sequence_ != 0U &&
-        message->header.seq == pending_simple_goal_sequence_) {
-      source.type = xd_uav_controller::ReferenceType::kSimpleGoal;
-      source.source = "simple_goal";
-      pending_simple_goal_sequence_ = 0U;
     }
     if (!positionTargetSupportedByVehicle(source, &reason)) {
       rejectExternalReference(reason);
@@ -2214,6 +2502,7 @@ class ControllerNode {
     updateFixedwingExternalSetpointGuidance(
         normalized, starting_new_mode);
 
+    claimExternalReference(publisher);
     reference_source_ = source;
     reference_ = normalized;
     path_active_ = false;
@@ -2243,7 +2532,12 @@ class ControllerNode {
   }
 
   void simpleGoalCallback(
-      const geometry_msgs::PoseStamped::ConstPtr& message) {
+      const ros::MessageEvent<geometry_msgs::PoseStamped const>& event) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    if (referencePublisherBlocked(publisher)) {
+      return;
+    }
     if (!externalReferenceAllowed()) {
       return;
     }
@@ -2297,7 +2591,6 @@ class ControllerNode {
         canonicalFrame(message->header.frame_id);
     reference.header.stamp = ros::Time::now();
     reference.header.seq = ++simple_goal_sequence_counter_;
-    pending_simple_goal_sequence_ = reference.header.seq;
     reference.coordinate_frame =
         mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
     reference.type_mask =
@@ -2331,6 +2624,7 @@ class ControllerNode {
         idle_reference_active_ || fixedwing_loiter_active_ ||
         !have_reference_;
     updateFixedwingExternalSetpointGuidance(normalized, starting_new_mode);
+    claimExternalReference(publisher);
     reference_source_ = source;
     reference_ = normalized;
     path_active_ = false;
@@ -2965,7 +3259,14 @@ class ControllerNode {
     return true;
   }
 
-  void referencePathCallback(const nav_msgs::Path::ConstPtr& message) {
+  void referencePathCallback(
+      const ros::MessageEvent<nav_msgs::Path const>& event) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    if (formationReferenceBlocked(publisher) ||
+        referencePublisherBlocked(publisher)) {
+      return;
+    }
     // rospy replaces a top-level Header.seq during serialization.  Prefer the
     // independently stored ID in the first path pose so multiple per-vehicle
     // publishers cannot accidentally collapse to path ID 1.
@@ -3018,6 +3319,7 @@ class ControllerNode {
       rejectPath(requested_id, "去除重复点后Path不足两个点");
       return;
     }
+    claimExternalReference(publisher);
     reference_path_source_points_ = std::move(source_points);
     reference_path_points_ = std::move(points);
     reference_path_frame_ = canonicalFrame(message->header.frame_id);
@@ -3048,8 +3350,14 @@ class ControllerNode {
   }
 
   void referenceTrajectoryCallback(
-      const trajectory_msgs::MultiDOFJointTrajectory::ConstPtr&
-          message) {
+      const ros::MessageEvent<trajectory_msgs::MultiDOFJointTrajectory const>&
+          event) {
+    const auto message = event.getMessage();
+    const std::string publisher = event.getPublisherName();
+    if (formationReferenceBlocked(publisher) ||
+        referencePublisherBlocked(publisher)) {
+      return;
+    }
     if (!externalReferenceAllowed()) {
       return;
     }
@@ -3076,6 +3384,7 @@ class ControllerNode {
       rejectExternalReference(reason);
       return;
     }
+    claimExternalReference(publisher);
     reference_trajectory_ = *message;
     reference_ = normalized;
     reference_trajectory_start_ =
@@ -3255,6 +3564,7 @@ class ControllerNode {
              request.action_phase ==
                  xd_uav_controller::InternalCommand::Request::
                      PHASE_WAIT_HOVER)) {
+          relinquishExternalReferenceSources();
           finish(true, "已记录VTOL起飞动作，等待manager确认旋翼模式");
           return true;
         }
@@ -3273,6 +3583,7 @@ class ControllerNode {
              request.action_phase ==
                  xd_uav_controller::InternalCommand::Request::
                      PHASE_WAIT_HOVER)) {
+          relinquishExternalReferenceSources();
           finish(true, "已记录VTOL降落动作，等待manager确认悬停");
           return true;
         }
@@ -3290,6 +3601,7 @@ class ControllerNode {
              request.action_phase ==
                  xd_uav_controller::InternalCommand::Request::
                      PHASE_WAIT_HOVER)) {
+          relinquishExternalReferenceSources();
           finish(true, "已记录VTOL返航降落动作，等待manager确认悬停");
           return true;
         }
@@ -3389,6 +3701,7 @@ class ControllerNode {
     ROS_INFO("[xd_uav_controller] %s",
              home_message.c_str());
 
+    relinquishExternalReferenceSources();
     internal_reference_active_ = true;
     idle_reference_active_ = false;
     if (isMultirotorBackendActive()) {
@@ -3708,6 +4021,7 @@ class ControllerNode {
           landing_origin_.z(), landing_course_);
     }
 
+    relinquishExternalReferenceSources();
     landing_active_ = true;
     landing_touchdown_ = false;
     landing_return_home_ = return_home;
@@ -3757,6 +4071,7 @@ class ControllerNode {
       return true;
     }
 
+    relinquishExternalReferenceSources();
     landing_active_ = false;
     landing_touchdown_ = false;
     landing_return_home_ = false;
@@ -3804,6 +4119,7 @@ class ControllerNode {
   bool resetCallback(
       std_srvs::Trigger::Request&,
       std_srvs::Trigger::Response& response) {
+    relinquishExternalReferenceSources();
     takeoff_active_ = false;
     fixedwing_loiter_active_ = false;
     landing_active_ = false;
@@ -3881,13 +4197,11 @@ class ControllerNode {
         0.0, 1.0);
   }
 
-  void startFixedwingLoiter(
-      const double altitude,
-      const std::string& reason) {
+  void setFixedwingLoiterCenterTangentToCurrentCourse(
+      const double altitude) {
     const double course = currentFixedwingCourse();
     const double direction =
         static_cast<double>(fixedwing_loiter_direction_);
-
     // Put the circle centre to the left for a CCW orbit and to the
     // right for a CW orbit. The current position/course is therefore
     // tangent to the new circle and entering loiter does not require
@@ -3901,6 +4215,12 @@ class ControllerNode {
         direction * fixedwing_loiter_radius_ *
             std::cos(course);
     fixedwing_loiter_center_.z() = altitude;
+  }
+
+  void startFixedwingLoiter(
+      const double altitude,
+      const std::string& reason) {
+    setFixedwingLoiterCenterTangentToCurrentCourse(altitude);
     fixedwing_loiter_active_ = true;
     takeoff_active_ = false;
     internal_reference_active_ = true;
@@ -5031,7 +5351,8 @@ class ControllerNode {
         !internal_reference_active_ &&
         !idle_reference_active_ &&
         !landing_active_ &&
-        !fixedwing_loiter_active_;
+        !fixedwing_loiter_active_ &&
+        !vtol_back_transition_heading_hold_active_;
     const bool external_setpoint =
         external_reference && !reference.trajectory_reference &&
         !reference.path_reference;
@@ -5209,6 +5530,20 @@ class ControllerNode {
     target.enable_altitude_integrator =
         target.use_altitude_feedback &&
         !takeoff_active_ && !landing_active_;
+    if (vtol_back_transition_hold_altitude_valid_ &&
+        std::isfinite(vtol_back_transition_hold_altitude_) &&
+        std::isfinite(state_.position_odom.z)) {
+      // Keep following the active fixed-wing XY reference, but pin the
+      // altitude loop to the height measured when PX4 began back-transition.
+      target.use_altitude_feedback = true;
+      target.altitude_error =
+          vtol_back_transition_hold_altitude_ -
+          state_.position_odom.z;
+      target.climb_rate_feedforward = 0.0;
+      target.vertical_acceleration_feedforward = 0.0;
+      target.enable_altitude_integrator =
+          !takeoff_active_ && !landing_active_;
+    }
     return target;
   }
 
@@ -5248,9 +5583,14 @@ class ControllerNode {
     }
     last_fixedwing_control_time_ = now;
 
-    const FixedwingControlTarget target =
+    FixedwingControlTarget target =
         makeFixedwingControlTarget(
             reference, current_course, yaw, dt);
+    if (vtol_back_transition_heading_hold_active_) {
+      target.course = vtol_back_transition_initial_course_;
+      target.course_rate_feedforward = 0.0;
+      target.enable_course_integrator = false;
+    }
 
     const double airspeed =
         std::max(minimum_airspeed_, state_.airspeed);
@@ -5292,6 +5632,12 @@ class ControllerNode {
     double desired_roll = clamp(
         -std::atan2(airspeed * desired_course_rate, gravity_),
         -max_roll_, max_roll_);
+    if (vtol_back_transition_heading_hold_active_) {
+      desired_roll = clamp(
+          desired_roll,
+          -vtol_back_transition_max_roll_,
+          vtol_back_transition_max_roll_);
+    }
     if ((reference.trajectory_reference || reference.path_reference) &&
         std::abs(target.course_rate_feedforward) > 0.03) {
       ROS_INFO_THROTTLE(
@@ -5314,9 +5660,27 @@ class ControllerNode {
         minimum_airspeed_ * std::sqrt(load_factor) +
             bank_airspeed_margin_,
         minimum_airspeed_, maximum_airspeed_);
+    const bool vtol_back_transition =
+        xd_uav_controller::isVtolAirframe(
+            static_cast<xd_uav_controller::AirframeType>(
+                state_.airframe_type)) &&
+        (static_cast<xd_uav_controller::FlightRegime>(
+             state_.flight_regime) ==
+             xd_uav_controller::FlightRegime::kTransitionToHover ||
+         (state_.transition_pending &&
+          state_.requested_regime ==
+              xd_uav_controller::ControlState::REQUESTED_HOVER));
     if (takeoff_active_ || landing_active_) {
       // Dedicated takeoff and landing laws deliberately pass through low
       // airspeed and must not latch the normal airborne recovery mode.
+      fixedwing_underspeed_active_ = false;
+    } else if (vtol_back_transition) {
+      // Back-transition deliberately reduces airspeed. The fixed-wing
+      // underspeed recovery law commands maximum throttle and, below the
+      // configured minimum airspeed, nose-down pitch. That fights the PX4
+      // transition and can trade away altitude before the MC backend takes
+      // over. Keep the altitude controller active and leave speed recovery
+      // disabled until PX4 reports a stable flight regime again.
       fixedwing_underspeed_active_ = false;
     } else if (!fixedwing_underspeed_active_ &&
                state_.airspeed < bank_protected_airspeed) {
@@ -5415,15 +5779,50 @@ class ControllerNode {
         -vertical_acceleration_pitch_rate_gain_ *
         target.vertical_acceleration_feedforward /
         std::max(minimum_airspeed_, airspeed);
+    const double airspeed_error =
+        std::max(target.airspeed, bank_protected_airspeed) -
+        state_.airspeed;
+    const double fixedwing_energy_throttle =
+        vtol_back_transition
+            ? trim_throttle_
+            : trim_throttle_ +
+                  airspeed_throttle_gain_ * airspeed_error +
+                  turn_load_factor_throttle_gain_ *
+                      (load_factor - 1.0);
+    const double throttle_without_airspeed_integral =
+        fixedwing_energy_throttle +
+        climb_rate_throttle_gain_ * desired_climb_rate;
+    const bool airspeed_integrator_enabled =
+        !takeoff_active_ && !landing_active_ &&
+        !vtol_back_transition && !fixedwing_underspeed_active_ &&
+        airspeed_integral_gain_ > 0.0 &&
+        airspeed_integral_throttle_limit_ > 0.0;
+    if (airspeed_integrator_enabled) {
+      const double integral_delta =
+          airspeed_integral_gain_ * airspeed_error * dt;
+      const double candidate = clamp(
+          fixedwing_airspeed_integral_throttle_ + integral_delta,
+          -airspeed_integral_throttle_limit_,
+          airspeed_integral_throttle_limit_);
+      const double candidate_throttle =
+          throttle_without_airspeed_integral + candidate;
+      const bool winds_up_high =
+          candidate_throttle > maximum_throttle_ &&
+          integral_delta > 0.0;
+      const bool winds_up_low =
+          candidate_throttle < minimum_throttle_ &&
+          integral_delta < 0.0;
+      if (!winds_up_high && !winds_up_low) {
+        fixedwing_airspeed_integral_throttle_ = candidate;
+      }
+    } else {
+      // Takeoff, landing, back-transition and underspeed recovery use
+      // dedicated throttle laws; do not carry speed-loop integral through them.
+      fixedwing_airspeed_integral_throttle_ = 0.0;
+    }
     double throttle = clamp(
-        trim_throttle_ +
-            airspeed_throttle_gain_ *
-                (std::max(target.airspeed,
-                          bank_protected_airspeed) -
-                 state_.airspeed) +
-            climb_rate_throttle_gain_ * desired_climb_rate +
-            turn_load_factor_throttle_gain_ *
-                (load_factor - 1.0),
+        throttle_without_airspeed_integral +
+            fixedwing_airspeed_integral_throttle_,
         minimum_throttle_, maximum_throttle_);
 
     if (takeoff_active_) {
@@ -5494,15 +5893,36 @@ class ControllerNode {
           load_factor);
     }
 
+    if (vtol_back_transition_heading_hold_active_) {
+      desired_roll = clamp(
+          desired_roll,
+          -vtol_back_transition_max_roll_,
+          vtol_back_transition_max_roll_);
+      desired_pitch = clamp(
+          desired_pitch,
+          -vtol_back_transition_max_pitch_,
+          vtol_back_transition_max_pitch_);
+    }
+
+    const double roll_body_rate_limit =
+        vtol_back_transition_heading_hold_active_
+            ? std::min(maximum_body_rate_[0],
+                       vtol_back_transition_max_roll_rate_)
+            : maximum_body_rate_[0];
+    const double pitch_body_rate_limit =
+        vtol_back_transition_heading_hold_active_
+            ? std::min(maximum_body_rate_[1],
+                       vtol_back_transition_max_pitch_rate_)
+            : maximum_body_rate_[1];
     result.body_rate.x() = clamp(
         (desired_roll - roll) /
             std::max(0.1, roll_time_constant_),
-        -maximum_body_rate_[0], maximum_body_rate_[0]);
+        -roll_body_rate_limit, roll_body_rate_limit);
     result.body_rate.y() = clamp(
         (desired_pitch - pitch) /
                 std::max(0.1, pitch_time_constant_) +
             pitch_rate_feedforward,
-        -maximum_body_rate_[1], maximum_body_rate_[1]);
+        -pitch_body_rate_limit, pitch_body_rate_limit);
     result.body_rate.z() = clamp(
         -gravity_ * std::tan(desired_roll) / airspeed,
         -maximum_body_rate_[2], maximum_body_rate_[2]);
@@ -5600,9 +6020,39 @@ class ControllerNode {
             reference_source_,
             state_.header.frame_id, 0.0,
             &candidate, &transform_reason);
-    return useTransformedReference(
+    const bool accepted = useTransformedReference(
         transformed, candidate, transform_reason,
         now, reference, reason);
+    if (!accepted || !transformed ||
+        !isFixedwingBackendActive() ||
+        !point_reference_latched_ ||
+        (!candidate.use_position[0] &&
+         !candidate.use_position[1])) {
+      return accepted;
+    }
+
+    const double dx = candidate.use_position[0]
+                          ? candidate.position.x - state_.position_odom.x
+                          : 0.0;
+    const double dy = candidate.use_position[1]
+                          ? candidate.position.y - state_.position_odom.y
+                          : 0.0;
+    const double horizontal_error = std::hypot(dx, dy);
+    const bool altitude_reached =
+        !candidate.use_position[2] ||
+        std::abs(candidate.position.z - state_.position_odom.z) <=
+            fixedwing_point_completion_altitude_tolerance_;
+    if (horizontal_error <= fixedwing_point_completion_radius_ &&
+        altitude_reached) {
+      const double loiter_altitude =
+          candidate.use_position[2]
+              ? candidate.position.z
+              : state_.position_odom.z;
+      startFixedwingLoiter(
+          loiter_altitude, "到达固定翼单点目标");
+      *reference = makeFixedwingLoiterReference();
+    }
+    return true;
   }
 
   bool resolveTrajectoryReference(
@@ -5733,7 +6183,9 @@ class ControllerNode {
             ? (path_active_ ? "path_finite_horizon_mpc_so3"
                             : "finite_horizon_mpc_so3")
             : backend == xd_uav_controller::BackendId::kFixedWing
-            ? (landing_active_
+            ? (vtol_back_transition_heading_hold_active_
+                   ? "fixedwing_vtol_backtransition_heading_hold"
+                   : landing_active_
                    ? "fixedwing_course_energy_landing"
                    : fixedwing_loiter_active_
                    ? "fixedwing_course_energy_loiter"
@@ -5788,6 +6240,16 @@ class ControllerNode {
     Reference reference;
     if (landing_active_) {
       reference = makeLandingReference();
+    } else if (backend == xd_uav_controller::BackendId::kFixedWing &&
+               vtol_back_transition_heading_hold_active_) {
+      reference.type = xd_uav_controller::ReferenceType::kIdle;
+      reference.source = "vtol_back_transition_heading_hold";
+      reference.header.stamp = now;
+      reference.header.frame_id = state_.header.frame_id;
+      reference.position.z = vtol_back_transition_hold_altitude_;
+      reference.yaw = vtol_back_transition_initial_course_;
+      reference.use_position[2] = true;
+      reference.use_yaw = true;
     } else if (internal_reference_active_) {
       reference = makeTakeoffReference();
     } else if (idle_reference_active_) {
@@ -5968,6 +6430,8 @@ class ControllerNode {
   ros::Subscriber reference_position_target_subscriber_;
   ros::Subscriber reference_trajectory_subscriber_;
   ros::Subscriber reference_path_subscriber_;
+  ros::Subscriber formation_follow_status_subscriber_;
+  ros::Subscriber formation_consensus_status_subscriber_;
   ros::Subscriber simple_goal_subscriber_;
   ros::Subscriber local_alignment_valid_subscriber_;
   ros::Publisher reference_position_target_publisher_;
@@ -5983,6 +6447,10 @@ class ControllerNode {
   sensor_msgs::Range distance_sensor_;
   Reference reference_;
   Reference reference_source_;
+  std::array<FormationReferenceSource, 2> formation_sources_;
+  std::unordered_map<std::string, ReferencePublisherState>
+      reference_publishers_;
+  std::string active_reference_publisher_;
   trajectory_msgs::MultiDOFJointTrajectory
       reference_trajectory_;
   std::vector<Eigen::Vector3d> reference_path_source_points_;
@@ -6010,7 +6478,6 @@ class ControllerNode {
   bool point_reference_latched_{false};
   bool external_control_paused_{false};
   uint32_t simple_goal_sequence_counter_{0};
-  uint32_t pending_simple_goal_sequence_{0};
   uint32_t path_sequence_counter_{0};
   uint32_t active_path_id_{0};
   std::size_t path_current_segment_{0};
@@ -6090,6 +6557,7 @@ class ControllerNode {
   double control_rate_{100.0};
   double state_timeout_{0.2};
   double reference_timeout_{0.5};
+  double reference_source_rearm_quiet_time_{0.20};
   double reference_transform_timeout_{0.03};
   double maximum_transform_age_{0.5};
   double reference_transform_future_tolerance_{0.05};
@@ -6151,6 +6619,9 @@ class ControllerNode {
   double maximum_airspeed_{24.0};
   double trim_throttle_{0.25};
   double airspeed_throttle_gain_{0.08};
+  double airspeed_integral_gain_{0.02};
+  double airspeed_integral_throttle_limit_{0.25};
+  double fixedwing_airspeed_integral_throttle_{0.0};
   double course_time_constant_{3.0};
   double fixedwing_guidance_lookahead_distance_{60.0};
   bool fixedwing_adaptive_lookahead_{true};
@@ -6189,6 +6660,10 @@ class ControllerNode {
   double underspeed_max_nose_up_pitch_{0.05};
   bool fixedwing_underspeed_active_{false};
   double fixedwing_altitude_integral_climb_rate_{0.0};
+  double vtol_back_transition_hold_altitude_{0.0};
+  bool vtol_back_transition_hold_altitude_valid_{false};
+  bool vtol_back_transition_heading_hold_active_{false};
+  double vtol_back_transition_initial_course_{0.0};
   double filtered_climb_rate_{0.0};
   bool filtered_climb_rate_initialized_{false};
   ros::Time last_fixedwing_control_time_;
@@ -6202,10 +6677,16 @@ class ControllerNode {
   int fixedwing_loiter_direction_{1};
   double fixedwing_loiter_radial_gain_{1.0};
   double fixedwing_loiter_max_course_correction_{0.70};
+  double vtol_back_transition_max_roll_{0.25};
+  double vtol_back_transition_max_roll_rate_{0.35};
+  double vtol_back_transition_max_pitch_{0.25};
+  double vtol_back_transition_max_pitch_rate_{0.35};
   double fixedwing_path_curvature_distance_{10.0};
   double fixedwing_path_curvature_preview_time_{0.30};
   double fixedwing_path_completion_radius_{20.0};
   double fixedwing_path_completion_altitude_tolerance_{5.0};
+  double fixedwing_point_completion_radius_{20.0};
+  double fixedwing_point_completion_altitude_tolerance_{5.0};
   double fixedwing_path_reacquisition_distance_{50.0};
 
   double multirotor_takeoff_default_altitude_{2.0};

@@ -1,0 +1,61 @@
+{
+  "action": "start",
+  "session_id": "sim_run_001",
+  "profile": "vtol",
+  "shared_launches": ["world_tf"],
+  "vehicles": [
+    {
+      "name": "uav1",
+      "type": "vtol",
+      "sensors": [
+        {
+          "id": "front",
+          "type": "front_gimbal_camera",
+          "params": {
+            "sensor_id": "front_gimbal",
+            "image_topic": "/uav1/front_camera/image_raw",
+            "camera_info_topic": "/uav1/front_camera/camera_info",
+            "range_topic": "/Sim/SceneBasicDrone/robots/Drone1/sensors/FrontDistance/distance_sensor",
+            "gimbal_att_topic": "/uav1/gimbal/attitude"
+          }
+        },
+        {
+          "id": "down",
+          "type": "down_camera",
+          "params": {
+            "image_topic": "/uav1/down_camera/image_raw",
+            "camera_info_topic": "/uav1/down_camera/camera_info"
+          }
+        }
+      ],
+      "launches": [
+        "localization",
+        "control",
+        {"id": "sar_yolo_detector", "sensor": "front"}
+      ]
+    },
+    {
+      "name": "uav2",
+      "type": "vtol",
+      "sensors": [
+        {
+          "id": "front",
+          "type": "front_gimbal_camera",
+          "params": {
+            "sensor_id": "front_gimbal",
+            "image_topic": "/uav2/front_camera/image_raw",
+            "camera_info_topic": "/uav2/front_camera/camera_info",
+            "range_topic": "/Sim/SceneBasicDrone/robots/Drone2/sensors/FrontDistance/distance_sensor",
+            "gimbal_att_topic": "/uav2/gimbal/attitude"
+          }
+        }
+      ],
+      "launches": [
+        "localization",
+        "control",
+        "task_execute",
+        {"id": "sar_yolo_detector", "sensor": "front"}
+      ]
+    }
+  ]
+}

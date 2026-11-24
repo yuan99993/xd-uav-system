@@ -29,6 +29,9 @@
   <arg name="rviz" default="false"/>
   <arg name="airsim_scene" default="SceneBasicDrone"/>
   <arg name="airsim_drone" default="Drone1"/>
+  <arg name="range_topic"
+       default="/Sim/$(arg airsim_scene)/robots/$(arg airsim_drone)/sensors/FrontDistance/distance_sensor"/>
+  <arg name="gimbal_att_topic" default="$(arg uav_ns)/gimbal/attitude"/>
   <!-- A unique default lets separate per-UAV roslaunch processes coexist. -->
   <arg name="node_name" default="$(anon target_geolocation)"/>
   <arg name="det_topic" default="$(arg uav_ns)/sar_yolo_detector/smart/selected_tracked_detections"/>
@@ -53,9 +56,8 @@
          以前只在 Windows 直接跑脚本、没走过 roslaunch，所以这个坑一直没暴露。 -->
 
     <!-- 本仿真：云台欧拉角 + 云台固连的前置测距 -->
-    <param if="$(arg gimbal)" name="range_topic"
-           value="/Sim/$(arg airsim_scene)/robots/$(arg airsim_drone)/sensors/FrontDistance/distance_sensor"/>
-    <param if="$(arg gimbal)" name="gimbal_att_topic" value="$(arg uav_ns)/gimbal/attitude"/>
+    <param if="$(arg gimbal)" name="range_topic" value="$(arg range_topic)"/>
+    <param if="$(arg gimbal)" name="gimbal_att_topic" value="$(arg gimbal_att_topic)"/>
     <param if="$(arg gimbal)" name="att_msg_type" value="Float64MultiArray"/>
     <param if="$(arg gimbal)" name="gimbal_yaw_is_body" value="true"/>
     <param if="$(arg gimbal)" name="gimbal_pitch_up_positive" value="true"/>

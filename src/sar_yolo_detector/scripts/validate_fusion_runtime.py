@@ -77,7 +77,7 @@ def main():
         rospy.wait_for_service(node + "/switch_tracking_mode", timeout=100.)
         switch = rospy.ServiceProxy(node + "/switch_tracking_mode", SwitchTrackingMode)
         results = {}
-        for mode in ("smart_tracker", "feature_tracker", "color_tracker", "fusion_tracker"):
+        for mode in ("fusion_tracker", "feature_tracker", "color_tracker"):
             response = switch(mode, "")
             results[mode] = response.success and response.active_mode == mode
         report["mode_switches"] = results

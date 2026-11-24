@@ -1,0 +1,9 @@
+mode: leader_follow
+team_id: cpp_vtol_test
+leader_name: uav1
+members: [uav2]
+offsets:
+  uav2: [-80.0, 0.0, 0.0]
+rate: 20.0
+state_timeout: 1.0
+external_quiet_time: 0.2

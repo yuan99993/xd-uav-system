@@ -12,6 +12,7 @@ enum class TargetGuidanceMode {
   kLegacyVisual,
   kMetricPursuit,
   kMetricOrbit,
+  kDirectControl,
   kAuto,
 };
 
@@ -53,6 +54,12 @@ struct TargetGuidanceConfig {
   double maximum_vertical_speed{1.5};
   bool metric_vertical_control{false};
   bool wind_feasibility_enabled{false};
+
+  // Direct control completes when the vehicle enters this 3D radius around
+  // the fixed shared-world XYZ target. Outside the radius it commands a
+  // constant-speed velocity vector toward the target.
+  double direct_control_speed_mps{3.0};
+  double direct_control_arrival_radius_m{1.5};
 
   // Optional image-plane guard for a fixed forward camera. Error coordinates
   // are normalized to [-1, 1]; when the target enters the margin, orbit mode

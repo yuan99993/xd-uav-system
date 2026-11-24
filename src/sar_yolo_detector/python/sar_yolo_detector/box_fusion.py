@@ -123,9 +123,11 @@ class BoxFusion:
         self.visual_hold = self._positive("visual_hold_sec", 1.5)
         self.predict_hold = self._positive("prediction_hold_sec", .35)
         self.reacquire_hold = self._positive("reacquire_hold_sec", 8.)
-        self.identity_ttl = self._positive("identity_memory_ttl_sec", 60.)
-        if self.identity_ttl <= self.reacquire_hold or self.identity_ttl > 300.:
-            raise ValueError("Identity TTL must exceed short recovery and be <= 300 seconds")
+        self.identity_ttl = float(self.config.get("identity_memory_ttl_sec", 60.))
+        if (not math.isfinite(self.identity_ttl) or self.identity_ttl < 0 or
+                (self.identity_ttl > 0 and
+                 (self.identity_ttl <= self.reacquire_hold or self.identity_ttl > 300.))):
+            raise ValueError("Identity TTL must be 0 (until reselection) or exceed short recovery and be <= 300 seconds")
         # One selected identity per camera instance, not an unbounded gallery.
         self.identity_capacity = 1
         self.long_appearance_gate = self._unit("long_reacquire_appearance_gate", .85)
@@ -200,7 +202,7 @@ class BoxFusion:
         self.diagnostics = {}
         self.result = FusionResult(None, -1, -1, 0., "idle", "no_selection", 0., -1)
 
-    def initialize(self, frame, box, stamp, public_id, candidate=None, manual_seed=False):
+    def initialize(self, frame, box, stamp, public_id, candidate=None, manual_seed=False, gray=None):
         if not math.isfinite(stamp) or stamp <= 0 or public_id < 0 or not valid_box(box, frame.shape):
             raise ValueError("Invalid original-frame selection")
         self.reset()
@@ -214,7 +216,7 @@ class BoxFusion:
         self._previous_frame = frame
         self.anchor, quality = appearance(frame, box)
         self.anchor_area = box[2] * box[3]
-        self.tracker.initialize(frame, self.box)
+        self.tracker.initialize(frame, self.box, gray=gray)
         self.last_local_seed_stamp = stamp
         if self.tracker.tracker_name == "template" and not self.config.get("allow_template_fallback", False):
             self.reset()
@@ -239,7 +241,8 @@ class BoxFusion:
                 and reason != "identity_memory_expired" and self.identity_archive is None):
             self.identity_archive = dict(public_id=self.public_id, local_id=self.local_id,
                 class_id=self.class_id, last_seen=self.last_observation_stamp,
-                expires_at=self.last_observation_stamp + self.identity_ttl,
+                expires_at=(self.last_observation_stamp + self.identity_ttl
+                            if self.identity_ttl > 0 else None),
                 box=self.box, velocity=self.velocity.copy(),
                 appearance=self.anchor.copy() if self.anchor is not None else None)
         elif self.result.observed:
@@ -258,7 +261,7 @@ class BoxFusion:
 
     def step(self, frame, stamp, detections, *, detector_updated=True, same_frame_correction=False,
              camera_transform=None, camera_motion_reliable=None,
-             visual_observation=None, visual_quality=0., visual_scale_ratio=None):
+             visual_observation=None, visual_quality=0., visual_scale_ratio=None, gray=None):
         self.diagnostics = dict(detector_updated=bool(detector_updated), candidates=len(detections),
             rejected={}, local_tracker="not_run", camera_motion_available=False,
             frame_gap_sec=max(0., stamp-self.stamp) if math.isfinite(stamp) else None)
@@ -275,7 +278,7 @@ class BoxFusion:
             return self._result(None, "lost", "image_dimensions_changed", 0.)
         absence = stamp - self.last_observation_stamp
         self._long_recovery = absence > self.reacquire_hold
-        if absence > self.identity_ttl:
+        if self.identity_ttl > 0 and absence > self.identity_ttl:
             self.tracker.reset()
             self.pending_count, self.pending_id = 0, None
             result = self._result(None, "lost", "identity_memory_expired", 0.)
@@ -288,7 +291,8 @@ class BoxFusion:
             camera_motion_reliable=bool(motion_reliable),
             recovery_phase="identity_memory" if self._long_recovery else "short",
             identity_memory_capacity=self.identity_capacity,
-            identity_memory_remaining_sec=max(0., self.identity_ttl-absence))
+            identity_memory_remaining_sec=(max(0., self.identity_ttl-absence)
+                                           if self.identity_ttl > 0 else None))
         if not correction and (not motion_reliable or dt > self.max_gap):
             self._motion_continuous = False
         self.diagnostics['camera_motion_continuous'] = self._motion_continuous
@@ -322,7 +326,7 @@ class BoxFusion:
             self.tracker.reset()
             if dt > self.max_gap:
                 self.pending_count = 0
-        local = self.tracker.update(frame) if not correction and not self._long_recovery else None
+        local = self.tracker.update(frame, gray=gray) if not correction and not self._long_recovery else None
         self.diagnostics['local_tracker'] = ("cached_same_capture" if correction else
             "short_tracking_ended" if self._long_recovery else
             "frame_gap_reset" if dt > self.max_gap else
@@ -550,7 +554,7 @@ class BoxFusion:
                 and match.confidence >= self.min_detector_conf
                 and (match.detector_stamp is None or match.detector_stamp == stamp))
             if not agree or rebound or refresh:
-                self.tracker.initialize(frame, match.box)
+                self.tracker.initialize(frame, match.box, gray=gray)
                 self.last_local_seed_stamp = stamp
                 self.diagnostics['local_reinitialized'] = True
             if rebound:

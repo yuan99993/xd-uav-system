@@ -91,7 +91,12 @@ class TrackHandler:
 
     @staticmethod
     def _is_metric_profile(profile):
-        return str(profile).startswith("fw_metric_")
+        value = str(profile).strip().lower()
+        return value.startswith("fw_metric_") or value == "direct_control"
+
+    @staticmethod
+    def _is_direct_control_profile(profile):
+        return str(profile).strip().lower() == "direct_control"
 
     @staticmethod
     def _metric_target_available(goal):
@@ -111,7 +116,7 @@ class TrackHandler:
         pose = goal.target_pose
         if not self._metric_target_available(goal):
             raise RuntimeError(
-                "metric fixed-wing task requires target_pose in the shared world frame"
+                "metric task requires target_pose in the shared world frame"
             )
         message = MetricTarget()
         message.header.stamp = rospy.Time.now()
@@ -135,6 +140,11 @@ class TrackHandler:
             if float(goal.maximum_duration_sec) > 0.0
             else float(self._config.get("maximum_duration_sec", 120.0))
         )
+        if self._is_direct_control_profile(profile):
+            # Direct control completes at the destination; the visual
+            # tracking interval is irrelevant, but the shared policy object
+            # still validates required_duration <= maximum_duration.
+            required = min(required, maximum)
         return TrackMonitorPolicy(
             required_tracking_sec=required,
             acquisition_timeout_sec=float(
@@ -166,14 +176,26 @@ class TrackHandler:
         profile = self._effective_profile(goal)
         if self._is_metric_profile(profile) and not self._metric_target_available(goal):
             raise RuntimeError(
-                "metric fixed-wing task requires target_pose in the shared world frame"
+                "metric task requires target_pose in the shared world frame"
+            )
+        if self._is_direct_control_profile(profile) and not str(
+            goal.target_pose.header.frame_id
+        ).strip():
+            raise RuntimeError(
+                "direct_control requires target_pose.header.frame_id in the shared world frame"
+            )
+        if self._is_direct_control_profile(profile) and (
+            self._metric_target_publisher is None
+        ):
+            raise RuntimeError(
+                "direct_control requires a configured metric_target_topic"
             )
         if profile:
             self._wait_for_service(self._profile_service_name)
             response = self._profile_client(profile)
             if not response.success:
                 raise RuntimeError("track profile rejected: " + response.message)
-        if int(goal.local_track_id) >= 0:
+        if int(goal.local_track_id) >= 0 and not self._is_direct_control_profile(profile):
             self._wait_for_service(self._select_service_name)
             timeout = max(
                 0.0, float(self._config.get("selection_wait_timeout_sec", 1.0))
@@ -254,6 +276,11 @@ class TrackHandler:
                     )
                     break
                 now = rospy.Time.now().to_sec()
+                # A direct-control target is a live setpoint for the duration
+                # of the flight. Refreshing it keeps the metric guidance
+                # freshness gate valid even when the point is far away.
+                if self._is_direct_control_profile(profile):
+                    self._publish_metric_target(goal, profile)
                 with self._condition:
                     status = self._latest_status
                     sequence = self._status_sequence

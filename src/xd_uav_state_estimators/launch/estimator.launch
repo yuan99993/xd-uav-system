@@ -9,6 +9,7 @@
   <arg name="imu_topic" default="mavros/imu/data"/>
   <arg name="respawn" default="false"/>
   <arg name="republish_world" default="true"/>
+  <arg name="inline_odometry_adapters" default="false"/>
 
   <group ns="$(arg uav_name)">
     <node pkg="xd_uav_state_estimators"
@@ -29,6 +30,8 @@
       <rosparam unless="$(arg republish_world)" param="sources/fastlio/republish_in_frames">[local_origin]</rosparam>
       <rosparam unless="$(arg republish_world)" param="sources/openvins/republish_in_frames">[local_origin]</rosparam>
       <param name="uav_name" value="$(arg uav_name)"/>
+      <param name="inline_odometry_adapters"
+             value="$(arg inline_odometry_adapters)"/>
       <param name="odom_frame" value="$(arg odom_frame)"/>
       <param name="body_frame" value="$(arg body_frame)"/>
       <remap from="imu" to="$(arg imu_topic)"/>

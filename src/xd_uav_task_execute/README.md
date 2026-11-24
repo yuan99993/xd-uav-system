@@ -1,7 +1,7 @@
 # xd_uav_task_execute
 
-`xd_uav_task_execute` 是每架工作机上的“到达后任务执行层”。它不负责任务分配、飞往目标、
-起降或底层控制，只在工作机到达目标附近后接收一个长时 `ExecuteTask` action：
+`xd_uav_task_execute` 是每架工作机上的任务执行层。它不负责任务分配、起降或底层控制；
+普通任务在工作机到达目标附近后接收长时 `ExecuteTask` action，`direct_control` 则在分配目标后立即启动：
 
 ```text
 task_allocate / 上级任务管理器
@@ -15,6 +15,7 @@ task_allocate / 上级任务管理器
 - `ARRIVE`：兼容“到达即完成”，收到 action 后立即成功；
 - `TRACK`：可选切换 follower profile、可选选择本机 `local_track_id`，启动
   `xd_uav_track` 并监听 `TrackStatus`；
+- `TRACK` + `follower_profile: direct_control`：不选择视觉目标，直接把 `target_pose` 的共享世界 XYZ 发给 `xd_uav_track`；持续刷新目标，进入配置的三维到达半径后 action 成功；
 - `OBSERVE`：默认调用 `fw_metric_orbit`，以任务目标世界坐标进行定半径侦察盘旋；
 - `INTERCEPT`：默认调用 `fw_metric_pursuit`，以任务目标世界坐标进行固定翼接近；
 - 视觉 TRACK 成功要求目标可见、非纯预测、目标 ID 未发生切换；metric
@@ -28,6 +29,13 @@ task_allocate / 上级任务管理器
 `OBSERVE` 和 `INTERCEPT` 分别默认使用 `fw_metric_orbit` 和
 `fw_metric_pursuit`；metric goal 的 `target_pose` 会在启动跟踪后发布到
 `track/metric_target`，其坐标系必须是共享世界坐标系。
+
+也可以把 `task_type` 设为 `direct_control`（分配器会将其转换成 TRACK action 和
+`direct_control` profile），或使用 `task_type: track` 并显式设置
+`follower_profile: direct_control`。该任务不需要相机或 `local_track_id`；目标点必须带有
+与飞机里程计一致的 `target_pose.header.frame_id`，执行器会一直控制到进入
+`xd_uav_track` 配置的 XYZ 到达半径。飞行速度用 `track.yaml` 的
+`follower/target_guidance/direct_control/speed_mps` 单独设置，到达前保持这个速度。
 
 ## 启动
 

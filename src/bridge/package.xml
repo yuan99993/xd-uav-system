@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>xd_uav_video_bridge</name>
+  <version>0.1.0</version>
+  <description>Native H.264 video stream receiver and sender for the XD UAV stack.</description>
+  <maintainer email="kzy@example.com">kzy</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <export/>
+</package>

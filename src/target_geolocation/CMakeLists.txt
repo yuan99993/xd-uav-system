@@ -3,6 +3,7 @@ project(target_geolocation)
 
 find_package(catkin REQUIRED COMPONENTS
   message_generation
+  nav_msgs
   sar_yolo_detector
   sensor_msgs
   std_msgs
@@ -19,6 +20,7 @@ generate_messages(DEPENDENCIES sensor_msgs std_msgs)
 
 catkin_package(CATKIN_DEPENDS
   message_runtime
+  nav_msgs
   sensor_msgs
   sar_yolo_detector
   std_msgs

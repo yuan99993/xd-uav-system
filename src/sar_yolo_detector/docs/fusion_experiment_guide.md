@@ -1,12 +1,13 @@
-# PixEagle / train7.pt 四模式融合使用指南
+# PixEagle / train7.pt 三模式融合使用指南
 
 更新：2026-10-09。基线 Gitee feature/xd-uav-construction 提交 `3db09b001e903f70ca56815b325dba18d40fb756`。
 
-方案定位更新：用户于2026-10-09选定本目录SAR与同级XD为后续正式方案。文件名、工作区路径保留历史experiment命名；
-不改变原有默认模式，不代表UE/实机上线验收已经完成。完整正式部署合同见下方网页适配指南。
+方案定位更新：用户于2026-10-09选定本目录SAR与同级XD为后续方案；2026-11-19按当前需求移除了独立
+`smart_tracker` 跟踪模式，并把默认模式设为 FusionTracker。文件名、工作区路径保留历史experiment命名；
+这不代表UE/实机上线验收已经完成。完整部署合同见下方网页适配指南。
 
 新网页/跨主机接入见 [网页接口适配指南](web_frontend_integration_guide.md)与
-[接口绑定 JSON](web_frontend_interface_manifest.json)；该文档描述本实验实际四模式接口，不是旧 perception/* 网页。
+[接口绑定 JSON](web_frontend_interface_manifest.json)；该文档描述当前三种运行模式，不是旧 perception/* 网页。
 
 ## 修改范围
 
@@ -14,18 +15,17 @@
 旧 `/home/promise/mrs_test/src` 下两包未改。旧实验备份在 `/home/promise/mrs_test/sar_fusion_backup_20261009.CpqpkW`，含旧 build/devel。
 没有推送 Gitee，没有保存密钥。本次没有搬迁源码；不要同时将两份同名包加入同一catkin src，避免重复包。
 
-## 四种模式
+## 当前三种运行模式
 
 | 服务值 | 启动参数 | 算法 |
 |---|---|---|
-| smart_tracker | SmartTracker | 原 PixEagle YOLO + BoT-SORT |
 | feature_tracker | FeatureTracker | 原人工 ROI + KCF/CSRT/MIL/模板兼容路径 |
 | color_tracker | ColorTracker | 原 ROI 颜色学习或配置颜色全图搜索 |
-| fusion_tracker | FusionTracker | 全图 YOLO + 选中单目标 KCF/CSRT + 运动、类别父组及弱外观门控 |
+| fusion_tracker | FusionTracker | 全图 YOLO + 每个目标独立的局部模板跟踪；UI 选择只决定哪个目标输出给云台 |
 
-默认由原 YAML 的 Default_Tracker 决定，当前 SmartTracker；tracking_mode 留空不覆盖配置。
-融合未选目标时输出全图 YOLO；选择后该目标只输出一个最终融合框，其他目标保持 YOLO 输出。
-不是全目标 KCF 池，也不是跨相机身份层。原三模式未被替换。
+独立 `smart_tracker` 跟踪模式已移除，默认运行 FusionTracker。YOLO 模型、类别过滤和 BoT-SORT 后端配置仍在 `SmartTracker:` YAML 命名空间中供融合检测链使用；该名称是历史参数空间，不代表独立运行模式。
+YOLO 检出的每个目标都会维护自己的模板框；选择后，云台目标输出只跟随 UI 选中的 ID。
+各目标每帧做单尺度局部匹配，多尺度校正最多每秒五次；长时全图重获仍只用于选中目标。
 
 ## 模型与环境
 
@@ -74,7 +74,7 @@ roslaunch sar_yolo_detector xd_smart_tracker_fusion_integration.launch \
   python_executable:=/home/promise/mrs_test/sar_fusion_experiment.wlpAs3/.venv-fusion/bin/python
 ```
 
-包须解析到实验副本。旧入口位于 archive/launch，原样保留；新增唯一命名入口避免同名 launch 冲突。
+历史实验期间旧入口位于 archive/launch；当前精简包已删除归档目录，只保留融合入口。启动时仍须确认 rospack 解析到本工作区副本。
 只有新融合入口显式启用 enable_fusion_mode；旧归档入口仍运行原三模式，拒绝切入融合，避免旧 tracked 桥接把视觉辅助误当 YOLO。
 按 UE 相机实际宽高、话题、frame 和时间配置；使用 /clock 时同步 use_sim_time。
 入口只启动 SAR 和桥接，不启动飞行、定位、XD tracker 或云台设备控制器。默认把 UI 选中的单框转成
@@ -126,14 +126,14 @@ SAR 选择只选择图像融合目标，不自动改变 XD 的飞行跟随目标
 | track/selected_detections | xd_uav_track/DetectionArray，默认桥接 UI 选中的单框，供 StartTracker 使用 |
 | detect/input/detections_2d | xd_uav_track/DetectionArray，可选的全候选定位链输入 |
 | sar_yolo_smart_tracker_smart/fusion_evidence | String JSON：公开/局部 ID、来源、原因、最近 YOLO 时间、耗时 |
-| sar_yolo_detector/manual/initial_roi | 原 RegionOfInterest；feature/color 初始化手动跟踪器；fusion_tracker 中按最新缓存帧手动初始化 KCF |
+| sar_yolo_detector/manual/initial_roi | 原 RegionOfInterest；feature/color 初始化手动跟踪器；fusion_tracker 中按最新缓存帧初始化模板目标 |
 
 | 私有服务 | 类型/用途 |
 |---|---|
 | switch_tracking_mode | 原 SwitchTrackingMode，新增支持 fusion_tracker |
 | select | 原 SelectSmartTrack，当前帧 ID/点击/归一化 ROI/取消 |
-| select_fusion_roi | 新 SelectFusionROI，原帧 header + 像素 ROI；唯一 YOLO 框可作为 KCF 初始框 |
-| select_fusion_manual_roi | 同一 SelectFusionROI 请求；始终用手画框初始化 KCF，后续再由附近 YOLO 检测校正 |
+| select_fusion_roi | 新 SelectFusionROI，原帧 header + 像素 ROI；唯一 YOLO 框用于选择跟踪目标 |
+| select_fusion_manual_roi | 同一 SelectFusionROI 请求；用手画框初始化选中目标模板，后续由附近 YOLO 检测校正 |
 | switch_model | 原 SwitchSmartTrackerModel；切换后清空融合选择 |
 
 ```bash
@@ -144,15 +144,15 @@ rosservice call /uav1/sar_yolo_smart_tracker_smart/select "{clear_selection: tru
 
 旧 select 和 stamp=0 点击是最新帧接口，不适用于延迟网页。延迟点击须带显示原图完整 stamp/seq/frame_id。
 延迟框选用 select_fusion_roi，先查原帧再匹配目标；它保留现有 YOLO 优先初始化行为。新增
-select_fusion_manual_roi 使用完全相同的原帧请求合同，但跳过 YOLO 初始框吸附，直接用手画 ROI 启动 KCF。
-后续 YOLO 仍在全图推理。手选 KCF 尚未绑定 YOLO 时，候选框中心落在本次手选 ROI 内（或与 ROI 的 IoU 不低于 0.15）才可开始首次关联；已在 ROI 内开始确认的同一 YOLO ID 可继续完成确认，即使检测框随后移出 ROI。首次 YOLO 身份确认后，清除该 ROI 限制，后续按位置、尺度、外观、类别和歧义门控融合。
+select_fusion_manual_roi 使用完全相同的原帧请求合同，但跳过 YOLO 初始框吸附，直接用手画 ROI 选择模板目标。
+后续 YOLO 仍在全图推理。所有 YOLO 框都会各自运行模板跟踪；UI 所选目标再按位置、尺度、外观、类别和歧义门控与 YOLO 关联。
 每次新的手动画框都会重置启动门控并记录新的 ROI；此前选框的区域不会限制新选目标，也不会在进入融合后继续限制当前目标。
 最多24帧/24 MiB，最大年龄0.75秒，三项限制同时生效。
 请求header取与显示画面按stamp/frame_id配对的 fusion_evidence.capture_header，不能用不同发布者重写的seq。
 过期、未来、错帧和越界请求均拒绝；select_fusion_roi 对多检测 ROI 拒绝，select_fusion_manual_roi 则按手画框启动，但后续歧义候选不会绑定为目标。
 select_fusion_roi 的大 ROI 含唯一检测目标时使用紧框；无检测时可初始化未知类别 -1。
-select_fusion_manual_roi 始终使用原始手画框作为 KCF 初始框，即使框内已有一个或多个 YOLO 候选；此时初始类别和检测身份未知，后续由区域内通过门控的 YOLO 结果确认，不默认伪称 tank。
-第三方 UI 若只能发布 `sensor_msgs/RegionOfInterest`，也可向 `sar_yolo_detector/manual/initial_roi` 发布框：在 `fusion_tracker` 模式下后端以最新且未过期的缓存原帧为 KCF seed，YOLO 仍继续校正。该旧消息不带 header，因此不能保证与延迟显示帧精确对应；需要帧绑定时应调用 `select_fusion_manual_roi`。
+select_fusion_manual_roi 始终使用原始手画框初始化选中目标，即使框内已有一个或多个 YOLO 候选；初始类别和检测身份未知，后续由附近 YOLO 结果确认。
+第三方 UI 若只能发布 `sensor_msgs/RegionOfInterest`，也可向 `sar_yolo_detector/manual/initial_roi` 发布框：在 `fusion_tracker` 模式下后端以最新且未过期的缓存原帧初始化模板目标，YOLO 仍继续校正。该旧消息不带 header，因此不能保证与延迟显示帧精确对应；需要帧绑定时应调用 `select_fusion_manual_roi`。
 中心在 detection.bbox.center.x/y（新消息为 target.detection），原图左上角为原点，x 右、y 下。
 叠框与数值共用最终框、原始宽高/header，不缩图或独立修框。桥接 bbox 是 xmin/ymin/xmax/ymax，floor/ceil 取整最多一像素差。
 不同 ROS1 发布者会独立计数 header.seq，输入与输出序号不保证相同；严格框选回传所显示叠框的 header，不猜测其他话题的序号。

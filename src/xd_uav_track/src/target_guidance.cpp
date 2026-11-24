@@ -97,6 +97,10 @@ bool parseTargetGuidanceMode(const std::string& value,
     *mode = TargetGuidanceMode::kMetricOrbit;
     return true;
   }
+  if (value == "direct_control") {
+    *mode = TargetGuidanceMode::kDirectControl;
+    return true;
+  }
   if (value == "auto") {
     *mode = TargetGuidanceMode::kAuto;
     return true;
@@ -109,6 +113,7 @@ const char* targetGuidanceModeName(const TargetGuidanceMode mode) {
     case TargetGuidanceMode::kLegacyVisual: return "legacy_visual";
     case TargetGuidanceMode::kMetricPursuit: return "metric_pursuit";
     case TargetGuidanceMode::kMetricOrbit: return "metric_orbit";
+    case TargetGuidanceMode::kDirectControl: return "direct_control";
     case TargetGuidanceMode::kAuto: return "auto";
   }
   return "legacy_visual";
@@ -162,6 +167,10 @@ TargetGuidance::TargetGuidance(const TargetGuidanceConfig& requested)
                                             config_.maximum_lateral_speed);
   config_.maximum_vertical_speed = std::max(0.0,
                                              config_.maximum_vertical_speed);
+  config_.direct_control_speed_mps = std::max(
+      0.1, config_.direct_control_speed_mps);
+  config_.direct_control_arrival_radius_m = std::max(
+      0.0, config_.direct_control_arrival_radius_m);
   config_.fixed_camera_fov_margin_ratio = clamp(
       config_.fixed_camera_fov_margin_ratio, 0.0, 0.49);
   config_.dynamic_gimbal_fov_margin_ratio = clamp(
@@ -321,10 +330,12 @@ TargetGuidanceOutput TargetGuidance::update(
   const bool metric_required = config_.observation_policy == "metric_required";
   const bool use_metric = config_.mode == TargetGuidanceMode::kMetricPursuit ||
       config_.mode == TargetGuidanceMode::kMetricOrbit ||
+      config_.mode == TargetGuidanceMode::kDirectControl ||
       config_.mode == TargetGuidanceMode::kAuto;
   const bool metric_mode_requires_observation =
       config_.mode == TargetGuidanceMode::kMetricPursuit ||
-      config_.mode == TargetGuidanceMode::kMetricOrbit;
+      config_.mode == TargetGuidanceMode::kMetricOrbit ||
+      config_.mode == TargetGuidanceMode::kDirectControl;
   if ((metric_required || metric_mode_requires_observation) && !metric_fresh) {
     output.invalid_reason = "metric target observation is stale or invalid";
     output.state = "metric_required";
@@ -381,6 +392,26 @@ TargetGuidanceOutput TargetGuidance::update(
   const double target_forward = input.relative_position_body_frd[0];
   const double target_left = -input.relative_position_body_frd[1];
   const double target_up = -input.relative_position_body_frd[2];
+  if (config_.mode == TargetGuidanceMode::kDirectControl) {
+    const double distance = std::sqrt(target_forward * target_forward +
+        target_left * target_left + target_up * target_up);
+    output.metric_active = true;
+    output.active = true;
+    if (distance <= config_.direct_control_arrival_radius_m) {
+      output.state = "arrived";
+      output.forward = 0.0;
+      output.left = 0.0;
+      output.up = 0.0;
+    } else {
+      output.state = "direct_control";
+      const double speed = config_.direct_control_speed_mps;
+      output.forward = target_forward / distance * speed;
+      output.left = target_left / distance * speed;
+      output.up = target_up / distance * speed;
+    }
+    output.invalid_reason.clear();
+    return output;
+  }
   const double horizontal_range = vectorNorm(target_forward, target_left);
   if (horizontal_range < 1e-3) {
     output.invalid_reason = "metric target is too close to define a course";

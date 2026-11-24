@@ -10,7 +10,7 @@ SeaDronesSee v2 category order:
 3. `life_saving_appliances`
 4. `buoy`
 
-`rescue_profile.launch profile:=maritime_person` loads
-`maritime_person_fp16.engine` by default.  The package also keeps the
-PyTorch checkpoint and ONNX export for retraining or a non-TensorRT backend.
-`training_metadata.json` records the dataset run and validation metrics.
+These are retained model artifacts from the former rescue profile. The trimmed
+runtime package no longer includes that profile launch. The package also keeps
+the PyTorch checkpoint and ONNX export; `training_metadata.json` records the
+dataset run and validation metrics.

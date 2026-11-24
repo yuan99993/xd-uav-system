@@ -46,11 +46,12 @@ post_arrival:
     uav2:
       task_type: track
       handoff_mode: visual
-      follower_profile: gm_velocity_chase
+      follower_profile: gmfw_velocity_vector
 
-    # uav3:
-    #   task_type: arrive
-    #   handoff_mode: position
-    #   follower_profile: ""
+    uav3:
+      task_type: direct_control
+      handoff_mode: position
+      follower_profile: direct_control
+      maximum_duration_sec: 180.0
 
   class_overrides: {}

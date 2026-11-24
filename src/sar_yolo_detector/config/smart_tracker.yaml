@@ -1,5 +1,6 @@
-# Legacy generic PixEagle SmartTracker profile. The primary scout-aircraft
-# entry point uses smart_tracker_aircraft.yaml via scout_perception.launch.
+# YOLO detector/runtime profile consumed by the Fusion/Color/Feature pipeline.
+# The standalone SmartTracker tracking mode is disabled; this config still
+# supplies the model backend, class filter, thresholds and inference settings.
 input_image_topic: camera/image_raw
 tracked_detections_topic: sar_yolo_detector/smart/tracked_detections
 state_topic: sar_yolo_detector/smart/state
@@ -21,6 +22,10 @@ coordinate_contract: CAMERA_RAY
 SmartTracker:
   SMART_TRACKER_ENABLED: true
   DETECTION_BACKEND: ultralytics
+  # Several ROS processes may run on the same aircraft. Avoid letting each
+  # YOLO process create a large CPU thread pool alongside ROS/OpenCV/GStreamer.
+  SMART_TRACKER_TORCH_NUM_THREADS: 1
+  SMART_TRACKER_TORCH_INTEROP_THREADS: 1
   SMART_TRACKER_USE_GPU: true
   SMART_TRACKER_FALLBACK_TO_CPU: true
   SMART_TRACKER_GPU_MODEL_PATH: models/thermal_uav/thermal_uav.pt

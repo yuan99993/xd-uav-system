@@ -9,12 +9,11 @@
        default="$(find xd_uav_task_allocate)/config/task_execution.yaml"/>
   <arg name="respawn" default="false"/>
 
-  <!-- This launch starts only mission allocation. Detection, estimators,
-       managers and controllers remain owned by their own packages. The active
-       default execution backend is selected in mission.yaml and may be
-       overridden per vehicle in scouts.yaml/workers.yaml. -->
+  <!-- The production coordinator is implemented in C++ to keep mission
+       allocation off the Python runtime. Detection, estimators, managers and
+       controllers remain owned by their own packages. -->
   <node pkg="xd_uav_task_allocate"
-        type="task_allocate_node.py"
+        type="task_allocate_node_cpp"
         name="task_allocate_coordinator"
         output="screen"
         respawn="$(arg respawn)"

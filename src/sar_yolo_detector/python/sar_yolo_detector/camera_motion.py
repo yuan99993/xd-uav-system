@@ -72,11 +72,18 @@ class CameraMotion:
         area = abs(cv2.contourArea(projected[:4].astype(np.float32))) / max(1., width*height)
         return .65 <= area <= 1.5
 
-    def update(self, frame, stamp, excluded_boxes=(), pose_rotation=None, estimate=True):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    def update(self, frame, stamp, excluded_boxes=(), pose_rotation=None, estimate=True, gray=None):
         matrix, self.source, self.inlier_ratio = None, "unavailable", 0.
+        if not self.enabled or not estimate:
+            # With no active target there is no reason to convert every camera
+            # frame to grayscale just to discard it. Start a fresh motion
+            # baseline when a target becomes available again.
+            self.gray, self.stamp = None, stamp
+            self.history.clear()
+            return None
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if gray is None else gray
         previous, previous_stamp = self.gray, self.stamp
-        if self.enabled and estimate and previous is not None and previous.shape == gray.shape and 0 < stamp-previous_stamp <= self.max_gap:
+        if previous is not None and previous.shape == gray.shape and 0 < stamp-previous_stamp <= self.max_gap:
             pose = pose_rotation if self.validate(pose_rotation, gray.shape) else None
             matrix = self._background(previous, gray, excluded_boxes, pose)
             if matrix is not None:

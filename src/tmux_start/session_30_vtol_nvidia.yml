@@ -1,0 +1,109 @@
+root: ./
+name: one_multirotor_nvidia_functions
+socket_name: mrs
+attach: false
+tmux_options: -f /home/nvidia/xd-uavsystem-test/src/tmux_start/tmux_cfg/tmux.conf
+
+# Functional nodes run on this board and connect to the ROS master on the
+# other board. The launcher supplies ROS_MASTER_URI and ROS_IP from the shell.
+pre_window: source /opt/ros/noetic/setup.bash; source "$HOME/xd-uavsystem-test/devel/setup.bash"; export ROS_MASTER_URI="${ROS_MASTER_URI:?ROS_MASTER_URI is required}"; export ROS_IP="${ROS_IP:?ROS_IP is required}"; unset ROS_HOSTNAME; export DISPLAY=${DISPLAY:-:0}; source $HOME/xd-uavsystem-test/.venv-sar/bin/activate
+startup_window: vehicle_stack
+
+windows:
+  - vehicle_stack:
+      layout: tiled
+      panes:
+        - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav1 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav1
+        - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav2 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav2
+        - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav3 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav3
+        - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav4 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav4
+        - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav5 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav5
+        - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav6 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav6
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav7 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav7
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav8 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav8
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav9 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav9
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav10 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav10
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav11 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav11
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav12 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav12
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav13 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav13
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav14 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav14
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav15 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav15
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav16 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav16
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav17 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav17
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav18 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav18
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav19 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav19
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav20 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav20
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav21 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav21
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav22 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav22
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav23 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav23
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav24 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav24
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav25 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav25
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav26 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav26
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav27 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav27
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav28 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav28
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav29 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav29
+        # - roslaunch xd_uav_state_estimators uav_localization_stack.launch UAV_NAME:=uav30 tf_config:=$(rospack find xd_uav_single_tf_manager)/config/vtol_single_tf.yaml
+        # - roslaunch xd_uav_control_manager vtol_system.launch UAV_NAME:=uav30
+
+  - world_tf:
+      layout: tiled
+      panes:
+        - roslaunch xd_uav_world_tf_manager world_tf.launch config:=$(rospack find xd_uav_world_tf_manager)/config/30world.yaml
+
+  - formation:
+      layout: tiled
+      panes:
+        - roslaunch xd_uav_formation formation.launch config:=$(rospack find xd_uav_formation)/config/formation_10_fixedwing.yaml
+  
+  - stop_and_land:
+      layout: tiled
+      panes:
+        - history -s 'rosservice call /uav1/control_manager/land_home'
+        - >-
+          history -s 'rosservice call /uav1/control_manager/external_control "data: false"'
+
+  - takeoff:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rosservice call /uav1/control_manager/takeoff "altitude: 4.0"'
+  
+  - observe:
+      layout: tiled
+      panes:
+        - waitForTime; rostopic echo /uav1/state_estimator/main/frames/world/odom
+
+  - goto:
+      layout: tiled
+      panes:
+        - >-
+          history -s 'rostopic pub -1 /uav1/control/reference/setpoint mavros_msgs/PositionTarget "{header: {stamp: now, frame_id: 'world'}, coordinate_frame: 1, type_mask: 2552, position: {x: 3000.0, y: 3000.0, z: 130.0}, velocity: {x: 0.0, y: 0.0, z: 0.0}, acceleration_or_force: {x: 0.0, y: 0.0, z: 0.0}, yaw: 0.0, yaw_rate: 0.0}"'

@@ -2,8 +2,8 @@
 
 `xd_vehicle_latest.pt` is copied from `src/train/weights/best.pt` (training run
 `train`). The filename `latest` is a historical alias, not the active runtime
-model. It is the default of the archived
-`archive/launch/xd_smart_tracker_integration.launch`.
+model. The current fusion launch uses the TensorRT artifact in
+`../xd_vehicle_train7/` instead.
 
 The current `xd_uav_track/launch/vision_tracking_stack.launch` defaults to train7.
 Launch arguments can override that default. Read the shared detector's latched

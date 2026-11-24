@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import stat
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -42,6 +43,7 @@ class UltralyticsBackend(DetectionBackend):
 
     def __init__(self, config: dict, *, models_root: Optional[Path] = None):
         self._config = dict(config or {})
+        self._configure_torch_threads()
         configured_root = self._config.get("SMART_TRACKER_MODELS_ROOT")
         self._models_root = Path(
             models_root or configured_root or Path.cwd()
@@ -56,6 +58,12 @@ class UltralyticsBackend(DetectionBackend):
         )
         self._model = None
         self._runtime_info: Dict[str, Any] = {}
+        self._last_stage_timings: Dict[str, float] = {
+            "preprocess_ms": 0.0,
+            "model_forward_ms": 0.0,
+            "postprocess_ms": 0.0,
+            "normalize_ms": 0.0,
+        }
         raw_allowed_class_ids = self._config.get("SMART_TRACKER_ALLOWED_CLASS_IDS")
         self._allowed_class_ids = (
             sorted({int(class_id) for class_id in raw_allowed_class_ids})
@@ -91,6 +99,28 @@ class UltralyticsBackend(DetectionBackend):
             self._tracker_config_path = str(path.resolve())
         self.tracker_args = {"persist": True, "verbose": False}
 
+    def _configure_torch_threads(self) -> None:
+        """Bound PyTorch CPU pools before loading or running the model."""
+        try:
+            import torch
+        except Exception:
+            # Model loading reports the actionable dependency error later.
+            return
+
+        intraop = max(1, min(4, int(
+            self._config.get("SMART_TRACKER_TORCH_NUM_THREADS", 1)
+        )))
+        interop = max(1, min(4, int(
+            self._config.get("SMART_TRACKER_TORCH_INTEROP_THREADS", 1)
+        )))
+        torch.set_num_threads(intraop)
+        try:
+            # PyTorch permits this only before inter-op work starts. A backend
+            # recreated in the same process may find the limit already fixed.
+            torch.set_num_interop_threads(interop)
+        except RuntimeError:
+            pass
+
     @property
     def is_available(self) -> bool:
         return ULTRALYTICS_AVAILABLE
@@ -102,6 +132,29 @@ class UltralyticsBackend(DetectionBackend):
     @property
     def is_loaded(self) -> bool:
         return self._model is not None
+
+    @property
+    def last_stage_timings(self) -> Dict[str, float]:
+        """Most recent Ultralytics stage timings, when Results.speed is available."""
+        return dict(self._last_stage_timings)
+
+    @staticmethod
+    def _result_speed(results: Any) -> Dict[str, float]:
+        if not isinstance(results, (list, tuple)) or not results:
+            return {}
+        speed = getattr(results[0], "speed", None)
+        if not isinstance(speed, dict):
+            return {}
+        values = {}
+        for source, target in (("preprocess", "preprocess_ms"),
+                               ("inference", "model_forward_ms"),
+                               ("postprocess", "postprocess_ms")):
+            try:
+                value = float(speed.get(source, 0.0))
+            except (TypeError, ValueError):
+                value = 0.0
+            values[target] = value if math.isfinite(value) and value >= 0.0 else 0.0
+        return values
 
     def _select_tracker_type(self) -> Tuple[str, bool]:
         requested = str(
@@ -381,7 +434,14 @@ class UltralyticsBackend(DetectionBackend):
             verbose=False,
             **self._inference_args(image_size),
         )
-        return self._normalize_results(results)
+        speed = self._result_speed(results)
+        normalize_started = time.perf_counter()
+        normalized = self._normalize_results(results)
+        self._last_stage_timings = dict(
+            speed,
+            normalize_ms=(time.perf_counter() - normalize_started) * 1000.0,
+        )
+        return normalized
 
     def detect_many(
         self, frames: List[Any], conf: float = 0.3, iou: float = 0.3,
@@ -399,7 +459,17 @@ class UltralyticsBackend(DetectionBackend):
             **self._inference_args(image_size)))
         if len(results) != len(frames):
             raise RuntimeError("Ultralytics returned an incomplete inference batch")
-        return [self._normalize_results([result]) for result in results]
+        stage_samples = [self._result_speed([result]) for result in results]
+        speed = {}
+        for key in ("preprocess_ms", "model_forward_ms", "postprocess_ms"):
+            values = [sample[key] for sample in stage_samples if key in sample]
+            if values:
+                speed[key] = sum(values) / len(values)
+        normalize_started = time.perf_counter()
+        normalized = [self._normalize_results([result]) for result in results]
+        speed["normalize_ms"] = (time.perf_counter() - normalize_started) * 1000.0
+        self._last_stage_timings = speed
+        return normalized
 
     def detect_and_track(
         self,

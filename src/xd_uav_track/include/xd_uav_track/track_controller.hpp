@@ -22,6 +22,8 @@ enum class FollowerProfile {
   // use TargetGuidance for pursuit or standoff orbit generation.
   kFixedWingMetricPursuit,
   kFixedWingMetricOrbit,
+  // Point-to-point flight from a shared-world XYZ target.
+  kDirectControl,
 };
 
 enum class LateralGuidanceMode {
@@ -136,6 +138,23 @@ struct TrackControllerConfig {
   double gmfw_horizontal_fov_rad{1.0};
   double gmfw_vertical_fov_rad{0.75};
   double gmfw_image_alignment_rad{0.35};
+  // Image-ray correction is blended into the full gimbal LOS ray. A value
+  // below 1 gives gimbal angles more authority than image-box displacement.
+  double gmfw_image_error_weight{0.30};
+  // When the GMFW target is lost after it was centered in the gimbal image,
+  // keep following the current gimbal line of sight briefly.
+  bool gmfw_aligned_loss_coast_enabled{true};
+  double gmfw_aligned_loss_coast_sec{1.0};
+  double gmfw_aligned_loss_max_image_error_x{0.05};
+  double gmfw_aligned_loss_max_image_error_y{0.05};
+  // A recent, range-valid target point can guide GMFW through a brief image
+  // loss in the odometry world frame. The descent limit is a rate limit; it
+  // does not impose an altitude hold above the target.
+  bool gmfw_metric_loss_coast_enabled{true};
+  double gmfw_loss_max_descent_rate_mps{5.0};
+  // Offset added to the initialized metric target's world Z for image-loss
+  // guidance; e.g. -5 m guides to five metres below the measured point.
+  double gmfw_terminal_ground_z_m{0.0};
 
   // Track-quality safety. Kalman covariance is expressed in normalized image
   // coordinates, so these limits are independent of camera resolution.
@@ -269,14 +288,16 @@ struct TrackVelocity {
   // Fixed-wing vector guidance intentionally supplies no separate yaw-rate;
   // the horizontal velocity direction is the complete course reference.
   bool use_yaw_rate{true};
-  // Fixed-wing cannot stop in place. On target loss, release the streaming
-  // reference so xd_uav_controller can enter its configured timeout loiter.
+  // Fixed-wing cannot stop in place. Normally release the streaming reference
+  // on target loss so xd_uav_controller can enter its timeout loiter; aligned
+  // GMFW loss may temporarily keep a bounded course reference instead.
   bool release_reference_on_invalid{false};
-  // Optional internal position anchor for fixed-wing orbit guidance.  These
-  // fields are consumed by xd_uav_track_node when publishing the existing
-  // MAVROS PositionTarget.
+  // Optional internal position reference for fixed-wing orbit and direct
+  // point guidance. These fields are consumed by xd_uav_track_node when
+  // publishing the existing MAVROS PositionTarget.
   bool position_reference_valid{false};
   std::array<double, 3> position_reference{{0.0, 0.0, 0.0}};
+  bool position_reference_only{false};
   std::string profile;
   std::string lateral_guidance_mode;
   std::string tracking_state;
@@ -308,6 +329,15 @@ class TrackController {
   // anchor must use this flag rather than treating the image update itself as
   // proof that the world-frame observation was accepted.
   bool lastMetricMeasurementAccepted() const;
+  bool lastMetricWorldTargetAccepted() const;
+  bool gmfwLossTargetWorld(std::array<double, 3>* world_position,
+                           double* position_sigma_m) const;
+  bool lockGmfwMetricTargetWorld(
+      int target_id, const std::array<double, 3>& world_position,
+      double position_sigma_m);
+  // True after the controller has accepted a selected visual measurement
+  // since its last reset. Gimbal world points are held until this is true.
+  bool everAcquired() const;
   // Read-only cross-camera association gate.  It projects the candidate at
   // its capture time and compares it with the current inertial target state;
   // callers use it before allowing a standby camera to update the filter.
@@ -419,6 +449,7 @@ class TrackController {
   Pid fw_climb_rate_pid_;
   Pid gmfw_course_pid_;
   Pid gmfw_climb_rate_pid_;
+  Pid gmfw_metric_course_pid_;
 
   bool have_measurement_{false};
   bool ever_acquired_{false};
@@ -439,6 +470,25 @@ class TrackController {
   double forward_velocity_{0.0};
   double smoothed_left_{0.0};
   double smoothed_up_{0.0};
+  bool gmfw_output_filter_initialized_{false};
+  double gmfw_filtered_course_offset_{0.0};
+  double gmfw_filtered_climb_rate_{0.0};
+  bool gmfw_aligned_loss_coast_eligible_{false};
+  bool gmfw_metric_loss_anchor_valid_{false};
+  bool gmfw_terminal_approach_active_{false};
+  int gmfw_locked_visual_track_id_{-1};
+  double gmfw_last_confirmed_detection_time_{-1.0};
+  std::array<double, 3> gmfw_metric_loss_target_world_{{0.0, 0.0, 0.0}};
+  double gmfw_metric_loss_origin_x_{0.0};
+  double gmfw_metric_loss_origin_y_{0.0};
+  double gmfw_metric_loss_target_course_world_rad_{0.0};
+  double gmfw_metric_loss_target_distance_m_{0.0};
+  // First accepted GMFW world point in the current tracking session. Its
+  // position and sigma are latched once and held until reset/reselection.
+  bool gmfw_recent_metric_target_valid_{false};
+  int gmfw_recent_metric_target_id_{-1};
+  std::array<double, 3> gmfw_recent_metric_target_world_{{0.0, 0.0, 0.0}};
+  double gmfw_recent_metric_target_sigma_m_{0.0};
   double yaw_rate_limited_{0.0};
   double smoothed_yaw_{0.0};
   double loss_start_time_{0.0};
@@ -451,6 +501,7 @@ class TrackController {
   // detections until the tracker is reset or the profile leaves metric mode.
   bool external_metric_target_active_{false};
   bool last_metric_measurement_accepted_{false};
+  bool last_metric_world_target_accepted_{false};
   double metric_state_time_{0.0};
   std::array<double, 3> last_metric_position_frd_{{0.0, 0.0, 0.0}};
   std::array<double, 3> last_metric_velocity_frd_{{0.0, 0.0, 0.0}};
@@ -481,6 +532,7 @@ bool parseFollowerProfile(const std::string& value, FollowerProfile* profile);
 const char* followerProfileName(FollowerProfile profile);
 bool isFixedWingProfile(FollowerProfile profile);
 bool isMetricFixedWingProfile(FollowerProfile profile);
+bool isMetricTargetProfile(FollowerProfile profile);
 TargetGuidanceMode targetGuidanceModeForFollowerProfile(
     FollowerProfile profile);
 bool parseLateralGuidanceMode(const std::string& value,

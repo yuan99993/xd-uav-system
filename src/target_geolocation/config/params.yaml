@@ -9,6 +9,7 @@ heading_topic: ""          # Float64    罗盘航向 compass_hdg（#285 未锁 y
 mavlink_topic: ""          # Mavlink    原始 MAVLink 帧，用于解析 #285 云台姿态
 range_topic: ""            # Range      测距仪斜距，默认 /uav1/mavros/distance_sensor/laser_1d
 local_pose_topic: ""       # PoseStamped 仅用于把结果画到 RViz
+metric_odom_topic: ""      # MetricTarget 坐标源；默认 /<uav_ns>/state_estimator/main/odom
 gimbal_att_topic: ""       # 非空则改用它当姿态源（仿真/其他飞控）
 # att_msg_type 可选值：
 #   QuaternionStamped  世界系(或已锁 yaw)四元数
@@ -56,6 +57,8 @@ max_img_offset_deg: 20.0   # 目标离光轴超过该角度则不修正（测距
 det_timeout: 0.3           # 检测框过期时间 [s]
 
 # ---------------- 输出 ----------------
+metric_status_topic: ""  # std_msgs/String JSON，默认 /<uav_ns>/track/metric_target_status
+metric_status_publish_rate: 2.0  # 坐标有效/过期状态刷新频率 [Hz]
 marker_frame: "map"        # 与 mavros local_position 的坐标系一致
 marker_scale: 3.0
 range_msg_type: "Range"    # 或 "Float32"（测距用 std_msgs/Float32 发布时）

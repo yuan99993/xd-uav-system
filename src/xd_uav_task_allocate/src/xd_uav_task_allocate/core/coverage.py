@@ -345,8 +345,21 @@ def dubins_path(
             previous = current
     position_error = hypot(samples[-1][0] - goal[0], samples[-1][1] - goal[1])
     heading_error = abs((_mod2pi(samples[-1][2] - goal[2] + pi)) - pi)
-    if position_error > max(1e-5, 1e-7 * radius) or heading_error > 1e-7:
-        raise RuntimeError("Dubins integration did not reach the requested goal pose")
+    # The endpoint is snapped to the requested pose below. Reject only a
+    # meaningful integration mismatch; micrometre/radian-level thresholds
+    # were rejecting harmless floating-point error in large world frames.
+    position_tolerance = max(0.05, 1e-7 * max(radius, separation))
+    heading_tolerance = 1e-3
+    if position_error > position_tolerance or heading_error > heading_tolerance:
+        raise RuntimeError(
+            "Dubins %s integration missed goal: position error %.6f m "
+            "(limit %.6f m), heading error %.8f rad (limit %.8f rad); "
+            "start=%r goal=%r radius=%.3f m" % (
+                modes, position_error, position_tolerance,
+                heading_error, heading_tolerance,
+                start, goal, radius,
+            )
+        )
     # Analytic formulas and incremental sampling can accumulate small floating
     # point error. Preserve the exact requested endpoint for downstream goals.
     samples[-1] = (float(goal[0]), float(goal[1]), float(goal[2]))

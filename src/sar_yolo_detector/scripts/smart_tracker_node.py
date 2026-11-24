@@ -25,6 +25,11 @@ from sensor_msgs.msg import Image, RegionOfInterest, CameraInfo
 from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, SetBoolResponse
 from vision_msgs.msg import BoundingBox2D, Detection2D, ObjectHypothesisWithPose
+from xd_uav_track.msg import (
+    DetectionArray as TrackDetectionArray,
+    GimbalState,
+    TrackStatus,
+)
 
 from sar_yolo_detector.msg import (
     PerceptionIdentity,
@@ -64,6 +69,32 @@ from sar_yolo_detector.srv import (
 class _VideoDimensions:
     width = 1
     height = 1
+
+
+class _FrameContext:
+    """One BGR frame with lazily shared color conversions for each mode."""
+
+    __slots__ = ("bgr", "_gray", "_hsv", "_gray_conversion_ms")
+
+    def __init__(self, bgr):
+        self.bgr = bgr
+        self._gray = None
+        self._hsv = None
+        self._gray_conversion_ms = 0.0
+
+    @property
+    def gray(self):
+        if self._gray is None:
+            started = time.perf_counter()
+            self._gray = cv2.cvtColor(self.bgr, cv2.COLOR_BGR2GRAY)
+            self._gray_conversion_ms = (time.perf_counter() - started) * 1000.0
+        return self._gray
+
+    @property
+    def hsv(self):
+        if self._hsv is None:
+            self._hsv = cv2.cvtColor(self.bgr, cv2.COLOR_BGR2HSV)
+        return self._hsv
 
 
 class _SmartTrackerController:
@@ -157,6 +188,8 @@ def _bgr_to_image(frame: np.ndarray, header) -> Image:
     message.encoding = "bgr8"
     message.is_bigendian = 0
     message.step = int(contiguous.shape[1] * 3)
+    # Noetic genpy's generated Image serializer requires `bytes`; memoryview
+    # raises during ROS service/topic serialization.
     message.data = contiguous.tobytes()
     return message
 
@@ -199,11 +232,23 @@ class SmartTrackerNode:
         self._processed_frames = 0
         self._rejected_frames = 0
         self._last_processing_ms = 0.0
-        self._selected_track_id: Optional[int] = None
-        self._selected_track_id_is_stable = False
-        self._selected_class_id: Optional[int] = None
-        self._selected_last_bbox: Optional[Tuple[int, int, int, int]] = None
-
+        self._last_image_decode_ms = 0.0
+        self._last_callback_to_decode_ms = 0.0
+        self._last_gray_conversion_ms = 0.0
+        self._last_camera_motion_ms = 0.0
+        self._last_lk_flow_ms = 0.0
+        self._last_fusion_logic_ms = 0.0
+        self._last_result_publish_ms = 0.0
+        self._last_callback_to_result_publish_ms = 0.0
+        self._last_inference_source_to_result_publish_ms = 0.0
+        self._last_annotated_render_publish_ms = 0.0
+        self._last_callback_to_annotated_publish_ms = 0.0
+        self._last_inference_source_to_annotated_publish_ms = 0.0
+        self._latency_samples = {
+            name: deque(maxlen=120)
+            for name in ("callback_to_result", "inference_source_to_result",
+                         "callback_to_annotated", "inference_source_to_annotated")
+        }
         self._input_topic = rospy.get_param("~input_image_topic", "camera/image_raw")
         tracked_topic = rospy.get_param(
             "~tracked_detections_topic",
@@ -231,6 +276,68 @@ class SmartTrackerNode:
         self._publish_annotated = bool(
             rospy.get_param("~publish_annotated_image", True)
         )
+        annotated_max_fps = max(
+            0.0, _finite(rospy.get_param("~annotated_max_fps", 30.0), 30.0)
+        )
+        self._annotated_min_interval = (
+            1.0 / annotated_max_fps if annotated_max_fps > 0.0 else 0.0
+        )
+        self._last_annotated_publish_wall = 0.0
+        phase_config = dict(rospy.get_param("~PhaseOverlay", {}))
+        self._phase_overlay_enabled = bool(phase_config.get("enabled", False))
+        self._phase_detection_topic = str(phase_config.get(
+            "input_detections_topic", "track/selected_detections"))
+        self._phase_status_topic = str(phase_config.get(
+            "status_topic", "track/status"))
+        self._phase_gimbal_topic = str(phase_config.get(
+            "gimbal_state_topic", "track/gimbal_state"))
+        self._phase_detection_timeout = max(0.1, _finite(
+            phase_config.get("detection_timeout_sec", 0.5), 0.5))
+        self._phase_status_timeout = max(0.1, _finite(
+            phase_config.get("status_timeout_sec", 0.5), 0.5))
+        self._phase_gimbal_timeout = max(0.1, _finite(
+            phase_config.get("gimbal_state_timeout_sec", 0.5), 0.5))
+        self._phase_min_tracking_duration = max(0.0, _finite(
+            phase_config.get("attacking_min_tracking_duration_sec", 1.0), 1.0))
+        self._phase_attack_enter_error = max(0.0, _finite(
+            phase_config.get("attacking_error_threshold", 0.05), 0.05))
+        self._phase_attack_exit_error = max(
+            self._phase_attack_enter_error,
+            _finite(phase_config.get("attacking_error_exit_threshold", 0.40), 0.40))
+        self._phase_attack_enter_gimbal_yaw = max(0.0, _finite(
+            phase_config.get("attacking_gimbal_yaw_threshold_rad", 0.08), 0.08))
+        self._phase_attack_exit_gimbal_yaw = max(
+            self._phase_attack_enter_gimbal_yaw,
+            _finite(phase_config.get(
+                "attacking_gimbal_yaw_exit_threshold_rad", 0.18), 0.18))
+        gimbal_config_ns = rospy.get_namespace().rstrip("/") + "/track/follower/gimbal"
+        self._phase_gimbal_yaw_inverted = bool(rospy.get_param(
+            gimbal_config_ns + "/invert_yaw", False))
+        self._phase_gimbal_yaw_offset = _finite(rospy.get_param(
+            gimbal_config_ns + "/yaw_offset", 0.0))
+        self._phase_gimbal_filter_previous_weight = min(0.99, max(0.0, _finite(
+            rospy.get_param(gimbal_config_ns + "/angle_filter_previous_weight", 0.70),
+            0.70)))
+        self._phase_gimbal_angle_deadzone = max(0.0, _finite(rospy.get_param(
+            gimbal_config_ns + "/angle_deadzone", 0.035), 0.035))
+        self._phase_lock = threading.Lock()
+        self._phase_has_detection = False
+        self._phase_detection_received_at = 0.0
+        self._phase_tracker_active = False
+        self._phase_follower_profile = ""
+        self._phase_target_visible = False
+        self._phase_command_valid = False
+        self._phase_status_gimbal_valid = False
+        self._phase_error_x = 0.0
+        self._phase_error_y = 0.0
+        self._phase_status_received_at = 0.0
+        self._phase_gimbal_valid = False
+        self._phase_gimbal_received_at = 0.0
+        self._phase_gimbal_filter_initialized = False
+        self._phase_filtered_gimbal_yaw = 0.0
+        self._phase_gimbal_yaw = 0.0
+        self._phase_tracking_started_at = 0.0
+        self._phase_attacking = False
         self._maximum_age = max(
             0.0, float(rospy.get_param("~maximum_capture_age_sec", 0.5))
         )
@@ -246,13 +353,9 @@ class SmartTrackerNode:
             raise ValueError("maximum_image_bytes must be within 1 KiB..128 MiB")
 
         default_tracker = str(
-            rospy.get_param("~Default_Tracker", "SmartTracker")
+            rospy.get_param("~Default_Tracker", "FusionTracker")
         ).strip().lower()
         default_aliases = {
-            "smarttracker": "smart_tracker",
-            "smart_tracker": "smart_tracker",
-            "smart": "smart_tracker",
-            "yolo": "smart_tracker",
             "featuretracker": "feature_tracker",
             "feature_tracker": "feature_tracker",
             "manualboxtracker": "feature_tracker",
@@ -267,7 +370,7 @@ class SmartTrackerNode:
         }
         if default_tracker not in default_aliases:
             raise RuntimeError(
-                "Default_Tracker must be SmartTracker, FeatureTracker, ColorTracker, or FusionTracker"
+                "Default_Tracker must be FusionTracker, FeatureTracker, or ColorTracker; standalone SmartTracker mode was removed"
             )
         self._tracking_mode = default_aliases[default_tracker]
         # Archived launch files bridge the legacy array without provenance.
@@ -286,7 +389,7 @@ class SmartTrackerNode:
                 self._manual_trackers[tracker_type] = ManualBoxTracker(
                     tracker_config
                 )
-        elif self._tracking_mode != "smart_tracker":
+        else:
             raise RuntimeError("A manual Default_Tracker requires ManualBoxTracker/enabled")
         self._manual_active = False
         self._manual_pending_roi = None
@@ -304,7 +407,13 @@ class SmartTrackerNode:
             )
         )
         fusion_config = dict(rospy.get_param("~FusionTracker", {}))
-        self._fusion = BoxFusion(fusion_config, manual_config)
+        # FusionTracker and FeatureTracker share the same KCF/template engine.
+        # Reuse one instance instead of constructing a second feature tracker.
+        self._fusion = BoxFusion(
+            fusion_config,
+            manual_config,
+            tracker=self._manual_trackers.get("feature_tracker"),
+        )
         self._loss_journal = LossJournal()
         self._last_loss_revision = None
         self._input_rejection_counts = Counter()
@@ -439,6 +548,19 @@ class SmartTrackerNode:
             buff_size=16 * 1024 * 1024,
             tcp_nodelay=True,
         )
+        self._phase_detection_subscriber = None
+        self._phase_status_subscriber = None
+        self._phase_gimbal_subscriber = None
+        if self._phase_overlay_enabled:
+            self._phase_detection_subscriber = rospy.Subscriber(
+                self._phase_detection_topic, TrackDetectionArray,
+                self._phase_detection_callback, queue_size=1, tcp_nodelay=True)
+            self._phase_status_subscriber = rospy.Subscriber(
+                self._phase_status_topic, TrackStatus,
+                self._phase_status_callback, queue_size=1, tcp_nodelay=True)
+            self._phase_gimbal_subscriber = rospy.Subscriber(
+                self._phase_gimbal_topic, GimbalState,
+                self._phase_gimbal_callback, queue_size=1, tcp_nodelay=True)
         camera_info_topic = str(rospy.get_param("~camera_info_topic", ""))
         self._camera_info_subscriber = rospy.Subscriber(camera_info_topic, CameraInfo,
             self._camera_info_callback, queue_size=1) if camera_info_topic else None
@@ -479,7 +601,7 @@ class SmartTrackerNode:
         for worker in self._workers:
             worker.start()
         rospy.loginfo(
-            "SmartTracker ready: model=%s device=%s topic=%s default=%s manual_roi=%s",
+            "SAR YOLO pipeline ready: model=%s device=%s topic=%s mode=%s manual_roi=%s",
             runtime.get("model_path"),
             runtime.get("effective_device"),
             self._input_topic,
@@ -504,7 +626,9 @@ class SmartTrackerNode:
         if timer is not None:
             timer.shutdown()
         for name in ("_subscriber", "_select_pixel_subscriber", "_manual_roi_subscriber",
-                     "_camera_info_subscriber", "_tf_listener"):
+                     "_camera_info_subscriber", "_tf_listener",
+                     "_phase_detection_subscriber", "_phase_status_subscriber",
+                     "_phase_gimbal_subscriber"):
             subscriber = getattr(self, name, None)
             if subscriber is not None:
                 subscriber.unregister()
@@ -690,9 +814,138 @@ class SmartTrackerNode:
 
     def _image_callback(self, message: Image) -> None:
         # ROS transport never waits for CUDA, KCF, rendering, or a mode service.
-        self._image_mailbox.put(message)
+        self._image_mailbox.put((message, time.monotonic()))
 
-    def _infer(self, frame, header=None, image_message=None):
+    @staticmethod
+    def _phase_message_has_detection(message: TrackDetectionArray) -> bool:
+        return any(
+            candidate.has_bbox and
+            candidate.bbox[2] > candidate.bbox[0] and
+            candidate.bbox[3] > candidate.bbox[1]
+            for candidate in message.candidates
+        )
+
+    def _phase_detection_callback(self, message: TrackDetectionArray) -> None:
+        with self._phase_lock:
+            self._phase_has_detection = self._phase_message_has_detection(message)
+            self._phase_detection_received_at = time.monotonic()
+
+    def _phase_status_callback(self, message: TrackStatus) -> None:
+        with self._phase_lock:
+            if message.follower_profile != self._phase_follower_profile:
+                self._phase_attacking = False
+                self._phase_tracking_started_at = 0.0
+            self._phase_follower_profile = str(message.follower_profile)
+            self._phase_tracker_active = bool(message.tracker_active)
+            self._phase_target_visible = bool(message.target_visible)
+            self._phase_command_valid = bool(message.command_valid)
+            self._phase_status_gimbal_valid = bool(message.gimbal_state_valid)
+            self._phase_error_x = float(message.error_x)
+            self._phase_error_y = float(message.error_y)
+            self._phase_status_received_at = time.monotonic()
+
+    def _phase_gimbal_callback(self, message: GimbalState) -> None:
+        received_at = time.monotonic()
+        with self._phase_lock:
+            self._phase_gimbal_received_at = received_at
+            self._phase_gimbal_valid = bool(message.valid)
+            if not self._phase_gimbal_valid or not math.isfinite(float(message.yaw_rad)):
+                self._phase_gimbal_valid = False
+                self._phase_gimbal_filter_initialized = False
+                return
+            yaw = float(message.yaw_rad)
+            if self._phase_gimbal_yaw_inverted:
+                yaw = -yaw
+            if not self._phase_gimbal_filter_initialized:
+                filtered_yaw = yaw
+                self._phase_gimbal_filter_initialized = True
+            else:
+                previous = self._phase_gimbal_filter_previous_weight
+                filtered_yaw = (previous * self._phase_filtered_gimbal_yaw +
+                                (1.0 - previous) * yaw)
+            self._phase_filtered_gimbal_yaw = filtered_yaw
+            self._phase_gimbal_yaw = filtered_yaw + self._phase_gimbal_yaw_offset
+            if abs(self._phase_gimbal_yaw) < self._phase_gimbal_angle_deadzone:
+                self._phase_gimbal_yaw = 0.0
+
+    def _tracking_phase(self, now: float) -> str:
+        gimbal_profiles = {
+            "gm_velocity_chase", "gm_velocity_vector", "gmfw_velocity_vector"
+        }
+        with self._phase_lock:
+            if (not self._phase_has_detection or
+                    now - self._phase_detection_received_at > self._phase_detection_timeout):
+                self._phase_attacking = False
+                self._phase_tracking_started_at = 0.0
+                return "UNIDENTIFICATION"
+
+            if (self._phase_status_received_at <= 0.0 or
+                    now - self._phase_status_received_at > self._phase_status_timeout):
+                self._phase_attacking = False
+                self._phase_tracking_started_at = 0.0
+                return "LOCKING"
+            if not self._phase_tracker_active:
+                self._phase_attacking = False
+                self._phase_tracking_started_at = 0.0
+                return "LOCKING"
+            if not self._phase_target_visible or not self._phase_command_valid:
+                self._phase_attacking = False
+                self._phase_tracking_started_at = 0.0
+                return "TRACKING"
+
+            if self._phase_tracking_started_at <= 0.0:
+                self._phase_tracking_started_at = now
+            if now - self._phase_tracking_started_at < self._phase_min_tracking_duration:
+                self._phase_attacking = False
+                return "TRACKING"
+
+            if self._phase_follower_profile in gimbal_profiles:
+                gimbal_fresh = (
+                    self._phase_status_gimbal_valid and self._phase_gimbal_valid and
+                    self._phase_gimbal_received_at > 0.0 and
+                    now - self._phase_gimbal_received_at <= self._phase_gimbal_timeout
+                )
+                if not gimbal_fresh:
+                    self._phase_attacking = False
+                    self._phase_tracking_started_at = 0.0
+                    return "TRACKING"
+                error = abs(self._phase_gimbal_yaw)
+                enter_threshold = self._phase_attack_enter_gimbal_yaw
+                exit_threshold = self._phase_attack_exit_gimbal_yaw
+            else:
+                error = max(abs(self._phase_error_x), abs(self._phase_error_y))
+                enter_threshold = self._phase_attack_enter_error
+                exit_threshold = self._phase_attack_exit_error
+
+            if self._phase_attacking:
+                if error > exit_threshold:
+                    self._phase_attacking = False
+            elif error <= enter_threshold:
+                self._phase_attacking = True
+            return "ATTACKING" if self._phase_attacking else "TRACKING"
+
+    @staticmethod
+    def _draw_tracking_phase(frame, phase: str) -> None:
+        colors = {
+            "UNIDENTIFICATION": (96, 96, 96),
+            "LOCKING": (0, 165, 255),
+            "TRACKING": (0, 210, 0),
+            "ATTACKING": (0, 0, 255),
+        }
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.9
+        thickness = 2
+        padding = 12
+        (text_width, text_height), baseline = cv2.getTextSize(
+            phase, font, scale, thickness)
+        right = padding * 2 + text_width
+        bottom = padding * 2 + text_height + baseline
+        cv2.rectangle(frame, (8, 8), (8 + right, 8 + bottom), colors[phase], -1)
+        cv2.putText(frame, phase,
+                    (8 + padding, 8 + padding + text_height),
+                    font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+    def _infer(self, frame, header=None):
         tracker = self._tracker
         arguments = dict(conf=tracker.conf_threshold, iou=tracker.iou_threshold, max_det=tracker.max_det)
         remote_detect = getattr(tracker.backend, "detect_frame", None)
@@ -702,9 +955,9 @@ class SmartTrackerNode:
             source_id = "%s/%s/%s" % (
                 self._identity.uav_id, self._identity.sensor_id, rospy.get_name()
             )
-            remote_image = getattr(tracker.backend, "detect_image", None)
-            if image_message is not None and callable(remote_image):
-                return tuple(remote_image(image_message, source_id, **arguments))
+            # The shared backend sends the already-decoded BGR frame. It can
+            # shrink it to the model input size before ROS service serialization,
+            # avoiding a second full-resolution image copy/transfer per UAV.
             return tuple(remote_detect(frame, header, source_id, **arguments))
         if tracker._should_run_track_api():
             _, detections = tracker.backend.detect_and_track(
@@ -719,7 +972,7 @@ class SmartTrackerNode:
             job = self._inference_mailbox.get(.25)
             if job is None:
                 continue
-            epoch, message, frame = job
+            epoch, message, frame, input_received_wall = job
             started, error, detections = time.perf_counter(), "", ()
             with self._backend_lock:
                 if epoch != self._epoch or self._model_busy:
@@ -729,7 +982,7 @@ class SmartTrackerNode:
                     if backend_epoch != generation:
                         self._tracker.backend.reset_tracking()
                         backend_epoch = generation
-                    detections = self._infer(frame, message.header, image_message=message)
+                    detections = self._infer(frame, message.header)
                     self._inference_completed += 1
                 except Exception as exc:
                     self._inference_failed += 1
@@ -739,13 +992,15 @@ class SmartTrackerNode:
             if epoch != self._epoch:
                 continue
             packet = InferencePacket(message, frame, detections, epoch,
-                                     (time.perf_counter()-started)*1000., error)
+                                     (time.perf_counter()-started)*1000., error,
+                                     input_received_wall)
             self._result_mailbox.put(packet)
             self._image_mailbox.wake()
 
     def _frame_loop(self):
         while not self._image_mailbox.closed:
-            message = self._image_mailbox.get(.25)
+            image_item = self._image_mailbox.get(.25)
+            message, input_received_wall = image_item if image_item is not None else (None, None)
             packet = self._result_mailbox.get()
             try:
                 if message is not None:
@@ -755,7 +1010,12 @@ class SmartTrackerNode:
                             self._note_frame_rejection("image_byte_limit")
                         self._last_error = "image exceeds configured byte limit"
                         continue
+                    decode_started = time.perf_counter()
                     frame = _image_to_bgr(message)
+                    self._last_image_decode_ms = (time.perf_counter() - decode_started) * 1000.0
+                    self._last_callback_to_decode_ms = max(
+                        0.0, (time.monotonic() - input_received_wall) * 1000.0
+                    )
                     with self._lock:
                         decision = self._capture_clock.observe(message.header.stamp.to_sec(),
                             message.header.seq, message.header.frame_id,
@@ -775,12 +1035,14 @@ class SmartTrackerNode:
                             self._image_mailbox.wake()
                         continue
                     self._last_input_stamp = message.header.stamp
-                    self._pipeline_current = (epoch, message, frame)
-                    if mode in ("smart_tracker", "fusion_tracker") and not self._model_busy:
+                    self._pipeline_current = (epoch, message, frame, input_received_wall)
+                    if mode == "fusion_tracker" and not self._model_busy:
                         now_wall = time.monotonic()
                         if (self._inference_min_interval <= 0.0 or
                                 now_wall - self._last_inference_enqueue_wall >= self._inference_min_interval):
-                            self._inference_mailbox.put((epoch, message, frame))
+                            self._inference_mailbox.put(
+                                (epoch, message, frame, input_received_wall)
+                            )
                             self._last_inference_enqueue_wall = now_wall
                         else:
                             self._inference_rate_limited += 1
@@ -789,12 +1051,10 @@ class SmartTrackerNode:
                     continue
                 if packet is not None and packet.epoch != self._epoch:
                     packet = None
-                if self._tracking_mode == "smart_tracker":
-                    if packet is not None:
-                        self._process_image(packet.image, packet.frame, packet=packet, expected_epoch=packet.epoch)
-                elif message is not None or packet is not None:
+                if message is not None or packet is not None:
                     self._process_image(current[1], current[2], packet=packet,
-                                        result_only=message is None, expected_epoch=current[0])
+                                        result_only=message is None, expected_epoch=current[0],
+                                        input_received_wall=current[3])
             except Exception as exc:
                 self._publication_context.batch = None
                 self._last_error = "image worker failed: %s" % type(exc).__name__
@@ -808,6 +1068,11 @@ class SmartTrackerNode:
         else:
             batch.append((publisher, message))
 
+    def _record_latency_sample(self, name, value_ms):
+        samples = getattr(self, "_latency_samples", {}).get(name)
+        if samples is not None:
+            samples.append(max(0.0, float(value_ms)))
+
     def _note_frame_rejection(self, reason):
         # Called under the state lock. Rejected captures are not observations
         # and must not advance target clocks or confirmation counters.
@@ -819,7 +1084,8 @@ class SmartTrackerNode:
         self._input_rejection_counts[key] += 1
         self._last_input_rejection = str(reason)[:160]
 
-    def _process_image(self, message: Image, frame=None, packet=None, result_only=False, expected_epoch=None) -> None:
+    def _process_image(self, message: Image, frame=None, packet=None, result_only=False,
+                       expected_epoch=None, input_received_wall=None) -> None:
         valid, reason = self._valid_timestamp(message)
         if result_only and message.header.stamp == self._last_capture_stamp:
             age = (rospy.Time.now()-message.header.stamp).to_sec()
@@ -829,7 +1095,7 @@ class SmartTrackerNode:
             with self._lock:
                 self._note_frame_rejection(reason)
             self._last_error = reason
-            rospy.logwarn_throttle(2.0, "SmartTracker rejected frame: %s", reason)
+            rospy.logwarn_throttle(2.0, "SAR YOLO pipeline rejected frame: %s", reason)
             return
 
         try:
@@ -839,6 +1105,7 @@ class SmartTrackerNode:
             self._last_error = f"image conversion failed: {exc}"
             rospy.logerr_throttle(2.0, self._last_error)
             return
+        frame_context = _FrameContext(frame)
 
         self._publication_context.batch = []
         overlay = None
@@ -865,28 +1132,42 @@ class SmartTrackerNode:
             manual_tracker = self._current_manual_tracker()
             previous_frame = getattr(self, "_motion_frame", None)
             motion_matrix = None
-            if not result_only and self._tracking_mode != "smart_tracker":
+            if not result_only:
                 boxes = [(box[0], box[1], box[2]-box[0], box[3]-box[1]) for _, box, _ in self._flow.items]
                 if self._fusion.box is not None:
                     boxes.append(self._fusion.box)
                 if manual_tracker is not None and manual_tracker._last_bbox is not None:
                     boxes.append(manual_tracker._last_bbox)
+                camera_gray = (
+                    frame_context.gray
+                    if boxes and self._camera_motion.enabled else None
+                )
+                camera_motion_started = time.perf_counter()
                 motion_matrix = self._camera_motion.update(frame, message.header.stamp.to_sec(),
-                    boxes, self._pose_rotation(message) if boxes else None, estimate=bool(boxes))
+                    boxes, self._pose_rotation(message) if boxes else None,
+                    estimate=bool(boxes), gray=camera_gray)
+                self._last_camera_motion_ms = (time.perf_counter() - camera_motion_started) * 1000.0
                 self._motion_header, self._motion_frame = message.header, frame
             if self._tracking_mode == "fusion_tracker":
                 fresh = packet is not None and packet.image.header.stamp <= message.header.stamp
+                flow_needs_gray = bool(self._flow.items) or bool(
+                    fresh and packet.detections
+                )
+                flow_gray = frame_context.gray if flow_needs_gray else None
+                flow_started = time.perf_counter()
                 detections = self._flow.update(frame, message.header.stamp.to_sec(),
                     packet.detections if fresh else None,
                     packet.frame if fresh else None,
-                    packet.image.header.stamp.to_sec() if fresh else None, motion=self._camera_motion)
+                    packet.image.header.stamp.to_sec() if fresh else None,
+                    motion=self._camera_motion, gray=flow_gray)
+                self._last_lk_flow_ms = (time.perf_counter() - flow_started) * 1000.0
                 if fresh:
                     self._inference_ms = packet.processing_ms
                 annotated = self._process_fusion(message, frame, detections=detections,
                     detector_updated=fresh, result_only=result_only, defer_overlay=True,
                     detector_capture_stamp=packet.image.header.stamp.to_sec() if fresh else None,
                     inference_error=packet.error if fresh else "",
-                    processing_started=started)
+                    processing_started=started, gray=frame_context._gray)
                 if fresh:
                     self._inference_ms = packet.processing_ms
                     self._last_error = packet.error
@@ -895,7 +1176,9 @@ class SmartTrackerNode:
                 manual_handled = True
             elif (manual_tracker is not None and self._tracking_mode == "color_tracker"
                   and manual_tracker.colour_source == "configured"):
-                raw_candidates = manual_tracker.configured_colour_candidates(frame)
+                raw_candidates = manual_tracker.configured_colour_candidates(
+                    frame, hsv=frame_context.hsv
+                )
                 # Keep output bounded while retaining the largest useful red regions.
                 raw_candidates = sorted(raw_candidates, key=lambda item: item[2], reverse=True)[:30]
                 raw_candidates.sort(key=lambda item: (item[0][0], item[0][1]))
@@ -952,9 +1235,21 @@ class SmartTrackerNode:
                 pending_roi = self._manual_pending_roi
                 self._manual_pending_roi = None
                 result = (
-                    manual_tracker.initialize(frame, pending_roi)
+                    manual_tracker.initialize(
+                        frame, pending_roi,
+                        gray=(frame_context._gray if frame_context._gray is not None
+                              else frame_context.gray if self._tracking_mode == "feature_tracker"
+                              else None),
+                        hsv=frame_context.hsv if self._tracking_mode == "color_tracker" else None,
+                    )
                     if pending_roi is not None
-                    else manual_tracker.update(frame)
+                    else manual_tracker.update(
+                        frame,
+                        gray=(frame_context._gray if frame_context._gray is not None
+                              else frame_context.gray if self._tracking_mode == "feature_tracker"
+                              else None),
+                        hsv=frame_context.hsv if self._tracking_mode == "color_tracker" else None,
+                    )
                 )
                 self._manual_active = manual_tracker.active
                 manual_handled = True
@@ -969,31 +1264,17 @@ class SmartTrackerNode:
                 )
 
             if not manual_handled:
-                annotated = self._tracker.track_and_draw(frame, detections=packet.detections, draw=False)
-                self._inference_ms = packet.processing_ms
-                output = self._tracker.get_output()
-                detections = tuple(self._tracker.last_detections)
-                self._auto_select_from_detections(message, detections)
-                frame_error_rate = _finite(
-                    output.quality_metrics.get("frame_error_rate")
+                # Only FusionTracker, FeatureTracker and ColorTracker are
+                # supported processing modes. The legacy standalone
+                # SmartTracker path has been removed.
+                self._publication_context.batch = None
+                rospy.logerr_throttle(
+                    2.0, "No frame processor is registered for mode=%s",
+                    self._tracking_mode,
                 )
-                self._last_error = (
-                    "inference failure"
-                    if frame_error_rate > 0 and not detections
-                    else ""
-                )
-                self._publish_detections(message, detections)
-                self._publish_detector_observations(packet)
-                self._last_processing_ms = (time.perf_counter()-started)*1000.
-                self._publish_state(message, output)
-                overlay = ("boxes", tuple(detections), dict(self._tracker.labels), self._selected_track_id, "")
-            else:
-                detections = ()
+                return
 
-            if not manual_handled:
-                selected_detection = self._selected_detection_for_frame(detections)
-                self._publish_selected_detections(message, selected_detection)
-
+            self._last_gray_conversion_ms = frame_context._gray_conversion_ms
             self._last_processing_ms = (time.perf_counter() - started) * 1000.0
             self._last_header = message.header
             self._last_capture_stamp = message.header.stamp
@@ -1001,34 +1282,85 @@ class SmartTrackerNode:
             self._processed_frames += 1
             epoch = self._epoch
         batch, self._publication_context.batch = self._publication_context.batch, None
+        publish_started = time.monotonic()
         with self._commit_lock:
             if epoch != self._epoch:
                 return
             for publisher, output_message in batch:
                 publisher.publish(output_message)
+        self._last_result_publish_ms = (time.monotonic() - publish_started) * 1000.0
+        if input_received_wall is not None:
+            self._last_callback_to_result_publish_ms = max(
+                0.0, (time.monotonic() - input_received_wall) * 1000.0
+            )
+            self._record_latency_sample(
+                "callback_to_result", self._last_callback_to_result_publish_ms
+            )
+        inference_source_received_wall = (
+            getattr(packet, "input_received_wall", 0.0) if packet is not None else 0.0
+        )
+        if inference_source_received_wall > 0.0:
+            self._last_inference_source_to_result_publish_ms = max(
+                0.0,
+                (time.monotonic() - inference_source_received_wall) * 1000.0,
+            )
+            self._record_latency_sample(
+                "inference_source_to_result",
+                self._last_inference_source_to_result_publish_ms,
+            )
         # Render/serialize only when requested, with immutable final boxes and
         # the exact capture header. Never draw by querying a newer live state.
         if self._publish_annotated and self._annotated_publisher.get_num_connections() > 0:
-            annotated = self._render_overlay(frame.copy(), overlay)
-            video = _bgr_to_image(annotated, message.header)
-            with self._commit_lock:
-                if epoch == self._epoch:
-                    self._annotated_publisher.publish(video)
-        self._updater.update()
+            now_wall = time.monotonic()
+            if (self._annotated_min_interval <= 0.0 or
+                    now_wall - self._last_annotated_publish_wall >= self._annotated_min_interval):
+                self._last_annotated_publish_wall = now_wall
+                annotated_started = time.monotonic()
+                annotated = self._render_overlay(frame.copy(), overlay)
+                video = _bgr_to_image(annotated, message.header)
+                with self._commit_lock:
+                    if epoch == self._epoch:
+                        self._annotated_publisher.publish(video)
+                        self._last_annotated_render_publish_ms = (
+                            time.monotonic() - annotated_started
+                        ) * 1000.0
+                        if input_received_wall is not None:
+                            self._last_callback_to_annotated_publish_ms = max(
+                                0.0, (time.monotonic() - input_received_wall) * 1000.0
+                            )
+                            self._record_latency_sample(
+                                "callback_to_annotated",
+                                self._last_callback_to_annotated_publish_ms,
+                            )
+                        if inference_source_received_wall > 0.0:
+                            self._last_inference_source_to_annotated_publish_ms = max(
+                                0.0,
+                                (time.monotonic() - inference_source_received_wall) * 1000.0,
+                            )
+                            self._record_latency_sample(
+                                "inference_source_to_annotated",
+                                self._last_inference_source_to_annotated_publish_ms,
+                            )
+        # Diagnostics are already published by the 1 Hz ROS timer created in
+        # __init__. Updating them here ran the full diagnostic callback on
+        # every image (and again for result-only fusion updates), adding Python
+        # work to the frame path without improving the reported cadence.
 
-    @classmethod
-    def _render_overlay(cls, frame, payload):
+    def _render_overlay(self, frame, payload):
         if payload[0] == "manual":
-            return cls._annotate_manual(frame, payload[1])
-        _, detections, labels, selected_id, status = payload
-        for detection in detections:
-            x1, y1, x2, y2 = detection.aabb_xyxy
-            colour = (0, 255, 100) if selected_id >= 0 and detection.track_id == selected_id else (255, 190, 0)
-            cv2.rectangle(frame, (round(x1), round(y1)), (round(x2), round(y2)), colour, 2)
-            cv2.putText(frame, "%s ID %d" % (labels.get(detection.class_id, "unknown"), detection.track_id),
-                        (round(x1), max(18, round(y1)-5)), cv2.FONT_HERSHEY_SIMPLEX, .5, colour, 1)
-        if status:
-            cv2.putText(frame, status, (12, 25), cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 180, 255), 1)
+            frame = self._annotate_manual(frame, payload[1])
+        else:
+            _, detections, labels, selected_id, status = payload
+            for detection in detections:
+                x1, y1, x2, y2 = detection.aabb_xyxy
+                colour = (0, 255, 100) if selected_id >= 0 and detection.track_id == selected_id else (255, 190, 0)
+                cv2.rectangle(frame, (round(x1), round(y1)), (round(x2), round(y2)), colour, 2)
+                cv2.putText(frame, "%s ID %d" % (labels.get(detection.class_id, "unknown"), detection.track_id),
+                            (round(x1), max(18, round(y1)-5)), cv2.FONT_HERSHEY_SIMPLEX, .5, colour, 1)
+            if status:
+                cv2.putText(frame, status, (12, 25), cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 180, 255), 1)
+        if self._phase_overlay_enabled:
+            self._draw_tracking_phase(frame, self._tracking_phase(time.monotonic()))
         return frame
 
     @staticmethod
@@ -1042,8 +1374,9 @@ class SmartTrackerNode:
 
     def _process_fusion(self, image, frame, detections=None, detector_updated=True,
                         result_only=False, defer_overlay=False, detector_capture_stamp=None,
-                        processing_started=None, inference_error=""):
+                        processing_started=None, inference_error="", gray=None):
         started = time.perf_counter() if processing_started is None else processing_started
+        fusion_logic_started = time.perf_counter()
         error = inference_error
         shape = frame.shape[:2]
         if getattr(self, "_fusion_input_shape", None) is not None and shape != self._fusion_input_shape:
@@ -1053,7 +1386,7 @@ class SmartTrackerNode:
         suppressed_class_duplicates = 0
         try:
             if detections is None:
-                detections = self._infer(frame, image.header, image_message=image)
+                detections = self._infer(frame, image.header)
             allowed = self._tracker.allowed_class_ids
             detections = [d for d in detections if allowed is None or int(d.class_id) in allowed]
             candidates = [self._fusion_candidate(d) for d in detections]
@@ -1099,7 +1432,8 @@ class SmartTrackerNode:
                                       camera_motion_reliable=getattr(getattr(self, '_camera_motion', None),
                                           'source', '') in ('background', 'pose_seeded_background'),
                                       camera_transform=self._camera_motion.between(self._fusion.stamp, stamp)
-                                      if hasattr(self, "_camera_motion") and not result_only else None)
+                                      if hasattr(self, "_camera_motion") and not result_only else None,
+                                      gray=gray)
             if self._fusion.diagnostics.get('identity_rebound'):
                 self._fusion.diagnostics['lk_reseeded'] = self._flow.reseed_identity(
                     frame, stamp, self._fusion.diagnostics['previous_local_id'], result.local_id,
@@ -1108,6 +1442,13 @@ class SmartTrackerNode:
             result = self._fusion.result
         # A bounded original-image cache is used only by frame-bound selection.
         self._cache_fusion_snapshot(image, frame, candidates)
+        # Auto selection must advance on fresh detector updates only. Reusing
+        # cached LK observations on every camera frame would count the same
+        # detector result multiple times as independent confirmations.
+        if detector_updated:
+            auto_selected = self._auto_select_from_detections(image, detections)
+            if auto_selected is not None:
+                result = self._fusion.result
         # Raw BoT-SORT output must not bypass a rejected selected-entity gate.
         bound_ids = {identity for identity in (result.public_id, result.local_id) if identity >= 0}
         if result.observed and result.reason == "reacquisition_confirmation_visual_hold":
@@ -1132,6 +1473,9 @@ class SmartTrackerNode:
                                        suppress_selected_same_class=True)
         suppressed_class_duplicates += len(output) - len(keep)
         output = [output[index] for index in keep]
+        self._last_fusion_logic_ms = (
+            time.perf_counter() - fusion_logic_started
+        ) * 1000.0
         self._last_processing_ms = (time.perf_counter() - started) * 1000.
         self._last_error = error
         evidence = dict(stamp=stamp, frame_seq=image.header.seq, frame_id=image.header.frame_id,
@@ -1145,6 +1489,9 @@ class SmartTrackerNode:
                         observed=result.observed, processing_ms=self._last_processing_ms,
                         suppressed_class_duplicates=suppressed_class_duplicates,
                         inference_ms=getattr(self, "_inference_ms", 0.),
+                        detector_updated=bool(detector_updated),
+                        detector_detection_count=(len(self._tracker.last_detections)
+                            if detector_updated else None),
                         pipeline_epoch=getattr(self, "_epoch", 0),
                         capture_segment=getattr(getattr(self, "_capture_clock", None), "segment", 0))
         evidence['diagnostics'] = dict(self._fusion.diagnostics,
@@ -1526,7 +1873,7 @@ class SmartTrackerNode:
     ) -> None:
         state = SmartTrackerState()
         state.header = copy.copy(image.header)
-        state.tracking_active = self._tracking_mode != "smart_tracker"
+        state.tracking_active = True
         state.has_selection = bool(self._manual_active and result.bbox is not None)
         state.selected_track_id = self._manual_track_id if state.has_selection else -1
         state.selected_class_id = self._manual_class_id
@@ -1711,7 +2058,7 @@ class SmartTrackerNode:
                 accepted = False
                 response.success = False
                 response.message = (
-                    "Auto target selection requires SmartTracker/YOLO or "
+                    "Auto target selection requires FusionTracker or "
                     "configured-colour ColorTracker; current mode=%s" % self._tracking_mode
                 )
             else:
@@ -1735,7 +2082,7 @@ class SmartTrackerNode:
         return response
 
     def _auto_select_mode_supported(self) -> bool:
-        if self._tracking_mode == "smart_tracker":
+        if self._tracking_mode == "fusion_tracker":
             return True
         if self._tracking_mode == "color_tracker":
             tracker = self._manual_trackers.get("color_tracker")
@@ -1823,8 +2170,29 @@ class SmartTrackerNode:
         if self._tracking_mode == "color_tracker":
             self._manual_color_selected_bbox = tuple(winner.aabb_xyxy)
             self._manual_color_misses = 0
+        elif self._tracking_mode == "fusion_tracker":
+            # Initialize FusionTracker from the exact current-frame detector
+            # candidate, preserving the same local/public identity as a manual
+            # YOLO selection.
+            snapshot = next((item for item in reversed(self._fusion_snapshots)
+                             if item[0].stamp == image.header.stamp
+                             and item[0].frame_id == image.header.frame_id), None)
+            if snapshot is None:
+                return None
+            matches = [candidate for candidate in snapshot[2]
+                       if candidate.local_id == int(winner.track_id)
+                       and candidate.class_id == int(winner.class_id)]
+            if len(matches) != 1:
+                return None
+            try:
+                self._initialize_fusion_selection(
+                    snapshot, matches[0].box, selected_candidate=matches[0]
+                )
+            except ValueError as exc:
+                rospy.logwarn_throttle(2.0, "Auto Fusion selection rejected: %s", exc)
+                return None
         else:
-            self._remember_selected_detection(winner)
+            return None
         self._auto_select_enabled = False
         selected_frames = self._auto_select_candidate_count
         self._reset_auto_select_candidate()
@@ -1942,49 +2310,13 @@ class SmartTrackerNode:
                               x, y, x0, y0, side, side,
                               getattr(manual_tracker, "colour_name", ""))
                 return
-            width = int(self._controller.video_handler.width)
-            height = int(self._controller.video_handler.height)
-            if x >= width or y >= height:
-                rospy.logwarn(
-                    "Ignoring target pixel click outside current image: (%.1f, %.1f) in %dx%d",
-                    x, y, width, height,
-                )
-                return
-            detections = tuple(self._tracker.last_detections or ())
-            if not detections:
-                self._clear_selected_target()
-                rospy.logwarn("Ignoring target pixel click: no current YOLO detections")
-                return
-
-            def rank(detection):
-                distance = self._point_to_box_distance_squared(x, y, detection)
-                center_x, center_y = detection.center_xy
-                center_distance = (float(center_x) - x) ** 2 + (float(center_y) - y) ** 2
-                return (distance, center_distance, -_finite(detection.confidence))
-
-            selected = min(detections, key=rank)
-            self._remember_selected_detection(selected)
-            rospy.loginfo(
-                "UI selected YOLO box: pixel=(%.1f, %.1f) track_id=%d stable=%s class=%d",
-                x,
-                y,
-                int(selected.track_id),
-                bool(selected.track_id_is_stable),
-                int(selected.class_id),
+            rospy.logwarn_throttle(
+                2.0, "No pixel-selection handler is registered for mode=%s",
+                self._tracking_mode,
             )
-
-    def _remember_selected_detection(self, detection) -> None:
-        self._selected_track_id = int(detection.track_id)
-        self._selected_track_id_is_stable = bool(detection.track_id_is_stable)
-        self._selected_class_id = int(detection.class_id)
-        self._selected_last_bbox = tuple(int(value) for value in detection.aabb_xyxy)
 
     def _clear_selected_target(self) -> None:
         self._fusion.reset()
-        self._selected_track_id = None
-        self._selected_track_id_is_stable = False
-        self._selected_class_id = None
-        self._selected_last_bbox = None
         if hasattr(self, "_manual_color_selected_bbox"):
             self._manual_color_selected_bbox = None
             self._manual_color_misses = 0
@@ -1997,41 +2329,6 @@ class SmartTrackerNode:
             output.header.stamp = rospy.Time.now()
         output.provenance = copy.copy(self._identity)
         self._emit(self._selected_detections_publisher, output)
-
-    def _selected_detection_for_frame(self, detections):
-        if self._selected_track_id is None:
-            return None
-        if self._selected_track_id_is_stable:
-            for detection in detections:
-                if int(detection.track_id) == self._selected_track_id:
-                    self._selected_last_bbox = tuple(
-                        int(value) for value in detection.aabb_xyxy
-                    )
-                    return detection
-            return None
-
-        # Some backends do not expose persistent IDs. In that case, associate
-        # each new YOLO result with the selected class's nearest previous box.
-        candidates = [
-            detection for detection in detections
-            if int(detection.class_id) == self._selected_class_id
-        ]
-        if not candidates:
-            return None
-        if self._selected_last_bbox is None:
-            selected = candidates[0]
-        else:
-            x1, y1, x2, y2 = self._selected_last_bbox
-            previous_center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-            selected = min(
-                candidates,
-                key=lambda detection: (
-                    (float(detection.center_xy[0]) - previous_center[0]) ** 2
-                    + (float(detection.center_xy[1]) - previous_center[1]) ** 2
-                ),
-            )
-        self._remember_selected_detection(selected)
-        return selected
 
     def _publish_selected_detections(self, image: Image, detection) -> None:
         output = TrackedDetection2DArray()
@@ -2048,28 +2345,6 @@ class SmartTrackerNode:
         self._emit(self._selected_detections_publisher, output)
 
     @staticmethod
-    def _highlight_selected_detection(frame: np.ndarray, detection) -> None:
-        """Highlight the selected box on the all-detections annotated image."""
-        if detection is None:
-            return
-        x1, y1, x2, y2 = (int(value) for value in detection.aabb_xyxy)
-        colour = (0, 0, 255)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 4, cv2.LINE_AA)
-        label = "SELECTED %d %.2f" % (
-            int(detection.track_id), _finite(detection.confidence)
-        )
-        cv2.putText(
-            frame,
-            label,
-            (x1, max(18, y1 - 6)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            colour,
-            1,
-            cv2.LINE_AA,
-        )
-
-    @staticmethod
     def _fill_bbox(message: BoundingBox2D, bbox: Optional[Tuple[int, int, int, int]]) -> None:
         if not bbox:
             return
@@ -2078,57 +2353,6 @@ class SmartTrackerNode:
         message.center.y = y + height / 2.0
         message.size_x = max(0.0, float(width))
         message.size_y = max(0.0, float(height))
-
-    def _publish_state(self, image: Image, output) -> None:
-        raw = output.raw_data or {}
-        tracking_result = raw.get("tracking_state_result") or {}
-        state = SmartTrackerState()
-        state.header = copy.copy(image.header)
-        state.tracking_active = bool(output.tracking_active)
-        state.has_selection = output.target_id is not None
-        state.selected_track_id = int(output.target_id if output.target_id is not None else -1)
-        selected_class_id = raw.get("selected_class_id")
-        state.selected_class_id = int(
-            selected_class_id if selected_class_id is not None else -1
-        )
-        state.selected_class_name = str(
-            self._tracker.labels.get(state.selected_class_id, "")
-        )
-        state.confidence = _finite(output.confidence)
-        self._fill_bbox(state.selected_bbox, output.bbox)
-        state.geometry_type = str(output.geometry_type or "none")
-        state.has_oriented_bbox = output.oriented_bbox is not None
-        if output.oriented_bbox is not None:
-            state.oriented_bbox = [_finite(value) for value in output.oriented_bbox]
-        state.measurement_current = bool(raw.get("selected_detected_this_frame", False))
-        state.prediction_only = bool(raw.get("prediction_only", False))
-        state.tentative = bool(raw.get("tentative", False))
-        state.data_is_stale = bool(raw.get("data_is_stale", False))
-        state.control_measurement_ready = bool(raw.get("usable_for_following", False))
-        manager_info = self._tracker.tracking_manager.get_tracking_info()
-        state.frames_since_detection = max(
-            0, int(manager_info.get("frames_since_detection", 0) or 0)
-        )
-        if tracking_result.get("appearance_match"):
-            state.association_method = "appearance"
-        elif tracking_result.get("distance_match"):
-            state.association_method = "distance"
-        elif tracking_result.get("iou_match"):
-            state.association_method = "spatial"
-        elif state.prediction_only:
-            state.association_method = "prediction"
-        elif state.measurement_current:
-            state.association_method = "id_or_measurement"
-        else:
-            state.association_method = "none"
-        state.freshness_reason = str(raw.get("freshness_reason", "unknown"))
-        state.tracker_type = str(raw.get("tracker_type", "unknown"))
-        state.backend = str(raw.get("backend", "unknown"))
-        state.device = str(raw.get("device", "unknown"))
-        state.model_path = str(raw.get("model_path") or "")
-        state.detection_count = len(output.targets or [])
-        state.frame_processing_ms = _finite(self._last_processing_ms)
-        self._emit(self._state_publisher, state)
 
     @staticmethod
     def _iou(box_a, box_b) -> float:
@@ -2147,7 +2371,7 @@ class SmartTrackerNode:
                 response.message = "BUSY: model switch in progress"
                 return response
             if self._tracker is None:
-                response.message = "SmartTracker is shutting down"
+                response.message = "Detector runtime is shutting down"
                 return response
             if request.clear_selection:
                 manual_tracker = self._current_manual_tracker()
@@ -2163,81 +2387,16 @@ class SmartTrackerNode:
                 return response
             if self._tracking_mode == "fusion_tracker":
                 return self._select_fusion_latest(request, response)
-            detections = list(self._tracker.last_detections)
-            width = int(self._controller.video_handler.width)
-            height = int(self._controller.video_handler.height)
-            if not detections or width <= 1 or height <= 1:
-                response.message = "No current detections are available"
-                response.selected_target_id = -1
-                return response
-            try:
-                if request.use_target_id:
-                    matches = [d for d in detections if int(d.track_id) == request.target_id]
-                    if not matches:
-                        response.message = "Requested target ID is not in the current frame"
-                        response.selected_target_id = -1
-                        return response
-                    point = matches[0].center_xy
-                elif request.use_normalized_roi:
-                    x, y, roi_width, roi_height = request.normalized_roi
-                    roi = tracking_roi_to_pixels(
-                        x=x,
-                        y=y,
-                        width=roi_width,
-                        height=roi_height,
-                        coordinate_space="normalized",
-                        frame_width=width,
-                        frame_height=height,
-                    )
-                    roi_xyxy = (
-                        roi["x"], roi["y"],
-                        roi["x"] + roi["width"], roi["y"] + roi["height"],
-                    )
-                    ranked = sorted(
-                        ((self._iou(d.aabb_xyxy, roi_xyxy), d) for d in detections),
-                        key=lambda item: item[0], reverse=True,
-                    )
-                    if not ranked or ranked[0][0] <= 0:
-                        response.message = "Normalized ROI does not overlap a current detection"
-                        response.selected_target_id = -1
-                        return response
-                    point = ranked[0][1].center_xy
-                else:
-                    point = tracking_point_to_pixels(
-                        x=request.point_x,
-                        y=request.point_y,
-                        coordinate_space=("normalized" if request.use_normalized_point else "pixels"),
-                        frame_width=width,
-                        frame_height=height,
-                    )
-            except (TrackingROIError, TypeError, ValueError) as exc:
-                response.message = str(exc)
-                response.selected_target_id = -1
-                return response
-
-            response.success = bool(self._tracker.select_object_by_click(*point))
-            if response.success:
-                selected_id = int(self._tracker.selected_object_id)
-                for detection in detections:
-                    if int(detection.track_id) == selected_id:
-                        self._remember_selected_detection(detection)
-                        break
-            response.tracking_active = bool(self._tracker.selected_object_id is not None)
-            response.selected_target_id = int(
-                self._tracker.selected_object_id
-                if self._tracker.selected_object_id is not None else -1
+            response.message = (
+                "Detection selection by ID/ROI is only available in FusionTracker; "
+                "use the active manual mode's pixel or ROI interface"
             )
-            response.measurement_current = bool(self._tracker._last_measurement_current)
-            response.message = "Target selected" if response.success else "Selection did not match uniquely"
+            response.selected_target_id = -1
             return response
 
     @staticmethod
     def _normalize_tracking_mode(value: str) -> Optional[str]:
         aliases = {
-            "smarttracker": "smart_tracker",
-            "smart_tracker": "smart_tracker",
-            "smart": "smart_tracker",
-            "yolo": "smart_tracker",
             "featuretracker": "feature_tracker",
             "feature_tracker": "feature_tracker",
             "feature": "feature_tracker",
@@ -2261,11 +2420,11 @@ class SmartTrackerNode:
                 response.active_mode = self._tracking_mode
                 return response
             if self._tracker is None:
-                response.message = "SmartTracker is shutting down"
+                response.message = "Detector runtime is shutting down"
                 return response
             if requested_mode is None:
                 response.message = (
-                    "mode must be smart_tracker, feature_tracker, color_tracker, or fusion_tracker"
+                    "mode must be fusion_tracker, feature_tracker, or color_tracker; standalone SmartTracker mode was removed"
                 )
                 response.active_mode = self._tracking_mode
                 return response
@@ -2273,7 +2432,7 @@ class SmartTrackerNode:
                 response.message = "Fusion requires the provenance-aware xd_smart_tracker_fusion_integration.launch"
                 response.active_mode = self._tracking_mode
                 return response
-            if requested_mode != "smart_tracker" and not self._manual_enabled:
+            if not self._manual_enabled:
                 response.message = "ManualBoxTracker is disabled"
                 response.active_mode = self._tracking_mode
                 return response
@@ -2329,9 +2488,7 @@ class SmartTrackerNode:
             if color_tracker is not None:
                 response.color_source = color_tracker.colour_source
                 response.color_name = color_tracker.colour_name
-            if requested_mode == "smart_tracker":
-                response.message = "Switched to SmartTracker/YOLO"
-            elif requested_mode == "fusion_tracker":
+            if requested_mode == "fusion_tracker":
                 response.message = "Switched to YOLO/feature fusion; select by ID, point or frame-bound ROI"
             elif response.waiting_for_initial_roi:
                 response.message = "Switched to %s; waiting for initial ROI" % requested_mode
@@ -2381,7 +2538,7 @@ class SmartTrackerNode:
         model_path = raw_path if raw_path.is_absolute() else self._package_root / raw_path
         with self._lock:
             if self._tracker is None:
-                response.message = "SmartTracker is shutting down"
+                response.message = "Detector runtime is shutting down"
                 return response
             if self._model_busy:
                 response.message = "BUSY: model switch in progress"
@@ -2443,7 +2600,44 @@ class SmartTrackerNode:
             status.add("processed_frames", self._processed_frames)
             status.add("rejected_frames", self._rejected_frames)
             status.add("last_processing_ms", self._last_processing_ms)
+            status.add("image_decode_ms", self._last_image_decode_ms)
+            status.add("callback_to_decode_ms", self._last_callback_to_decode_ms)
+            status.add("fusion_gray_conversion_ms", self._last_gray_conversion_ms)
+            status.add("fusion_camera_motion_ms", self._last_camera_motion_ms)
+            status.add("fusion_lk_flow_ms", self._last_lk_flow_ms)
+            status.add("fusion_logic_ms", self._last_fusion_logic_ms)
+            status.add("result_publish_ms", self._last_result_publish_ms)
+            status.add("callback_to_result_publish_ms",
+                       self._last_callback_to_result_publish_ms)
+            status.add("inference_source_to_result_publish_ms",
+                       self._last_inference_source_to_result_publish_ms)
+            status.add("annotated_render_publish_ms",
+                       self._last_annotated_render_publish_ms)
+            status.add("callback_to_annotated_publish_ms",
+                       self._last_callback_to_annotated_publish_ms)
+            status.add("inference_source_to_annotated_publish_ms",
+                       self._last_inference_source_to_annotated_publish_ms)
+            for timing_name, samples in self._latency_samples.items():
+                if not samples:
+                    continue
+                ordered = sorted(samples)
+                count = len(ordered)
+                p50 = ordered[(count - 1) // 2]
+                p95 = ordered[min(count - 1, int(math.ceil(0.95 * count)) - 1)]
+                status.add(timing_name + "_publish_p50_ms", p50)
+                status.add(timing_name + "_publish_p95_ms", p95)
             status.add("inference_ms", getattr(self, "_inference_ms", 0.))
+            backend = getattr(getattr(self, "_tracker", None), "backend", None)
+            status.add("shared_model_inference_ms",
+                       getattr(backend, "last_inference_ms", 0.0))
+            status.add("shared_request_round_trip_ms",
+                       getattr(backend, "last_request_ms", 0.0))
+            status.add("shared_input_pack_ms",
+                       getattr(backend, "last_input_pack_ms", 0.0))
+            status.add("shared_response_parse_ms",
+                       getattr(backend, "last_response_parse_ms", 0.0))
+            status.add("shared_coordinate_rescale_ms",
+                       getattr(backend, "last_coordinate_rescale_ms", 0.0))
             status.add("pipeline_epoch", getattr(self, "_epoch", 0))
             status.add("model_switch_busy", self._model_busy)
             status.add("capture_segment", self._capture_clock.segment)

@@ -110,7 +110,7 @@ follower:
       # the measured radial rate (rather than a large derivative gain that
       # amplifies 20 Hz metric-frame jitter).  The resulting correction is
       # bounded by maximum_course_offset in the guidance core.
-      radial_gain: 0.55
+      radial_gain: 0.40
       radial_damping: 0.30
       target_velocity_feedforward: true
       # Pass the coordinated-turn curvature to xd_uav_controller so the

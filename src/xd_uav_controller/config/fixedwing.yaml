@@ -14,6 +14,11 @@ fixedwing:
     completion_altitude_tolerance: 5.0
     reacquisition_distance: 50.0
 
+  point_following:
+    # 固定翼锁存单点到达该范围后转入当前位置的相切等待盘旋。
+    completion_radius: 20.0
+    completion_altitude_tolerance: 5.0
+
   # 输入适配层：仅在流式VXY没有AXY/yaw_rate时估计course-rate。
   # 完整P/V/A参考不会使用这组差分参数。
   reference_adapter:
@@ -62,6 +67,10 @@ fixedwing:
     maximum_airspeed: 24.0
     trim_throttle: 0.25
     airspeed_throttle_gain: 0.08
+    # 空速误差积分增益，单位为油门/(m/s·s)，用于消除稳态空速误差。
+    airspeed_integral_gain: 0.02
+    # 积分项对归一化油门的最大绝对修正量，防止积分过量。
+    airspeed_integral_throttle_limit: 0.25
     # 爬升时同步补油以维持空速。
     climb_rate_throttle_gain: 0.03
     # 补偿量为gain*(1/cos(bank)-1)，在空速实际下降前随目标滚转补油。

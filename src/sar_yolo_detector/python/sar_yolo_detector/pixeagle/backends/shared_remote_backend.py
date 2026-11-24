@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import rospy
 from sensor_msgs.msg import Image
@@ -64,12 +65,38 @@ class SharedRemoteBackend(DetectionBackend):
         self._labels: Dict[int, str] = {}
         self._task = "detect"
         self._stale_frames_dropped = 0
+        self._last_inference_ms = 0.0
+        self._last_request_ms = 0.0
+        self._last_input_pack_ms = 0.0
+        self._last_response_parse_ms = 0.0
+        self._last_coordinate_rescale_ms = 0.0
         self._loaded = False
         self._info_proxy = None
         self._detect_proxy = None
         self.tracker_type_str = str(self._config.get("TRACKER_TYPE", "botsort")).lower()
         self.use_custom_reid = False
         self.tracker_args = {"persist": False, "verbose": False}
+        self._configured_image_size = int(
+            self._config.get("SMART_TRACKER_INFERENCE_IMAGE_SIZE", 640)
+        )
+        if (self._configured_image_size < 320 or
+                self._configured_image_size > 1536 or
+                self._configured_image_size % 32):
+            raise ValueError(
+                "SMART_TRACKER_INFERENCE_IMAGE_SIZE must be a multiple of 32 "
+                "within 320..1536"
+            )
+        self._shared_input_max_side = int(self._config.get(
+            "SMART_TRACKER_SHARED_INPUT_MAX_SIDE", self._configured_image_size
+        ))
+        if (self._shared_input_max_side != 0 and
+                (self._shared_input_max_side < 320 or
+                 self._shared_input_max_side > 1536 or
+                 self._shared_input_max_side % 32)):
+            raise ValueError(
+                "SMART_TRACKER_SHARED_INPUT_MAX_SIDE must be 0 or a multiple "
+                "of 32 within 320..1536"
+            )
 
     @property
     def is_available(self) -> bool:
@@ -87,6 +114,31 @@ class SharedRemoteBackend(DetectionBackend):
     def stale_frames_dropped(self) -> int:
         return self._stale_frames_dropped
 
+    @property
+    def last_inference_ms(self) -> float:
+        """Last model-call duration reported by the shared inference server."""
+        return self._last_inference_ms
+
+    @property
+    def last_request_ms(self) -> float:
+        """Last end-to-end ROS service round-trip duration."""
+        return self._last_request_ms
+
+    @property
+    def last_input_pack_ms(self) -> float:
+        """Resize and ROS Image construction/packing before the service call."""
+        return self._last_input_pack_ms
+
+    @property
+    def last_response_parse_ms(self) -> float:
+        """Convert normalized ROS detection messages to local detections."""
+        return self._last_response_parse_ms
+
+    @property
+    def last_coordinate_rescale_ms(self) -> float:
+        """Map resized-model coordinates back to the source frame."""
+        return self._last_coordinate_rescale_ms
+
     def load_model(
         self,
         model_path: str,
@@ -102,7 +154,7 @@ class SharedRemoteBackend(DetectionBackend):
             self._base + "/info", GetSharedModelInfo, persistent=False
         )
         self._detect_proxy = rospy.ServiceProxy(
-            self._base + "/detect", RunSharedInference, persistent=False
+            self._base + "/detect", RunSharedInference, persistent=True
         )
 
         timeout_sec = max(10.0, float(self._config.get(
@@ -144,6 +196,12 @@ class SharedRemoteBackend(DetectionBackend):
         # The shared provider owns the model lifetime. A tracker leaving must
         # never unload the model still serving other vehicles.
         self._loaded = False
+        for proxy in (self._detect_proxy, self._info_proxy):
+            if proxy is not None:
+                try:
+                    proxy.close()
+                except Exception:
+                    pass
         self._info_proxy = None
         self._detect_proxy = None
 
@@ -195,22 +253,66 @@ class SharedRemoteBackend(DetectionBackend):
     ) -> List[NormalizedDetection]:
         if not self._loaded or self._detect_proxy is None:
             raise RuntimeError("shared YOLO model is not connected")
+        pack_started = time.perf_counter()
         if header is None:
             from std_msgs.msg import Header
             header = Header(stamp=rospy.Time.now())
         contiguous = np.ascontiguousarray(frame, dtype=np.uint8)
         if contiguous.ndim != 3 or contiguous.shape[2] != 3:
             raise ValueError("shared YOLO expects a BGR HxWx3 image")
+        source_height, source_width = contiguous.shape[:2]
+        max_side = int(image_size or self._shared_input_max_side or 0)
+        resized = False
+        if max_side > 0 and max(source_height, source_width) > max_side:
+            scale = max_side / float(max(source_height, source_width))
+            width = max(1, int(round(source_width * scale)))
+            height = max(1, int(round(source_height * scale)))
+            contiguous = cv2.resize(
+                contiguous, (width, height), interpolation=cv2.INTER_AREA
+            )
+            resized = True
         message = Image()
         message.header = header
         message.height, message.width = map(int, contiguous.shape[:2])
         message.encoding = "bgr8"
         message.is_bigendian = 0
         message.step = message.width * 3
+        # Noetic genpy requires a bytes payload here. This copy is required by
+        # the current rospy Image service transport; memoryview is rejected.
         message.data = contiguous.tobytes()
-        return self.detect_image(
+        self._last_input_pack_ms = (time.perf_counter() - pack_started) * 1000.0
+        detections = self.detect_image(
             message, source_id, conf, iou, max_det, image_size
         )
+        if resized:
+            rescale_started = time.perf_counter()
+            scale_x = source_width / float(message.width)
+            scale_y = source_height / float(message.height)
+            for detection in detections:
+                detection.aabb_xyxy = tuple(int(round(value * scale)) for value, scale in zip(
+                    detection.aabb_xyxy, (scale_x, scale_y, scale_x, scale_y)
+                ))
+                detection.center_xy = (
+                    int(round(detection.center_xy[0] * scale_x)),
+                    int(round(detection.center_xy[1] * scale_y)),
+                )
+                if detection.obb_xywhr is not None:
+                    cx, cy, width, height, angle = detection.obb_xywhr
+                    detection.obb_xywhr = (
+                        cx * scale_x, cy * scale_y,
+                        width * scale_x, height * scale_y, angle,
+                    )
+                if detection.polygon_xy is not None:
+                    detection.polygon_xy = [
+                        (x * scale_x, y * scale_y)
+                        for x, y in detection.polygon_xy
+                    ]
+            self._last_coordinate_rescale_ms = (
+                time.perf_counter() - rescale_started
+            ) * 1000.0
+        else:
+            self._last_coordinate_rescale_ms = 0.0
+        return detections
 
     def detect_image(
         self,
@@ -232,7 +334,24 @@ class SharedRemoteBackend(DetectionBackend):
             max_detections=max(1, int(max_det)),
             image_size=int(image_size or 0),
         )
-        response = self._detect_proxy(request)
+        started = time.perf_counter()
+        try:
+            response = self._detect_proxy(request)
+        except rospy.ServiceException:
+            # A persistent TCPROS connection can become stale when the shared
+            # provider restarts. Reconnect once, then keep the hot path warm.
+            if self._detect_proxy is not None:
+                try:
+                    self._detect_proxy.close()
+                except Exception:
+                    pass
+            self._detect_proxy = None
+            rospy.wait_for_service(self._base + "/detect", timeout=2.0)
+            self._detect_proxy = rospy.ServiceProxy(
+                self._base + "/detect", RunSharedInference, persistent=True
+            )
+            response = self._detect_proxy(request)
+        self._last_request_ms = (time.perf_counter() - started) * 1000.0
         if not response.success:
             message = str(response.message or "")
             if (message.startswith("stale image discarded by shared inference") or
@@ -241,7 +360,11 @@ class SharedRemoteBackend(DetectionBackend):
                 logger.debug("Dropped an outdated shared-inference frame: %s", message)
                 return []
             raise RuntimeError(response.message or "shared YOLO inference failed")
-        return [self._from_message(item) for item in response.detections]
+        self._last_inference_ms = float(response.inference_ms)
+        parse_started = time.perf_counter()
+        detections = [self._from_message(item) for item in response.detections]
+        self._last_response_parse_ms = (time.perf_counter() - parse_started) * 1000.0
+        return detections
 
     @staticmethod
     def _from_message(item: NormalizedDetectionMsg) -> NormalizedDetection:

@@ -5,8 +5,8 @@ import unittest
 
 from xd_uav_formation.core import (
     acquisition_slots, blocking_action, catchup_velocity,
-    consensus_velocity, formation_offsets,
-    path_reference, ring_neighbors, rounded_path, shared_center,
+    consensus_speed_targets, consensus_velocity, formation_offsets,
+    path_reference, path_reference_state, ring_neighbors, rounded_path, shared_center,
     slot_target, slot_velocity,
     validate_offset, virtual_center)
 
@@ -101,6 +101,41 @@ class FormationCoreTest(unittest.TestCase):
             20.0, 60.0, False)
         self.assertEqual(position, (160.0, 0.0, 100.0))
         self.assertEqual(velocity, (20.0, 0.0, 0.0))
+
+    def test_consensus_velocity_never_reverses_route_motion(self):
+        velocity = consensus_velocity(
+            (20.0, 0.0, 0.0), (0.0, 0.0, 100.0),
+            (100.0, 0.0, 100.0), ((100.0, 0.0, 100.0),),
+            0.1, 2.5, 4.0)
+        self.assertGreater(velocity[0], 0.0)
+
+    def test_path_reference_reports_turn_rate_for_slot_feedforward(self):
+        square = ((0.0, 0.0, 20.0), (100.0, 0.0, 20.0),
+                  (100.0, 100.0, 20.0), (0.0, 100.0, 20.0))
+        route = rounded_path(square, 20.0, True)
+        samples = [path_reference_state(
+            point, route, 10.0, 0.0, True) for point in route]
+        turn_rates = [turn_rate for _position, _velocity, turn_rate in samples]
+        self.assertTrue(any(rate > 0.0 for rate in turn_rates))
+        self.assertLess(max(abs(rate) for rate in turn_rates), 1.0)
+
+    def test_consensus_pacing_accelerates_lagger_and_slows_others(self):
+        targets = consensus_speed_targets(
+            20.0, (8.0, -1.6, -1.6, -1.6, -1.6, -1.6),
+            (15.0, 20.0, 20.0, 20.0, 20.0, 20.0),
+            0.4, 4.0, 0.1, deadband=1.0)
+        self.assertGreater(targets[0], 15.0)
+        self.assertTrue(all(speed < 20.0 for speed in targets[1:]))
+        waiting = consensus_speed_targets(
+            20.0, (8.0, -1.6, -1.6, -1.6, -1.6, -1.6),
+            (15.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+            0.4, 4.0, 0.1, deadband=1.0)
+        self.assertGreater(waiting[0], 15.0)
+        self.assertTrue(all(speed <= 10.0 for speed in waiting[1:]))
+        aligned = consensus_speed_targets(
+            20.0, (0.0, 0.0, 0.0), (15.0, 15.0, 15.0),
+            0.4, 4.0, 0.1, deadband=1.0)
+        self.assertEqual(aligned, (20.0, 20.0, 20.0))
 
     def test_shared_path_center_and_start_spacing(self):
         slots = formation_offsets("circle", 4, 12.0)

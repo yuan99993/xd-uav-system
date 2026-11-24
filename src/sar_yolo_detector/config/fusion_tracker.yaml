@@ -1,35 +1,48 @@
 # Additional mode only. Original YOLO/feature/color configuration is preserved.
 FusionTracker:
-  allow_template_fallback: false
   visual_hold_sec: 1.5
-  # A manually seeded KCF track may publish valid per-frame KCF boxes while
-  # waiting for YOLO; after confirmation, visual_hold_sec applies.
+  # A manually seeded template may publish validated matches before YOLO binds
+  # an identity; after confirmation, visual_hold_sec applies.
   manual_seed_visual_without_yolo: true
-  prediction_hold_sec: 0.35
+  # Keep a low-confidence coast box alive through brief YOLO/template gaps;
+  # SmartTracker publishes it as prediction_only and clears it after this age.
+  prediction_hold_sec: 1.50
+  # Retain the selected detector identity through YOLO/template gaps. Zero means
+  # keep the lock until the operator explicitly selects another target.
+  detector_id_memory_sec: 1.5
+  # Long-recovery threshold and stale unselected-template TTL since last YOLO.
   reacquire_hold_sec: 8.0
-  # Short tracking ends at 8 s; one selected identity remains recoverable up
-  # to 60 s. No archive refresh on failed/pending candidates. HSV is weak
-  # evidence: long recovery additionally requires a continuous camera-motion
-  # chain, strong appearance/ROI quality and distinct consecutive detections.
-  identity_memory_ttl_sec: 60.0
-  long_reacquire_appearance_gate: 0.85
-  long_reacquire_quality_gate: 0.65
+  # Zero keeps the single selected identity/template until explicit reselection.
+  # A lost target publishes no stale box; matching continues in the background.
+  identity_memory_ttl_sec: 0.0
+  long_reacquire_appearance_gate: 0.76
+  long_reacquire_quality_gate: 0.50
   long_reacquire_minimum_score: 0.65
   long_reacquire_require_camera_motion: true
   reacquire_motion_horizon_sec: 2.0
   max_frame_gap_sec: 0.75
-  max_area_ratio: 2.5
-  center_gate_sizes: 1.4
-  appearance_gate: 0.70
-  quality_gate: 0.35
+  max_area_ratio: 3.0
+  center_gate_sizes: 1.6
+  appearance_gate: 0.62
+  quality_gate: 0.30
   ambiguity_margin: 0.12
   reacquire_confirm_frames: 3
   detector_weight: 0.70
+  # Blend a confirmed re-acquisition into the continuous template/predicted box
+  # instead of snapping the control output to one YOLO rectangle.
+  reacquire_detector_gain: 0.35
   detector_authority_confidence: 0.85
   minimum_detector_confidence: 0.50
   minimum_maintenance_confidence: 0.10
-  # Refresh KCF from an independently gated, current YOLO observation only.
-  local_template_refresh_sec: 0.75
+  # Minimum interval between template refreshes from visual or overlapping YOLO boxes.
+  local_template_refresh_sec: 0.40
+  # The selected template is matched every frame, with periodic scale search.
+  # Visual matches adapt it slowly; an overlapping YOLO box can refresh its appearance and size.
+  template_match_threshold: 0.48
+  long_template_match_threshold: 0.64
+  template_update_confidence: 0.70
+  # Search a wider scale range every 0.2 sec for the selected target.
+  template_search_period_sec: 0.2
   class_groups: [[0, 1, 2, 3]]
   selection_max_age_sec: 10.0
   selection_max_frames: 24

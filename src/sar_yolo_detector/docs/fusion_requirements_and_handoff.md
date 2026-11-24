@@ -1,5 +1,12 @@
 # SAR YOLO / PixEagle 四模式融合：需求、功能、问题与交接汇总
 
+> 历史交接记录。当前活动运行时已移除独立 `smart_tracker` 跟踪模式，默认使用 FusionTracker；
+> FusionTracker 仍通过 `SmartTracker:` 参数空间加载 YOLO 检测器。当前可切换模式见
+> [融合使用指南](fusion_experiment_guide.md)。
+
+> 当前精简包以 `launch/xd_smart_tracker_fusion_integration.launch` 为主入口；下文
+> 关于旧归档入口和历史代码布局的描述仅记录当时的实现状态，不代表当前文件仍保留。
+
 最新选型确认（2026-10-09）：用户确定 `/home/promise/mrs_test/sar_fusion_experiment.wlpAs3/src` 的
 SAR与XD两包为后续正式方案。只有SAR已作实现修改，XD保持导出基线。
 历史实验称谓/旧正式目录称谓不再决定后续默认选型；完整部署和网页合同以
@@ -14,7 +21,7 @@ SAR与XD两包为后续正式方案。只有SAR已作实现修改，XD保持导�
 旧实验源码与构建产物已备份至 `/home/promise/mrs_test/sar_fusion_backup_20261009.CpqpkW`。
 
 - 最新上游允许四类 `[0,1,2,3]`，检测门限 0.10；下文 0.60 / 三类描述是旧版本历史，不是当前配置。
-- 最新 PixEagle 入口移到 archive/launch，原样保留。新增唯一入口 `launch/xd_smart_tracker_fusion_integration.launch`，避免同名递归冲突。
+- 当时的旧 PixEagle 入口移到 archive/launch；后续包精简时已删除该归档目录。当前入口为 `launch/xd_smart_tracker_fusion_integration.launch`。
 - 保留原 SmartTracker、FeatureTracker、ColorTracker，新增 opt-in FusionTracker，使用相同 train7.pt / CUDA 权重，不替换 TensorRT。
 - 保留最新上游的 select_pixel、selected_tracked_detections 和云台话题参数；fusion 的 selected 流只输出同一最终框。
 - 不再扩展旧 TrackedDetection2D：新增平行 FusionDetection2D/Array 和 SelectFusionROI。所有旧 msg/srv 字节及 MD5 不变。

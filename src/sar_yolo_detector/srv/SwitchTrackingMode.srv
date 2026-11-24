@@ -1,5 +1,5 @@
 # Select the image tracking source. Supported modes are:
-# smart_tracker, feature_tracker, color_tracker.
+# fusion_tracker, feature_tracker, color_tracker.
 string mode
 
 # Used only by color_tracker. A non-empty value detects that configured colour

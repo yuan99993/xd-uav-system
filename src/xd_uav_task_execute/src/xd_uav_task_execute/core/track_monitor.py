@@ -125,10 +125,17 @@ class TrackMonitor:
             str(self.policy.required_profile).strip()
             or str(requested_profile).strip()
         )
-        metric_profile = expected_profile.startswith("fw_metric_")
-        metric_state = str(tracking_state).strip() in (
-            "pursuit", "orbit", "coast", "orbit_coast", "center_hold"
+        direct_control_profile = expected_profile.lower() == "direct_control"
+        metric_profile = (
+            expected_profile.startswith("fw_metric_")
+            or direct_control_profile
         )
+        current_tracking_state = str(tracking_state).strip()
+        metric_state = current_tracking_state in (
+            "pursuit", "orbit", "coast", "orbit_coast", "center_hold"
+        ) or (direct_control_profile and current_tracking_state in (
+            "direct_control", "arrived"
+        ))
         measured_target = (
             bool(metric_target_valid) and bool(metric_active) and metric_state
             if metric_profile
@@ -163,7 +170,11 @@ class TrackMonitor:
             or control_reference_published
         )
         tracking_state_valid = (
-            metric_state if metric_profile else str(tracking_state) == "tracking"
+            (current_tracking_state in ("direct_control", "arrived")
+             if direct_control_profile
+             else metric_state)
+            if metric_profile
+            else current_tracking_state == "tracking"
         )
         valid = bool(
             measured_target
@@ -177,6 +188,20 @@ class TrackMonitor:
             and reference_valid
         )
         if valid:
+            if direct_control_profile:
+                self.acquired = True
+                self.pending_error = ERROR_NONE
+                self.pending_detail = ""
+                self.last_valid_at = stamp
+                if current_tracking_state == "arrived":
+                    self.state = STATE_SUCCEEDED
+                    self.progress = 1.0
+                    self.detail = "direct-control target reached"
+                else:
+                    self.state = STATE_RUNNING
+                    self.progress = 0.0
+                    self.detail = "direct-control flight in progress"
+                return self.state
             if self.locked_track_id is None and not metric_profile:
                 self.locked_track_id = int(track_id)
             if self.valid_started_at is None:

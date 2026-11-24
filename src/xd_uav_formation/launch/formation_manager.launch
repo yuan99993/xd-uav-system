@@ -1,8 +1,0 @@
-<?xml version="1.0"?>
-<launch>
-  <arg name="service_timeout" default="3.0"/>
-  <node pkg="xd_uav_formation" type="formation_manager.py"
-        name="formation_manager" output="screen" required="true">
-    <param name="service_timeout" value="$(arg service_timeout)"/>
-  </node>
-</launch>

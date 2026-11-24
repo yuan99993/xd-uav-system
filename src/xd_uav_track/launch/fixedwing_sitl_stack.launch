@@ -25,7 +25,7 @@
   <arg name="world_config" default="$(find xd_uav_track)/config/world_sitl.yaml"/>
   <arg name="tf_config" default="$(find xd_uav_single_tf_manager)/config/fixedwing_single_tf.yaml"/>
   <arg name="airspeed_topic" default="mavros/vfr_hud"/>
-  <arg name="tracker_config" default="$(find xd_uav_track)/config/fixedwing_metric_orbit.yaml"/>
+  <arg name="tracker_config" default="$(find xd_uav_track)/config/track.yaml"/>
 
   <include if="$(arg start_world_tf)"
            file="$(find xd_uav_world_tf_manager)/launch/world_tf.launch">

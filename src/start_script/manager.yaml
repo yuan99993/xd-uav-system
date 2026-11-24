@@ -1,0 +1,345 @@
+# TCP supervisor configuration. Edit this file to change launch mappings,
+# config files, ports, or ROS profiles; do not put shell commands in messages.
+workspace: /home/nvidia/xd-uavsystem-test
+runtime_dir: ~/.ros/xd_uav_start_manager
+default_profile: vtol
+max_vehicles: 60
+node_startup_timeout_sec: 15.0
+node_status_check_interval_sec: 10.0
+node_reuse_check_interval_sec: 10.0
+
+# Each child launch sources these files before exec'ing its argv.
+setup_scripts:
+  - /opt/ros/noetic/setup.bash
+  - "{workspace}/devel/setup.bash"
+  - "{workspace}/.venv-sar/bin/activate"
+
+network:
+  host: 0.0.0.0
+  port: 8765
+  heartbeat_timeout_sec: 30.0
+  max_message_bytes: 1048576
+  auth_token_env: XD_UAV_START_TOKEN
+  require_auth: true
+
+# Start tracking only on uav1, uav2, and uav3 to limit CPU usage.
+required_vehicle_launches:
+  track:
+    uav_indices: [1, 10, 11]
+
+# Formation and task allocation each run once per simulation session. Task
+# allocation uses the fixed config files declared in its shared launch below.
+required_shared_launches:
+  - formation
+  - task_allocate
+
+sensor_types:
+  front_gimbal_camera:
+    description: Existing front-view camera entry; it is mounted on the EO gimbal.
+  down_camera:
+    description: Downward camera.
+  lidar:
+    description: Point cloud or laser range sensor.
+
+parameters:
+  gimbal_attitude_bridge_script: "{workspace}/src/bridge/gimbal_attitude_bridge.py"
+  gimbal_control_script: "{workspace}/src/bridge/gimbal_control.py"
+  video_stream_receiver_binary: "{workspace}/src/bridge/bin/video_stream_receiver"
+  h264_sender_binary: "{workspace}/src/bridge/bin/h264_nal_multicast_sender"
+  airsim_scene: SceneBasicDrone
+
+aircraft_types:
+  vtol:
+    launches:
+      - id: localization
+        expected_nodes:
+          - "/{name}/state_estimator"
+          - "/{name}/gps_global_alignment"
+          - "/{name}/single_tf_manager"
+        argv:
+          - roslaunch
+          - xd_uav_state_estimators
+          - uav_localization_stack.launch
+          - "UAV_NAME:={name}"
+          - "tf_config:={tf_config}"
+      - id: control
+        expected_nodes:
+          - "/{name}/control_manager"
+          - "/{name}/controller"
+        argv:
+          - roslaunch
+          - xd_uav_control_manager
+          - vtol_system.launch
+          - "UAV_NAME:={name}"
+
+  fixedwing:
+    launches:
+      - id: localization
+        expected_nodes:
+          - "/{name}/state_estimator"
+          - "/{name}/gps_global_alignment"
+          - "/{name}/single_tf_manager"
+        argv:
+          - roslaunch
+          - xd_uav_state_estimators
+          - uav_localization_stack.launch
+          - "UAV_NAME:={name}"
+          - "tf_config:={tf_config}"
+      - id: control
+        expected_nodes:
+          - "/{name}/control_manager"
+          - "/{name}/controller"
+        argv:
+          - roslaunch
+          - xd_uav_control_manager
+          - fixedwing_system.launch
+          - "UAV_NAME:={name}"
+          - "controller_config:={controller_config}"
+
+  multirotor:
+    launches:
+      - id: localization
+        expected_nodes:
+          - "/{name}/state_estimator"
+          - "/{name}/gps_global_alignment"
+          - "/{name}/single_tf_manager"
+        argv:
+          - roslaunch
+          - xd_uav_state_estimators
+          - uav_localization_stack.launch
+          - "UAV_NAME:={name}"
+          - "tf_config:={tf_config}"
+      - id: control
+        expected_nodes:
+          - "/{name}/control_manager"
+          - "/{name}/controller"
+        argv:
+          - roslaunch
+          - xd_uav_control_manager
+          - multirotor_system.launch
+          - "UAV_NAME:={name}"
+          - "controller_config:={controller_config}"
+
+# Per-aircraft launch definitions. Required launch selection is configured
+# above; other entries can be selected explicitly or started by sensor type.
+vehicle_launches:
+  track:
+    expected_nodes:
+      - "/{name}/track"
+    once_per_vehicle: true
+    argv:
+      - roslaunch
+      - xd_uav_track
+      - track.launch
+      - "UAV_NAME:={name}"
+
+  h264_sender:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera]
+    once_per_vehicle: true
+    argv:
+      - "{h264_sender_binary}"
+    parameter_prefix: "_"
+    default_params:
+      image_topic: "{video_topic}"
+      port: "{video_port}"
+      group: "224.0.5.4"
+      local_ip: "192.168.2.102"
+
+  down_h264_sender:
+    sensor_required: true
+    sensor_types: [down_camera]
+    once_per_vehicle: true
+    argv:
+      - "{h264_sender_binary}"
+    parameter_prefix: "_"
+    default_params:
+      image_topic: "{down_video_topic}"
+      port: "{down_video_port}"
+      group: "224.0.5.4"
+      local_ip: "192.168.2.102"
+
+  detect:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera, down_camera, lidar]
+    required_sensor_params:
+      lidar: [point_cloud_topic]
+    sensor_param_map:
+      image_topic: image_topic
+      camera_info_topic: camera_info_topic
+      point_cloud_topic: point_cloud_topic
+      laser_range_topic: laser_range_topic
+    argv:
+      - roslaunch
+      - xd_uav_detect
+      - detect.launch
+      - "UAV_NAME:={name}"
+      - "config:={detect_config}"
+
+  task_execute:
+    argv:
+      - roslaunch
+      - xd_uav_task_execute
+      - task_execute.launch
+      - "UAV_NAME:={name}"
+
+  camera_stream_receiver:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera, down_camera]
+    ignore_selection_params: true
+    argv:
+      - "{video_stream_receiver_binary}"
+      - --decoder
+      - hardware
+      - "--camera"
+      - "{camera_stream_name}"
+      - --no-display
+      - --ros-image-topic
+      - "{image_topic}"
+      - --ros-camera-info-output-topic
+      - "{camera_info_topic}"
+
+  sar_yolo_detector:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera, down_camera]
+    allowed_params: [input_image_topic, camera_info_topic]
+    argv:
+      - roslaunch
+      - sar_yolo_detector
+      - xd_smart_tracker_fusion_integration.launch
+      - "UAV_NAME:={name}"
+      - "input_image_topic:={input_image_topic}"
+      - "camera_info_topic:={camera_info_topic}"
+
+  gimbal_attitude_bridge:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera]
+    argv:
+      - python3
+      - "{gimbal_attitude_bridge_script}"
+      - "_uav_ns:=/{name}"
+
+  gimbal_control:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera]
+    ignore_selection_params: true
+    argv:
+      - python3
+      - "{gimbal_control_script}"
+      - "_uav_name:={name}"
+      - "_mode:=tracking"
+      - "_stabilize:=true"
+      - "_detection_topic:=/{name}/sar_yolo_detector/smart/selected_tracked_detections"
+      - "_image_width:=1280"
+      - "_image_height:=720"
+      - "_fov_x_deg:=17"
+      - "_kp_yaw:=0.07"
+      - "_kp_pitch:=0.03"
+      - "_ki_yaw:=0.04"
+      - "_ki_pitch:=0.02"
+      - "_ff_alpha:=0.0"
+      - "_filter_alpha:=0.3"
+      - "_deadzone_px:=8"
+
+  target_geolocation:
+    sensor_required: true
+    sensor_types: [front_gimbal_camera]
+    required_params: [detection_topic]
+    selection_param_map:
+      detection_topic: det_topic
+    forced_params:
+      det_topic: "/{name}/sar_yolo_detector/smart/selected_tracked_detections"
+    sensor_param_map:
+      range_topic: range_topic
+      gimbal_att_topic: gimbal_att_topic
+    argv:
+      - roslaunch
+      - target_geolocation
+      - target_geolocation.launch
+      - gimbal:=true
+      - "uav_ns:=/{name}"
+      - "airsim_scene:={airsim_scene}"
+      - "airsim_drone:={drone}"
+      - "node_name:=target_geolocation_{name}"
+      - "det_sensor_id:={sensor_id}"
+
+# Existing front_gimbal_camera entries all refer to the one front camera on
+# the EO gimbal. Track is already started for every aircraft above; the sensor
+# starts its camera and gimbal programs once. Explicit entries in a vehicle's
+# launches list override these sensor defaults.
+automatic_sensor_launches:
+  front_gimbal_camera:
+    - id: camera_stream_receiver
+    - id: h264_sender
+    - id: gimbal_attitude_bridge
+    - id: gimbal_control
+    - id: target_geolocation
+      params:
+        detection_topic: "{automatic_detection_topic}"
+
+shared_launches:
+  world_tf:
+    argv:
+      - roslaunch
+      - xd_uav_world_tf_manager
+      - world_tf.launch
+      - "config:={world_tf_config}"
+
+  formation:
+    argv:
+      - roslaunch
+      - xd_uav_formation
+      - formation.launch
+
+  task_allocate:
+    argv:
+      - roslaunch
+      - xd_uav_task_allocate
+      - task_allocate.launch
+      - "mission_config:={workspace}/src/xd_uav_task_allocate/config/mission.yaml"
+      - "scout_config:={workspace}/src/xd_uav_task_allocate/config/scouts_two_fixed.yaml"
+      - "worker_config:={workspace}/src/xd_uav_task_allocate/config/workers_two_fixed.yaml"
+      - "post_arrival_config:={workspace}/src/xd_uav_task_allocate/config/task_execution_uav1_uav2_gm_fixedwing.yaml"
+
+profiles:
+  vtol:
+    parameters:
+      detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml
+      lidar_detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/lidar_camera.yaml
+    files:
+      world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
+      tf_config_by_type:
+        vtol: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+      controller_config_by_type:
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/fixedwing_projectairsim.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/multirotor.yaml
+
+  fixedwing:
+    parameters:
+      detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/fixedwing_front_detect.yaml
+      lidar_detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/lidar_camera.yaml
+    files:
+      world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
+      tf_config_by_type:
+        vtol: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+      controller_config_by_type:
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/fixedwing_projectairsim.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/multirotor.yaml
+
+  multirotor:
+    parameters:
+      detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/camera_ground_plane.yaml
+      lidar_detect_config: /home/nvidia/xd-uavsystem-test/src/xd_uav_detect/config/lidar_camera.yaml
+    files:
+      world_tf_template: /home/nvidia/xd-uavsystem-test/src/xd_uav_world_tf_manager/config/world.yaml
+      tf_config_by_type:
+        vtol: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/vtol_single_tf.yaml
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/fixedwing_single_tf.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_single_tf_manager/config/multirotor_single_tf.yaml
+      controller_config_by_type:
+        fixedwing: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/fixedwing_projectairsim.yaml
+        multirotor: /home/nvidia/xd-uavsystem-test/src/xd_uav_controller/config/multirotor.yaml

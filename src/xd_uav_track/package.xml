@@ -23,10 +23,13 @@
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>roslib</exec_depend>
-  <exec_depend>rosbridge_server</exec_depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>visualization_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>topic_tools</depend>
   <build_depend>message_generation</build_depend>
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>
@@ -34,7 +37,6 @@
   <exec_depend>tf</exec_depend>
   <exec_depend>mavros</exec_depend>
   <exec_depend>rosnode</exec_depend>
-  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>xd_uav_state_estimators</exec_depend>
   <exec_depend>xd_uav_control_manager</exec_depend>
   <exec_depend>xd_uav_world_tf_manager</exec_depend>

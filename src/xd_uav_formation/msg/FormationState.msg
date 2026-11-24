@@ -1,0 +1,19 @@
+# Latched snapshot of the complete formation configuration and grouping.
+std_msgs/Header header
+string team_id
+string mode
+bool running
+string common_frame
+string leader_name
+string shape
+geometry_msgs/Point[] waypoints
+bool loop_path
+float64 spacing
+float64 group_spacing
+uint32 configured_group_size
+string[] members
+uint32 group_count
+uint32 detached_group_count
+FormationGroupInfo[] groups
+uint64 selection_revision
+uint64 group_revision

@@ -1,0 +1,60 @@
+# Shared parameters for fixed-wing formation modes. Consensus members are
+# selected in each /formation/set_enabled request; leader_follow is static.
+team_id: fixedwing_30
+
+leader_follow:
+  shape: manual
+  leader_name: uav1
+  members: [uav2, uav3, uav4, uav5, uav6]
+  offsets:
+    # [forward, left, up] metres relative to uav1's ground-track direction.
+    uav2: [-100.0, 80.0, 0.0]
+    uav3: [-100.0, -80.0, 0.0]
+    uav4: [-200.0, 160.0, 0.0]
+    uav5: [-200.0, -160.0, 0.0]
+    uav6: [-300.0, 240.0, 0.0]
+    # uav7: [-300.0, -240.0, 0.0]
+    # uav8: [-400.0, 320.0, 0.0]
+    # uav9: [-400.0, -320.0, 0.0]
+
+consensus:
+  team_id: team
+  common_frame: world
+  # line：一字横队
+  # column：纵队
+  # arrow：箭头/V形
+  # circle 圆形
+  # rectangle_compact 网格
+  shape: column
+  spacing: 80.0
+  group_size: 1
+  # 0 selects a safe group spacing from the inner formation footprint.
+  group_spacing: 250.0
+  acquire_tolerance: 20.0
+  acquire_height_tolerance: 5.0
+  acquire_vertical_spacing: 10.0
+  acquire_timeout: 300.0
+  # Demonstration route; replace with a safe route in the current world frame.
+  waypoints:
+    - [-1000.0, -1000.0, 100.0]
+    - [2000.0, -1000.0, 100.0]
+    - [2000.0, 2000.0, 100.0]
+    - [-1000.0, 2000.0, 100.0]
+  loop_path: true
+  corner_radius: 300.0
+  cruise_speed: 20.0
+  lookahead_distance: 50.0
+  consensus_gain: 0.4
+  max_consensus_velocity: 8.0  # m/s, slot correction limit during route flight
+  # Capture-stage settings: lateral gain and independent velocity limits (m/s).
+  acquire_consensus_gain: 0.8
+  acquire_max_consensus_velocity: 10.0
+  acquire_max_speed_adjustment: 10.0
+  # Shared geometry and command slew limits for all configured members.
+  formation_heading_rate_limit: 0.10  # rad/s, slot rotation during route flight
+  formation_speed_slew_rate: 2.0     # m/s^2, commanded speed change limit
+  formation_course_slew_rate: 0.25   # rad/s, commanded course change limit
+  # Route attraction acts after gathering and altitude merging have completed.
+  route_correction_gain: 0.4
+  max_route_correction_velocity: 8.0 # m/s, separate from slot capture correction
+  convergence_time: 100.0

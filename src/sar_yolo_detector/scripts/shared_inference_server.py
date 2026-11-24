@@ -12,6 +12,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+import cv2
+import numpy as np
 import rospy
 import rospkg
 import yaml
@@ -52,6 +54,10 @@ def _read_yaml(path):
 
 class SharedInferenceServer:
     def __init__(self):
+        # The tracker process also uses a one-thread OpenCV budget. Keep resize
+        # and image conversions in the shared model worker from oversubscribing
+        # CPU cores when several aircraft are submitting frames concurrently.
+        cv2.setNumThreads(max(1, min(4, int(rospy.get_param("~opencv_threads", 1)))))
         self._backend_lock = threading.Lock()
         self._queue_condition = threading.Condition()
         self._pending = deque()
@@ -92,6 +98,17 @@ class SharedInferenceServer:
             "~maximum_capture_age_sec", 0.5)))
         self._request_count = 0
         self._failure_count = 0
+        self._batch_counts = [0] * 9
+        self._batch_stats_requests = 0
+        self._batch_inference_ms_total = 0.0
+        self._backend_stage_totals = {
+            "preprocess_ms": 0.0,
+            "model_forward_ms": 0.0,
+            "postprocess_ms": 0.0,
+            "normalize_ms": 0.0,
+        }
+        self._backend_stage_samples = 0
+        self._batch_stats_started = time.monotonic()
         self._batch_wait_sec = max(0.0, min(0.010, float(rospy.get_param(
             "~batch_wait_ms", 4.0)) / 1000.0))
         requested_batch = max(1, min(8, int(rospy.get_param("~maximum_batch_size", 2))))
@@ -191,6 +208,21 @@ class SharedInferenceServer:
             str(self._provider_model_path), preference, fallback_enabled=fallback,
             context="shared_inference_startup",
         )
+        # TensorRT creates its execution context lazily on the first predict().
+        # Warm it before advertising the service so that the first live camera
+        # request does not consume the short shared-inference queue deadline.
+        if (self._provider_model_path.suffix.lower() == ".engine" and
+                bool(rospy.get_param("~startup_warmup", True))):
+            image_size = int(self._smart_config.get(
+                "SMART_TRACKER_INFERENCE_IMAGE_SIZE", 512))
+            started = time.perf_counter()
+            self._backend.detect(
+                np.zeros((image_size, image_size, 3), dtype=np.uint8),
+                conf=1.0, iou=0.3, max_det=1, image_size=image_size,
+            )
+            warmup_ms = (time.perf_counter() - started) * 1000.0
+            self._runtime["startup_warmup_ms"] = warmup_ms
+            rospy.loginfo("shared YOLO TensorRT warmup completed in %.1f ms", warmup_ms)
         self._labels = self._backend.get_model_labels()
         self._model_task = self._backend.get_model_task()
         rospy.loginfo(
@@ -404,6 +436,18 @@ class SharedInferenceServer:
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
                 if len(results) != len(fresh):
                     raise RuntimeError("shared backend returned an incomplete batch")
+                stage_timings = getattr(self._backend, "last_stage_timings", {})
+                for name in self._backend_stage_totals:
+                    try:
+                        self._backend_stage_totals[name] += float(
+                            stage_timings.get(name, 0.0)
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                self._backend_stage_samples += 1
+                self._batch_counts[len(fresh)] += 1
+                self._batch_stats_requests += len(fresh)
+                self._batch_inference_ms_total += elapsed_ms
                 for pending, (_mode, detections) in zip(fresh, results):
                     response = RunSharedInferenceResponse()
                     response.success = True
@@ -411,6 +455,43 @@ class SharedInferenceServer:
                     response.detections = [self._to_message(item) for item in detections]
                     self._complete(pending, response)
                     self._request_count += 1
+                now = time.monotonic()
+                if now - self._batch_stats_started >= 10.0:
+                    stats_duration = now - self._batch_stats_started
+                    batch_mix = ",".join(
+                        "%d:%d" % (size, self._batch_counts[size])
+                        for size in range(1, len(self._batch_counts))
+                    )
+                    batches = sum(self._batch_counts)
+                    average_ms = (self._batch_inference_ms_total / batches
+                                  if batches else 0.0)
+                    stage_count = max(1, self._backend_stage_samples)
+                    stage_averages = {
+                        name: total / stage_count
+                        for name, total in self._backend_stage_totals.items()
+                    }
+                    rospy.loginfo(
+                        "shared YOLO perf: requests=%d requests_per_sec=%.2f "
+                        "batches=%d batch_mix=%s batch_inference_ms_avg=%.2f max_batch=%d "
+                        "preprocess_ms_avg=%.2f model_forward_ms_avg=%.2f "
+                        "postprocess_ms_avg=%.2f normalize_ms_avg=%.2f",
+                        self._batch_stats_requests,
+                        self._batch_stats_requests / stats_duration,
+                        batches, batch_mix, average_ms,
+                        self._maximum_batch_size,
+                        stage_averages["preprocess_ms"],
+                        stage_averages["model_forward_ms"],
+                        stage_averages["postprocess_ms"],
+                        stage_averages["normalize_ms"],
+                    )
+                    self._batch_counts = [0] * 9
+                    self._batch_stats_requests = 0
+                    self._batch_inference_ms_total = 0.0
+                    self._backend_stage_totals = {
+                        name: 0.0 for name in self._backend_stage_totals
+                    }
+                    self._backend_stage_samples = 0
+                    self._batch_stats_started = now
             except Exception as exc:
                 message = "%s: %s" % (type(exc).__name__, exc)
                 rospy.logerr_throttle(2.0, "shared YOLO inference failed: %s", message)
