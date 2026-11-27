@@ -10,6 +10,11 @@
       <rosparam command="load"
                 file="$(find xd_uav_controller)/config/fixedwing.yaml"/>
       <param name="vehicle_type" value="fixedwing"/>
+      <!-- This fixture immediately resumes its publisher after takeoff and
+           checks stream expiry within a 3-second wait. Production defaults
+           require a quiet rearm interval and use a 10-second timeout. -->
+      <param name="reference_input/source_rearm_quiet_time" value="0.0"/>
+      <param name="reference_input/timeout" value="1.0"/>
       <param name="home/frame" value="odom"/>
       <rosparam param="home/fixed_position">[500.0, 100.0, 100.0]</rosparam>
       <param name="home/fixed_yaw" value="0.0"/>

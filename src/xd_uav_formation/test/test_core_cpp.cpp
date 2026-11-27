@@ -3,6 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <algorithm>
+#include <limits>
+#include <numeric>
+#include <random>
 #include <stdexcept>
 
 using namespace xd_uav_formation;
@@ -76,6 +80,60 @@ TEST(FormationCoreCpp, ConsensusPacingAndAcquisitionMatchPythonCore) {
     }
     EXPECT_NEAR(start_sum, goal_sum, 1e-9);
   }
+}
+
+TEST(FormationCoreCpp, HungarianFindsGlobalMinimumInsteadOfGreedyNearest) {
+  // Greedy gives row 0 slot 0, forcing row 1 to travel 12 m (total 15).
+  const auto assignment = minimumDistanceAssignment(
+      {{3, 0, 200}, {-2, 0, 0}}, {{0, 0, 0}, {10, 0, 200}});
+  EXPECT_EQ(assignment, (std::vector<std::size_t>{1, 0}));
+  EXPECT_EQ(minimumDistanceAssignment({}, {}), std::vector<std::size_t>{});
+  EXPECT_EQ(minimumDistanceAssignment({{0, 0, 0}}, {{1, 1, 1}}),
+            (std::vector<std::size_t>{0}));
+  EXPECT_THROW(minimumDistanceAssignment({{0, 0, 0}}, {}), std::invalid_argument);
+  EXPECT_THROW(minimumDistanceAssignment({{NAN, 0, 0}}, {{0, 0, 0}}),
+               std::invalid_argument);
+  EXPECT_THROW(minimumDistanceAssignment({{0, 0, 0}}, {{0, INFINITY, 0}}),
+               std::invalid_argument);
+}
+
+TEST(FormationCoreCpp, HungarianMatchesExhaustivePermutations) {
+  std::mt19937 random(42);
+  std::uniform_real_distribution<double> coordinate(-100.0, 100.0);
+  for (std::size_t n = 2; n <= 7; ++n) {
+    for (int trial = 0; trial < 10; ++trial) {
+      std::vector<Vec3> points(n), slots(n);
+      for (std::size_t i = 0; i < n; ++i) {
+        points[i] = {coordinate(random), coordinate(random), 0};
+        slots[i] = {coordinate(random), coordinate(random), 0};
+      }
+      auto cost = [&](const auto& assignment) {
+        double total = 0;
+        for (std::size_t i = 0; i < n; ++i)
+          total += std::hypot(points[i][0] - slots[assignment[i]][0],
+                              points[i][1] - slots[assignment[i]][1]);
+        return total;
+      };
+      std::vector<std::size_t> permutation(n);
+      std::iota(permutation.begin(), permutation.end(), 0);
+      double optimum = std::numeric_limits<double>::infinity();
+      do { optimum = std::min(optimum, cost(permutation)); }
+      while (std::next_permutation(permutation.begin(), permutation.end()));
+      const auto assignment = minimumDistanceAssignment(points, slots);
+      EXPECT_NEAR(cost(assignment), optimum, 1e-8);
+      auto sorted = assignment;
+      std::sort(sorted.begin(), sorted.end());
+      std::iota(permutation.begin(), permutation.end(), 0);
+      EXPECT_EQ(sorted, permutation);
+    }
+  }
+}
+
+TEST(FormationCoreCpp, HungarianTieBreakingIsDeterministic) {
+  const std::vector<Vec3> coincident(30, Vec3{1, 2, 3});
+  std::vector<std::size_t> identity(30);
+  std::iota(identity.begin(), identity.end(), 0);
+  EXPECT_EQ(minimumDistanceAssignment(coincident, coincident), identity);
 }
 
 int main(int argc, char** argv) {

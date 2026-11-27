@@ -179,6 +179,143 @@ Vec3 slotVelocity(const Vec3& velocity, const Vec3& acceleration,
           velocity[1] + turn_rate * rotated[0], velocity[2]};
 }
 
+FormationTurnPlan planFormationTurn(const std::vector<Vec3>& offsets,
+    double cruise_speed, double minimum_speed, double maximum_speed,
+    double requested_rate, double lateral_velocity) {
+  requireFinite({cruise_speed, minimum_speed, maximum_speed, requested_rate,
+      lateral_velocity}, "invalid formation turn plan");
+  if (minimum_speed <= 0.0 || maximum_speed <= minimum_speed ||
+      cruise_speed < minimum_speed || cruise_speed > maximum_speed)
+    throw std::invalid_argument("invalid formation turn speed bounds");
+  for (const auto& offset : offsets)
+    requireFinite({offset[0], offset[1]}, "invalid formation turn offset");
+
+  // Retain a feasible straight-flight fallback even for a large route error.
+  const double lateral_limit = std::sqrt(std::max(0.0,
+      maximum_speed * maximum_speed - cruise_speed * cruise_speed));
+  lateral_velocity = clamp(lateral_velocity, -lateral_limit, lateral_limit);
+  auto speedBounds = [&](double rate) {
+    double lower = cruise_speed;
+    double upper = std::sqrt(std::max(0.0,
+        maximum_speed * maximum_speed - lateral_velocity * lateral_velocity));
+    for (const auto& offset : offsets) {
+      // Local slot velocity is (V - omega*y, lateral + omega*x).
+      // Keeping its forward component >= minimum is conservative and avoids
+      // satisfying the minimum by flying sideways or reversing direction.
+      lower = std::max(lower, minimum_speed + rate * offset[1]);
+      const double cross = lateral_velocity + rate * offset[0];
+      if (std::abs(cross) > maximum_speed)
+        return std::make_pair(lower, -1.0);
+      upper = std::min(upper, rate * offset[1] + std::sqrt(std::max(0.0,
+          maximum_speed * maximum_speed - cross * cross)));
+    }
+    return std::make_pair(lower, upper);
+  };
+
+  auto bounds = speedBounds(requested_rate);
+  if (bounds.first > bounds.second) {
+    // Feasible (speed, rate) pairs form a convex set. Along this rate ray,
+    // zero is feasible and bisection finds the largest feasible turn rate.
+    double low = 0.0, high = 1.0;
+    for (int iteration = 0; iteration < 48; ++iteration) {
+      const double middle = 0.5 * (low + high);
+      const auto candidate = speedBounds(requested_rate * middle);
+      if (candidate.first <= candidate.second) low = middle;
+      else high = middle;
+    }
+    requested_rate *= low;
+    bounds = speedBounds(requested_rate);
+  }
+  return {bounds.first, requested_rate, lateral_velocity};
+}
+
+TurnReference advanceTurnReference(const TurnReference& previous,
+    double desired_heading, double desired_rate, double dt,
+    double maximum_rate, double maximum_acceleration) {
+  requireFinite({previous.heading, previous.rate, desired_heading, desired_rate,
+      dt, maximum_rate, maximum_acceleration}, "invalid formation turn reference");
+  if (dt <= 0.0 || maximum_rate <= 0.0 || maximum_acceleration <= 0.0)
+    throw std::invalid_argument("formation turn limits and dt must be positive");
+  const double error = std::atan2(std::sin(desired_heading - previous.heading),
+                                  std::cos(desired_heading - previous.heading));
+  const double direction = error >= 0.0 ? 1.0 : -1.0;
+  const double step = maximum_acceleration * dt;
+  const double relative_rate = direction * (previous.rate - desired_rate);
+  // Bound the NEXT rate, including this cycle's trapezoidal heading travel
+  // and the remaining braking distance. sqrt(2*a*error) alone starts braking
+  // one cycle late because it ignores the travel before the next rate takes
+  // effect. Work relative to the moving target's rate.
+  const double stopping_rate = std::max(0.0, std::sqrt(std::max(0.0,
+      2.0 * maximum_acceleration * std::abs(error) +
+      0.25 * step * step - step * relative_rate)) - 0.5 * step);
+  const double recovery = direction * std::min(2.0 * std::abs(error), stopping_rate);
+  const double requested = clamp(desired_rate + recovery, -maximum_rate, maximum_rate);
+  const double rate = clamp(requested,
+      previous.rate - maximum_acceleration * dt,
+      previous.rate + maximum_acceleration * dt);
+  return {previous.heading + 0.5 * (previous.rate + rate) * dt,
+          rate, (rate - previous.rate) / dt};
+}
+
+HorizontalMotion horizontalMotion(const Vec3& velocity, const Vec3& acceleration) {
+  requireFinite({velocity[0], velocity[1], velocity[2], acceleration[0],
+      acceleration[1], acceleration[2]}, "invalid horizontal motion");
+  const double squared_speed = velocity[0] * velocity[0] + velocity[1] * velocity[1];
+  return {velocity, acceleration, squared_speed > 0.25
+      ? (velocity[0] * acceleration[1] - velocity[1] * acceleration[0]) / squared_speed
+      : 0.0};
+}
+
+HorizontalMotion slewHorizontalCorrection(const Vec3& previous,
+    const Vec3& desired, double dt, double maximum_acceleration) {
+  requireFinite({previous[0], previous[1], desired[0], desired[1], dt,
+      maximum_acceleration}, "invalid formation correction slew");
+  if (dt <= 0.0 || maximum_acceleration <= 0.0)
+    throw std::invalid_argument("correction slew and dt must be positive");
+  const double dx = desired[0] - previous[0], dy = desired[1] - previous[1];
+  const double length = std::hypot(dx, dy);
+  const double scale = length > 0.0 ? std::min(1.0, maximum_acceleration * dt / length) : 0.0;
+  return horizontalMotion({previous[0] + scale * dx, previous[1] + scale * dy, 0},
+                           {scale * dx / dt, scale * dy / dt, 0});
+}
+
+HorizontalMotion limitHorizontalMotion(const HorizontalMotion& motion,
+    double minimum_speed, double maximum_speed, double fallback_heading) {
+  requireFinite({minimum_speed, maximum_speed, fallback_heading}, "invalid motion speed bounds");
+  if (minimum_speed <= 0.0 || maximum_speed < minimum_speed)
+    throw std::invalid_argument("motion speed bounds must be positive and ordered");
+  horizontalMotion(motion.velocity, motion.acceleration);
+  const double speed = std::hypot(motion.velocity[0], motion.velocity[1]);
+  if (speed < 1e-6)
+    return horizontalMotion({minimum_speed * std::cos(fallback_heading),
+        minimum_speed * std::sin(fallback_heading), motion.velocity[2]}, {0,0,0});
+  const double bounded = clamp(speed, minimum_speed, maximum_speed);
+  if (bounded == speed) return motion;
+  const double scale = bounded / speed;
+  const double tx = motion.velocity[0] / speed, ty = motion.velocity[1] / speed;
+  const double tangential = tx * motion.acceleration[0] + ty * motion.acceleration[1];
+  // At a fixed speed bound only the normal acceleration remains. Preserve
+  // the course-rate feed-forward instead of scaling velocity alone.
+  return horizontalMotion({scale * motion.velocity[0], scale * motion.velocity[1], motion.velocity[2]},
+      {scale * (motion.acceleration[0] - tx * tangential),
+       scale * (motion.acceleration[1] - ty * tangential), 0});
+}
+
+HorizontalMotion turningSlotMotion(const Vec3& center_velocity,
+    const Vec3& center_acceleration, double heading, const Vec3& offset,
+    double turn_rate, double turn_acceleration) {
+  requireFinite({turn_rate, turn_acceleration}, "invalid formation turn motion");
+  const Vec3 velocity = slotVelocity(center_velocity, {0,0,0}, heading, offset,
+                                     0.0, false, turn_rate, true);
+  const Vec3 rotated = rotateOffset(heading, offset);
+  const double omega_squared = turn_rate * turn_rate;
+  const Vec3 acceleration{
+      center_acceleration[0] - turn_acceleration * rotated[1] - omega_squared * rotated[0],
+      center_acceleration[1] + turn_acceleration * rotated[0] - omega_squared * rotated[1],
+      center_acceleration[2]};
+  return horizontalMotion(velocity, acceleration);
+}
+
 Vec3 catchupVelocity(const Vec3& base_velocity, const Vec3& slot_position,
                      const Vec3& own_position, double gain,
                      double max_correction, bool limit_correction,
@@ -301,6 +438,67 @@ std::vector<Vec3> acquisitionSlots(const std::vector<Vec3>& positions,
     goals.push_back({slot[0], slot[1], slot[2]});
   }
   return goals;
+}
+
+std::vector<std::size_t> minimumDistanceAssignment(
+    const std::vector<Vec3>& positions, const std::vector<Vec3>& slots) {
+  if (positions.size() != slots.size())
+    throw std::invalid_argument("assignment requires equal aircraft and slot counts");
+  const std::size_t n = positions.size();
+  std::vector<std::vector<double>> costs(n, std::vector<double>(n));
+  for (const auto& point : positions)
+    requireFinite({point[0], point[1], point[2]}, "assignment positions must be finite");
+  for (const auto& point : slots)
+    requireFinite({point[0], point[1], point[2]}, "assignment slots must be finite");
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      costs[i][j] = std::hypot(positions[i][0] - slots[j][0],
+                               positions[i][1] - slots[j][1]);
+      if (!finite(costs[i][j]))
+        throw std::invalid_argument("assignment distance must be finite");
+    }
+  }
+  // Shortest augmenting path form of the Hungarian algorithm, O(n^3).
+  // Strict comparisons and ascending columns make equal-cost choices stable.
+  std::vector<double> u(n + 1), v(n + 1);
+  std::vector<std::size_t> matched(n + 1), previous(n + 1);
+  for (std::size_t i = 1; i <= n; ++i) {
+    matched[0] = i;
+    std::size_t column = 0;
+    std::vector<double> slack(n + 1, std::numeric_limits<double>::infinity());
+    std::vector<bool> used(n + 1, false);
+    do {
+      used[column] = true;
+      const std::size_t row = matched[column];
+      double delta = std::numeric_limits<double>::infinity();
+      std::size_t next = 0;
+      for (std::size_t j = 1; j <= n; ++j) {
+        if (used[j]) continue;
+        const double reduced = costs[row - 1][j - 1] - u[row] - v[j];
+        if (reduced < slack[j]) {
+          slack[j] = reduced;
+          previous[j] = column;
+        }
+        if (slack[j] < delta) {
+          delta = slack[j];
+          next = j;
+        }
+      }
+      for (std::size_t j = 0; j <= n; ++j) {
+        if (used[j]) { u[matched[j]] += delta; v[j] -= delta; }
+        else slack[j] -= delta;
+      }
+      column = next;
+    } while (matched[column] != 0);
+    do {
+      const std::size_t next = previous[column];
+      matched[column] = matched[next];
+      column = next;
+    } while (column != 0);
+  }
+  std::vector<std::size_t> assignment(n);
+  for (std::size_t j = 1; j <= n; ++j) assignment[matched[j] - 1] = j - 1;
+  return assignment;
 }
 
 std::vector<std::string> ringNeighbors(

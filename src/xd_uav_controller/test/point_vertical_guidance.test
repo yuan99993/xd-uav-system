@@ -1,0 +1,19 @@
+<launch>
+  <arg name="airframe_type" default="fixedwing"/>
+  <arg name="airframe_type_id" default="1"/>
+  <group ns="point_vertical_test">
+    <node pkg="xd_uav_controller" type="controller_node" name="controller"
+          output="screen" clear_params="true">
+      <rosparam command="load" file="$(find xd_uav_controller)/config/common_config.yaml"/>
+      <rosparam command="load" file="$(find xd_uav_controller)/config/$(arg airframe_type).yaml"/>
+      <param name="airframe_type" value="$(arg airframe_type)"/>
+      <!-- Make explicit velocity response immediate to isolate the point-only
+           limiter from the pre-existing streaming-reference limiter. -->
+      <param name="fixedwing/vertical_control/climb_rate_setpoint_acceleration_limit" value="0.0"/>
+    </node>
+    <test test-name="point_vertical_guidance_interface" pkg="xd_uav_controller"
+          type="test_point_vertical_guidance.py" time-limit="25">
+      <param name="airframe_type_id" value="$(arg airframe_type_id)"/>
+    </test>
+  </group>
+</launch>

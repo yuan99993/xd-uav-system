@@ -127,6 +127,7 @@ Config parseConfig(const std::string& mode, const YAML::Node& node,
   XD_DOUBLE(formation_speed_slew_rate, "formation_speed_slew_rate");
   XD_DOUBLE(formation_course_slew_rate, "formation_course_slew_rate");
   config.route_correction_gain = value<double>(node, "route_correction_gain", config.consensus_gain);
+  XD_DOUBLE(route_velocity_damping, "route_velocity_damping");
   config.max_route_correction_velocity = value<double>(node, "max_route_correction_velocity", config.max_consensus_velocity);
   XD_BOOL(loop_path, "loop_path");
   config.acquire_tolerance = value<double>(node, "acquire_tolerance", std::max(2.0, config.spacing * 0.1));

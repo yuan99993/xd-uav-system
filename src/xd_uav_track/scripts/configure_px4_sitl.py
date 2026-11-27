@@ -21,13 +21,12 @@ from mavros_msgs.srv import (
 
 
 PARAMETERS = {
-    # NAV_RCL_ACT has no disabled value in PX4 v1.13.  Use Hold as the
+    # NAV_RCL_ACT has no disabled value in PX4 v1.14.  Use Hold as the
     # well-defined fallback and exempt Hold/Offboard in this RC-less harness.
     "NAV_RCL_ACT": 1,
     "NAV_DLL_ACT": 0,
     "COM_RC_IN_MODE": 4,
     "COM_RCL_EXCEPT": 6,
-    "COM_OBL_ACT": 0,
     "COM_OBL_RC_ACT": 0,
     "ASPD_PRIMARY": 1,
     "ASPD_DO_CHECKS": 7,

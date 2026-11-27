@@ -84,6 +84,17 @@ VTOL按当前活动后端选择配置，转换阶段沿用转换发起时的后�
   盘旋。固定翼锁存单点进入`fixedwing/point_following/completion_radius`，并满足高度容差后，
   也会切换到当前位置相切的等待盘旋，不会继续追逐静止目标。固定翼轨迹到达最后一个时间点后
   同样建立相切等待圆；等待圆使用`V/R`角速度前馈维持配置半径。yaw是否启用不改变锁存判定。
+- 固定翼后端（包括VTOL前飞）对带水平位置和高度的纯位置单点，记录接收时的位置作为
+  三维航段起点，按实际沿航段进度生成参考高度和升降率。`fixedwing/point_following`下的
+  `maximum_climb_angle`/`maximum_descent_angle`（rad）、`maximum_climb_rate`/
+  `maximum_descent_rate`（m/s）、`vertical_acceleration_limit`（m/s²）和
+  `altitude_time_constant`独立限制完整的单点升降指令，并在接近目标高度时提前收坡。
+  水平航程不足时自动建立与当前航向相切的升降盘旋，半径至少使用已有loiter半径，并按
+  空速和滚转限制扩大；收敛到目标高度（容差至多1 m）且垂直速度低于0.3 m/s后，继续
+  飞向保留的原目标。同一目标重复发布不会重新捕获起点，新目标会重新建立航段。
+  盘旋只解决几何航程问题，不执行地形/障碍物避碰规划。启用任意速度或加速度字段
+  （包括显式零速度）、Path、轨迹、内部起降和旋翼控制不使用此单点引导，因此云台
+  跟踪的速度setpoint继续使用原控制链。
 - 单点、路径、轨迹和 simple goal 使用统一的发布者接管仲裁。有效的新发布者接管后，
   旧发布者排队中的消息不会覆盖新参考；旧发布者静默达到
   `reference_input/source_rearm_quiet_time` 后，才可再次接管。起飞、降落、取消降落、

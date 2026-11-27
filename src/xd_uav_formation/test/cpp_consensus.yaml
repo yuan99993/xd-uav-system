@@ -9,6 +9,8 @@ waypoints:
   - [500.0, 0.0, 100.0]
 loop_path: false
 cruise_speed: 3.0
+# Synthetic hover scenario: keep the generic consensus speed bounds valid.
+fixedwing_min_speed: 1.0
 lookahead_distance: 20.0
 state_timeout: 1.0
 corner_radius: 0.0

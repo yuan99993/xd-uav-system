@@ -167,6 +167,43 @@ std::map<std::string, Vec3> hierarchicalSlots(
   throw std::invalid_argument("nested formation slots are closer than minimum separation");
 }
 
+bool sameMembers(const std::vector<std::string>& first,
+                 const std::vector<std::string>& second) {
+  return first.size() == second.size() &&
+      std::set<std::string>(first.begin(), first.end()) ==
+      std::set<std::string>(second.begin(), second.end());
+}
+
+bool compatibleSlotAssignment(const FormationGroupPlan& groups,
+                              const FormationSlotAssignment& assignment,
+                              const std::string& shape) {
+  if (assignment.shape != shape ||
+      assignment.ordered_groups.revision != groups.revision ||
+      assignment.ordered_groups.groups.size() != groups.groups.size()) return false;
+  for (const auto& group : groups.groups) {
+    const auto& ordered = assignment.ordered_groups.groups;
+    if (std::none_of(ordered.begin(), ordered.end(), [&](const auto& entry) {
+          return entry.id == group.id;
+        })) return false;
+  }
+  return true;
+}
+
+FormationGroupPlan applySlotOrder(const FormationGroupPlan& groups,
+                                  const FormationSlotAssignment& assignment) {
+  FormationGroupPlan result = groups;
+  result.groups.clear();
+  for (const auto& ordered : assignment.ordered_groups.groups) {
+    const auto found = std::find_if(groups.groups.begin(), groups.groups.end(),
+        [&](const auto& group) { return group.id == ordered.id; });
+    if (found == groups.groups.end()) continue;
+    auto group = *found;
+    if (sameMembers(group.members, ordered.members)) group.members = ordered.members;
+    result.groups.push_back(std::move(group));
+  }
+  return result;
+}
+
 XmlRpc::XmlRpcValue acquisitionPlanValue(const AcquisitionPlan& plan) {
   XmlRpc::XmlRpcValue parameter;
   parameter["members"].setSize(static_cast<int>(plan.members.size()));
@@ -202,6 +239,86 @@ XmlRpc::XmlRpcValue acquisitionPlanValue(const AcquisitionPlan& plan) {
 }
 
 }  // namespace
+
+FormationSlotAssignment assignFormationSlots(
+    const FormationGroupPlan& groups,
+    const std::optional<FormationSlotAssignment>& previous,
+    const std::map<std::string, Vec3>& positions, const std::string& shape,
+    double spacing, double group_spacing, double minimum_distance,
+    double heading, double altitude) {
+  const bool reuse_outer = previous &&
+      compatibleSlotAssignment(groups, *previous, shape);
+  auto ordered = reuse_outer ? applySlotOrder(groups, *previous) : groups;
+  if (!reuse_outer) {
+    const auto offsets = hierarchicalSlots(ordered, shape, spacing,
+                                           group_spacing, minimum_distance);
+    std::vector<Vec3> centers, outer_offsets;
+    std::vector<std::size_t> movable;
+    for (std::size_t i = 0; i < ordered.groups.size(); ++i) {
+      const auto& group = ordered.groups[i];
+      if (group.detached || group.members.empty()) continue;
+      std::vector<Vec3> points, local_offsets;
+      for (const auto& name : group.members) {
+        points.push_back(positions.at(name));
+        local_offsets.push_back(offsets.at(name));
+      }
+      centers.push_back(sharedCenter(points).first);
+      outer_offsets.push_back(sharedCenter(local_offsets).first);
+      movable.push_back(i);
+    }
+    if (!centers.empty()) {
+      const auto origin = sharedCenter(centers).first;
+      std::vector<Vec3> goals;
+      for (const auto& offset : outer_offsets) {
+        const auto slot = slotTarget(origin, heading, offset);
+        goals.push_back({slot[0], slot[1], altitude});
+      }
+      const auto assignment = minimumDistanceAssignment(centers, goals);
+      const auto original = ordered.groups;
+      for (std::size_t i = 0; i < movable.size(); ++i)
+        ordered.groups[movable[assignment[i]]] = original[movable[i]];
+    }
+  }
+
+  // Use the same translated/rotated targets as acquisition. Optimize each
+  // group's members independently so external-control group membership stays
+  // intact. A local dropout only recomputes that group's inner ordering.
+  const auto offsets = hierarchicalSlots(ordered, shape, spacing,
+                                         group_spacing, minimum_distance);
+  std::vector<std::string> names;
+  std::vector<Vec3> starts, local_offsets;
+  for (const auto& group : ordered.groups) {
+    if (group.detached) continue;
+    for (const auto& name : group.members) {
+      names.push_back(name);
+      starts.push_back(positions.at(name));
+      local_offsets.push_back(offsets.at(name));
+    }
+  }
+  if (names.empty()) return {shape, std::move(ordered)};
+  const auto slots = acquisitionSlots(starts, local_offsets, heading, altitude);
+  std::map<std::string, Vec3> goals;
+  for (std::size_t i = 0; i < names.size(); ++i) goals[names[i]] = slots[i];
+  for (auto& group : ordered.groups) {
+    if (group.detached || group.members.size() < 2) continue;
+    if (reuse_outer) {
+      const auto& old_groups = previous->ordered_groups.groups;
+      const auto old = std::find_if(old_groups.begin(), old_groups.end(),
+          [&](const auto& entry) { return entry.id == group.id; });
+      if (old != old_groups.end() && sameMembers(old->members, group.members)) continue;
+    }
+    std::vector<Vec3> points, targets;
+    for (const auto& name : group.members) {
+      points.push_back(positions.at(name));
+      targets.push_back(goals.at(name));
+    }
+    const auto assignment = minimumDistanceAssignment(points, targets);
+    const auto members = group.members;
+    for (std::size_t i = 0; i < members.size(); ++i)
+      group.members[assignment[i]] = members[i];
+  }
+  return {shape, std::move(ordered)};
+}
 
 Follower::Follower(ros::NodeHandle nh, const Config& config, std::string member,
                    std::shared_ptr<SharedData> shared,
@@ -334,6 +451,8 @@ Follower::Follower(ros::NodeHandle nh, const Config& config, std::string member,
                              "formation_course_slew_rate");
     require_finite_positive(config_.route_correction_gain,
                              "route_correction_gain", true);
+    require_finite_positive(config_.route_velocity_damping,
+                             "route_velocity_damping", true);
     require_finite_positive(config_.max_route_correction_velocity,
                              "max_route_correction_velocity", true);
     require_finite_positive(config_.acquire_tolerance, "acquire_tolerance");
@@ -994,6 +1113,7 @@ void Follower::restartAcquisitionForMembershipChange(const std::string& reason) 
   paced_speed_.reset();
   paced_speed_stamp_.reset();
   progress_error_filter_.clear();
+  resetConsensusMotion();
   clearAcquisitionPlan();
   nh_.deleteParam("/formation/" + config_.team_id + "/acquisition_plan");
   reason_ = "acquiring_waiting_for_team:" + reason;
@@ -1220,6 +1340,7 @@ void Follower::refreshFormationSelection(const ros::Time& now) {
   FormationSelection selection = shared_->formationSelection();
   if (selection.revision == formation_selection_.revision) return;
   formation_selection_ = std::move(selection);
+  resetConsensusMotion();
   consensus_heading_.reset();
   consensus_heading_stamp_.reset();
   paced_speed_.reset();
@@ -1247,24 +1368,102 @@ std::map<std::string, Vec3> Follower::consensusSlotOffsets() const {
   if (own_group && own_group->detached) {
     std::map<std::string, Vec3> offsets;
     for (const auto& group : groups) {
+      std::vector<std::string> order;
+      {
+        std::lock_guard<std::mutex> lock(shared_->slot_assignment_mutex);
+        auto& cached = shared_->group_slot_orders[group.id];
+        // Retain slots occupied by dropped members so surviving aircraft do
+        // not exchange roles when an anchor is replaced or a member fails.
+        cached.erase(std::remove_if(cached.begin(), cached.end(),
+            [&](const std::string& name) {
+              return std::find(own_group->members.begin(), own_group->members.end(), name) ==
+                  own_group->members.end();
+            }), cached.end());
+        for (const auto& name : group.members)
+          if (std::find(cached.begin(), cached.end(), name) == cached.end())
+            cached.push_back(name);
+        order = cached;
+      }
       const auto slots = centeredSlots(formation_selection_.shape,
-                                       group.members.size(), config_.spacing);
-      for (std::size_t i = 0; i < group.members.size(); ++i)
-        offsets[group.members[i]] = slots[i];
+                                       order.size(), config_.spacing);
+      for (std::size_t i = 0; i < order.size(); ++i)
+        offsets[order[i]] = slots[i];
     }
     return offsets;
   }
   FormationGroupPlan plan = formationGroupPlan();
+  plan.groups.erase(std::remove_if(plan.groups.begin(), plan.groups.end(),
+      [](const auto& group) { return group.detached; }), plan.groups.end());
   for (auto& group : plan.groups) {
     group.members.erase(std::remove_if(group.members.begin(), group.members.end(),
         [&](const std::string& name) {
           return dropped_members_.count(name) != 0;
         }), group.members.end());
   }
+  {
+    std::lock_guard<std::mutex> lock(shared_->slot_assignment_mutex);
+    if (shared_->slot_assignment && shared_->slot_assignment->selection_revision ==
+          formation_selection_.revision && compatibleSlotAssignment(
+          plan, *shared_->slot_assignment, formation_selection_.shape))
+      plan = applySlotOrder(plan, *shared_->slot_assignment);
+  }
   return hierarchicalSlots(plan, formation_selection_.shape,
       config_.spacing, config_.group_spacing,
       std::max(config_.minimum_slot_distance,
                config_.fixedwing_minimum_slot_distance));
+}
+
+void Follower::ensureSlotAssignment(const ros::Time& now,
+                                    const StateSnapshot& input) const {
+  auto plan = formationGroupPlan();
+  const auto own_group = formationGroupFor(member_);
+  if (own_group && own_group->detached) return;
+  plan.groups.erase(std::remove_if(plan.groups.begin(), plan.groups.end(),
+      [](const auto& group) { return group.detached; }), plan.groups.end());
+  for (auto& group : plan.groups) {
+    group.members.erase(std::remove_if(group.members.begin(), group.members.end(),
+        [&](const auto& name) { return dropped_members_.count(name) != 0; }),
+        group.members.end());
+  }
+  // The first controller publishes the result while holding this lock. All
+  // other controllers reuse it, even if they see slightly newer telemetry.
+  std::lock_guard<std::mutex> lock(shared_->slot_assignment_mutex);
+  const auto& cached = shared_->slot_assignment;
+  const bool current_selection = cached &&
+      cached->selection_revision == formation_selection_.revision;
+  if (current_selection && compatibleSlotAssignment(plan, *cached, formation_selection_.shape)) {
+    bool complete = true;
+    for (const auto& group : plan.groups) {
+      const auto& old = cached->ordered_groups.groups;
+      const auto found = std::find_if(old.begin(), old.end(),
+          [&](const auto& entry) { return entry.id == group.id; });
+      complete = complete && found != old.end() && sameMembers(found->members, group.members);
+    }
+    if (complete) return;
+  }
+  const auto members = activeMembers();
+  const auto points = memberPositionsInCommonFrame(now, input);
+  std::map<std::string, Vec3> positions;
+  for (std::size_t i = 0; i < members.size(); ++i) positions[members[i]] = points.at(i);
+  std::vector<Vec3> centers;
+  for (const auto& group : plan.groups) {
+    std::vector<Vec3> group_points;
+    for (const auto& name : group.members) group_points.push_back(positions.at(name));
+    if (!group_points.empty()) centers.push_back(sharedCenter(group_points).first);
+  }
+  if (centers.empty()) throw std::invalid_argument("no active groups for slot assignment");
+  const auto route = pathReferenceState(sharedCenter(centers).first,
+      formation_selection_.waypoints, config_.cruise_speed, config_.lookahead,
+      formation_selection_.loop_path);
+  shared_->slot_assignment = assignFormationSlots(plan,
+      current_selection ? cached : std::nullopt, positions,
+      formation_selection_.shape, config_.spacing, config_.group_spacing,
+      std::max(config_.minimum_slot_distance, config_.fixedwing_minimum_slot_distance),
+      acquisitionHeading(now, input, std::atan2(route.velocity[1], route.velocity[0])),
+      route.position[2]);
+  shared_->slot_assignment->selection_revision = formation_selection_.revision;
+  for (const auto& group : shared_->slot_assignment->ordered_groups.groups)
+    shared_->group_slot_orders[group.id] = group.members;
 }
 
 void Follower::refreshFormationGroups(const ros::Time& now) {
@@ -1287,6 +1486,10 @@ void Follower::refreshFormationGroups(const ros::Time& now) {
     acquire_started_.reset();
     reason_ = "following_detached_group:" + group->anchor;
     resetCatchupPid();
+    resetConsensusMotion();
+    filtered_course_.reset();
+    filtered_course_stamp_.reset();
+    filtered_speed_.reset();
     publishStatus();
   } else {
     restartAcquisitionForMembershipChange("group_layout_changed");
@@ -1422,6 +1625,124 @@ void Follower::resetCatchupPid() {
   catchup_previous_error_.reset();
   catchup_filtered_derivative_ = {{0.0, 0.0}};
   catchup_pid_stamp_.reset();
+}
+
+void Follower::resetConsensusMotion() {
+  consensus_correction_ = {0, 0, 0};
+  consensus_correction_stamp_.reset();
+  consensus_closing_velocity_ = {0, 0, 0};
+  consensus_closing_velocity_stamp_.reset();
+  column_reference_velocity_.reset();
+  column_reference_stamp_.reset();
+}
+
+Vec3 Follower::filteredConsensusClosingVelocity(const Vec3& velocity,
+    const ros::Time& now) {
+  if (!consensus_closing_velocity_stamp_) {
+    consensus_closing_velocity_ = velocity;
+    consensus_closing_velocity_stamp_ = now;
+  } else {
+    const double elapsed = (now - *consensus_closing_velocity_stamp_).toSec();
+    if (elapsed > 0.0) {
+      const double dt = std::min(elapsed, 0.2);
+      const double time_constant = config_.catchup_derivative_filter_time_constant;
+      const double alpha = time_constant > 0.0 ? dt / (time_constant + dt) : 1.0;
+      for (std::size_t i = 0; i < 2; ++i)
+        consensus_closing_velocity_[i] += alpha *
+            (velocity[i] - consensus_closing_velocity_[i]);
+      consensus_closing_velocity_stamp_ = now;
+    }
+  }
+  return consensus_closing_velocity_;
+}
+
+HorizontalMotion Follower::consensusCorrectionMotion(const Vec3& desired,
+    double turn_rate, const ros::Time& now, const Vec3& nominal_velocity) {
+  // Slew only feedback in the rotating fleet frame. Slewing the entire world
+  // velocity separately for each aircraft delays their shared turn unequally.
+  // Budget feedback before forming velocity and curvature. Raising only the
+  // final speed lets a near-cancelled nominal/feedback vector generate an
+  // excessive course-rate feed-forward from its small squared speed.
+  auto boundedCorrection = [&](const Vec3& correction) {
+    const double minimum = config_.fixedwing_min_speed;
+    const double maximum = config_.fixedwing_max_speed;
+    double along = std::max(minimum, nominal_velocity[0] + correction[0]);
+    double cross = nominal_velocity[1] + correction[1];
+    const double speed = std::hypot(along, cross);
+    if (speed > maximum) {
+      along *= maximum / speed;
+      cross *= maximum / speed;
+    }
+    if (along < minimum) {
+      along = minimum;
+      const double cross_limit = std::sqrt(std::max(0.0,
+          maximum * maximum - minimum * minimum));
+      cross = clampValue(cross, -cross_limit, cross_limit);
+    }
+    return Vec3{along - nominal_velocity[0], cross - nominal_velocity[1], 0};
+  };
+  const Vec3 bounded_desired = boundedCorrection(desired);
+  if (!consensus_correction_stamp_) consensus_correction_stamp_ = now;
+  const double dt = clampValue((now - *consensus_correction_stamp_).toSec(), 0.0, 0.2);
+  HorizontalMotion motion = horizontalMotion(consensus_correction_, {0,0,0});
+  if (dt > 0.0) {
+    const double heading_margin = std::max(0.01,
+        config_.formation_course_slew_rate - std::abs(turn_rate));
+    const double slew = std::min(config_.formation_speed_slew_rate,
+        config_.fixedwing_min_speed * heading_margin);
+    // Filter only feedback, not nominal rotation. This prevents stepped
+    // telemetry positions from becoming noisy acceleration feed-forward.
+    const double alpha = dt / (0.2 + dt);
+    const Vec3 filtered{
+        consensus_correction_[0] + alpha * (bounded_desired[0] - consensus_correction_[0]),
+        consensus_correction_[1] + alpha * (bounded_desired[1] - consensus_correction_[1]), 0};
+    motion = slewHorizontalCorrection(consensus_correction_, filtered, dt, slew);
+    // The nominal turn can move the feasible feedback range since the last
+    // cycle. Keep stored feedback feasible and derive acceleration from the
+    // correction actually sent, so no hidden saturation state accumulates.
+    const Vec3 bounded = boundedCorrection(motion.velocity);
+    motion = horizontalMotion(bounded,
+        {(bounded[0] - consensus_correction_[0]) / dt,
+         (bounded[1] - consensus_correction_[1]) / dt, 0});
+    consensus_correction_ = bounded;
+    consensus_correction_stamp_ = now;
+  }
+  return motion;
+}
+
+HorizontalMotion Follower::columnReferenceMotion(const Vec3& velocity,
+    double nominal_course_rate, const ros::Time& now) {
+  // Column members follow different positions on the curved route. Derive
+  // feed-forward from each member's final, already slew-limited velocity.
+  Vec3 acceleration{-nominal_course_rate * velocity[1],
+                     nominal_course_rate * velocity[0], 0};
+  if (column_reference_velocity_ && column_reference_stamp_) {
+    const double dt = (now - *column_reference_stamp_).toSec();
+    if (dt >= 1e-3 && dt <= 0.2) {
+      acceleration = {(velocity[0] - (*column_reference_velocity_)[0]) / dt,
+                      (velocity[1] - (*column_reference_velocity_)[1]) / dt, 0};
+    }
+  }
+  column_reference_velocity_ = velocity;
+  column_reference_stamp_ = now;
+  return horizontalMotion(velocity, acceleration);
+}
+
+mavros_msgs::PositionTarget Follower::motionTarget(const Vec3& position,
+    const HorizontalMotion& motion, const ros::Time& now,
+    const xd_uav_controller::ControlState& own, const std::string& frame) const {
+  auto target = positionTarget(position,
+      std::atan2(motion.velocity[1], motion.velocity[0]) + config_.yaw_offset,
+      now, motion.velocity, frame.empty() ? config_.common_frame : frame, own);
+  target.type_mask |= mavros_msgs::PositionTarget::IGNORE_PX |
+                      mavros_msgs::PositionTarget::IGNORE_PY;
+  target.type_mask &= ~(mavros_msgs::PositionTarget::IGNORE_AFX |
+                        mavros_msgs::PositionTarget::IGNORE_AFY |
+                        mavros_msgs::PositionTarget::IGNORE_YAW_RATE);
+  target.acceleration_or_force.x = motion.acceleration[0];
+  target.acceleration_or_force.y = motion.acceleration[1];
+  target.yaw_rate = motion.course_rate;
+  return target;
 }
 
 Vec3 Follower::pidCatchupVelocity(
@@ -1625,6 +1946,37 @@ std::vector<Vec3> Follower::memberPositionsInCommonFrame(
   return positions;
 }
 
+double Follower::acquisitionHeading(const ros::Time& now,
+    const StateSnapshot& input, double fallback) const {
+  if (!own_state_ || !usesFixedwingConsensusGuidance(*own_state_)) return fallback;
+  double x = 0.0, y = 0.0;
+  std::optional<double> first_heading;
+  std::size_t count = 0;
+  for (const auto& name : activeMembers()) {
+    const xd_uav_controller::ControlState* state = nullptr;
+    if (name == member_) state = &*own_state_;
+    else {
+      const auto found = input.states.find(name);
+      if (found != input.states.end()) state = &found->second;
+    }
+    if (!state) continue;
+    const auto velocity = std::get<1>(stateInCommonFrame(*state, now));
+    const double speed = std::hypot(velocity.x, velocity.y);
+    if (speed < config_.fixedwing_min_groundspeed_for_course || speed < 1e-3) continue;
+    if (!first_heading) first_heading = std::atan2(velocity.y, velocity.x);
+    x += velocity.x / speed;
+    y += velocity.y / speed;
+    ++count;
+  }
+  // Join along the team's current flight direction. Do not command an
+  // unrelated route tangent while the aircraft are still separating/climbing.
+  // Opposing courses have no meaningful circular mean; use a deterministic
+  // member course in that case, shared by the acquisition plan.
+  if (count > 0 && std::hypot(x, y) >= 0.2 * static_cast<double>(count))
+    return std::atan2(y, x);
+  return first_heading.value_or(fallback);
+}
+
 bool Follower::usesFixedwingConsensusGuidance(
     const xd_uav_controller::ControlState& own) const {
   return config_.mode == "consensus" && own.vehicle_type ==
@@ -1640,6 +1992,7 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
   std::vector<Vec3> positions;
   positions.reserve(geometry.members.size());
   std::map<std::string, Vec3> positions_by_member;
+  std::map<std::string, Vec3> velocities_by_member;
   std::vector<Vec3> offsets;
   offsets.reserve(geometry.members.size());
   for (const auto& name : geometry.members) {
@@ -1650,9 +2003,11 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
       if (state_it != input.states.end()) state = &state_it->second;
     }
     if (!state) throw std::invalid_argument(name + "_state_stale");
-    const Vec3 position = std::get<0>(stateInCommonFrame(*state, now));
+    const auto converted = stateInCommonFrame(*state, now);
+    const Vec3 position = std::get<0>(converted);
     positions.push_back(position);
     positions_by_member[name] = position;
+    velocities_by_member[name] = vectorVec(std::get<1>(converted));
     auto offset = slot_offsets.find(name);
     if (offset == slot_offsets.end()) throw std::invalid_argument("missing consensus slot");
     offsets.push_back(offset->second);
@@ -1672,20 +2027,14 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
     return means;
   };
   const Vec3 centroid = sharedCenter(groupMeans(groups, positions_by_member)).first;
+  const Vec3 mean_velocity = sharedCenter(groupMeans(groups, velocities_by_member)).first;
+  const Vec3 mean_offset = sharedCenter(groupMeans(groups, slot_offsets)).first;
+  const Vec3 own_velocity = velocities_by_member.at(member_);
   double maximum_slot_radius = 0.0;
-  for (const auto& entry : slot_offsets) {
+  for (const auto& offset : offsets) {
     maximum_slot_radius = std::max(
-        maximum_slot_radius,
-        std::hypot(entry.second[0], entry.second[1]));
+        maximum_slot_radius, std::hypot(offset[0], offset[1]));
   }
-  const double speed_headroom = std::min(
-      config_.cruise_speed - config_.fixedwing_min_speed,
-      config_.fixedwing_max_speed - config_.cruise_speed);
-  const double shape_turn_rate_limit = maximum_slot_radius > 1e-6
-      ? speed_headroom / maximum_slot_radius
-      : config_.formation_heading_rate_limit;
-  const double turn_rate_limit = std::min(
-      config_.formation_heading_rate_limit, shape_turn_rate_limit);
   geometry.capturing = acquire_heading_ && acquire_stage_ &&
       (*acquire_stage_ == "waiting_for_team" || *acquire_stage_ == "separating" ||
        *acquire_stage_ == "gathering" || *acquire_stage_ == "merging");
@@ -1693,46 +2042,203 @@ Follower::Geometry Follower::fixedwingConsensusGeometry(
     geometry.heading = *acquire_heading_;
     geometry.route_position = centroid;
     geometry.route_vz = 0.0;
-  } else {
-    double seed_heading;
-    if (consensus_heading_) seed_heading = *consensus_heading_;
-    else {
-      const auto reference = pathReferenceState(centroid,
-          formation_selection_.waypoints, config_.cruise_speed,
-          config_.lookahead, formation_selection_.loop_path);
-      seed_heading = std::atan2(reference.velocity[1], reference.velocity[0]);
-    }
-    std::map<std::string, Vec3> estimates;
-    for (std::size_t i = 0; i < positions.size(); ++i)
-      estimates[geometry.members[i]] =
-          virtualCenter(positions[i], seed_heading, offsets[i]);
-    const Vec3 estimate = sharedCenter(groupMeans(groups, estimates)).first;
-    const auto reference = pathReferenceState(estimate,
+    geometry.reference_velocity = {config_.cruise_speed * std::cos(geometry.heading),
+                                    config_.cruise_speed * std::sin(geometry.heading), 0};
+  } else if (!enabled_ || !acquire_stage_ || *acquire_stage_ == "waiting_for_team") {
+    // Idle center heartbeats must not advance the flight reference before
+    // the common acquisition heading has been adopted by the team.
+    const auto reference = pathReferenceState(centroid,
         formation_selection_.waypoints, config_.cruise_speed,
         config_.lookahead, formation_selection_.loop_path);
-    const double desired = std::atan2(reference.velocity[1], reference.velocity[0]);
-    geometry.heading = desired;
-    if (consensus_heading_) {
-      geometry.heading = *consensus_heading_;
-      if (consensus_heading_stamp_) {
-        double dt = (now - *consensus_heading_stamp_).toSec();
-        if (dt > 0.0) {
-          dt = std::min(dt, 0.2);
-          const double error = std::atan2(std::sin(desired - geometry.heading),
-                                          std::cos(desired - geometry.heading));
-          const double step = clampValue(error,
-              -turn_rate_limit * dt,
-              turn_rate_limit * dt);
-          geometry.heading += step;
-          geometry.turn_rate = step / dt;
-        }
-      }
-    }
+    geometry.heading = std::atan2(reference.velocity[1], reference.velocity[0]);
     geometry.route_position = reference.position;
     geometry.route_vz = reference.velocity[2];
+    geometry.reference_velocity = reference.velocity;
+  } else {
+    const auto group_revision = formationGroupPlan().revision;
+    std::lock_guard<std::mutex> lock(shared_->formation_motion_mutex);
+    auto& motion = shared_->formation_motion;
+    if (!motion.initialized || motion.selection_revision < formation_selection_.revision ||
+        motion.group_revision < group_revision) {
+      const auto initial = pathReferenceState(centroid,
+          formation_selection_.waypoints, config_.cruise_speed,
+          config_.lookahead, formation_selection_.loop_path);
+      motion = SharedFormationMotion{};
+      motion.initialized = true;
+      motion.selection_revision = formation_selection_.revision;
+      motion.group_revision = group_revision;
+      motion.turn.heading = acquire_heading_.value_or(
+          std::atan2(initial.velocity[1], initial.velocity[0]));
+      motion.forward_speed = config_.cruise_speed;
+      motion.stamp = now;
+      motion.route_position = initial.position;
+      motion.velocity = {config_.cruise_speed * std::cos(motion.turn.heading),
+                         config_.cruise_speed * std::sin(motion.turn.heading),
+                         initial.velocity[2]};
+    }
+    // publishCenter() and the control target query this in the same cycle.
+    // A repeated timestamp must reuse omega/alpha, not replace them with zero.
+    const double elapsed = (now - motion.stamp).toSec();
+    if (elapsed > 0.0 && motion.selection_revision == formation_selection_.revision &&
+        motion.group_revision == group_revision) {
+      const double dt = std::min(elapsed, 0.2);
+      std::map<std::string, Vec3> estimates;
+      for (std::size_t i = 0; i < positions.size(); ++i)
+        estimates[geometry.members[i]] =
+            virtualCenter(positions[i], motion.turn.heading, offsets[i]);
+      const Vec3 estimate = sharedCenter(groupMeans(groups, estimates)).first;
+      const auto reference = pathReferenceState(estimate,
+          formation_selection_.waypoints, config_.cruise_speed,
+          config_.lookahead, formation_selection_.loop_path);
+      // The furthest slot's tangential acceleration is bounded by the same
+      // acceleration budget used for speed corrections. No new tuning knob.
+      const double maximum_angular_acceleration = config_.formation_speed_slew_rate /
+          std::max(1.0, maximum_slot_radius);
+      const auto proposed_turn = advanceTurnReference(motion.turn,
+          std::atan2(reference.velocity[1], reference.velocity[0]),
+          reference.turn_rate * motion.forward_speed / config_.cruise_speed,
+          dt, config_.formation_heading_rate_limit, maximum_angular_acceleration);
+      const double old_nx = -std::sin(motion.turn.heading);
+      const double old_ny = std::cos(motion.turn.heading);
+      const double route_ex = reference.position[0] - estimate[0];
+      const double route_ey = reference.position[1] - estimate[1];
+      if (config_.route_velocity_damping > 0.0) {
+        // Differentiate the same moving lookahead-point error used by P.
+        // Remove nominal rotation of the mean slot offset first; otherwise
+        // unequal groups can make valid turn motion look like route error.
+        const double old_tx = old_ny, old_ty = -old_nx;
+        const double mean_rx = old_tx * mean_offset[0] - old_ty * mean_offset[1];
+        const double mean_ry = old_ty * mean_offset[0] + old_tx * mean_offset[1];
+        const double center_vx = mean_velocity[0] + motion.turn.rate * mean_ry;
+        const double center_vy = mean_velocity[1] - motion.turn.rate * mean_rx;
+        const auto projection = pathReferenceState(estimate,
+            formation_selection_.waypoints, config_.cruise_speed, 0.0,
+            formation_selection_.loop_path);
+        const double progress_speed = (center_vx * projection.velocity[0] +
+            center_vy * projection.velocity[1]) / config_.cruise_speed;
+        const double target_vx = reference.velocity[0] * progress_speed / config_.cruise_speed;
+        const double target_vy = reference.velocity[1] * progress_speed / config_.cruise_speed;
+        const double closing = (center_vx - target_vx) * old_nx +
+            (center_vy - target_vy) * old_ny +
+            motion.turn.rate * (route_ex * old_tx + route_ey * old_ty);
+        const double time_constant = config_.catchup_derivative_filter_time_constant;
+        const double alpha = time_constant > 0.0 ? dt / (time_constant + dt) : 1.0;
+        motion.route_closing_velocity += alpha *
+            (closing - motion.route_closing_velocity);
+      }
+      const double requested = clampValue(config_.route_correction_gain *
+          (route_ex * old_nx + route_ey * old_ny) -
+          config_.route_velocity_damping * motion.route_closing_velocity,
+          -config_.max_route_correction_velocity, config_.max_route_correction_velocity);
+      const double lateral_goal = motion.route_correction +
+          (requested - motion.route_correction) * dt / (0.2 + dt);
+      // Allocate rotation first. Keep the current common speed available so
+      // inner aircraft can accelerate while outer aircraft decelerate at
+      // turn exit. Dropping common speed in the same interpolation used to
+      // double the outer slot's required deceleration and halve angular
+      // braking, invalidating advanceTurnReference's stopping calculation.
+      const auto plan = planFormationTurn(offsets, motion.forward_speed,
+          config_.fixedwing_min_speed, config_.fixedwing_max_speed,
+          proposed_turn.rate, motion.route_correction);
+      const double speed_change = plan.speed - motion.forward_speed;
+      const double rate_change = plan.turn_rate - motion.turn.rate;
+
+      double largest_change = std::abs(speed_change);
+      for (const auto& offset : offsets)
+        largest_change = std::max(largest_change,
+            std::hypot(speed_change - rate_change * offset[1],
+                       rate_change * offset[0]));
+      double fraction = largest_change > 0.0
+          ? std::min(1.0, config_.formation_speed_slew_rate * dt / largest_change)
+          : 1.0;
+      if (std::abs(rate_change) > 0.0)
+        fraction = std::min(fraction,
+            maximum_angular_acceleration * dt / std::abs(rate_change));
+      const double previous_rate = motion.turn.rate;
+      double actual_speed_change = fraction * speed_change;
+      const double actual_rate_change = fraction * rate_change;
+      double actual_lateral_change = 0.0;
+
+      // Spend only the remaining per-slot acceleration and speed headroom
+      // on lateral route recovery, then on returning to cruise. A late route
+      // correction must never stretch the angular stopping distance.
+      auto remainingStep = [&](bool lateral, double requested_step) {
+        double lower = -std::numeric_limits<double>::infinity();
+        double upper = std::numeric_limits<double>::infinity();
+        auto constrain = [&](const Vec3& offset) {
+          const double dx = actual_speed_change - actual_rate_change * offset[1];
+          const double dy = actual_lateral_change + actual_rate_change * offset[0];
+          const double vx = motion.forward_speed + actual_speed_change -
+              (previous_rate + actual_rate_change) * offset[1];
+          const double vy = motion.route_correction + actual_lateral_change +
+              (previous_rate + actual_rate_change) * offset[0];
+          const double budget = config_.formation_speed_slew_rate * dt;
+          const double other_delta = lateral ? dx : dy;
+          const double radius = std::sqrt(std::max(0.0,
+              budget * budget - other_delta * other_delta));
+          const double delta = lateral ? dy : dx;
+          lower = std::max(lower, -radius - delta);
+          upper = std::min(upper, radius - delta);
+          const double other_speed = lateral ? vx : vy;
+          const double speed_radius = std::sqrt(std::max(0.0,
+              config_.fixedwing_max_speed * config_.fixedwing_max_speed -
+              other_speed * other_speed));
+          const double speed = lateral ? vy : vx;
+          lower = std::max(lower, (lateral ? -speed_radius : config_.fixedwing_min_speed) - speed);
+          upper = std::min(upper, speed_radius - speed);
+        };
+        constrain({0, 0, 0});
+        for (const auto& offset : offsets) constrain(offset);
+        // Zero is feasible by construction; include it despite roundoff at
+        // a fully used acceleration or speed boundary.
+        return clampValue(requested_step, std::min(0.0, lower), std::max(0.0, upper));
+      };
+      actual_lateral_change = remainingStep(true,
+          lateral_goal - motion.route_correction);
+      actual_speed_change += remainingStep(false,
+          config_.cruise_speed - (motion.forward_speed + actual_speed_change));
+      motion.forward_speed += actual_speed_change;
+      motion.route_correction += actual_lateral_change;
+      motion.turn.rate += actual_rate_change;
+      motion.turn.acceleration = (motion.turn.rate - previous_rate) / dt;
+      motion.turn.heading += 0.5 * (previous_rate + motion.turn.rate) * dt;
+      const double tx = std::cos(motion.turn.heading), ty = std::sin(motion.turn.heading);
+      const double nx = -ty, ny = tx;
+      const double omega = motion.turn.rate;
+      motion.velocity = {tx * motion.forward_speed + nx * motion.route_correction,
+                          ty * motion.forward_speed + ny * motion.route_correction,
+                          reference.velocity[2]};
+      const double along_acceleration = actual_speed_change / dt -
+          omega * motion.route_correction;
+      const double cross_acceleration = actual_lateral_change / dt +
+          omega * motion.forward_speed;
+      motion.acceleration = {
+          tx * along_acceleration + nx * cross_acceleration,
+          ty * along_acceleration + ny * cross_acceleration, 0};
+      motion.route_position = reference.position;
+      motion.stamp = now;
+    }
+    geometry.heading = motion.turn.heading;
+    geometry.turn_rate = motion.turn.rate;
+    geometry.turn_acceleration = motion.turn.acceleration;
+    geometry.route_position = motion.route_position;
+    geometry.route_vz = motion.velocity[2];
+    geometry.reference_velocity = motion.velocity;
+    geometry.reference_acceleration = motion.acceleration;
   }
   consensus_heading_ = geometry.heading;
   consensus_heading_stamp_ = now;
+  // d(R^-1 * (p_i - centroid))/dt expressed back in world axes.
+  // Use actual position deviations so rotation of a displaced slot does not
+  // look like extra closing velocity. Fixed local slot offsets have zero
+  // derivative in this rotating frame; group weights match the position law.
+  const Vec3& own_position = positions_by_member.at(member_);
+  geometry.relative_velocity = {
+      own_velocity[0] - mean_velocity[0] +
+          geometry.turn_rate * (own_position[1] - centroid[1]),
+      own_velocity[1] - mean_velocity[1] -
+          geometry.turn_rate * (own_position[0] - centroid[0]),
+      own_velocity[2] - mean_velocity[2]};
   std::map<std::string, Vec3> centers_by_member;
   for (std::size_t i = 0; i < positions.size(); ++i) {
     const Vec3 center = virtualCenter(positions[i], geometry.heading, offsets[i]);
@@ -2030,6 +2536,7 @@ void Follower::setAcquireStage(const std::string& stage) {
 
 AcquisitionPlan Follower::buildAcquisitionPlan(
     const ros::Time& now, const StateSnapshot& input) const {
+  ensureSlotAssignment(now, input);
   AcquisitionPlan plan;
   plan.members = activeMembers();
   if (plan.members.empty())
@@ -2055,7 +2562,8 @@ AcquisitionPlan Follower::buildAcquisitionPlan(
   const auto route = pathReferenceState(mean, formation_selection_.waypoints,
       config_.cruise_speed, config_.lookahead,
       formation_selection_.loop_path);
-  plan.heading = std::atan2(route.velocity[1], route.velocity[0]);
+  plan.heading = acquisitionHeading(now, input,
+      std::atan2(route.velocity[1], route.velocity[0]));
   plan.altitude = route.position[2];
   const auto offset_map = consensusSlotOffsets();
   std::vector<Vec3> offsets;
@@ -2069,6 +2577,10 @@ AcquisitionPlan Follower::buildAcquisitionPlan(
   const double base = std::ceil(top);
   for (std::size_t i = 0; i < plan.members.size(); ++i)
     plan.tiers.push_back(base + i * config_.acquire_vertical_spacing);
+  {
+    std::lock_guard<std::mutex> lock(shared_->formation_motion_mutex);
+    shared_->formation_motion = SharedFormationMotion{};
+  }
   return plan;
 }
 
@@ -2421,12 +2933,10 @@ mavros_msgs::PositionTarget Follower::fixedwingConsensusTarget(
     const double target_altitude = altitude
         ? *altitude
         : route_reference.position[2] + own_offset[2];
-    auto target = positionTarget(
-        {slot[0], slot[1], target_altitude}, slot[3], now, velocity,
-        config_.common_frame, own);
-    target.type_mask |= mavros_msgs::PositionTarget::IGNORE_PX |
-                        mavros_msgs::PositionTarget::IGNORE_PY;
-    return target;
+    const auto motion = limitHorizontalMotion(columnReferenceMotion(velocity,
+        route_reference.turn_rate * speed_scale, now), config_.fixedwing_min_speed,
+        config_.fixedwing_max_speed, route_heading);
+    return motionTarget({slot[0], slot[1], target_altitude}, motion, now, own);
   }
 
   const Geometry geometry = fixedwingConsensusGeometry(now, input, own);
@@ -2447,35 +2957,50 @@ mavros_msgs::PositionTarget Follower::fixedwingConsensusTarget(
   const double speed_limit = capture_stage ? config_.acquire_max_speed_adjustment :
       config_.max_consensus_velocity;
   along = std::copysign(std::max(0.0, std::abs(along) - config_.catchup_deadband), along);
-  const double speed_adjustment = clampValue(correction.first * along,
-                                              -speed_limit, speed_limit);
-  const double lateral_adjustment = clampValue(correction.first * cross,
+  const bool separating = acquire_stage_ && *acquire_stage_ == "separating";
+  const double relative_along = geometry.relative_velocity[0] * tx +
+                                geometry.relative_velocity[1] * ty;
+  const double relative_cross = geometry.relative_velocity[0] * nx +
+                                geometry.relative_velocity[1] * ny;
+  // Linear damping only: the former signed speed-squared prediction amplified
+  // this feedback at large closing speeds. Filter measured derivatives before
+  // damping both axes, including cross-track overshoot after a turn.
+  const Vec3 closing = capture_stage ? Vec3{relative_along, relative_cross, 0} :
+      filteredConsensusClosingVelocity({relative_along, relative_cross, 0}, now);
+  const double speed_adjustment = separating ? 0.0 : clampValue(
+      correction.first * along - closing[0],
+      -speed_limit, speed_limit);
+  const double lateral_adjustment = separating ? 0.0 : clampValue(
+      correction.first * cross - closing[1],
       -correction.second, correction.second);
-  double route_adjustment = 0.0;
-  if (!geometry.capturing) {
-    const double route_error = (geometry.route_position[0] - mean[0]) * nx +
-                               (geometry.route_position[1] - mean[1]) * ny;
-    route_adjustment = clampValue(config_.route_correction_gain * route_error,
-        -config_.max_route_correction_velocity, config_.max_route_correction_velocity);
-  }
-  Vec3 center_velocity = smoothCourseVelocity(
-      {tx * (config_.cruise_speed + speed_adjustment) +
-           nx * (route_adjustment + lateral_adjustment),
-       ty * (config_.cruise_speed + speed_adjustment) +
-           ny * (route_adjustment + lateral_adjustment),
-       geometry.route_vz},
-      now, own);
-  const Vec3 velocity = slotVelocity(center_velocity, {0,0,0}, heading,
-      consensus_offset, 0.0, false, geometry.turn_rate, true);
+  const Vec3 nominal_velocity{
+      geometry.reference_velocity[0] * tx + geometry.reference_velocity[1] * ty -
+          geometry.turn_rate * consensus_offset[1],
+      geometry.reference_velocity[0] * nx + geometry.reference_velocity[1] * ny +
+          geometry.turn_rate * consensus_offset[0], 0};
+  const auto feedback = consensusCorrectionMotion(
+      {speed_adjustment, lateral_adjustment, 0}, geometry.turn_rate, now,
+      nominal_velocity);
+  const double along_acceleration = feedback.acceleration[0] -
+      geometry.turn_rate * feedback.velocity[1];
+  const double cross_acceleration = feedback.acceleration[1] +
+      geometry.turn_rate * feedback.velocity[0];
+  const Vec3 center_velocity{
+      geometry.reference_velocity[0] + tx * feedback.velocity[0] + nx * feedback.velocity[1],
+      geometry.reference_velocity[1] + ty * feedback.velocity[0] + ny * feedback.velocity[1],
+      geometry.route_vz};
+  const Vec3 center_acceleration{
+      geometry.reference_acceleration[0] + tx * along_acceleration + nx * cross_acceleration,
+      geometry.reference_acceleration[1] + ty * along_acceleration + ny * cross_acceleration, 0};
+  const auto motion = limitHorizontalMotion(turningSlotMotion(center_velocity,
+      center_acceleration, heading, consensus_offset, geometry.turn_rate,
+      geometry.turn_acceleration), config_.fixedwing_min_speed,
+      config_.fixedwing_max_speed, heading);
   const auto slot = slotTarget(mean, heading, consensus_offset, config_.yaw_offset);
   const double target_altitude = altitude ? *altitude :
       (geometry.capturing ? *acquire_altitude_ + consensus_offset[2] :
        geometry.route_position[2] + consensus_offset[2]);
-  auto target = positionTarget({slot[0], slot[1], target_altitude}, slot[3],
-      now, velocity, config_.common_frame, own);
-  target.type_mask |= mavros_msgs::PositionTarget::IGNORE_PX |
-                      mavros_msgs::PositionTarget::IGNORE_PY;
-  return target;
+  return motionTarget({slot[0], slot[1], target_altitude}, motion, now, own);
 }
 
 mavros_msgs::PositionTarget Follower::consensusTarget(
@@ -2601,23 +3126,25 @@ mavros_msgs::PositionTarget Follower::detachedGroupTarget(
       !fresh(anchor_state->second.header, true, anchor_received->second, now))
     throw std::invalid_argument("detached_group_anchor_state_stale");
 
-  const auto slots = centeredSlots(formation_selection_.shape, members.size(),
-                                   config_.spacing);
-  const std::size_t anchor_index = static_cast<std::size_t>(anchor_it - members.begin());
-  const std::size_t own_index = static_cast<std::size_t>(own_it - members.begin());
+  const auto slots = consensusSlotOffsets();
+  const auto anchor_slot = slots.find(group.anchor);
+  const auto own_slot = slots.find(member_);
+  if (anchor_slot == slots.end() || own_slot == slots.end())
+    throw std::invalid_argument("detached_group_slot_unavailable");
   Vec3 relative_offset{};
   for (int axis = 0; axis < 3; ++axis)
-    relative_offset[axis] = slots[own_index][axis] - slots[anchor_index][axis];
-  // Detached group members keep the shared control point's altitude. The
-  // formation shape only separates them horizontally around the anchor.
+    relative_offset[axis] = own_slot->second[axis] - anchor_slot->second[axis];
+  // The detached subgroup has no vertical slot separation. Fixed-wing
+  // followers track the anchor's measured altitude and vertical motion;
+  // the external control point remains the anchor's eventual destination.
   relative_offset[2] = 0.0;
 
-  if (group.control_point) {
+  const bool fixedwing = own.vehicle_type ==
+      xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
+  if (group.control_point && (!fixedwing || group.anchor == member_)) {
     const auto anchor_common = stateInCommonFrame(anchor_state->second, now);
     const Vec3 anchor_velocity = vectorVec(std::get<1>(anchor_common));
     const double anchor_speed = std::hypot(anchor_velocity[0], anchor_velocity[1]);
-    const bool fixedwing = own.vehicle_type ==
-        xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
     const double anchor_heading = fixedwing && anchor_speed >=
             config_.fixedwing_min_groundspeed_for_course
         ? std::atan2(anchor_velocity[1], anchor_velocity[0])
@@ -2641,8 +3168,6 @@ mavros_msgs::PositionTarget Follower::detachedGroupTarget(
   if (!std::all_of(velocity.begin(), velocity.end(),
                    [](double value) { return std::isfinite(value); }))
     throw std::invalid_argument("detached_group_anchor_velocity_invalid");
-  const bool fixedwing = own.vehicle_type ==
-      xd_uav_controller::ControlState::VEHICLE_FIXEDWING;
   const double speed = std::hypot(velocity[0], velocity[1]);
   const double heading = fixedwing &&
       speed >= config_.fixedwing_min_groundspeed_for_course
@@ -2668,7 +3193,29 @@ mavros_msgs::PositionTarget Follower::detachedGroupTarget(
   reference_velocity = pidCatchupVelocity(reference_velocity,
       {slot[0], slot[1], slot[2]}, own_position, now, own);
   reference_velocity = smoothCourseVelocity(reference_velocity, now, own);
-  return positionTarget({slot[0], slot[1], position[2]}, slot[3], now,
+  const double target_altitude = position[2];
+  if (fixedwing) {
+    // Follow the moving anchor, including when it is loitering around an
+    // external point. Separate fixed waypoints produce separate loiter
+    // circles, not a rigid subgroup formation.
+    const auto nominal = horizontalMotion(velocity, acceleration);
+    const auto motion = limitHorizontalMotion(columnReferenceMotion(
+        reference_velocity, turn_rate.value_or(nominal.course_rate), now),
+        config_.fixedwing_min_speed, config_.fixedwing_max_speed, heading);
+    auto target = motionTarget({slot[0], slot[1], target_altitude}, motion,
+        now, own, own.header.frame_id);
+    target.type_mask &= ~(mavros_msgs::PositionTarget::IGNORE_PX |
+                          mavros_msgs::PositionTarget::IGNORE_PY);
+    // HorizontalMotion deliberately discards Z. Restore the transformed
+    // anchor Vz so height feedback only corrects the follower's height error,
+    // rather than asking it to jump directly to the final external altitude.
+    if (group.control_point) {
+      target.type_mask &= ~mavros_msgs::PositionTarget::IGNORE_VZ;
+      target.velocity.z = velocity[2];
+    }
+    return target;
+  }
+  return positionTarget({slot[0], slot[1], target_altitude}, slot[3], now,
                         reference_velocity, "", own);
 }
 
@@ -2759,6 +3306,7 @@ bool Follower::setEnabled(bool enabled, std::string& message) {
   } else reason_ = "following";
   filtered_course_.reset(); filtered_course_stamp_.reset(); filtered_speed_.reset();
   resetCatchupPid();
+  resetConsensusMotion();
   publishStatus();
   message = config_.mode == "consensus" ? "formation gathering started" : "formation started";
   return true;
@@ -2812,6 +3360,8 @@ void Follower::tick(const ros::TimerEvent&) {
     beginDropout("acquisition_timeout"); return;
   }
   try {
+    if (config_.mode == "consensus" && !detached_group)
+      ensureSlotAssignment(now, fresh_input);
     const auto target = config_.mode == "consensus" && !detached_group
         ? acquisitionTarget(now, fresh_input, *own_state_)
         : formationTarget(now, fresh_input, *own_state_);

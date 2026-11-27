@@ -6,5 +6,7 @@
     <param name="spawn_members" value="true"/>
   </node>
   <test test-name="formation_cpp_consensus" pkg="xd_uav_formation"
-        type="test_consensus_ros.py" time-limit="45"/>
+        type="test_consensus_ros.py" time-limit="45">
+    <param name="reverse_members" value="true"/>
+  </test>
 </launch>

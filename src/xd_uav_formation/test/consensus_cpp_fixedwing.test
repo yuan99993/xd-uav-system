@@ -8,6 +8,7 @@
   <test test-name="formation_cpp_consensus_fixedwing" pkg="xd_uav_formation"
         type="test_consensus_ros.py" time-limit="45">
     <param name="airframe" value="fixedwing"/>
+    <param name="reverse_members" value="true"/>
     <param name="expected_x" value="100.0"/>
   </test>
 </launch>

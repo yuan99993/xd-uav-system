@@ -65,6 +65,7 @@ struct Config {
   double formation_speed_slew_rate{2.0};
   double formation_course_slew_rate{0.25};
   double route_correction_gain{0.1};
+  double route_velocity_damping{0.0};
   double max_route_correction_velocity{4.0};
   bool loop_path{true};
   double acquire_tolerance{8.0};
@@ -166,9 +167,45 @@ struct FormationGroupPlan {
   std::uint64_t revision{0};
 };
 
+struct FormationSlotAssignment {
+  std::string shape;
+  // A private ordering for geometry, without changing service member order,
+  // group identities, or the membership used by external-control takeover.
+  FormationGroupPlan ordered_groups;
+  std::uint64_t selection_revision{0};
+};
+
+FormationSlotAssignment assignFormationSlots(
+    const FormationGroupPlan& groups,
+    const std::optional<FormationSlotAssignment>& previous,
+    const std::map<std::string, Vec3>& positions, const std::string& shape,
+    double spacing, double group_spacing, double minimum_distance,
+    double heading, double altitude);
+
+struct SharedFormationMotion {
+  bool initialized{false};
+  ros::Time stamp;
+  std::uint64_t selection_revision{0};
+  std::uint64_t group_revision{0};
+  TurnReference turn;
+  double forward_speed{0.0};
+  double route_correction{0.0};
+  double route_closing_velocity{0.0};
+  Vec3 route_position{0.0, 0.0, 0.0};
+  Vec3 velocity{0.0, 0.0, 0.0};
+  Vec3 acceleration{0.0, 0.0, 0.0};
+};
+
 struct SharedData : SharedSnapshot {
   std::mutex mutex;
   std::mutex acquisition_plan_mutex;
+  std::mutex slot_assignment_mutex;
+  std::optional<FormationSlotAssignment> slot_assignment;
+  // Keep each group's Hungarian inner order when the main-fleet assignment
+  // is replaced after detachment. Protected by slot_assignment_mutex.
+  std::map<std::string, std::vector<std::string>> group_slot_orders;
+  std::mutex formation_motion_mutex;
+  SharedFormationMotion formation_motion;
   std::uint64_t revision{0};
   std::uint64_t snapshot_revision{0};
   std::shared_ptr<const SharedSnapshot> snapshot_cache;
@@ -355,6 +392,12 @@ class Follower {
     double largest_error{0.0};
     double heading{0.0};
     double turn_rate{0.0};
+    double turn_acceleration{0.0};
+    Vec3 reference_velocity{0.0, 0.0, 0.0};
+    Vec3 reference_acceleration{0.0, 0.0, 0.0};
+    // Relative motion of position deviations in the rotating formation frame,
+    // expressed in world axes. Nominal inner/outer turn speeds are removed.
+    Vec3 relative_velocity{0.0, 0.0, 0.0};
     Vec3 route_position;
     double route_vz{0.0};
     bool capturing{false};
@@ -394,6 +437,8 @@ class Follower {
       const std::string& member) const;
   std::vector<FormationGroup> activeFormationGroups() const;
   std::map<std::string, Vec3> consensusSlotOffsets() const;
+  void ensureSlotAssignment(const ros::Time& now,
+                            const StateSnapshot& snapshot) const;
   mavros_msgs::PositionTarget detachedGroupTarget(
       const ros::Time& now, const StateSnapshot& snapshot,
       const xd_uav_controller::ControlState& own,
@@ -411,6 +456,17 @@ class Follower {
       const ros::Time& now, const Vec3& leader_position, double heading,
       const StateSnapshot& snapshot);
   void resetCatchupPid();
+  void resetConsensusMotion();
+  HorizontalMotion consensusCorrectionMotion(const Vec3& desired,
+      double turn_rate, const ros::Time& now, const Vec3& nominal_velocity);
+  Vec3 filteredConsensusClosingVelocity(const Vec3& velocity,
+      const ros::Time& now);
+  HorizontalMotion columnReferenceMotion(const Vec3& velocity,
+      double nominal_course_rate, const ros::Time& now);
+  mavros_msgs::PositionTarget motionTarget(const Vec3& position,
+      const HorizontalMotion& motion, const ros::Time& now,
+      const xd_uav_controller::ControlState& own,
+      const std::string& frame = "") const;
   Vec3 pidCatchupVelocity(const Vec3& base_velocity,
                           const Vec3& slot_position,
                           const Vec3& own_position,
@@ -427,6 +483,8 @@ class Follower {
                      const ros::Time& now) const;
   std::vector<Vec3> memberPositionsInCommonFrame(
       const ros::Time& now, const StateSnapshot& snapshot) const;
+  double acquisitionHeading(const ros::Time& now,
+      const StateSnapshot& snapshot, double fallback) const;
   bool usesFixedwingConsensusGuidance(
       const xd_uav_controller::ControlState& own) const;
   Geometry fixedwingConsensusGeometry(
@@ -530,6 +588,12 @@ class Follower {
   std::optional<double> filtered_course_;
   std::optional<ros::Time> filtered_course_stamp_;
   std::optional<double> filtered_speed_;
+  Vec3 consensus_correction_{0.0, 0.0, 0.0};
+  std::optional<ros::Time> consensus_correction_stamp_;
+  Vec3 consensus_closing_velocity_{0.0, 0.0, 0.0};
+  std::optional<ros::Time> consensus_closing_velocity_stamp_;
+  std::optional<Vec3> column_reference_velocity_;
+  std::optional<ros::Time> column_reference_stamp_;
   std::optional<double> paced_speed_;
   std::optional<ros::Time> paced_speed_stamp_;
   std::optional<ros::Time> last_status_publish_;

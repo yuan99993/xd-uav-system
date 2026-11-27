@@ -25,7 +25,7 @@ consensus:
   # arrow：箭头/V形
   # circle 圆形
   # rectangle_compact 网格
-  shape: column
+  shape: arrow
   spacing: 80.0
   group_size: 1
   # 0 selects a safe group spacing from the inner formation footprint.
@@ -45,7 +45,7 @@ consensus:
   cruise_speed: 20.0
   lookahead_distance: 50.0
   consensus_gain: 0.4
-  max_consensus_velocity: 8.0  # m/s, slot correction limit during route flight
+  max_consensus_velocity: 10.0  # m/s, slot correction limit during route flight
   # Capture-stage settings: lateral gain and independent velocity limits (m/s).
   acquire_consensus_gain: 0.8
   acquire_max_consensus_velocity: 10.0
@@ -56,5 +56,7 @@ consensus:
   formation_course_slew_rate: 0.25   # rad/s, commanded course change limit
   # Route attraction acts after gathering and altitude merging have completed.
   route_correction_gain: 0.4
+  # Dampen common route-crossing velocity while retaining fast position recovery.
+  route_velocity_damping: 0.8
   max_route_correction_velocity: 8.0 # m/s, separate from slot capture correction
   convergence_time: 100.0

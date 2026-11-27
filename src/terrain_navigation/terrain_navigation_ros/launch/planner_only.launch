@@ -1,0 +1,28 @@
+<launch>
+  <!-- One planner instance per UAV. All instances publish routes in the same world frame. -->
+  <arg name="uav_name" default="uav1" />
+  <arg name="world_frame" default="world" />
+  <arg name="planning_input_frame" default="$(arg world_frame)" />
+  <arg name="location" default="davosdorf" />
+  <arg name="planner_config" default="$(find terrain_navigation_ros)/config/planner.yaml" />
+  <arg name="path_output_topic" default="planned_path" />
+
+  <group ns="$(arg uav_name)">
+    <node pkg="terrain_navigation_ros" type="terrain_planner_node"
+          name="terrain_planner" output="screen">
+      <rosparam command="load" file="$(arg planner_config)" />
+      <param name="uav_name" value="$(arg uav_name)" />
+      <param name="world_frame" value="$(arg world_frame)" />
+      <param name="local_origin_frame" value="$(arg uav_name)/local_origin" />
+      <param name="terrain_frame" value="$(arg uav_name)/terrain_map" />
+      <param name="planning_input_frame" value="$(arg planning_input_frame)" />
+      <param name="terrain_path"
+             value="$(find terrain_navigation_ros)/../resources/$(arg location).tif" />
+      <param name="terrain_color_path"
+             value="$(find terrain_navigation_ros)/../resources/$(arg location)_color.tif" />
+      <param name="resource_path"
+             value="$(find terrain_navigation_ros)/../resources" />
+      <remap from="planned_path" to="$(arg path_output_topic)" />
+    </node>
+  </group>
+</launch>

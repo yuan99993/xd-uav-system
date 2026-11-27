@@ -1,0 +1,24 @@
+# Runtime inputs for one UAV's terrain planner. Topic names are relative to
+# the planner's UAV namespace (for example, /uav1).
+estimator_odometry_topic: state_estimator/main/odom
+estimator_state_valid_topic: state_estimator/state_valid
+
+# Maximum age of the latest estimator odometry when /terrain_planner/plan arrives.
+estimator_pose_timeout: 5.0
+
+# Geographic origin used to convert local_origin ENU coordinates to WGS84.
+global_origin_topic: mavros/global_position/gp_origin
+global_origin_request_service: mavros/cmd/command
+
+# Planner tuning.
+# Minimum radius for route turns and the startup climb. The goal orbit radius
+# and direction are read from the running controller's fixedwing loiter params.
+minimum_turn_radius: 80.0
+minimum_terrain_clearance: 50.0
+map_altitude_margin: 120.0
+startup_climb_minimum_clearance: 10.0
+cruise_speed: 20.0
+maximum_climb_rate: 8.0
+maximum_climb_angle: 0.25
+planner_time_budget: 40.0
+check_max_altitude: false

@@ -339,6 +339,11 @@ bool parseFormationSnapshot(const topic_tools::ShapeShifter& message,
   message.write(output);
   ros::serialization::IStream stream(bytes.data(),
       static_cast<std::uint32_t>(bytes.size()));
+  // FormationGroupInfo gained control-point fields after anchor. They must
+  // be consumed even though Track only needs the member lists. Older
+  // publishers without this extension keep their original wire layout.
+  const bool group_has_control_point = message.getMessageDefinition().find(
+      "bool has_control_point") != std::string::npos;
   try {
     std_msgs::Header header;
     std::string mode;
@@ -391,6 +396,18 @@ bool parseFormationSnapshot(const topic_tools::ShapeShifter& message,
       stream.next(detached);
       stream.next(anchor_external_control);
       stream.next(anchor);
+      if (group_has_control_point) {
+        std::uint8_t has_control_point = 0;
+        geometry_msgs::Point control_point;
+        double control_heading = 0.0;
+        std::uint8_t control_heading_valid = 0;
+        ros::Time control_point_stamp;
+        stream.next(has_control_point);
+        stream.next(control_point);
+        stream.next(control_heading);
+        stream.next(control_heading_valid);
+        stream.next(control_point_stamp);
+      }
       snapshot->groups.push_back(std::move(uavs));
     }
     std::uint64_t selection_revision = 0;

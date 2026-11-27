@@ -10,11 +10,21 @@ fixedwing:
     # 只让曲率/滚转按飞行时间短暂预判；横向位置仍跟随当前航段，避免提前切弯。
     # 15m/s时0.30s约为4.5m预判距离。
     curvature_preview_time: 0.30
+    # 用路径前后窗口估计垂直坡度，平滑折线航点处的爬升率前馈跳变。
+    vertical_slope_smoothing_distance: 30.0
     completion_radius: 20.0
     completion_altitude_tolerance: 5.0
     reacquisition_distance: 50.0
 
   point_following:
+    # 仅用于纯位置单点；启用任意V/A字段的track等参考保留原有响应。
+    # 航程不足时先按等待盘旋半径自动升降，再飞向原目标。
+    maximum_climb_angle: 0.174533  # rad，约10度
+    maximum_descent_angle: 0.209440  # rad，约12度
+    maximum_climb_rate: 3.0  # m/s
+    maximum_descent_rate: 4.0  # m/s
+    vertical_acceleration_limit: 0.8  # m/s²，作用于单点完整升降率
+    altitude_time_constant: 5.0
     # 固定翼锁存单点到达该范围后转入当前位置的相切等待盘旋。
     completion_radius: 20.0
     completion_altitude_tolerance: 5.0
@@ -54,9 +64,11 @@ fixedwing:
     # 爬升率闭环直接修正俯仰角，单位rad/(m/s)；测量先低通滤波。
     climb_rate_pitch_gain: 0.06
     climb_rate_filter_time_constant: 0.50
+    # 垂直速度前馈的变化率限制，降低折线路径或路径结束切换造成的俯仰突变。
+    climb_rate_setpoint_acceleration_limit: 1.0
     # AZ转换为俯仰角速度前馈。
     vertical_acceleration_pitch_rate_gain: 1.0
-    pitch_time_constant: 0.45
+    pitch_time_constant: 0.8
     # 协调转弯时按n=1/cos(bank)提前增加迎角，避免等掉高后才由高度环纠正。
     # 单位为rad/(load_factor-1)，应与下方转弯补油增益配合标定。
     bank_load_factor_pitch_gain: 0.25
@@ -91,14 +103,14 @@ fixedwing:
     # Dubins radius (the previous 0.95 rad produced the measured inner loops).
     maximum_roll: 0.9
     maximum_pitch: 0.6
-    maximum_climb_rate: 30.0
+    maximum_climb_rate: 10.0
     maximum_body_rate: [2.5, 2.0, 2.0]
 
   modes:
     loiter:
       # 起飞达到目标高度后，固定翼以当前位置和航向切入圆的切点，
       # 在该圆上等待外部参考。+1为逆时针，-1为顺时针。
-      radius: 150.0
+      radius: 100.0
       airspeed: 18.0
       direction: 1
       radial_gain: 1.0

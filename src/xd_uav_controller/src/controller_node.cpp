@@ -32,6 +32,7 @@
 #include <xd_uav_controller/functional_controller_backends.h>
 #include <xd_uav_controller/setpoint_output.h>
 #include <xd_uav_controller/unified_reference.h>
+#include <xd_uav_controller/point_vertical_guidance.h>
 
 #include <xd_uav_controller/ControlCommand.h>
 #include <xd_uav_controller/ControlState.h>
@@ -294,6 +295,7 @@ struct FixedwingControlTarget {
   bool use_altitude_feedback{false};
   bool enable_course_integrator{false};
   bool enable_altitude_integrator{false};
+  bool point_vertical_guidance{false};
 };
 
 struct FormationReferenceSource {
@@ -699,6 +701,9 @@ class ControllerNode {
           "fixedwing/path_following/curvature_preview_time",
           fixedwing_path_curvature_preview_time_, 0.30);
       private_nh_.param(
+          "fixedwing/path_following/vertical_slope_smoothing_distance",
+          fixedwing_path_vertical_slope_smoothing_distance_, 30.0);
+      private_nh_.param(
           "fixedwing/path_following/completion_radius",
           fixedwing_path_completion_radius_, 20.0);
       private_nh_.param(
@@ -710,6 +715,20 @@ class ControllerNode {
       private_nh_.param(
           "fixedwing/point_following/completion_altitude_tolerance",
           fixedwing_point_completion_altitude_tolerance_, 5.0);
+      private_nh_.param("fixedwing/point_following/maximum_climb_angle",
+                        fixedwing_point_vertical_config_.maximum_climb_angle,
+                        0.174533);
+      private_nh_.param("fixedwing/point_following/maximum_descent_angle",
+                        fixedwing_point_vertical_config_.maximum_descent_angle,
+                        0.209440);
+      private_nh_.param("fixedwing/point_following/maximum_climb_rate",
+                        fixedwing_point_vertical_config_.maximum_climb_rate, 3.0);
+      private_nh_.param("fixedwing/point_following/maximum_descent_rate",
+                        fixedwing_point_vertical_config_.maximum_descent_rate, 4.0);
+      private_nh_.param("fixedwing/point_following/vertical_acceleration_limit",
+                        fixedwing_point_vertical_config_.acceleration_limit, 0.8);
+      private_nh_.param("fixedwing/point_following/altitude_time_constant",
+                        fixedwing_point_vertical_config_.altitude_time_constant, 5.0);
       private_nh_.param(
           "fixedwing/path_following/reacquisition_distance",
           fixedwing_path_reacquisition_distance_, 50.0);
@@ -857,6 +876,10 @@ class ControllerNode {
           "fixedwing/vertical_control/climb_rate_filter_time_constant",
           "fixedwing/climb_rate_filter_time_constant",
           &climb_rate_filter_time_constant_, 0.50);
+      private_nh_.param(
+          "fixedwing/vertical_control/"
+          "climb_rate_setpoint_acceleration_limit",
+          climb_rate_setpoint_acceleration_limit_, 1.0);
       loadParameterWithLegacy(
           private_nh_,
           "fixedwing/vertical_control/vertical_acceleration_pitch_rate_gain",
@@ -1264,8 +1287,10 @@ class ControllerNode {
           "固定翼landing参数不在安全范围内");
     }
     if (load_fixedwing_ &&
-        (fixedwing_path_curvature_distance_ <= 0.0 ||
+        (!fixedwing_point_vertical_config_.valid() ||
+         fixedwing_path_curvature_distance_ <= 0.0 ||
          fixedwing_path_curvature_preview_time_ < 0.0 ||
+         fixedwing_path_vertical_slope_smoothing_distance_ < 0.0 ||
          fixedwing_point_completion_radius_ <= 0.0 ||
          fixedwing_point_completion_altitude_tolerance_ < 0.0 ||
          fixedwing_guidance_lookahead_distance_ <= 0.0 ||
@@ -1286,6 +1311,7 @@ class ControllerNode {
          altitude_integral_climb_rate_limit_ < 0.0 ||
          climb_rate_pitch_gain_ < 0.0 ||
          climb_rate_filter_time_constant_ < 0.0 ||
+         climb_rate_setpoint_acceleration_limit_ < 0.0 ||
          vertical_acceleration_pitch_rate_gain_ < 0.0 ||
          bank_load_factor_pitch_gain_ < 0.0 ||
          climb_rate_throttle_gain_ < 0.0 ||
@@ -1301,6 +1327,8 @@ class ControllerNode {
          max_roll_ <= 0.0 || max_roll_ >= 0.5 * kPi ||
          !std::isfinite(fixedwing_path_curvature_distance_) ||
          !std::isfinite(fixedwing_path_curvature_preview_time_) ||
+         !std::isfinite(
+             fixedwing_path_vertical_slope_smoothing_distance_) ||
          !std::isfinite(fixedwing_point_completion_radius_) ||
          !std::isfinite(
              fixedwing_point_completion_altitude_tolerance_) ||
@@ -1321,6 +1349,7 @@ class ControllerNode {
          !std::isfinite(altitude_integral_climb_rate_limit_) ||
          !std::isfinite(climb_rate_pitch_gain_) ||
          !std::isfinite(climb_rate_filter_time_constant_) ||
+         !std::isfinite(climb_rate_setpoint_acceleration_limit_) ||
          !std::isfinite(vertical_acceleration_pitch_rate_gain_) ||
          !std::isfinite(bank_load_factor_pitch_gain_) ||
          !std::isfinite(climb_rate_throttle_gain_) ||
@@ -2179,8 +2208,11 @@ class ControllerNode {
   }
 
   void resetFixedwingControlState() {
+    fixedwing_point_vertical_guidance_.reset();
     fixedwing_altitude_integral_climb_rate_ = 0.0;
     fixedwing_airspeed_integral_throttle_ = 0.0;
+    fixedwing_climb_rate_setpoint_ = 0.0;
+    fixedwing_climb_rate_setpoint_initialized_ = false;
     filtered_climb_rate_ = 0.0;
     filtered_climb_rate_initialized_ = false;
     fixedwing_course_integral_rate_ = 0.0;
@@ -2453,6 +2485,26 @@ class ControllerNode {
     formationStatusCallback(event, 1);
   }
 
+  void updateFixedwingPointGoal(const Reference& source) {
+    // Compare source-frame coordinates, not a re-transformed odom endpoint.
+    // Repeated publication of the same point must not move the leg origin.
+    const bool same_goal = have_reference_ && !path_active_ &&
+        !trajectory_active_ && !internal_reference_active_ &&
+        !idle_reference_active_ &&
+        xd_uav_controller::usesPointVerticalGuidance(source) &&
+        xd_uav_controller::usesPointVerticalGuidance(reference_source_) &&
+        source.header.frame_id == reference_source_.header.frame_id &&
+        source.use_position == reference_source_.use_position &&
+        (!source.use_position[0] ||
+         source.position.x == reference_source_.position.x) &&
+        (!source.use_position[1] ||
+         source.position.y == reference_source_.position.y) &&
+        source.position.z == reference_source_.position.z;
+    if (!same_goal) {
+      fixedwing_point_vertical_guidance_.reset();
+    }
+  }
+
   void referencePositionTargetCallback(
       const ros::MessageEvent<mavros_msgs::PositionTarget const>& event) {
     const auto message = event.getMessage();
@@ -2501,6 +2553,7 @@ class ControllerNode {
         !have_reference_;
     updateFixedwingExternalSetpointGuidance(
         normalized, starting_new_mode);
+    updateFixedwingPointGoal(source);
 
     claimExternalReference(publisher);
     reference_source_ = source;
@@ -2624,6 +2677,7 @@ class ControllerNode {
         idle_reference_active_ || fixedwing_loiter_active_ ||
         !have_reference_;
     updateFixedwingExternalSetpointGuidance(normalized, starting_new_mode);
+    updateFixedwingPointGoal(source);
     claimExternalReference(publisher);
     reference_source_ = source;
     reference_ = normalized;
@@ -2945,6 +2999,48 @@ class ControllerNode {
     return true;
   }
 
+  bool estimatePathVerticalSlope(
+      const double distance, const double smoothing_distance,
+      double* vertical_slope) const {
+    if (vertical_slope == nullptr ||
+        !std::isfinite(smoothing_distance) ||
+        smoothing_distance <= 1e-3) {
+      return false;
+    }
+
+    const double half_window = 0.5 * smoothing_distance;
+    const double before_distance =
+        std::max(0.0, distance - half_window);
+    const double after_distance =
+        std::min(path_total_length_, distance + half_window);
+    if (after_distance - before_distance <= 1e-3) {
+      return false;
+    }
+
+    Eigen::Vector3d before_point;
+    Eigen::Vector3d before_tangent;
+    Eigen::Vector3d after_point;
+    Eigen::Vector3d after_tangent;
+    if (!samplePathAt(
+            before_distance, &before_point, &before_tangent) ||
+        !samplePathAt(
+            after_distance, &after_point, &after_tangent)) {
+      return false;
+    }
+
+    const double horizontal_distance = std::hypot(
+        after_point.x() - before_point.x(),
+        after_point.y() - before_point.y());
+    if (horizontal_distance <= 1e-3) {
+      return false;
+    }
+
+    *vertical_slope =
+        (after_point.z() - before_point.z()) /
+        horizontal_distance;
+    return std::isfinite(*vertical_slope);
+  }
+
   bool estimatePathCurvature(
       const double distance, const double window,
       double* curvature) const {
@@ -3189,8 +3285,13 @@ class ControllerNode {
       }
       velocity.x() = desired_speed * tangent.x() / horizontal_norm;
       velocity.y() = desired_speed * tangent.y() / horizontal_norm;
+      double vertical_slope = tangent.z() / horizontal_norm;
+      estimatePathVerticalSlope(
+          path_progress_,
+          fixedwing_path_vertical_slope_smoothing_distance_,
+          &vertical_slope);
       velocity.z() = clamp(
-          desired_speed * tangent.z() / horizontal_norm,
+          desired_speed * vertical_slope,
           -max_climb_rate_, max_climb_rate_);
     }
     reference->velocity.x = velocity.x();
@@ -5544,6 +5645,42 @@ class ControllerNode {
       target.enable_altitude_integrator =
           !takeoff_active_ && !landing_active_;
     }
+    if (external_setpoint &&
+        !vtol_back_transition_hold_altitude_valid_ &&
+        xd_uav_controller::usesPointVerticalGuidance(reference)) {
+      if (fixedwing_point_guidance_frame_ != state_.header.frame_id) {
+        fixedwing_point_vertical_guidance_.reset();
+        fixedwing_point_guidance_frame_ = state_.header.frame_id;
+      }
+      const Eigen::Vector3d position(
+          state_.position_odom.x, state_.position_odom.y, state_.position_odom.z);
+      const Eigen::Vector3d velocity(
+          state_.velocity_odom.x, state_.velocity_odom.y, state_.velocity_odom.z);
+      Eigen::Vector3d goal = position;
+      if (reference.use_position[0]) goal.x() = reference.position.x;
+      if (reference.use_position[1]) goal.y() = reference.position.y;
+      goal.z() = reference.position.z;
+      const auto guidance = fixedwing_point_vertical_guidance_.update(
+          fixedwing_point_vertical_config_, position, velocity, goal,
+          current_course, state_.airspeed, target.airspeed, max_climb_rate_,
+          fixedwing_loiter_radius_, fixedwing_loiter_direction_, max_roll_,
+          std::min(1.0, fixedwing_point_completion_altitude_tolerance_), dt,
+          altitude_integral_gain_,
+          std::min(0.5, altitude_integral_climb_rate_limit_));
+      target.point_vertical_guidance = true;
+      target.use_altitude_feedback = false;
+      target.enable_altitude_integrator = false;
+      target.climb_rate_feedforward = guidance.climb_rate;
+      if (guidance.orbit) {
+        target.course = wrapAngle(guidance.course);
+        target.course_rate_feedforward = guidance.course_rate;
+        target.enable_course_integrator = false;
+        ROS_INFO_THROTTLE(
+            5.0, "[xd_uav_controller] 单点航程不足，先盘旋升降: "
+            "height_error=%.1f climb_rate=%.2f；原目标继续保留",
+            goal.z() - position.z(), guidance.climb_rate);
+      }
+    }
     return target;
   }
 
@@ -5586,6 +5723,37 @@ class ControllerNode {
     FixedwingControlTarget target =
         makeFixedwingControlTarget(
             reference, current_course, yaw, dt);
+    if (target.point_vertical_guidance) {
+      // The complete point command is already shaped. Keep the original
+      // explicit-velocity branch intact for tracking and formation inputs.
+      fixedwing_climb_rate_setpoint_initialized_ = false;
+    } else if (!takeoff_active_ && !landing_active_) {
+      const double requested_climb_rate_feedforward = clamp(
+          target.climb_rate_feedforward,
+          -max_climb_rate_, max_climb_rate_);
+      if (!fixedwing_climb_rate_setpoint_initialized_) {
+        fixedwing_climb_rate_setpoint_ = clamp(
+            state_.velocity_odom.z,
+            -max_climb_rate_, max_climb_rate_);
+        fixedwing_climb_rate_setpoint_initialized_ = true;
+      }
+      if (climb_rate_setpoint_acceleration_limit_ <= 1e-6) {
+        fixedwing_climb_rate_setpoint_ =
+            requested_climb_rate_feedforward;
+      } else {
+        const double maximum_climb_rate_step =
+            climb_rate_setpoint_acceleration_limit_ * dt;
+        fixedwing_climb_rate_setpoint_ += clamp(
+            requested_climb_rate_feedforward -
+                fixedwing_climb_rate_setpoint_,
+            -maximum_climb_rate_step,
+            maximum_climb_rate_step);
+      }
+      target.climb_rate_feedforward =
+          fixedwing_climb_rate_setpoint_;
+    } else {
+      fixedwing_climb_rate_setpoint_initialized_ = false;
+    }
     if (vtol_back_transition_heading_hold_active_) {
       target.course = vtol_back_transition_initial_course_;
       target.course_rate_feedforward = 0.0;
@@ -6038,12 +6206,17 @@ class ControllerNode {
                           ? candidate.position.y - state_.position_odom.y
                           : 0.0;
     const double horizontal_error = std::hypot(dx, dy);
+    const bool guided_point =
+        xd_uav_controller::usesPointVerticalGuidance(candidate);
     const bool altitude_reached =
         !candidate.use_position[2] ||
         std::abs(candidate.position.z - state_.position_odom.z) <=
-            fixedwing_point_completion_altitude_tolerance_;
+            (guided_point
+                 ? std::min(1.0, fixedwing_point_completion_altitude_tolerance_)
+                 : fixedwing_point_completion_altitude_tolerance_);
     if (horizontal_error <= fixedwing_point_completion_radius_ &&
-        altitude_reached) {
+        altitude_reached &&
+        (!guided_point || std::abs(state_.velocity_odom.z) <= 0.3)) {
       const double loiter_altitude =
           candidate.use_position[2]
               ? candidate.position.z
@@ -6650,6 +6823,9 @@ class ControllerNode {
   double altitude_integral_climb_rate_limit_{1.0};
   double climb_rate_pitch_gain_{0.06};
   double climb_rate_filter_time_constant_{0.50};
+  double climb_rate_setpoint_acceleration_limit_{1.0};
+  double fixedwing_climb_rate_setpoint_{0.0};
+  bool fixedwing_climb_rate_setpoint_initialized_{false};
   double vertical_acceleration_pitch_rate_gain_{1.0};
   double bank_load_factor_pitch_gain_{0.20};
   double climb_rate_throttle_gain_{0.03};
@@ -6683,10 +6859,14 @@ class ControllerNode {
   double vtol_back_transition_max_pitch_rate_{0.35};
   double fixedwing_path_curvature_distance_{10.0};
   double fixedwing_path_curvature_preview_time_{0.30};
+  double fixedwing_path_vertical_slope_smoothing_distance_{30.0};
   double fixedwing_path_completion_radius_{20.0};
   double fixedwing_path_completion_altitude_tolerance_{5.0};
   double fixedwing_point_completion_radius_{20.0};
   double fixedwing_point_completion_altitude_tolerance_{5.0};
+  xd_uav_controller::PointVerticalConfig fixedwing_point_vertical_config_;
+  xd_uav_controller::PointVerticalGuidance fixedwing_point_vertical_guidance_;
+  std::string fixedwing_point_guidance_frame_;
   double fixedwing_path_reacquisition_distance_{50.0};
 
   double multirotor_takeoff_default_altitude_{2.0};

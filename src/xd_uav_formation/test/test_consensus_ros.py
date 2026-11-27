@@ -7,8 +7,7 @@ import unittest
 import rospy
 import rostest
 from mavros_msgs.msg import PositionTarget, State
-from std_msgs.msg import String
-from std_srvs.srv import SetBool
+from std_msgs.msg import String, UInt32
 from xd_uav_controller.msg import ControlState
 from xd_uav_formation.srv import FormationControl
 
@@ -22,9 +21,12 @@ class ConsensusRosTest(unittest.TestCase):
         self._peer_airframe_override = None
         self._statuses = {}
         self._references = {"uav1": 0, "uav2": 0}
+        self._received_counts = dict.fromkeys(self._references, 0)
         self._latest_velocity_x = {}
         self._latest_reference = {}
         self._uav2_x = 100.0
+        self._uav2_z = 100.0
+        self._uav2_vz = 0.0
         self._state_pubs = {name: rospy.Publisher(
             "/{}/control_manager/state".format(name), ControlState,
             queue_size=10) for name in self._references}
@@ -73,7 +75,8 @@ class ConsensusRosTest(unittest.TestCase):
                 state.position_odom.x = (self._uav2_x if name == "uav2"
                                          else 100.0)
                 state.position_odom.y = y
-                state.position_odom.z = 100.0
+                state.position_odom.z = self._uav2_z if name == "uav2" else 100.0
+                state.velocity_odom.z = self._uav2_vz if name == "uav2" else 0.0
                 state.orientation_odom_body.w = 1.0
                 self._state_pubs[name].publish(state)
                 mavros = State()
@@ -88,10 +91,12 @@ class ConsensusRosTest(unittest.TestCase):
 
     def _on_reference(self, message, name):
         with self._lock:
+            self._received_counts[name] += 1
             self._latest_reference[name] = (
                 message.position.x, message.position.y,
                 message.header.frame_id, message.type_mask,
-                message.velocity.x, message.velocity.y)
+                message.velocity.x, message.velocity.y,
+                message.position.z, message.velocity.z)
         expected_y = 40.0 if name == "uav1" else -40.0
         if (abs(message.position.y - expected_y) < 0.01 and
                 message.header.frame_id == "world" and
@@ -113,40 +118,35 @@ class ConsensusRosTest(unittest.TestCase):
         return False
 
     def test_both_members_stream_and_preempt_together(self):
-        services = {}
-        for name in self._references:
-            path = "/{}/formation_consensus/set_enabled".format(name)
-            rospy.wait_for_service(path, timeout=10.0)
-            services[name] = rospy.ServiceProxy(path, SetBool)
+        # The C++ manager creates member services only after a team request.
+        rospy.wait_for_service("/formation/set_enabled", timeout=10)
+        team_service = rospy.ServiceProxy(
+            "/formation/set_enabled", FormationControl)
+        members = ["uav1", "uav2"]
+        if rospy.get_param("~reverse_members", False):
+            members.reverse()
         self._peer_airframe_override = (
             ControlState.AIRFRAME_FIXED_WING
             if self._airframe == "multirotor" else
             ControlState.AIRFRAME_MULTIROTOR)
         time.sleep(0.15)
-        # A manager can advertise member services before state, MAVROS, and
-        # center telemetry has reached every callback queue. Wait through those
-        # startup-only readiness errors to check the airframe mismatch itself.
-        transient_readiness = {
-            "follower_state_stale", "follower_offboard_required",
-            "uav2_state_stale", "peer_offboard_required:uav2",
-            "neighbor_center_stale:uav2"}
+        # Wait through startup telemetry readiness errors before checking the
+        # mismatch, through the same public team interface used by operators.
         mismatch = None
         for _ in range(20):
-            mismatch = services["uav1"](True)
-            if mismatch.message not in transient_readiness:
+            mismatch = team_service(mode="consensus", members=members, enabled=True)
+            if mismatch.message.endswith("same_airframe_type_required"):
                 break
             time.sleep(0.05)
         self.assertFalse(mismatch.success)
-        self.assertEqual(mismatch.message, "same_airframe_type_required")
+        self.assertTrue(mismatch.message.endswith("same_airframe_type_required"),
+                        mismatch.message)
         self._peer_airframe_override = None
-        rospy.wait_for_service("/formation/set_enabled", timeout=5)
-        team_service = rospy.ServiceProxy(
-            "/formation/set_enabled", FormationControl)
         response = None
         for _ in range(40):
             response = team_service(
                 mode="consensus",
-                members=["uav1", "uav2"], enabled=True)
+                members=members, enabled=True)
             if response.success:
                 break
             time.sleep(0.05)
@@ -156,26 +156,78 @@ class ConsensusRosTest(unittest.TestCase):
             "both members did not stream their slots: references={}, statuses={}, velocities={}, raw={}".
             format(self._references, self._statuses,
                    self._latest_velocity_x, self._latest_reference))
+        if rospy.get_param("~reverse_members", False):
+            # Reversing service order must not send aircraft across the fleet.
+            team = ("cpp_consensus_test" if self._airframe == "multirotor"
+                    else "cpp_consensus_fixedwing_test")
+            plan = rospy.get_param("/formation/{}/acquisition_plan".format(team))
+            self.assertEqual(plan["members"], members)
+            goals = dict(zip(plan["members"], plan["slots"]))
+            self.assertAlmostEqual(goals["uav1"][1], 40.0)
+            self.assertAlmostEqual(goals["uav2"][1], -40.0)
         base_speed = 3.0 if self._airframe == "multirotor" else 15.0
         self._uav2_x = 80.0
-        self.assertTrue(self._until(lambda:
-            self._latest_velocity_x.get("uav1", base_speed) <
-                base_speed - 0.2 and
-            self._latest_velocity_x.get("uav2", base_speed) >
-                base_speed + 0.2),
-            "lagging member did not speed up while its neighbor slowed: {}".
-            format(self._latest_velocity_x))
+        if self._airframe == "multirotor":
+            # Hover members in one group close along-track error through their
+            # position targets; group pacing need not change feedforward speed.
+            self.assertTrue(self._until(lambda: all(
+                abs(self._latest_reference.get(name, (0.0,))[0] -
+                    (self._expected_x - 10.0)) < 0.01
+                for name in self._references)),
+                "slot positions did not follow the moved group center")
+        else:
+            self.assertTrue(self._until(lambda:
+                self._latest_velocity_x.get("uav1", base_speed) <
+                    base_speed - 0.2 and
+                self._latest_velocity_x.get("uav2", base_speed) >
+                    base_speed + 0.2),
+                "lagging member did not speed up while its neighbor slowed: {}".
+                format(self._latest_velocity_x))
         self._uav2_x = 100.0
         self.assertTrue(self._until(lambda: all(
-            abs(self._latest_velocity_x.get(name, 0.0) - base_speed) < 0.01
+            abs(self._latest_velocity_x.get(name, 0.0) - base_speed) < 0.01 and
+            abs(self._latest_reference.get(name, (0.0,))[0] - self._expected_x) < 0.01
             for name in self._references)),
             "members did not return to cruise speed after convergence")
+        if rospy.get_param("~detached_altitude", False):
+            regroup = rospy.Publisher("/formation/group_size", UInt32, queue_size=1)
+            self.assertTrue(self._until(lambda: regroup.get_num_connections() > 0))
+            regroup.publish(UInt32(data=2))
+            time.sleep(0.3)
+            self._uav2_vz = -1.2
+            self.assertTrue(self._until(lambda: self._external.get_num_connections() > 0))
+            goal = PositionTarget()
+            goal.header.stamp = rospy.Time.now()
+            goal.header.frame_id = "world"
+            goal.coordinate_frame = 1
+            goal.type_mask = 2552
+            goal.position.x = goal.position.y = 10.0
+            goal.position.z = 3.0
+            self._external.publish(goal)
+
+            def tracks(height, vz):
+                reference = self._latest_reference.get("uav1")
+                return (reference is not None and len(reference) >= 8 and
+                        abs(reference[6] - height) < 0.01 and
+                        abs(reference[7] - vz) < 0.01 and
+                        not (reference[3] & (PositionTarget.IGNORE_PZ |
+                                             PositionTarget.IGNORE_VZ)) and
+                        self._statuses.get("uav1", "").startswith(
+                            "active:following_detached_group:uav2"))
+
+            self.assertTrue(self._until(lambda: tracks(100.0, -1.2)),
+                            "follower jumped to final Z instead of anchor height")
+            self._uav2_z, self._uav2_vz = 60.0, -2.0
+            self.assertTrue(self._until(lambda: tracks(60.0, -2.0)))
+            self._uav2_z, self._uav2_vz = 3.0, 0.0
+            self.assertTrue(self._until(lambda: tracks(3.0, 0.0)))
+            return
         self._preempt = rospy.Publisher(
             "/uav2/formation/preempt", String, queue_size=10)
         self.assertTrue(self._until(
             lambda: self._preempt.get_num_connections() > 0),
             "member preempt subscriber did not connect")
-        previous_count = self._references["uav1"]
+        previous_count = self._received_counts["uav1"]
         for _ in range(3):
             self._preempt.publish(String(data="member_fault"))
             time.sleep(0.03)
@@ -185,7 +237,7 @@ class ConsensusRosTest(unittest.TestCase):
             self._statuses.get("uav1", "").startswith("active:")),
             "member preemption affected the remaining formation member")
         self.assertTrue(self._until(
-            lambda: self._references["uav1"] > previous_count),
+            lambda: self._received_counts["uav1"] > previous_count),
             "remaining member stopped publishing its formation reference")
 
 
