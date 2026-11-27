@@ -1079,7 +1079,7 @@ void Follower::refreshMembership(const ros::Time& now,
         error = "left_offboard";
       }
     }
-    if (error.empty()) {
+    if (error.empty() && !usesFixedwingConsensusGuidance(*own_state_)) {
       const auto center = input.centers.find(name);
       const auto received = input.center_received.find(name);
       if (center == input.centers.end() || received == input.center_received.end() ||
@@ -1236,7 +1236,10 @@ std::optional<std::string> Follower::readiness(
              "peer_offboard_required:" + peer.name;
     }
   }
-  if (config_.mode == "consensus") {
+  // Fixed-wing geometry and detached following use validated peer states
+  // directly. Requiring a previous center heartbeat adds a startup race,
+  // and can falsely exclude a healthy aircraft before its first heartbeat.
+  if (config_.mode == "consensus" && !usesFixedwingConsensusGuidance(own)) {
     const auto own_group = formationGroupFor(member_);
     for (const auto& name : activeMembers()) {
       if (name == member_) continue;
@@ -2322,13 +2325,13 @@ Vec3 Follower::ownCenterInCommonFrame(const ros::Time& now,
   return virtualCenter(position, heading, offset_);
 }
 
-void Follower::publishCenter(const ros::Time& now, const StateSnapshot& input) {
+bool Follower::publishCenter(const ros::Time& now, const StateSnapshot& input) {
   if (!own_state_ || !fresh(own_state_->header, has_own_state_received_,
       own_state_received_, now) || !own_state_->state_valid ||
-      own_state_->header.frame_id.empty()) return;
+      own_state_->header.frame_id.empty()) return false;
   Vec3 center;
   try { center = ownCenterInCommonFrame(now, input, *own_state_); }
-  catch (const std::exception&) { return; }
+  catch (const std::exception&) { return false; }
   geometry_msgs::PointStamped message;
   message.header.stamp = now;
   message.header.frame_id = config_.common_frame;
@@ -2340,6 +2343,7 @@ void Follower::publishCenter(const ros::Time& now, const StateSnapshot& input) {
     shared_->markChanged();
   }
   center_pub_.publish(message);
+  return true;
 }
 
 std::tuple<Vec3, Vec3, double> Follower::consensusCenters(
@@ -3328,8 +3332,7 @@ void Follower::tick(const ros::TimerEvent&) {
     if (!enabled_) {
       if (!last_idle_center_publish_ ||
           (now - *last_idle_center_publish_).toSec() >= idle_center_period_) {
-        publishCenter(now, input);
-        last_idle_center_publish_ = now;
+        if (publishCenter(now, input)) last_idle_center_publish_ = now;
       }
       return;
     }

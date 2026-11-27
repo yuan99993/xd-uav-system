@@ -423,7 +423,7 @@ class Follower {
       const ros::Time& received) const;
   void stop(const std::string& reason, bool hold, bool broadcast = true);
   void publishHold();
-  void publishCenter(const ros::Time& now, const StateSnapshot& snapshot);
+  bool publishCenter(const ros::Time& now, const StateSnapshot& snapshot);
   void refreshMembership(const ros::Time& now, const StateSnapshot& snapshot);
   void restartAcquisitionForMembershipChange(const std::string& reason);
   bool fresh(const std_msgs::Header& header, bool has_message,

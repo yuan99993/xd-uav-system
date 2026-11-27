@@ -176,6 +176,8 @@ rostopic pub -1 /formation/shape std_msgs/String "data: 'arrow'"
 
 ## 启动条件与状态
 
+默认 C++ 固定翼一致性控制直接根据有效成员状态和坐标变换生成槽位，不再把邻机中心心跳作为启用或成员有效性的前置条件；多旋翼仍保留中心数据检查。中心首次发布因状态或 TF 尚未就绪而失败时，不记录成功发布的时间，下个控制周期继续尝试，避免内部中心缓存未建立就报 `neighbor_center_stale`。有效定位、TF、飞行阶段、解锁和 OFFBOARD 等必要条件继续检查。
+
 Gazebo 仿真中，先确认 `/use_sim_time` 已设为 `true` 且 `/clock` 已有消息，再启动编队进程。若编队进程早于 Gazebo 启动，它可能仍使用系统时间，而飞机状态已使用仿真时间，造成持续的 `follower_state_stale`。此时在仿真时钟就绪后重启编队 launch；仅重试启用服务或增大 `state_timeout` 无法纠正时钟来源。PX4 的三机、六机 tmux 仿真配置已在编队启动前等待首条 `/clock` 消息。
 
 - 所有成员应有有效的本机状态、MAVROS 状态和公共 TF；坐标系和航点需一致。
